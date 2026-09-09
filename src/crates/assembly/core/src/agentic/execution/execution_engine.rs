@@ -1756,6 +1756,9 @@ impl ExecutionEngine {
                 None,
             )
             .await?;
+        // Optional host-level cognitive decoration (no-op when unregistered).
+        let system_prompt =
+            super::cognitive_hooks::decorate_system_prompt(system_prompt).await;
 
         Self::log_turn_prompt_scaffold(
             &input.context.session_id,
@@ -2660,6 +2663,8 @@ impl ExecutionEngine {
             }
         };
         let ai_client = apply_agent_temperature_override(current_agent.as_ref(), ai_client);
+        // Optional host-level sampling override (no-op when unregistered).
+        let ai_client = super::cognitive_hooks::apply_sampling_params_override(ai_client).await;
         Self::validate_frozen_model_contract(context).await?;
         Self::validate_frozen_reasoning_contract(context, ai_client.as_ref())?;
         let model_request_context = Self::model_request_context(
@@ -3632,6 +3637,8 @@ impl ExecutionEngine {
             }
         };
         let ai_client = apply_agent_temperature_override(current_agent.as_ref(), ai_client);
+        // Optional host-level sampling override (no-op when unregistered).
+        let ai_client = super::cognitive_hooks::apply_sampling_params_override(ai_client).await;
         Self::validate_frozen_model_contract(&context).await?;
         Self::validate_frozen_reasoning_contract(&context, ai_client.as_ref())?;
         let model_request_context = Self::model_request_context(

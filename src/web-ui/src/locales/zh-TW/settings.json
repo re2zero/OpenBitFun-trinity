@@ -48,6 +48,7 @@
         "label": "記憶",
         "description": "記憶生成、使用、提取與整理。"
       },
+      "trinity": { "label": "銀月引擎", "description": "認知引擎 LLM 端點、模型與連接。" },
       "sessionWorkspace": {
         "label": "會話與工作區",
         "description": "預設 Harness、會話標題與目前工作區搜尋。"
@@ -594,6 +595,21 @@
       "subtitle": "自定義應用的外觀和色彩",
       "import": "匯入外觀",
       "export": "導出目前外觀"
+    }
+  },
+  "trinity": {
+    "engine": {
+      "llmSection": "認知引擎 LLM",
+      "apiUrl": "API 位址",
+      "model": "模型",
+      "apiKey": "API 金鑰",
+      "save": "儲存",
+      "saving": "儲存中…",
+      "saved": "認知引擎設定已儲存。",
+      "testConnection": "測試連線",
+      "testing": "測試中…",
+      "connectionOk": "連線成功。",
+      "connectionFailed": "連線失敗。"
     }
   }
 }

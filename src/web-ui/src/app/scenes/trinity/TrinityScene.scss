@@ -1,0 +1,328 @@
+/**
+ * Cognitive Being scene styles.
+ *
+ * Visual language shared with the sidebar being-section: per-valence
+ * emotion hues (data-openbitfun-emotion), localized need bars with an
+ * unmet-attention highlight, and a management-enabled memory timeline.
+ */
+
+@use '../../styles/cognitive-emotion.scss' as cognitive-emotion;
+
+.openbitfun-trinity-scene {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+
+  &__scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  &__content {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: var(--openbitfun-space-6);
+    display: flex;
+    flex-direction: column;
+    gap: var(--openbitfun-space-4);
+  }
+
+  &__header {
+    display: flex;
+    flex-direction: column;
+    gap: var(--openbitfun-space-2);
+  }
+
+  &__title-row {
+    display: flex;
+    align-items: center;
+    gap: var(--openbitfun-space-3);
+
+    h1 {
+      flex: 1 1 auto;
+      margin: 0;
+      font-size: var(--openbitfun-font-size-lg);
+      font-weight: 600;
+    }
+  }
+
+  &__daemon-badge {
+    flex-shrink: 0;
+    padding: 2px 10px;
+    border-radius: var(--openbitfun-radius-full);
+    background: var(--openbitfun-color-surface-raised);
+    border: 1px solid var(--openbitfun-color-border-default);
+    color: var(--openbitfun-color-content-muted);
+    font-size: var(--openbitfun-type-overline-sm-font-size);
+
+    &[data-openbitfun-state='online'] {
+      color: var(--openbitfun-color-status-success-content);
+      border-color: currentcolor;
+    }
+
+    &[data-openbitfun-state='offline'] {
+      color: var(--openbitfun-color-text-danger);
+      border-color: currentcolor;
+    }
+  }
+
+  &__subtitle {
+    margin: 0;
+    color: var(--openbitfun-color-text-muted);
+    font-size: var(--openbitfun-font-size-sm);
+  }
+
+  &__offline {
+    p {
+      margin: 0;
+      color: var(--openbitfun-color-text-danger);
+    }
+  }
+
+  &__awaken {
+    h2 {
+      margin: 0 0 var(--openbitfun-space-2);
+      font-size: var(--openbitfun-font-size-md);
+    }
+
+    p {
+      margin: 0 0 var(--openbitfun-space-3);
+      color: var(--openbitfun-color-text-muted);
+    }
+  }
+
+  // ── Emotion hero ────────────────────────────
+
+  &__hero {
+    display: flex;
+    align-items: center;
+    gap: var(--openbitfun-space-4);
+    padding: var(--openbitfun-space-3) var(--openbitfun-space-4);
+    border-radius: var(--openbitfun-radius-md);
+    background: var(--openbitfun-color-surface-raised);
+    border: 1px solid var(--openbitfun-color-border-default);
+  }
+
+  &__hero-dot {
+    flex-shrink: 0;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: var(--openbitfun-color-content-muted);
+    box-shadow: 0 0 0 3px rgb(0 0 0 / 8%);
+
+    @include cognitive-emotion.emotion-dots;
+  }
+
+  &__hero-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  &__hero-emotion {
+    font-size: var(--openbitfun-font-size-lg);
+    font-weight: 600;
+  }
+
+  &__hero-meta {
+    color: var(--openbitfun-color-text-muted);
+    font-size: var(--openbitfun-font-size-sm);
+  }
+
+  // ── Needs ───────────────────────────────────
+
+  &__needs {
+    display: flex;
+    flex-direction: column;
+    gap: var(--openbitfun-space-2);
+    margin-top: var(--openbitfun-space-4);
+
+    h3 {
+      margin: 0 0 var(--openbitfun-space-1);
+      font-size: var(--openbitfun-font-size-sm);
+      font-weight: 600;
+    }
+  }
+
+  &__need {
+    display: flex;
+    align-items: center;
+    gap: var(--openbitfun-space-2);
+    font-size: var(--openbitfun-font-size-sm);
+  }
+
+  &__need-label {
+    width: 44px;
+    flex: 0 0 auto;
+    color: var(--openbitfun-color-text-muted);
+  }
+
+  &__need-track {
+    flex: 1 1 auto;
+    height: 6px;
+    border-radius: var(--openbitfun-radius-full);
+    background: var(--openbitfun-color-surface-raised);
+    overflow: hidden;
+  }
+
+  &__need-fill {
+    display: block;
+    height: 100%;
+    border-radius: var(--openbitfun-radius-full);
+    background: var(--openbitfun-color-accent);
+    transition: width var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard);
+
+    &[data-openbitfun-attention='low'] {
+      background: var(--openbitfun-color-status-warning-content);
+    }
+  }
+
+  &__need-value {
+    width: 44px;
+    flex: 0 0 auto;
+    text-align: right;
+    color: var(--openbitfun-color-text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  &__memory-scale {
+    margin-top: var(--openbitfun-space-3);
+    font-size: var(--openbitfun-font-size-sm);
+    color: var(--openbitfun-color-text-muted);
+  }
+
+  // ── Cloud memory entry ──────────────────────
+
+  &__cloud {
+    display: flex;
+    align-items: center;
+    gap: var(--openbitfun-space-2);
+    padding: var(--openbitfun-space-2) var(--openbitfun-space-3);
+    border-radius: var(--openbitfun-radius-md);
+    background: var(--openbitfun-color-surface-raised);
+    border: 1px dashed var(--openbitfun-color-border-default);
+  }
+
+  &__cloud-icon {
+    display: inline-flex;
+    flex-shrink: 0;
+    color: var(--openbitfun-color-text-muted);
+  }
+
+  &__cloud-label {
+    font-size: var(--openbitfun-font-size-sm);
+    font-weight: 600;
+  }
+
+  &__cloud-hint {
+    color: var(--openbitfun-color-text-muted);
+    font-size: var(--openbitfun-font-size-sm);
+  }
+
+  &__soon-badge {
+    margin-left: auto;
+    flex-shrink: 0;
+    padding: 1px 8px;
+    border-radius: var(--openbitfun-radius-full);
+    border: 1px solid var(--openbitfun-color-border-default);
+    color: var(--openbitfun-color-text-muted);
+    font-size: var(--openbitfun-font-size-xs);
+  }
+
+  // ── Memory timeline + management ────────────
+
+  &__memory-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--openbitfun-space-2);
+  }
+
+  &__memory-item {
+    display: flex;
+    align-items: baseline;
+    gap: var(--openbitfun-space-2);
+    font-size: var(--openbitfun-font-size-sm);
+    padding: var(--openbitfun-space-2) var(--openbitfun-space-3);
+    border-radius: var(--openbitfun-radius-md);
+    background: var(--openbitfun-color-surface-raised);
+
+    &:hover &-actions,
+    &:focus-within &-actions {
+      opacity: 1;
+      pointer-events: auto;
+    }
+  }
+
+  &__memory-kind {
+    flex: 0 0 auto;
+    padding: 1px 8px;
+    border-radius: var(--openbitfun-radius-full);
+    background: var(--openbitfun-color-surface);
+    border: 1px solid var(--openbitfun-color-border-default);
+    font-size: var(--openbitfun-font-size-xs);
+    color: var(--openbitfun-color-text-muted);
+  }
+
+  &__memory-content {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  &__memory-project {
+    flex: 0 0 auto;
+    color: var(--openbitfun-color-text-muted);
+    font-size: var(--openbitfun-font-size-xs);
+  }
+
+  &__memory-time {
+    flex: 0 0 auto;
+    color: var(--openbitfun-color-text-muted);
+    font-size: var(--openbitfun-font-size-xs);
+    font-variant-numeric: tabular-nums;
+  }
+
+  &__memory-actions {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard);
+  }
+
+  &__memory-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border: none;
+    border-radius: var(--openbitfun-radius-sm);
+    background: transparent;
+    color: var(--openbitfun-color-text-muted);
+    cursor: pointer;
+
+    &:hover,
+    &:focus-visible {
+      background: var(--openbitfun-color-surface);
+      color: var(--openbitfun-color-content-primary);
+    }
+
+    &.is-armed {
+      color: var(--openbitfun-color-text-danger);
+      background: var(--openbitfun-color-surface);
+    }
+  }
+
+  &__empty {
+    margin: 0;
+    color: var(--openbitfun-color-text-muted);
+    font-size: var(--openbitfun-font-size-sm);
+  }
+}

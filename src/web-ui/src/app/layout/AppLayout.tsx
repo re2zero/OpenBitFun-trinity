@@ -57,6 +57,9 @@ const ToolbarMode = lazy(() =>
 const FloatingMiniChat = lazy(() =>
   import('./FloatingMiniChat').then(module => ({ default: module.FloatingMiniChat }))
 );
+const TrinityAwakenGate = lazy(() =>
+  import('../components/TrinityAwakenGate/TrinityAwakenGate')
+);
 const AboutDialog = lazy(() =>
   import('../components/AboutDialog').then(module => ({ default: module.AboutDialog }))
 );
@@ -762,6 +765,12 @@ const AppLayout: React.FC<AppLayoutProps> = ({ className = '' }) => {
         {/* Hello stays available across every client scene, including Welcome. */}
         <Suspense fallback={null}>
           <FloatingMiniChat />
+        </Suspense>
+
+        {/* Trinity awakening gate: first conversation with the Trinity
+            assistant surfaces the ceremony when the being is not awakened. */}
+        <Suspense fallback={null}>
+          <TrinityAwakenGate />
         </Suspense>
       </div>
 

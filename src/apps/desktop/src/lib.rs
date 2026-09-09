@@ -34,6 +34,7 @@ pub mod runtime;
 pub mod sleep_prevention;
 pub mod startup_trace;
 pub mod tray;
+mod trinity;
 mod webview_recovery;
 mod window_state_support;
 
@@ -934,6 +935,12 @@ pub async fn run() {
             );
             startup_trace.record_logging_ready_and_stop_persistence();
 
+            // Trinity cognitive engine: spawn/reuse the daemon and register
+            // cognitive hooks + tools. Non-blocking; failures degrade gracefully.
+            tauri::async_runtime::spawn(async move {
+                trinity::init().await;
+            });
+
             let bundled_frontend = if cfg!(debug_assertions) {
                 let development_dist = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join("../../..")
@@ -1830,6 +1837,22 @@ pub async fn run() {
             api::update_api::download_update,
             api::update_api::get_pending_update,
             api::update_api::install_pending_update,
+            api::trinity_api::trinity_get_cognitive_state,
+            api::trinity_api::trinity_express,
+            api::trinity_api::trinity_self_perception,
+            api::trinity_api::trinity_get_status,
+            api::trinity_api::trinity_cognition_history,
+            api::trinity_api::trinity_memory_timeline,
+            api::trinity_api::trinity_memory_stats,
+            api::trinity_api::trinity_recall_memory,
+            api::trinity_api::trinity_memorize,
+            api::trinity_api::trinity_forget_memory,
+            api::trinity_api::trinity_reinforce_memory,
+            api::trinity_api::trinity_awaken,
+            api::trinity_api::trinity_llm_get_config,
+            api::trinity_api::trinity_llm_set_config,
+            api::trinity_api::trinity_llm_test_connection,
+            api::trinity_api::trinity_shutdown,
             api::system_api::open_html_file_in_browser,
             restart_app,
             send_system_notification,

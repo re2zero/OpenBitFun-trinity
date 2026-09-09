@@ -86,7 +86,8 @@
       "terminal": "Shell",
       "git": "Git",
       "miniApps": "小应用",
-      "insights": "洞察"
+      "insights": "洞察",
+      "trinity": "元一"
     },
     "tooltips": {
       "persona": "智能成员 — 展开查看基于角色和记忆的成员会话",
@@ -1941,5 +1942,86 @@
     "nextMonth": "下个月",
     "now": "此刻",
     "close": "关闭"
+  },
+  "trinity": {
+    "being": {
+      "title": "认知体",
+      "expand": "展开认知体",
+      "collapse": "收起认知体",
+      "state": "认知状态",
+      "offlineHint": "认知引擎离线",
+      "awakenAction": "开始觉醒仪式",
+      "cloudMemory": "云端记忆",
+      "cloudMemoryHint": "注册 / 登录",
+      "comingSoon": "即将上线",
+      "openPanel": "打开完整面板"
+    },
+    "emotion": {
+      "positive_high": "雀跃",
+      "positive_mild": "舒展",
+      "neutral": "平静",
+      "curious": "好奇",
+      "confused": "困惑",
+      "negative_mild": "低落",
+      "negative_high": "沮丧"
+    },
+    "focus": {
+      "respond": "应答",
+      "reflect": "反思",
+      "explore": "探索中",
+      "plan": "规划",
+      "idle": "待命"
+    },
+    "needs": {
+      "competence": "胜任",
+      "autonomy": "自主",
+      "relatedness": "归属",
+      "certainty": "确定",
+      "growth": "成长"
+    },
+    "memory": {
+      "reinforce": "强化",
+      "forget": "遗忘",
+      "forgetConfirm": "再点一次确认遗忘"
+    },
+    "status": {
+      "title": "认知状态",
+      "online": "在线",
+      "offline": "离线",
+      "unknown": "未知",
+      "unavailable": "Trinity 认知引擎不可用。请启动 trinityd 或检查 daemon 端口。",
+      "confidence": "置信度",
+      "needs": "需求",
+      "memory": "记忆",
+      "memoryNodes": "{{count}} 节点",
+      "memoryTriples": "{{count}} 三元组",
+      "vocabulary": "{{count}} 词表",
+      "openPanel": "打开面板",
+      "awaken": "觉醒"
+    },
+    "scene": {
+      "title": "唤醒",
+      "subtitle": "认知体 — PSI 状态、记忆与觉醒",
+      "refresh": "刷新",
+      "awakenTitle": "觉醒仪式",
+      "awakenDescription": "认知体尚未觉醒。运行仪式为其命名并建立羁绊。",
+      "awakenName": "银月",
+      "awakenNameLabel": "认知体名称",
+      "awakenUserNameLabel": "你的称呼",
+      "awakenPersonaLabel": "人格",
+      "userName": "公子",
+      "persona": {
+        "dolores": "多洛丽丝 — 温暖共情",
+        "arnold": "阿诺德 — 直率果断",
+        "sage": "智者 — 沉稳睿智",
+        "guardian": "守护者 — 忠诚守护",
+        "explorer": "探索者 — 好奇探索",
+        "neutral": "中性 — 均衡默认"
+      },
+      "awaken": "觉醒",
+      "awakening": "觉醒中…",
+      "memoryTimeline": "记忆时间线",
+      "noMemories": "暂无记忆。"
+    }
   }
 }

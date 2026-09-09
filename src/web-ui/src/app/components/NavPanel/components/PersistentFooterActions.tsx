@@ -31,6 +31,8 @@ import { getAppearanceOverlayHost } from '@/infrastructure/appearance/runtime/Ap
 import { useAnchoredPopoverPosition } from '@/shared/utils/useAnchoredPopoverPosition';
 import { useSettingsStore } from '@/app/scenes/settings/settingsStore';
 import DeviceStatusControl from './DeviceStatusControl';
+import TrinityStatusControl from './TrinityStatusControl';
+import TrinityStatusPanel from './TrinityStatusPanel';
 import AppearanceQuickSwitchMenuItem from './AppearanceQuickSwitchMenuItem';
 
 const RemoteConnectDialog = lazy(() => import('../../RemoteConnectDialog'));
@@ -46,6 +48,7 @@ const PersistentFooterActions: React.FC = () => {
   const [menuClosing, setMenuClosing] = useState(false);
   const [appearanceSubmenuOpen, setAppearanceSubmenuOpen] = useState(false);
   const [deviceOverviewOpen, setDeviceOverviewOpen] = useState(false);
+  const [trinityStatusOpen, setTrinityStatusOpen] = useState(false);
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
   const menuPopoverRef = useRef<HTMLDivElement>(null);
   const menuLayout = useAnchoredPopoverPosition({
@@ -103,6 +106,13 @@ const PersistentFooterActions: React.FC = () => {
       closeMenu();
     }
     setDeviceOverviewOpen(nextOpen);
+  }, [closeMenu, menuOpen]);
+
+  const handleTrinityStatusOpenChange = useCallback((nextOpen: boolean) => {
+    if (nextOpen && menuOpen) {
+      closeMenu();
+    }
+    setTrinityStatusOpen(nextOpen);
   }, [closeMenu, menuOpen]);
 
   const handleOpenSettings = useCallback(() => {
@@ -164,12 +174,21 @@ const PersistentFooterActions: React.FC = () => {
 
   return (
     <>
+      {/* Inline cognitive-state expansion anchored above the footer. */}
+      <TrinityStatusPanel
+        open={trinityStatusOpen}
+        onOpenChange={setTrinityStatusOpen}
+      />
       <div className="openbitfun-nav-panel__footer" data-openbitfun-component="nav-panel" data-openbitfun-part="footer">
         <div className="openbitfun-nav-panel__footer-left">
           <DeviceStatusControl
             open={deviceOverviewOpen}
             onOpenChange={handleDeviceOverviewOpenChange}
             onManageDevices={handleRemoteConnect}
+          />
+          <TrinityStatusControl
+            open={trinityStatusOpen}
+            onOpenChange={handleTrinityStatusOpenChange}
           />
         </div>
 

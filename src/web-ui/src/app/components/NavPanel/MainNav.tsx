@@ -38,6 +38,7 @@ import StickySectionHeader from './components/StickySectionHeader';
 import WorkspaceSessionGroupingToggle from './components/WorkspaceSessionGroupingToggle';
 import WorkspaceSessionFilterMenu from './components/WorkspaceSessionFilterMenu';
 import MiniAppEntry from './components/MiniAppEntry';
+import CognitiveBeingSection from './components/CognitiveBeingSection';
 import WorkspaceListSection from './sections/workspaces/WorkspaceListSection';
 import { useSceneStore } from '../../stores/sceneStore';
 import { useMiniAppCatalogSync } from '../../scenes/miniapps/hooks/useMiniAppCatalogSync';
@@ -352,6 +353,7 @@ const MainNav: React.FC<MainNavProps> = ({
   const extensionsLabel = t('nav.sections.extensions');
   const isAssistantManagerActive = activeTabId === 'assistant' || activeTabId === 'profile';
   const isTaskBoardActive = activeTabId === 'todos';
+  const isTrinityActive = activeTabId === 'trinity';
   return (
     <>
     <NavigationPanel
@@ -417,6 +419,19 @@ const MainNav: React.FC<MainNavProps> = ({
               <OverflowText>{assistantManagerLabel}</OverflowText>
             </button>
           </Tooltip>
+
+          <div
+            className={[
+              'openbitfun-nav-panel__being-slot',
+              isTrinityActive ? 'is-active' : '',
+            ].filter(Boolean).join(' ')}
+            data-openbitfun-component="nav-panel"
+            data-openbitfun-part="trinityEntry"
+            data-openbitfun-state={isTrinityActive ? 'active' : ''}
+            data-testid="nav-trinity-btn"
+          >
+            <CognitiveBeingSection />
+          </div>
 
           <Tooltip content={t('nav.tooltips.todos')} placement="right" followCursor>
             <button data-overflow-trigger

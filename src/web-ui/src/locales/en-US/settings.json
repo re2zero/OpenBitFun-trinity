@@ -48,6 +48,7 @@
         "label": "Memory",
         "description": "Memory generation, use, extraction, and consolidation."
       },
+      "trinity": { "label": "Trinity Engine", "description": "Cognitive engine LLM endpoint, model, and connection." },
       "sessionWorkspace": {
         "label": "Session & Workspace",
         "description": "Default Harness, session titles, and current workspace search."
@@ -594,6 +595,21 @@
       "subtitle": "Customize the app appearance and colors",
       "import": "Import Appearance",
       "export": "Export Current Appearance"
+    }
+  },
+  "trinity": {
+    "engine": {
+      "llmSection": "Cognitive Engine LLM",
+      "apiUrl": "API URL",
+      "model": "Model",
+      "apiKey": "API Key",
+      "save": "Save",
+      "saving": "Saving…",
+      "saved": "Cognitive engine configuration saved.",
+      "testConnection": "Test connection",
+      "testing": "Testing…",
+      "connectionOk": "Connection successful.",
+      "connectionFailed": "Connection failed."
     }
   }
 }

@@ -80,6 +80,8 @@ import { skillsAppearanceDescriptor } from '@/app/scenes/skills/appearance';
 import { terminalAppearanceDescriptor } from '@/app/scenes/terminal/appearance';
 import { aboutDialogAppearanceDescriptor } from '@/app/components/AboutDialog/appearance';
 import { navPanelAppearanceDescriptor } from '@/app/components/NavPanel/appearance';
+import { trinityAwakenAppearanceDescriptor } from '@/app/components/TrinityAwakenGate/appearance';
+import { trinityAppearanceDescriptor } from '@/app/scenes/trinity/appearance';
 import { sessionsSectionAppearanceDescriptor } from '@/app/components/NavPanel/sections/sessions/appearance';
 import { deviceOverviewAppearanceDescriptor } from '@/app/components/NavPanel/components/DeviceStatusControl.appearance';
 import { sessionNavigationAppearanceDescriptor } from '@/app/components/NavPanel/components/WorkspaceSessionGroupingToggle.appearance';
@@ -344,6 +346,7 @@ export function createDefaultAppearanceRegistry(): AppearanceRegistry {
     .registerComponent(sshRemoteAppearanceDescriptor)
     .registerComponent(aboutDialogAppearanceDescriptor)
     .registerComponent(navPanelAppearanceDescriptor)
+    .registerComponent(trinityAwakenAppearanceDescriptor)
     .registerComponent(sessionsSectionAppearanceDescriptor)
     .registerComponent(contentCanvasAppearanceDescriptor)
     .registerComponent(filesPanelAppearanceDescriptor)
@@ -485,6 +488,7 @@ export function createDefaultAppearanceRegistry(): AppearanceRegistry {
     .registerScene(skillsAppearanceDescriptor)
     .registerScene(terminalAppearanceDescriptor)
     .registerScene(todosSceneAppearanceDescriptor)
+    .registerScene(trinityAppearanceDescriptor)
     .registerRenderer(themeTokenAppearanceAdapter)
     .registerRenderer(monacoAppearanceAdapter)
     .registerRenderer(xtermAppearanceAdapter)

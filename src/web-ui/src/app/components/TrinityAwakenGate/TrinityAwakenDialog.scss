@@ -1,0 +1,22 @@
+.openbitfun-trinity-awaken {
+  display: flex;
+  flex-direction: column;
+  gap: var(--openbitfun-space-3);
+
+  &__description {
+    margin: 0;
+    color: var(--openbitfun-color-text-muted);
+    font-size: var(--openbitfun-font-size-sm);
+  }
+
+  &__field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--openbitfun-space-1);
+    font-size: var(--openbitfun-font-size-sm);
+
+    span {
+      color: var(--openbitfun-color-text-muted);
+    }
+  }
+}

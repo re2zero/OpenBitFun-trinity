@@ -201,6 +201,19 @@ export const SETTINGS_PAGE_MANIFESTS: readonly SettingsPageManifest[] = [
     load: () => import('../../../infrastructure/config/components/MemorySettingsPage'),
   }),
   definePage({
+    id: 'ai.trinity',
+    categoryId: 'ai',
+    labelKey: 'navigation.pages.trinity.label',
+    descriptionKey: 'navigation.pages.trinity.description',
+    keywords: ['trinity', 'cognitive', 'psi', 'emotion', 'mindgraph', 'memory', 'awaken'],
+    namespaces: ['settings'],
+    searchPhrases: [
+      phrase('settings', 'navigation.pages.trinity.label'),
+      phrase('settings', 'navigation.pages.trinity.description'),
+    ],
+    load: () => import('../../../infrastructure/config/components/TrinityEngineConfig'),
+  }),
+  definePage({
     id: 'workspace.session',
     categoryId: 'workspace',
     labelKey: 'navigation.pages.sessionWorkspace.label',

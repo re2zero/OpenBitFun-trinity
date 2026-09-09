@@ -23,8 +23,8 @@ describe('settings information architecture', () => {
       'tools',
       'data',
     ]);
-    expect(SETTINGS_PAGE_MANIFESTS).toHaveLength(20);
-    expect(new Set(SETTINGS_PAGE_MANIFESTS.map((page) => page.id)).size).toBe(20);
+    expect(SETTINGS_PAGE_MANIFESTS).toHaveLength(21);
+    expect(new Set(SETTINGS_PAGE_MANIFESTS.map((page) => page.id)).size).toBe(21);
   });
 
   it('keeps memory with AI, pet with application, and review inside execution', () => {

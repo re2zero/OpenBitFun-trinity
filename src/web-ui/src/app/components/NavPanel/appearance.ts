@@ -13,6 +13,7 @@ export const navPanelAppearanceDescriptor: AppearanceSurfaceDescriptor = {
     { id: 'search', propertyProfile: 'control', visualRole: 'control' },
     { id: 'searchTrigger', propertyProfile: 'control', visualRole: 'control' },
     { id: 'todoEntry', propertyProfile: 'control', visualRole: 'control' },
+    { id: 'trinityEntry', propertyProfile: 'control', visualRole: 'control' },
     { id: 'topActions', visualRole: 'toolbar' },
     { id: 'topAction', propertyProfile: 'control', visualRole: 'control' },
     { id: 'topActionUnseen', propertyProfile: 'paint', visualRole: 'decoration' },
@@ -24,12 +25,17 @@ export const navPanelAppearanceDescriptor: AppearanceSurfaceDescriptor = {
     { id: 'miniAppFooter', visualRole: 'toolbar', continuityGroup: 'nav-panel' },
     { id: 'footer', visualRole: 'toolbar', continuityGroup: 'nav-panel' },
     { id: 'deviceStatus', propertyProfile: 'control', visualRole: 'control' },
+    { id: 'trinityStatus', propertyProfile: 'control', visualRole: 'control' },
+    { id: 'trinityPanel', visualRole: 'content', continuityGroup: 'nav-panel' },
+    { id: 'cognitiveBeing', visualRole: 'content' },
     { id: 'settingsEntry', propertyProfile: 'control', visualRole: 'control' },
   ],
   facets: [
     { id: 'layer', attribute: 'data-openbitfun-layer', values: ['main', 'scene'] },
     { id: 'action', attribute: 'data-openbitfun-action', values: ['new-session', 'smart-members', 'long-term-tracking', 'todos', 'extensions', 'agents', 'skills', 'ecosystem-compatibility', 'session-filter', 'assistant-manager'] },
     { id: 'section', attribute: 'data-openbitfun-section', values: ['smart-members', 'workspace', 'sessions'] },
+    { id: 'emotion', attribute: 'data-openbitfun-emotion', values: ['positive_high', 'positive_mild', 'neutral', 'curious', 'confused', 'negative_mild', 'negative_high'] },
+    { id: 'need', attribute: 'data-openbitfun-need', values: ['competence', 'autonomy', 'relatedness', 'certainty', 'growth'] },
   ],
   states: [
     { id: 'scene', selector: { kind: 'self', suffix: '[data-openbitfun-state~="scene"]' } },
@@ -41,5 +47,7 @@ export const navPanelAppearanceDescriptor: AppearanceSurfaceDescriptor = {
     { id: 'stuck', selector: { kind: 'self', suffix: '[data-openbitfun-state~="stuck"]' } },
     { id: 'local', selector: { kind: 'self', suffix: '[data-openbitfun-state~="local"]' } },
     { id: 'connected', selector: { kind: 'self', suffix: '[data-openbitfun-state~="connected"]' } },
+    { id: 'online', selector: { kind: 'self', suffix: '[data-openbitfun-state~="online"]' } },
+    { id: 'offline', selector: { kind: 'self', suffix: '[data-openbitfun-state~="offline"]' } },
   ],
 };

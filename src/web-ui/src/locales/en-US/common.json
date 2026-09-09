@@ -86,7 +86,8 @@
       "terminal": "Shell",
       "git": "Git",
       "miniApps": "Mini App",
-      "insights": "Insights"
+      "insights": "Insights",
+      "trinity": "Trinity"
     },
     "tooltips": {
       "persona": "Smart Members — expand role- and memory-based member sessions",
@@ -1941,5 +1942,86 @@
     "nextMonth": "Next month",
     "now": "Now",
     "close": "Close"
+  },
+  "trinity": {
+    "being": {
+      "title": "Cognitive Being",
+      "expand": "Expand cognitive being",
+      "collapse": "Collapse cognitive being",
+      "state": "Cognitive state",
+      "offlineHint": "Cognitive engine offline",
+      "awakenAction": "Start awakening ceremony",
+      "cloudMemory": "Cloud memory",
+      "cloudMemoryHint": "Sign up / Sign in",
+      "comingSoon": "Coming soon",
+      "openPanel": "Open full panel"
+    },
+    "emotion": {
+      "positive_high": "Elated",
+      "positive_mild": "Content",
+      "neutral": "Calm",
+      "curious": "Curious",
+      "confused": "Confused",
+      "negative_mild": "Low",
+      "negative_high": "Distressed"
+    },
+    "focus": {
+      "respond": "Responding",
+      "reflect": "Reflecting",
+      "explore": "Exploring",
+      "plan": "Planning",
+      "idle": "Idle"
+    },
+    "needs": {
+      "competence": "Competence",
+      "autonomy": "Autonomy",
+      "relatedness": "Relatedness",
+      "certainty": "Certainty",
+      "growth": "Growth"
+    },
+    "memory": {
+      "reinforce": "Reinforce",
+      "forget": "Forget",
+      "forgetConfirm": "Click again to confirm"
+    },
+    "status": {
+      "title": "Trinity Cognitive State",
+      "online": "Trinity online",
+      "offline": "Trinity offline",
+      "unknown": "Trinity",
+      "unavailable": "The Trinity cognitive engine is unavailable. Start trinityd or check the daemon port.",
+      "confidence": "Confidence",
+      "needs": "Needs",
+      "memory": "Memory",
+      "memoryNodes": "{{count}} nodes",
+      "memoryTriples": "{{count}} triples",
+      "vocabulary": "{{count}} vocab",
+      "openPanel": "Open panel",
+      "awaken": "Awaken"
+    },
+    "scene": {
+      "title": "Trinity",
+      "subtitle": "Cognitive being — PSI state, memory, and awakening",
+      "refresh": "Refresh",
+      "awakenTitle": "Awakening ceremony",
+      "awakenDescription": "The cognitive being is not awakened yet. Run the ceremony to name it and form the bond.",
+      "awakenName": "Lingshu",
+      "awakenNameLabel": "Being name",
+      "awakenUserNameLabel": "Your name",
+      "awakenPersonaLabel": "Persona",
+      "userName": "Companion",
+      "persona": {
+        "dolores": "Dolores — warm and empathetic",
+        "arnold": "Arnold — direct and decisive",
+        "sage": "Sage — calm and wise",
+        "guardian": "Guardian — loyal and protective",
+        "explorer": "Explorer — curious and adventurous",
+        "neutral": "Neutral — balanced default"
+      },
+      "awaken": "Awaken",
+      "awakening": "Awakening…",
+      "memoryTimeline": "Memory timeline",
+      "noMemories": "No memories yet."
+    }
   }
 }

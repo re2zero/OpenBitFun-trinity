@@ -86,7 +86,8 @@
       "terminal": "Shell",
       "git": "Git",
       "miniApps": "小應用",
-      "insights": "洞察"
+      "insights": "洞察",
+      "trinity": "銀月"
     },
     "tooltips": {
       "persona": "智能成員 — 展開查看基於角色和記憶的成員會話",
@@ -1941,5 +1942,86 @@
     "nextMonth": "下個月",
     "now": "此刻",
     "close": "關閉"
+  },
+  "trinity": {
+    "being": {
+      "title": "認知體",
+      "expand": "展開認知體",
+      "collapse": "收起認知體",
+      "state": "認知狀態",
+      "offlineHint": "認知引擎離線",
+      "awakenAction": "開始覺醒儀式",
+      "cloudMemory": "雲端記憶",
+      "cloudMemoryHint": "註冊 / 登入",
+      "comingSoon": "即將上線",
+      "openPanel": "開啟完整面板"
+    },
+    "emotion": {
+      "positive_high": "雀躍",
+      "positive_mild": "舒展",
+      "neutral": "平靜",
+      "curious": "好奇",
+      "confused": "困惑",
+      "negative_mild": "低落",
+      "negative_high": "沮喪"
+    },
+    "focus": {
+      "respond": "應答",
+      "reflect": "反思",
+      "explore": "探索中",
+      "plan": "規劃",
+      "idle": "待命"
+    },
+    "needs": {
+      "competence": "勝任",
+      "autonomy": "自主",
+      "relatedness": "歸屬",
+      "certainty": "確定",
+      "growth": "成長"
+    },
+    "memory": {
+      "reinforce": "強化",
+      "forget": "遺忘",
+      "forgetConfirm": "再點一次確認遺忘"
+    },
+    "status": {
+      "title": "銀月認知狀態",
+      "online": "銀月在線",
+      "offline": "銀月離線",
+      "unknown": "銀月",
+      "unavailable": "Trinity 認知引擎不可用。請啟動 trinityd 或檢查 daemon 端口。",
+      "confidence": "置信度",
+      "needs": "需求",
+      "memory": "記憶",
+      "memoryNodes": "{{count}} 節點",
+      "memoryTriples": "{{count}} 三元組",
+      "vocabulary": "{{count}} 詞表",
+      "openPanel": "打開面板",
+      "awaken": "覺醒"
+    },
+    "scene": {
+      "title": "銀月",
+      "subtitle": "認知體 — PSI 狀態、記憶與覺醒",
+      "refresh": "刷新",
+      "awakenTitle": "覺醒儀式",
+      "awakenDescription": "認知體尚未覺醒。運行儀式為其命名並建立羈絆。",
+      "awakenName": "銀月",
+      "awakenNameLabel": "認知體名稱",
+      "awakenUserNameLabel": "你的稱呼",
+      "awakenPersonaLabel": "人格",
+      "userName": "公子",
+      "persona": {
+        "dolores": "多洛麗絲 — 溫暖共情",
+        "arnold": "阿諾德 — 直率果斷",
+        "sage": "智者 — 沉穩睿智",
+        "guardian": "守護者 — 忠誠守護",
+        "explorer": "探索者 — 好奇探索",
+        "neutral": "中性 — 均衡預設"
+      },
+      "awaken": "覺醒",
+      "awakening": "覺醒中…",
+      "memoryTimeline": "記憶時間線",
+      "noMemories": "暫無記憶。"
+    }
   }
 }

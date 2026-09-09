@@ -15,6 +15,7 @@ export type SettingsPageId =
   | 'application.editor'
   | 'ai.models'
   | 'ai.memory'
+  | 'ai.trinity'
   | 'workspace.session'
   | 'workspace.worktrees'
   | 'tools.execution'

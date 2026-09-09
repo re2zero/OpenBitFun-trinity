@@ -4,6 +4,7 @@
 
 #[cfg(feature = "agent-runtime")]
 pub(crate) mod conditional_instructions;
+pub mod cognitive_hooks;
 pub mod edit_constraint_guard;
 pub mod execution_engine;
 pub(crate) mod model_exchange_trace;

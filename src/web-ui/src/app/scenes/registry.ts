@@ -18,6 +18,7 @@ import {
   BarChart3,
   CalendarClock,
   Network,
+  Brain,
 } from 'lucide-react';
 import type { SceneTabDef, SceneTabIcon, SceneTabId } from '../components/SceneBar/types';
 import { getSceneViewId } from '../components/SceneBar/types';
@@ -130,6 +131,15 @@ export const SCENE_TAB_REGISTRY: SceneTabDef[] = [
     label: 'Assistant',
     labelKey: 'scenes.assistant',
     Icon: catalogSceneIcon('user'),
+    pinned: false,
+    singleton: true,
+    defaultOpen: false,
+  },
+  {
+    id: 'trinity' as SceneTabId,
+    label: 'Trinity',
+    labelKey: 'scenes.trinity',
+    Icon: Brain,
     pinned: false,
     singleton: true,
     defaultOpen: false,
