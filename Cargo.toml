@@ -301,6 +301,10 @@ rustls = { version = "0.23", default-features = false }
 tauri-runtime = { git = "https://github.com/tauri-apps/tauri.git", rev = "7cc68e74ff6981f5c50a52a67d56c5eb2d227188" }
 tauri-runtime-wry = { git = "https://github.com/tauri-apps/tauri.git", rev = "7cc68e74ff6981f5c50a52a67d56c5eb2d227188" }
 tauri-utils = { git = "https://github.com/tauri-apps/tauri.git", rev = "7cc68e74ff6981f5c50a52a67d56c5eb2d227188" }
+# Trinity fusion patch: libclang freestanding 环境无 atomics 导致 leptonica
+# environ.h 编译失败（unknown type name 'atomic_int'），强制 -std=c99 走 int
+# fallback。与 trinity 仓库 vendor 补丁同源。
+leptonica-sys = { path = "vendor/leptonica-sys" }
 
 [profile.dev]
 # Line tables only: keeps panic backtrace line numbers while shrinking PDB/DWARF

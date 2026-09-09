@@ -4405,8 +4405,6 @@ dependencies = [
 [[package]]
 name = "leptonica-sys"
 version = "0.4.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da627c72b2499a8106f4dd33143843015e4a631f445d561f3481f7fba35b6151"
 dependencies = [
  "bindgen",
  "pkg-config",
