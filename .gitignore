@@ -122,3 +122,5 @@ src/apps/mobile/android/.kotlin/
 # Downloaded Flashgrep release assets (metadata stays tracked).
 /resources/flashgrep/flashgrep-*
 /resources/flashgrep/*.download-*
+trinityd sidecar staging (built by scripts/build-trinity-deb.sh)
+src/apps/desktop/trinityd-*
