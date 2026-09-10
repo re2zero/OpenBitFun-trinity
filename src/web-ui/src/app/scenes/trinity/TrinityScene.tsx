@@ -351,26 +351,31 @@ const TrinityScene: React.FC = () => {
                   title={<h2>{t('trinity.being.state')}</h2>}
                 />
                 <CardBody>
+                  {/* One row, two flag groups: being-state left, engine-state right. */}
                   <div className="openbitfun-trinity-scene__hero">
-                    <span
-                      className="openbitfun-trinity-scene__hero-dot"
-                      data-openbitfun-emotion={emotionLabelKey(emotion)}
-                      aria-hidden="true"
-                    />
-                    <div className="openbitfun-trinity-scene__hero-text">
+                    <span className="openbitfun-trinity-scene__hero-group">
+                      <span
+                        className="openbitfun-trinity-scene__hero-dot"
+                        data-openbitfun-emotion={emotionLabelKey(emotion)}
+                        aria-hidden="true"
+                      />
                       <span className="openbitfun-trinity-scene__hero-emotion">
                         {t(`trinity.emotion.${emotionLabelKey(emotion)}`)}
                       </span>
-                      <span className="openbitfun-trinity-scene__hero-meta">
+                      <span className="openbitfun-trinity-scene__hero-focus">
                         {t(`trinity.focus.${focusLabelKey(focus)}`)}
-                        {typeof confidence === 'number' && (
-                          <> · {t('trinity.status.confidence')} {formatPercent(confidence)}</>
-                        )}
-                        {typeof cycleCount === 'number' && (
-                          <> · #{cycleCount}</>
-                        )}
                       </span>
-                    </div>
+                    </span>
+                    <span className="openbitfun-trinity-scene__hero-group openbitfun-trinity-scene__hero-group--end">
+                      {typeof confidence === 'number' && (
+                        <span className="openbitfun-trinity-scene__hero-meta">
+                          {t('trinity.status.confidence')} {formatPercent(confidence)}
+                        </span>
+                      )}
+                      {typeof cycleCount === 'number' && (
+                        <span className="openbitfun-trinity-scene__hero-meta">#{cycleCount}</span>
+                      )}
+                    </span>
                   </div>
                   {identity?.birthday && (
                     <div className="openbitfun-trinity-scene__profile">

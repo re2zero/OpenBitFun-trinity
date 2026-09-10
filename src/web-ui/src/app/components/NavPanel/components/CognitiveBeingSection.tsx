@@ -51,13 +51,6 @@ const CognitiveBeingSection: React.FC = () => {
           <Icon glyph={Brain} size="sm" />
         </span>
         <OverflowText>{t('trinity.being.title')}</OverflowText>
-        {phase === 'awake' && (
-          <span
-            className="openbitfun-nav-panel__being-dot"
-            data-openbitfun-emotion={emotionKey}
-            aria-hidden="true"
-          />
-        )}
       </button>
     </Tooltip>
   );
