@@ -1,27 +1,35 @@
 /**
- * Inline dynamic cognitive-state panel anchored above the sidebar footer.
+ * Inline cognitive quick panel anchored above the sidebar footer.
+ *
+ * Phase-aware quick glance (see docs/bitfun-trinity-cognitive-ui-design.md):
+ * - offline: identity header + "engine disconnected" hint only
+ * - dormant: awakening guidance + single CTA that opens the shared
+ *   TrinityAwakenDialog (no inline ceremony logic)
+ * - awake:   emotion hero + need bars (percentages at one decimal place)
+ *            + cloud-sync glance line + "open full panel" action
  *
  * Expands upward from the Trinity footer trigger by pushing sidebar content
- * up (flex sibling of the footer, no overlay/popover). While open it refresh
- *es immediately and keeps polling so the state stays live; collapsing stops
+ * up (flex sibling of the footer, no overlay/popover). While open it polls
+ * via the shared store (5s) and pulls cloud status once; collapsing stops
  * the poll. Escape also collapses.
  */
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Button, Icon, OverflowText } from '@openbitfun/ui';
-import { Sparkles, X } from 'lucide-react';
 import { useI18n } from '@/infrastructure/i18n/hooks/useI18n';
-import { trinityAPI } from '@/infrastructure/api';
+import { useSceneStore } from '@/app/stores/sceneStore';
+import { useTrinityStore, useTrinityPhase, useTrinityAutoRefresh } from '@/app/scenes/trinity/trinityStore';
 import {
   emotionLabelKey,
   focusLabelKey,
+  formatPercent,
   NEED_ATTENTION_THRESHOLD,
   NEED_KEYS,
 } from '@/app/scenes/trinity/trinityDisplay';
-import { useTrinityStore } from '@/app/scenes/trinity/trinityStore';
-import { useSceneStore } from '@/app/stores/sceneStore';
+import TrinityAwakenDialog from '@/app/components/TrinityAwakenGate/TrinityAwakenDialog';
 
-const POLL_INTERVAL_MS = 5000;
+/** Poll interval while the panel is open; closed panel polls nowhere. */
+const OPEN_POLL_INTERVAL_MS = 5000;
 
 interface TrinityStatusPanelProps {
   open: boolean;
@@ -30,48 +38,36 @@ interface TrinityStatusPanelProps {
 
 const TrinityStatusPanel: React.FC<TrinityStatusPanelProps> = ({ open, onOpenChange }) => {
   const { t } = useI18n('common');
-  const cognitiveState = useTrinityStore(s => s.cognitiveState);
-  const status = useTrinityStore(s => s.status);
-  const awakened = useTrinityStore(s => s.awakened);
-  const refresh = useTrinityStore(s => s.refresh);
+  const phase = useTrinityPhase();
+  const psi = useTrinityStore(s => s.psi);
+  const identity = useTrinityStore(s => s.identity);
+  const cloudStatus = useTrinityStore(s => s.cloudStatus);
+  const loadCloud = useTrinityStore(s => s.loadCloud);
 
-  const online = status === 'online';
-  const emotion = cognitiveState?.emotion?.valence;
-  const focus = cognitiveState?.focus;
-  const confidence = cognitiveState?.confidence;
-  const needs = cognitiveState?.needs ?? {};
-  const memory = cognitiveState?.memory ?? {};
+  const [awakenDialogOpen, setAwakenDialogOpen] = useState(false);
+
+  useTrinityAutoRefresh(open ? OPEN_POLL_INTERVAL_MS : null);
 
   useEffect(() => {
     if (!open) return undefined;
-    void refresh();
-    const interval = window.setInterval(() => { void refresh(); }, POLL_INTERVAL_MS);
+    void loadCloud();
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onOpenChange(false);
     };
     window.addEventListener('keydown', onKeyDown);
-    return () => {
-      window.clearInterval(interval);
-      window.removeEventListener('keydown', onKeyDown);
-    };
-  }, [onOpenChange, open, refresh]);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [loadCloud, onOpenChange, open]);
+
+  const emotion = psi?.emotion?.valence;
+  const focus = psi?.focus;
+  const confidence = psi?.confidence;
+  const needs = psi?.needs ?? {};
+  const title = identity?.name || t('trinity.being.title');
+  const cloudReady = cloudStatus?.registered === true && cloudStatus?.key_ready === true;
 
   const handleOpenPanel = () => {
     onOpenChange(false);
     useSceneStore.getState().openScene('trinity');
-  };
-
-  const handleAwaken = async () => {
-    try {
-      await trinityAPI.awaken({
-        name: t('trinity.scene.awakenName'),
-        persona: 'neutral',
-        user_name: t('trinity.scene.userName'),
-      });
-      await refresh();
-    } catch {
-      /* daemon offline — panel already shows the offline hint */
-    }
   };
 
   return (
@@ -84,14 +80,20 @@ const TrinityStatusPanel: React.FC<TrinityStatusPanelProps> = ({ open, onOpenCha
       data-openbitfun-part="trinityPanel"
       data-openbitfun-emotion={emotionLabelKey(emotion)}
       data-openbitfun-need={NEED_KEYS[0]}
-      data-openbitfun-state={[open ? 'open' : '', online ? 'online' : status].filter(Boolean).join(' ')}
+      data-openbitfun-state={[open ? 'open' : '', phase].filter(Boolean).join(' ')}
       aria-hidden={!open}
       data-testid="nav-trinity-status-panel"
     >
       <div className="openbitfun-nav-panel__trinity-panel-inner">
         <div className="openbitfun-nav-panel__trinity-panel-header">
           <span className="openbitfun-nav-panel__trinity-panel-title">
-            {t('trinity.status.title')}
+            {title}
+            <span
+              className="openbitfun-nav-panel__trinity-panel-phase"
+              data-openbitfun-state={phase}
+            >
+              {t(`trinity.phase.${phase}`)}
+            </span>
           </span>
           <button
             type="button"
@@ -100,17 +102,32 @@ const TrinityStatusPanel: React.FC<TrinityStatusPanelProps> = ({ open, onOpenCha
             aria-label={t('trinity.being.collapse')}
             data-testid="nav-trinity-status-collapse"
           >
-            <Icon glyph={X} size="sm" />
+            <Icon name="xmark" size="sm" />
           </button>
         </div>
 
-        {!online && (
+        {phase === 'offline' && (
           <p className="openbitfun-nav-panel__trinity-panel-offline">
             {t('trinity.being.offlineHint')}
           </p>
         )}
 
-        {online && cognitiveState && (
+        {phase === 'dormant' && (
+          <div className="openbitfun-nav-panel__trinity-panel-dormant">
+            <p>{t('trinity.scene.awakenDescription')}</p>
+            <Button
+              variant="outline"
+              size="sm"
+              leadingIcon={<Icon name="spark" size="sm" />}
+              onClick={() => setAwakenDialogOpen(true)}
+              data-testid="nav-trinity-panel-awaken"
+            >
+              {t('trinity.scene.awaken')}
+            </Button>
+          </div>
+        )}
+
+        {phase === 'awake' && psi && (
           <>
             <div className="openbitfun-nav-panel__trinity-panel-hero">
               <span
@@ -126,7 +143,7 @@ const TrinityStatusPanel: React.FC<TrinityStatusPanelProps> = ({ open, onOpenCha
               </span>
               {typeof confidence === 'number' && (
                 <span className="openbitfun-nav-panel__trinity-panel-confidence">
-                  {t('trinity.status.confidence')} {Math.round(confidence * 100)}%
+                  {t('trinity.status.confidence')} {formatPercent(confidence)}
                 </span>
               )}
             </div>
@@ -135,7 +152,6 @@ const TrinityStatusPanel: React.FC<TrinityStatusPanelProps> = ({ open, onOpenCha
               {NEED_KEYS.map(key => {
                 const value = needs[key];
                 if (typeof value !== 'number') return null;
-                const pct = Math.round(value * 100);
                 return (
                   <div className="openbitfun-nav-panel__trinity-panel-need" key={key}>
                     <span className="openbitfun-nav-panel__trinity-panel-need-label">
@@ -144,37 +160,31 @@ const TrinityStatusPanel: React.FC<TrinityStatusPanelProps> = ({ open, onOpenCha
                     <span className="openbitfun-nav-panel__trinity-panel-need-track">
                       <span
                         className="openbitfun-nav-panel__trinity-panel-need-fill"
-                        style={{ width: `${pct}%` }}
+                        style={{ width: `${value * 100}%` }}
                         data-openbitfun-need={key}
                         data-openbitfun-attention={value <= NEED_ATTENTION_THRESHOLD ? 'low' : undefined}
                       />
                     </span>
-                    <span className="openbitfun-nav-panel__trinity-panel-need-value">{pct}%</span>
+                    <span className="openbitfun-nav-panel__trinity-panel-need-value">
+                      {formatPercent(value)}
+                    </span>
                   </div>
                 );
               })}
             </div>
 
-            {typeof memory.total_nodes === 'number' && (
-              <div className="openbitfun-nav-panel__trinity-panel-memory">
-                {t('trinity.status.memoryNodes', { count: memory.total_nodes })}
-                {typeof memory.total_triples === 'number' && (
-                  <span> · {t('trinity.status.memoryTriples', { count: memory.total_triples })}</span>
+            {cloudReady && (
+              <div className="openbitfun-nav-panel__trinity-panel-cloud">
+                {cloudStatus?.user_id && <span>{cloudStatus.user_id}</span>}
+                {typeof cloudStatus?.pending_ops === 'number' && (
+                  <span> · {t('trinity.cloud.pendingOps', { count: cloudStatus.pending_ops })}</span>
                 )}
+                <span data-openbitfun-state={cloudStatus?.engine_running ? 'online' : 'offline'}>
+                  {' '}· {cloudStatus?.engine_running
+                    ? t('trinity.cloud.engineRunning')
+                    : t('trinity.cloud.engineStopped')}
+                </span>
               </div>
-            )}
-
-            {!awakened && (
-              <Button
-                className="openbitfun-nav-panel__trinity-panel-awaken"
-                variant="outline"
-                size="sm"
-                leadingIcon={<Icon glyph={Sparkles} size="sm" />}
-                onClick={() => { void handleAwaken(); }}
-                data-testid="nav-trinity-panel-awaken"
-              >
-                {t('trinity.being.awakenAction')}
-              </Button>
             )}
           </>
         )}
@@ -189,6 +199,11 @@ const TrinityStatusPanel: React.FC<TrinityStatusPanelProps> = ({ open, onOpenCha
           <OverflowText>{t('trinity.being.openPanel')}</OverflowText>
         </Button>
       </div>
+
+      <TrinityAwakenDialog
+        open={awakenDialogOpen}
+        onClose={() => setAwakenDialogOpen(false)}
+      />
     </div>
   );
 };

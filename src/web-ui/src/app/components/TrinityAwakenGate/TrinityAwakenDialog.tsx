@@ -11,7 +11,6 @@
 
 import React, { useCallback, useState } from 'react';
 import { Button, Dialog, DialogBody, DialogClose, DialogHeader, DialogHeading, DialogTitle, Icon } from '@openbitfun/ui';
-import { Sparkles } from 'lucide-react';
 import { useI18n } from '@/infrastructure/i18n/hooks/useI18n';
 import { trinityAPI, workspaceAPI } from '@/infrastructure/api';
 import { useTrinityStore } from '@/app/scenes/trinity/trinityStore';
@@ -123,16 +122,24 @@ not building a dossier. Respect the difference.
 const TrinityAwakenDialog: React.FC<TrinityAwakenDialogProps> = ({ open, onClose, workspacePath }) => {
   const { t } = useI18n('common');
   const refresh = useTrinityStore(s => s.refresh);
+  const markAwakenedLocally = useTrinityStore(s => s.markAwakenedLocally);
   const [name, setName] = useState(t('trinity.scene.awakenName'));
   const [userName, setUserName] = useState(t('trinity.scene.userName'));
   const [persona, setPersona] = useState<string>('neutral');
   const [awakening, setAwakening] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleAwaken = useCallback(async () => {
     if (!name.trim() || !userName.trim()) return;
     setAwakening(true);
+    setError(null);
     try {
+      // Birthday is generated daemon-side from the awakening moment; the
+      // form collects the original three fields only.
       await trinityAPI.awaken({ name: name.trim(), persona, user_name: userName.trim() });
+      // Flip the phase immediately: even a stale daemon binary that omits
+      // the `awakened` status field must not re-surface this dialog.
+      markAwakenedLocally();
       // Persist the awakened identity into the assistant workspace persona
       // files so the {PERSONA} block carries it into every conversation.
       if (workspacePath) {
@@ -143,10 +150,13 @@ const TrinityAwakenDialog: React.FC<TrinityAwakenDialogProps> = ({ open, onClose
       }
       await refresh();
       onClose();
+    } catch (err) {
+      // Surface the failure — a silent no-op reads as "the button is broken".
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setAwakening(false);
     }
-  }, [name, onClose, persona, refresh, userName, workspacePath]);
+  }, [markAwakenedLocally, name, onClose, persona, refresh, userName, workspacePath]);
 
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => { if (!nextOpen && !awakening) onClose(); }} size="md">
@@ -198,9 +208,14 @@ const TrinityAwakenDialog: React.FC<TrinityAwakenDialogProps> = ({ open, onClose
               ))}
             </select>
           </label>
+          {error && (
+            <p className="openbitfun-trinity-awaken__error" role="alert" data-testid="trinity-awaken-error">
+              {t('trinity.scene.awakenFailed', { message: error })}
+            </p>
+          )}
           <Button
             variant="primary"
-            leadingIcon={<Icon glyph={Sparkles} size="sm" />}
+            leadingIcon={<Icon name="spark" size="sm" />}
             onClick={() => { void handleAwaken(); }}
             disabled={awakening || !name.trim() || !userName.trim()}
             data-testid="trinity-awaken-confirm"

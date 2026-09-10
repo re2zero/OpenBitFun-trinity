@@ -1500,7 +1500,8 @@
     "assistant": "$t(shared:agents.Claw)",
     "todos": "任務看板",
     "shell": "Shell",
-    "panelView": "面板視圖"
+    "panelView": "面板視圖",
+    "trinity": "認知體"
   },
   "sceneBar": {
     "tabsLabel": "場景標籤頁",
@@ -1956,6 +1957,11 @@
       "comingSoon": "即將上線",
       "openPanel": "開啟完整面板"
     },
+    "phase": {
+      "offline": "未連線",
+      "dormant": "待覺醒",
+      "awake": "已覺醒"
+    },
     "emotion": {
       "positive_high": "雀躍",
       "positive_mild": "舒展",
@@ -1982,7 +1988,18 @@
     "memory": {
       "reinforce": "強化",
       "forget": "遺忘",
-      "forgetConfirm": "再點一次確認遺忘"
+      "forgetConfirm": "再點一次確認遺忘",
+      "searchPlaceholder": "搜尋記憶…",
+      "search": "搜尋",
+      "backToTimeline": "返回時間線",
+      "addMemory": "新增記憶",
+      "addContentPlaceholder": "寫下要記住的事…",
+      "addProject": "專案（可選）",
+      "addSubmit": "儲存",
+      "loadEarlier": "載入更早",
+      "noMore": "已到最早",
+      "searchResults": "搜尋結果",
+      "noSearchResults": "沒有符合的記憶。"
     },
     "status": {
       "title": "銀月認知狀態",
@@ -2021,7 +2038,40 @@
       "awaken": "覺醒",
       "awakening": "覺醒中…",
       "memoryTimeline": "記憶時間線",
-      "noMemories": "暫無記憶。"
+      "noMemories": "暫無記憶。",
+      "trend": "認知趨勢",
+      "awakenFailed": "覺醒失敗：{{message}}"
+    },
+    "cloud": {
+      "title": "雲端記憶",
+      "desc": "記憶端對端加密後同步，伺服器不可讀。帳號密碼 ≠ 記憶口令。",
+      "userId": "帳號",
+      "password": "密碼",
+      "signup": "註冊並綁定裝置",
+      "login": "登入並綁定裝置",
+      "toLogin": "已有帳號？去登入",
+      "toSignup": "沒有帳號？去註冊",
+      "keyDesc": "設定記憶口令（至少 8 位）以包裹主金鑰。遺忘口令 = 雲端記憶永久遺失，無後門。",
+      "passphrase": "記憶口令",
+      "setupKey": "啟用雲端加密",
+      "syncNow": "立即同步",
+      "backup": "備份快照",
+      "restore": "從雲端恢復",
+      "pendingOps": "{{count}} 筆待同步",
+      "engineRunning": "同步引擎執行中",
+      "engineStopped": "同步引擎未執行（重啟認知引擎後接管）",
+      "unavailable": "雲端記憶狀態不可用（daemon 可能未啟用雲同步）。"
+    },
+    "personaShort": {
+      "dolores": "多洛麗絲",
+      "arnold": "阿諾德",
+      "sage": "智者",
+      "guardian": "守護者",
+      "explorer": "探索者",
+      "neutral": "中性"
+    },
+    "profile": {
+      "birthday": "生日"
     }
   }
 }

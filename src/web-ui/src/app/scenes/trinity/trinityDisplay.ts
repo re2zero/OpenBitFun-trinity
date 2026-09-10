@@ -30,6 +30,16 @@ export function focusLabelKey(focus: string | undefined | null): string {
   return FOCUSES.includes(focus as (typeof FOCUSES)[number]) ? (focus as string) : 'idle';
 }
 
+/**
+ * Localized short persona name for badges. Known presets map to
+ * `trinity.personaShort.*`; unknown values fall back to the raw string.
+ */
+export function personaLabel(persona: string, t: (key: string) => string): string {
+  const key = `trinity.personaShort.${persona}`;
+  const label = t(key);
+  return label === key ? persona : label;
+}
+
 export const NEED_KEYS = ['competence', 'autonomy', 'relatedness', 'certainty', 'growth'] as const;
 
 export type NeedKey = (typeof NEED_KEYS)[number];
@@ -37,11 +47,19 @@ export type NeedKey = (typeof NEED_KEYS)[number];
 /** Needs at or below this level are highlighted as unmet in the UI. */
 export const NEED_ATTENTION_THRESHOLD = 0.4;
 
+/** Canonical percentage rendering — always one decimal place (99.4%). */
+export function formatPercent(value: number): string {
+  return `${(value * 100).toFixed(1)}%`;
+}
+
 export interface TrinityMemoryEntry {
   id?: string;
   content?: string;
   kind?: string;
-  project?: string;
+  layer?: string;
+  strength?: number;
+  /** Unix timestamp in seconds (daemon MindGraph convention). */
+  timestamp?: number;
   created_at?: string;
   ts?: string;
   [key: string]: unknown;
@@ -55,6 +73,10 @@ export function normalizeMemoryItems(payload: unknown): TrinityMemoryEntry[] {
 
 /** Best-effort timestamp (ms) for a memory entry. */
 export function memoryEntryTime(entry: TrinityMemoryEntry): number | null {
+  if (typeof entry.timestamp === 'number' && Number.isFinite(entry.timestamp)) {
+    // Daemon sends seconds; guard against ms-level values anyway.
+    return entry.timestamp > 1e12 ? entry.timestamp : entry.timestamp * 1000;
+  }
   const raw = entry.created_at ?? entry.ts;
   if (typeof raw !== 'string' && typeof raw !== 'number') return null;
   const value = typeof raw === 'number' ? raw : Date.parse(raw);

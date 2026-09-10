@@ -12,7 +12,9 @@ import { createTauriCommandError } from '../errors/TauriCommandError';
 export class TrinityAPI {
   private async invoke(command: string, params: Record<string, unknown> = {}): Promise<any> {
     try {
-      return await api.invoke(command, { params });
+      // Tauri binds JS args by Rust parameter name: the commands take
+      // `request: Option<TrinityRequest>` with an inner `params` object.
+      return await api.invoke(command, { request: { params } });
     } catch (error) {
       throw createTauriCommandError(command, error, params);
     }
@@ -64,6 +66,36 @@ export class TrinityAPI {
 
   async reinforceMemory(params: Record<string, unknown> = {}): Promise<any> {
     return this.invoke('trinity_reinforce_memory', params);
+  }
+
+  // ── Cloud memory ───────────────────────────────────────────────
+
+  async cloudStatus(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_cloud_status', params);
+  }
+
+  async cloudSignup(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_cloud_signup', params);
+  }
+
+  async cloudLogin(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_cloud_login', params);
+  }
+
+  async cloudSetupKey(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_cloud_setup_key', params);
+  }
+
+  async cloudSyncNow(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_cloud_sync_now', params);
+  }
+
+  async cloudBackup(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_cloud_backup', params);
+  }
+
+  async cloudRestore(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_cloud_restore', params);
   }
 
   // ── Awakening ceremony ─────────────────────────────────────────

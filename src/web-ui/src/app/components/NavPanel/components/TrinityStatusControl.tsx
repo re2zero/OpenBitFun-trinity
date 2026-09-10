@@ -1,17 +1,17 @@
 /**
  * Trinity cognitive status trigger (sidebar footer).
  *
- * Just the footer trigger button now: clicking toggles the inline
- * dynamic-state panel rendered above the footer (see TrinityStatusPanel).
- * The old floating popover is gone.
+ * The footer "lamp": phase label (disconnected / dormant / awake) plus the
+ * live emotion dot while awake. Clicking toggles the inline quick panel
+ * rendered above the footer (see TrinityStatusPanel).
  */
 
 import React from 'react';
 import { Icon, OverflowText } from '@openbitfun/ui';
-import { Brain, Sparkles } from 'lucide-react';
+import { Brain } from 'lucide-react';
 import { useI18n } from '@/infrastructure/i18n/hooks/useI18n';
 import { emotionLabelKey } from '@/app/scenes/trinity/trinityDisplay';
-import { useTrinityStore } from '@/app/scenes/trinity/trinityStore';
+import { useTrinityStore, useTrinityPhase } from '@/app/scenes/trinity/trinityStore';
 
 interface TrinityStatusControlProps {
   open: boolean;
@@ -20,15 +20,10 @@ interface TrinityStatusControlProps {
 
 const TrinityStatusControl: React.FC<TrinityStatusControlProps> = ({ open, onOpenChange }) => {
   const { t } = useI18n('common');
-  const cognitiveState = useTrinityStore(s => s.cognitiveState);
-  const status = useTrinityStore(s => s.status);
+  const phase = useTrinityPhase();
+  const psi = useTrinityStore(s => s.psi);
 
-  const online = status === 'online';
-  const label = online
-    ? t('trinity.status.online')
-    : status === 'offline'
-      ? t('trinity.status.offline')
-      : t('trinity.status.unknown');
+  const label = t(`trinity.phase.${phase}`);
 
   return (
     <button
@@ -41,13 +36,13 @@ const TrinityStatusControl: React.FC<TrinityStatusControlProps> = ({ open, onOpe
       data-testid="nav-footer-trinity-status"
       data-openbitfun-component="nav-panel"
       data-openbitfun-part="trinityStatus"
-      data-openbitfun-state={status}
+      data-openbitfun-state={phase}
     >
-      <Icon glyph={online ? Sparkles : Brain} size="sm" />
-      {online && cognitiveState && (
+      {phase === 'awake' ? <Icon name="spark" size="sm" /> : <Icon glyph={Brain} size="sm" />}
+      {phase === 'awake' && psi && (
         <span
           className="openbitfun-nav-panel__being-dot"
-          data-openbitfun-emotion={emotionLabelKey(cognitiveState?.emotion?.valence)}
+          data-openbitfun-emotion={emotionLabelKey(psi?.emotion?.valence)}
           aria-hidden="true"
         />
       )}

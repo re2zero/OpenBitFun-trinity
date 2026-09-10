@@ -1,15 +1,28 @@
 /**
- * Trinity cognitive state store.
+ * Trinity cognitive state store — single source of truth.
  *
- * Shared cache for the footer status control and the Trinity scene. `refresh`
- * pulls the PSI cognitive state and daemon health from the desktop host;
- * consumers subscribe via selectors so the two surfaces never double-fetch.
+ * Dimensions (orthogonal):
+ * - conn:      daemon reachability (transient; any RPC failure → disconnected)
+ * - awakened:  one-shot ceremony result persisted in trinity.toml
+ * - psi:       live cognitive stream; null whenever disconnected (never stale)
+ * - cloud:     independent sub-machine (unavailable / unregistered / key
+ *              pending / ready); only meaningful while awake
+ *
+ * Derived phase (see docs/bitfun-trinity-cognitive-ui-design.md):
+ *   offline = disconnected · dormant = connected && !awakened · awake = otherwise
+ *
+ * Polling is declared per surface via `useTrinityAutoRefresh(intervalMs)`;
+ * pass null to only refresh once on mount.
  */
 
+import { useEffect } from 'react';
 import { create } from 'zustand';
 import { trinityAPI } from '@/infrastructure/api';
 
-export type TrinityDaemonStatus = 'unknown' | 'online' | 'offline';
+export type TrinityConn = 'disconnected' | 'connected';
+
+/** UI lifecycle phase derived from conn + awakened. */
+export type TrinityPhase = 'offline' | 'dormant' | 'awake';
 
 export interface TrinityCognitiveState {
   emotion?: {
@@ -37,45 +50,112 @@ export interface TrinityCognitiveState {
   [key: string]: unknown;
 }
 
+/** Identity + awakening profile from the daemon `get_status` payload. */
+export interface TrinityIdentity {
+  name?: string;
+  persona?: string;
+  user_name?: string;
+  /** Birthday — generated daemon-side at the awakening moment; absent = not awakened. */
+  birthday?: string;
+}
+
+/** Raw `cloud.status` payload. */
+export interface TrinityCloudStatus {
+  enabled?: boolean;
+  registered?: boolean;
+  user_id?: string;
+  engine_running?: boolean;
+  relay_url?: string;
+  mode?: string;
+  pending_ops?: number;
+  key_ready?: boolean;
+  memory_nodes?: number;
+  [key: string]: unknown;
+}
+
 interface TrinityState {
-  cognitiveState: TrinityCognitiveState | null;
-  status: TrinityDaemonStatus;
+  conn: TrinityConn;
   awakened: boolean;
-  loading: boolean;
+  /** Set right after a successful ceremony so the phase flips to awake
+   *  immediately even when the daemon binary predates the `awakened`
+   *  status field (stale bundled trinityd). Memory-only; a refresh against
+   *  a current daemon overwrites with truth. */
+  awakenedLocally: boolean;
+  identity: TrinityIdentity | null;
+  psi: TrinityCognitiveState | null;
+  cloudStatus: TrinityCloudStatus | null;
   lastUpdatedAt: number | null;
   refresh: () => Promise<void>;
-  setCognitiveState: (state: TrinityCognitiveState | null) => void;
-  setStatus: (status: TrinityDaemonStatus) => void;
-  setAwakened: (awakened: boolean) => void;
+  loadCloud: () => Promise<void>;
+  markAwakenedLocally: () => void;
 }
 
 export const useTrinityStore = create<TrinityState>((set) => ({
-  cognitiveState: null,
-  status: 'unknown',
+  conn: 'disconnected',
   awakened: false,
-  loading: false,
+  awakenedLocally: false,
+  identity: null,
+  psi: null,
+  cloudStatus: null,
   lastUpdatedAt: null,
 
   refresh: async () => {
-    set({ loading: true });
     try {
-      const [state, status] = await Promise.all([
+      const [psi, status] = await Promise.all([
         trinityAPI.getCognitiveState(),
         trinityAPI.getStatus(),
       ]);
+      // A successful get_status RPC is the definition of "connected".
+      const connected = status != null;
       set({
-        cognitiveState: state ?? null,
-        status: status?.engine_running === false ? 'offline' : 'online',
+        conn: connected ? 'connected' : 'disconnected',
         awakened: status?.awakened ?? false,
-        lastUpdatedAt: Date.now(),
-        loading: false,
+        identity: connected
+          ? {
+              name: typeof status.name === 'string' ? status.name : undefined,
+              persona: typeof status.persona === 'string' ? status.persona : undefined,
+              user_name: typeof status.user_name === 'string' ? status.user_name : undefined,
+              birthday: typeof status.birthday === 'string' ? status.birthday : undefined,
+            }
+          : null,
+        psi: connected ? (psi ?? null) : null,
+        lastUpdatedAt: connected ? Date.now() : null,
       });
     } catch {
-      set({ status: 'offline', loading: false });
+      set({ conn: 'disconnected', awakened: false, identity: null, psi: null, lastUpdatedAt: null });
     }
   },
 
-  setCognitiveState: (cognitiveState) => set({ cognitiveState }),
-  setStatus: (status) => set({ status }),
-  setAwakened: (awakened) => set({ awakened }),
+  loadCloud: async () => {
+    try {
+      set({ cloudStatus: (await trinityAPI.cloudStatus()) ?? null });
+    } catch {
+      set({ cloudStatus: null });
+    }
+  },
+
+  markAwakenedLocally: () => set({ awakenedLocally: true, awakened: true }),
 }));
+
+/** Derived lifecycle phase — the single fact UI surfaces branch on. */
+export function useTrinityPhase(): TrinityPhase {
+  const conn = useTrinityStore(s => s.conn);
+  const awakened = useTrinityStore(s => s.awakened);
+  const awakenedLocally = useTrinityStore(s => s.awakenedLocally);
+  if (conn === 'disconnected') return 'offline';
+  return awakened || awakenedLocally ? 'awake' : 'dormant';
+}
+
+/**
+ * Declarative polling: refreshes once on mount, then every `intervalMs`.
+ * Pass null for mount-only. Unmount (or interval change) tears down the timer.
+ */
+export function useTrinityAutoRefresh(intervalMs: number | null): void {
+  const refresh = useTrinityStore(s => s.refresh);
+  useEffect(() => {
+    void refresh();
+    if (intervalMs == null) return undefined;
+    const timer = window.setInterval(() => { void refresh(); }, intervalMs);
+    return () => window.clearInterval(timer);
+  }, [intervalMs, refresh]);
+}

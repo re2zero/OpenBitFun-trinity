@@ -170,6 +170,71 @@ pub async fn trinity_llm_test_connection(
     forward("llm.test_connection", request).await
 }
 
+// ── Cloud memory ────────────────────────────────────────────────
+
+/// Cloud-memory status (registration / key / sync cursors / pending ops).
+#[tauri::command]
+pub async fn trinity_cloud_status(
+    _state: State<'_, crate::api::app_state::AppState>,
+    request: Option<TrinityRequest>,
+) -> Result<Value, String> {
+    forward("cloud.status", request).await
+}
+
+/// Register a cloud account and bind this device.
+#[tauri::command]
+pub async fn trinity_cloud_signup(
+    _state: State<'_, crate::api::app_state::AppState>,
+    request: Option<TrinityRequest>,
+) -> Result<Value, String> {
+    forward("cloud.signup", request).await
+}
+
+/// Log in to an existing cloud account and bind this device.
+#[tauri::command]
+pub async fn trinity_cloud_login(
+    _state: State<'_, crate::api::app_state::AppState>,
+    request: Option<TrinityRequest>,
+) -> Result<Value, String> {
+    forward("cloud.login", request).await
+}
+
+/// Wrap the local master key with a passphrase (cloud key ceremony).
+#[tauri::command]
+pub async fn trinity_cloud_setup_key(
+    _state: State<'_, crate::api::app_state::AppState>,
+    request: Option<TrinityRequest>,
+) -> Result<Value, String> {
+    forward("cloud.setup_key", request).await
+}
+
+/// Trigger an immediate cloud sync.
+#[tauri::command]
+pub async fn trinity_cloud_sync_now(
+    _state: State<'_, crate::api::app_state::AppState>,
+    request: Option<TrinityRequest>,
+) -> Result<Value, String> {
+    forward("cloud.sync_now", request).await
+}
+
+/// Export → seal → upload a full memory snapshot.
+#[tauri::command]
+pub async fn trinity_cloud_backup(
+    _state: State<'_, crate::api::app_state::AppState>,
+    request: Option<TrinityRequest>,
+) -> Result<Value, String> {
+    forward("cloud.backup", request).await
+}
+
+/// Download → decrypt → merge the latest cloud snapshot.
+#[tauri::command]
+pub async fn trinity_cloud_restore(
+    _state: State<'_, crate::api::app_state::AppState>,
+    request: Option<TrinityRequest>,
+) -> Result<Value, String> {
+    forward("cloud.restore", request).await
+}
+
 // ── Shutdown ────────────────────────────────────────────────────
 
 /// Ask the daemon to shut down gracefully (used on host exit).

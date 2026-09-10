@@ -7,7 +7,6 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { Button, Icon, Spinner } from '@openbitfun/ui';
-import { Check } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNotification } from '@/shared/notification-system';
 import { trinityAPI } from '@/infrastructure/api';
@@ -121,7 +120,7 @@ const TrinityEngineConfig: React.FC = () => {
               <Button
                 variant="primary"
                 size="sm"
-                leadingIcon={<Icon glyph={Check} size="sm" />}
+                leadingIcon={<Icon name="check-line" size="sm" />}
                 onClick={() => { void handleSave(); }}
                 disabled={saving}
                 data-testid="trinity-engine-save"

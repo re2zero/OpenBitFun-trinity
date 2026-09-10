@@ -1500,7 +1500,8 @@
     "assistant": "$t(shared:agents.Claw)",
     "todos": "Task Board",
     "shell": "Shell",
-    "panelView": "Panel View"
+    "panelView": "Panel View",
+    "trinity": "Cognitive Being"
   },
   "sceneBar": {
     "tabsLabel": "Scene tabs",
@@ -1956,6 +1957,11 @@
       "comingSoon": "Coming soon",
       "openPanel": "Open full panel"
     },
+    "phase": {
+      "offline": "Disconnected",
+      "dormant": "Dormant",
+      "awake": "Awake"
+    },
     "emotion": {
       "positive_high": "Elated",
       "positive_mild": "Content",
@@ -1982,7 +1988,18 @@
     "memory": {
       "reinforce": "Reinforce",
       "forget": "Forget",
-      "forgetConfirm": "Click again to confirm"
+      "forgetConfirm": "Click again to confirm",
+      "searchPlaceholder": "Search memories…",
+      "search": "Search",
+      "backToTimeline": "Back to timeline",
+      "addMemory": "Add memory",
+      "addContentPlaceholder": "Write something to remember…",
+      "addProject": "Project (optional)",
+      "addSubmit": "Save",
+      "loadEarlier": "Load earlier",
+      "noMore": "Beginning reached",
+      "searchResults": "Search results",
+      "noSearchResults": "No matching memories."
     },
     "status": {
       "title": "Trinity Cognitive State",
@@ -2021,7 +2038,40 @@
       "awaken": "Awaken",
       "awakening": "Awakening…",
       "memoryTimeline": "Memory timeline",
-      "noMemories": "No memories yet."
+      "noMemories": "No memories yet.",
+      "trend": "Cognitive trend",
+      "awakenFailed": "Awakening failed: {{message}}"
+    },
+    "cloud": {
+      "title": "Cloud Memory",
+      "desc": "Memories sync end-to-end encrypted; the server cannot read them. Account password ≠ memory passphrase.",
+      "userId": "Account",
+      "password": "Password",
+      "signup": "Sign up & bind device",
+      "login": "Log in & bind device",
+      "toLogin": "Have an account? Log in",
+      "toSignup": "No account? Sign up",
+      "keyDesc": "Set a memory passphrase (8+ chars) to wrap the master key. Forgetting it means cloud memories are lost forever — there is no backdoor.",
+      "passphrase": "Memory passphrase",
+      "setupKey": "Enable cloud encryption",
+      "syncNow": "Sync now",
+      "backup": "Back up snapshot",
+      "restore": "Restore from cloud",
+      "pendingOps": "{{count}} pending ops",
+      "engineRunning": "Sync engine running",
+      "engineStopped": "Sync engine not running (takes over after daemon restart)",
+      "unavailable": "Cloud memory status unavailable (daemon may not have cloud sync enabled)."
+    },
+    "personaShort": {
+      "dolores": "Dolores",
+      "arnold": "Arnold",
+      "sage": "Sage",
+      "guardian": "Guardian",
+      "explorer": "Explorer",
+      "neutral": "Neutral"
+    },
+    "profile": {
+      "birthday": "Birthday"
     }
   }
 }
