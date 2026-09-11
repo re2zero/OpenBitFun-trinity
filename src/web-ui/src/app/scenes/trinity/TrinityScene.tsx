@@ -20,6 +20,9 @@ import { useWorkspaceContext } from '@/infrastructure/contexts/WorkspaceContext'
 import { trinityAPI, workspaceAPI } from '@/infrastructure/api';
 import { confirmDanger } from '@/infrastructure/confirm-dialog';
 import TrinityAwakenDialog from '@/app/components/TrinityAwakenGate/TrinityAwakenDialog';
+import { flowChatManager } from '@/flow_chat/services/FlowChatManager';
+import { openMainSession } from '@/flow_chat/services/sessionActivation';
+import { flowChatSessionConfigForWorkspace } from '@/app/utils/projectSessionWorkspace';
 import { buildCognitiveIdentityFiles } from './cognitiveIdentityTemplate';
 import { needsCognitiveIdentity } from './cognitiveIdentityStatus';
 import {
@@ -47,6 +50,8 @@ const HISTORY_LIMIT = 120;
 const SCENE_POLL_INTERVAL_MS = 5000;
 /** ms a forget button stays in its confirm state before reverting. */
 const FORGET_CONFIRM_TIMEOUT_MS = 3000;
+/** Assistant workspaces chat through Claw sessions, matching the sidebar action. */
+const ASSISTANT_SESSION_MODE = 'Claw';
 
 interface HistoryPoint {
   ts?: number;
@@ -337,6 +342,14 @@ const TrinityScene: React.FC = () => {
       }
       await removeBootstrapFile(workspace.rootPath);
       await setPrimaryAssistantWorkspace(workspace.id);
+
+      // The reset already produced a session whose transcript was written under
+      // the generic persona, so the recovered identity starts a fresh one.
+      const sessionId = await flowChatManager.createChatSession(
+        flowChatSessionConfigForWorkspace(workspace),
+        ASSISTANT_SESSION_MODE,
+      );
+      await openMainSession(sessionId, { workspaceId: workspace.id });
     } catch (error) {
       setCreateIdentityError(error instanceof Error ? error.message : String(error));
     } finally {
