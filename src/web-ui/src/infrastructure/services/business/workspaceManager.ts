@@ -1021,6 +1021,45 @@ class WorkspaceManager {
     }
   }
 
+  public async ensureCognitiveBeingAssistant(): Promise<WorkspaceInfo> {
+    const surface = this.captureSurface();
+    try {
+      this.setLoading(true);
+      this.setError(null);
+
+      const workspace = await globalStateAPI.ensureCognitiveBeingAssistant();
+      this.assertSurfaceUnchanged(surface, 'ensure cognitive being assistant');
+      if (!this.state.primaryAssistantWorkspaceId) {
+        this.updateState({ primaryAssistantWorkspaceId: workspace.id });
+      }
+      const [currentWorkspace, recentWorkspaces, openedWorkspaces] = await Promise.all([
+        globalStateAPI.getCurrentWorkspace(),
+        globalStateAPI.getRecentWorkspaces(),
+        globalStateAPI.getOpenedWorkspaces(),
+      ]);
+      this.assertSurfaceUnchanged(surface, 'ensure cognitive being assistant');
+
+      this.updateWorkspaceState(
+        currentWorkspace,
+        recentWorkspaces,
+        openedWorkspaces,
+        false,
+        null,
+        { type: 'workspace:opened', workspace }
+      );
+
+      return workspace;
+    } catch (error) {
+      if (!this.isSurfaceUnchanged(surface)) {
+        throw error;
+      }
+      log.error('Failed to ensure cognitive being assistant', { error });
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      this.updateState({ loading: false, error: errorMessage }, { type: 'workspace:error', error: errorMessage });
+      throw error;
+    }
+  }
+
   public async closeWorkspace(): Promise<void> {
     if (!this.state.currentWorkspace?.id) {
       return;

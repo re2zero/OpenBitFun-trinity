@@ -27,6 +27,7 @@ export interface WorkspaceContextValue extends WorkspaceState {
   assistantWorkspacesList: WorkspaceInfo[];
   openWorkspace: (path: string) => Promise<WorkspaceInfo>;
   createAssistantWorkspace: () => Promise<WorkspaceInfo>;
+  ensureCognitiveBeingAssistant: () => Promise<WorkspaceInfo>;
   setPrimaryAssistantWorkspace: (workspaceId: string) => Promise<WorkspaceInfo>;
   closeWorkspace: () => Promise<void>;
   closeWorkspaceById: (workspaceId: string) => Promise<void>;

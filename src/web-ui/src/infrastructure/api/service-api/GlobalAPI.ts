@@ -216,6 +216,16 @@ export class GlobalAPI {
     }
   }
 
+  async ensureCognitiveBeingAssistant(): Promise<WorkspaceInfo> {
+    try {
+      return await api.invoke('ensure_cognitive_being_assistant', {
+        request: {},
+      });
+    } catch (error) {
+      throw createTauriCommandError('ensure_cognitive_being_assistant', error);
+    }
+  }
+
   async getPrimaryAssistantWorkspace(): Promise<WorkspaceInfo | null> {
     try {
       return await api.invoke('get_primary_assistant_workspace', { request: {} });

@@ -389,6 +389,9 @@ pub struct OpenRemoteWorkspaceRequest {
 #[derive(Debug, Deserialize, Default)]
 pub struct CreateAssistantWorkspaceRequest {}
 
+#[derive(Debug, Deserialize, Default)]
+pub struct EnsureCognitiveBeingAssistantRequest {}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanWorkspaceInfoRequest {
@@ -1421,6 +1424,67 @@ pub async fn create_assistant_workspace(
         Err(e) => {
             error!("Failed to create assistant workspace: {}", e);
             Err(format!("Failed to create assistant workspace: {}", e))
+        }
+    }
+}
+
+/// Assistant id of the Trinity cognitive being workspace.
+const COGNITIVE_BEING_ASSISTANT_ID: &str = "trinity";
+
+/// Ensures the cognitive being (Trinity) assistant workspace exists and returns
+/// it, reusing an existing one. The caller is responsible for writing the
+/// persona files and claiming the primary assistant role; this command only
+/// guarantees the workspace so a reset cognitive identity can be restored.
+#[tauri::command]
+pub async fn ensure_cognitive_being_assistant(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    _request: EnsureCognitiveBeingAssistantRequest,
+) -> Result<WorkspaceInfoDto, String> {
+    if let Some(workspace) = state
+        .workspace_service
+        .get_assistant_workspaces()
+        .await
+        .into_iter()
+        .find(|workspace| workspace.assistant_id.as_deref() == Some(COGNITIVE_BEING_ASSISTANT_ID))
+    {
+        info!(
+            "Cognitive being assistant reused: workspace_id={}, path={}",
+            workspace.id,
+            workspace.root_path.display()
+        );
+        return Ok(WorkspaceInfoDto::from_workspace_info(&workspace));
+    }
+
+    match state
+        .workspace_service
+        .create_assistant_workspace(Some(COGNITIVE_BEING_ASSISTANT_ID.to_string()))
+        .await
+    {
+        Ok(workspace_info) => {
+            apply_active_workspace_context(&state, &app, &workspace_info, None).await;
+
+            if let Err(e) = state
+                .workspace_identity_watch_service
+                .sync_watched_workspaces()
+                .await
+            {
+                warn!(
+                    "Failed to sync workspace identity watchers after cognitive being creation: {}",
+                    e
+                );
+            }
+
+            info!(
+                "Cognitive being assistant created: workspace_id={}, path={}",
+                workspace_info.id,
+                workspace_info.root_path.display()
+            );
+            Ok(WorkspaceInfoDto::from_workspace_info(&workspace_info))
+        }
+        Err(e) => {
+            error!("Failed to create cognitive being assistant: {}", e);
+            Err(format!("Failed to create cognitive being assistant: {}", e))
         }
     }
 }

@@ -2034,9 +2034,10 @@ impl WorkspaceService {
     }
 
     async fn ensure_assistant_workspaces(&self) -> OpenBitFunResult<()> {
-        // Trinity owns the primary assistant slot: the cognitive engine's
-        // being (银月) is the default assistant, so first-run conversations
-        // land on the cognitive flow and the awakening ceremony.
+        // Reuse an existing Trinity assistant workspace (cognitive being) but
+        // never create one or claim the primary assistant slot here: the user
+        // opts in through the cognitive-identity recovery action, so the host
+        // does not silently steal the default assistant on every startup.
         self.ensure_trinity_assistant().await?;
         let descriptors = self.discover_assistant_workspaces().await?;
         let has_current_workspace = self.get_current_workspace().await.is_some();
@@ -2091,58 +2092,39 @@ impl WorkspaceService {
         self.save_workspace_data().await
     }
 
-    /// Ensures the Trinity assistant workspace exists, owns the 银月 persona,
-    /// and is the primary assistant (idempotent).
+    /// Opens an existing Trinity assistant workspace and refreshes its
+    /// pre-awakening persona placeholders, dropping the generic bootstrap
+    /// prompt (idempotent).
     ///
-    /// Trinity is the default assistant: the cognitive engine's being owns the
-    /// primary assistant slot so first-run conversations land on the cognitive
-    /// flow. The generic bootstrap prompt is dropped because the awakening
-    /// ceremony replaces it as the first-conversation gate.
+    /// A missing Trinity workspace is left missing: creation and the primary
+    /// assistant role are user-driven through the cognitive-identity recovery
+    /// action, so the host never silently claims the default assistant slot.
     async fn ensure_trinity_assistant(&self) -> OpenBitFunResult<()> {
-        let descriptors = self.discover_assistant_workspaces().await?;
-        let trinity_descriptor = descriptors
-            .iter()
-            .find(|d| d.assistant_id.as_deref() == Some("trinity"))
-            .cloned();
+        let descriptor = self
+            .discover_assistant_workspaces()
+            .await?
+            .into_iter()
+            .find(|d| d.assistant_id.as_deref() == Some("trinity"));
 
-        let workspace_id = match trinity_descriptor {
-            Some(descriptor) => {
-                let workspace = self
-                    .open_workspace_with_options(
-                        descriptor.path.clone(),
-                        WorkspaceCreateOptions {
-                            auto_set_current: false,
-                            add_to_recent: false,
-                            workspace_kind: WorkspaceKind::Assistant,
-                            assistant_id: Some("trinity".to_string()),
-                            display_name: Some(descriptor.display_name.clone()),
-                            ..Default::default()
-                        },
-                    )
-                    .await?;
-                workspace.id
-            }
-            None => {
-                let workspace = self
-                    .create_assistant_workspace(Some("trinity".into()))
-                    .await?;
-                workspace.id
-            }
+        let Some(descriptor) = descriptor else {
+            return Ok(());
         };
 
-        let path = self
-            .path_manager
-            .assistant_workspace_dir("trinity", None);
-        write_trinity_persona_files(&path).await?;
+        self.open_workspace_with_options(
+            descriptor.path.clone(),
+            WorkspaceCreateOptions {
+                auto_set_current: false,
+                add_to_recent: false,
+                workspace_kind: WorkspaceKind::Assistant,
+                assistant_id: Some("trinity".to_string()),
+                display_name: Some(descriptor.display_name.clone()),
+                ..Default::default()
+            },
+        )
+        .await?;
 
-        let is_primary = self
-            .get_primary_assistant_workspace()
-            .await
-            .map(|w| w.assistant_id.as_deref() == Some("trinity"))
-            .unwrap_or(false);
-        if !is_primary {
-            self.set_primary_assistant_workspace(&workspace_id).await?;
-        }
+        let path = self.path_manager.assistant_workspace_dir("trinity", None);
+        write_trinity_persona_files(&path).await?;
 
         Ok(())
     }
@@ -2396,6 +2378,57 @@ mod tests {
         assert_eq!(assistants.len(), 1);
         assert_eq!(assistants[0].id, named.id);
         assert!(assistants[0].assistant_id.is_some());
+    }
+
+    #[tokio::test]
+    async fn missing_trinity_assistant_is_not_created_on_startup() {
+        let env = TestEnvironment::new();
+        let service = build_test_workspace_service(env.path_manager.clone()).await;
+
+        service
+            .ensure_assistant_workspaces()
+            .await
+            .expect("assistant workspaces should initialize");
+
+        let assistants = service.get_assistant_workspaces().await;
+        assert!(
+            assistants
+                .iter()
+                .all(|workspace| workspace.assistant_id.as_deref() != Some("trinity")),
+            "a missing Trinity workspace must not be created on startup"
+        );
+    }
+
+    #[tokio::test]
+    async fn existing_trinity_assistant_is_reused_without_stealing_primary() {
+        let env = TestEnvironment::new();
+        let service = build_test_workspace_service(env.path_manager.clone()).await;
+
+        let trinity = service
+            .create_assistant_workspace(Some("trinity".to_string()))
+            .await
+            .expect("trinity assistant should initialize");
+        let named = service
+            .create_assistant_workspace(Some("named-primary".to_string()))
+            .await
+            .expect("named assistant should initialize");
+        service
+            .set_primary_assistant_workspace(&named.id)
+            .await
+            .expect("primary assistant role should move");
+
+        service
+            .ensure_assistant_workspaces()
+            .await
+            .expect("assistant workspaces should initialize");
+
+        let primary = service
+            .get_primary_assistant_workspace()
+            .await
+            .expect("primary assistant should resolve");
+        assert_eq!(primary.id, named.id);
+        assert!(service.is_primary_assistant_workspace(&named.id).await);
+        assert!(!service.is_primary_assistant_workspace(&trinity.id).await);
     }
 
     #[tokio::test]
@@ -2948,10 +2981,7 @@ async fn write_trinity_persona_files(workspace_root: &Path) -> OpenBitFunResult<
     let bootstrap_path = workspace_root.join("BOOTSTRAP.md");
     if fs::try_exists(&bootstrap_path).await.unwrap_or(false) {
         fs::remove_file(&bootstrap_path).await.map_err(|e| {
-            OpenBitFunError::service(format!(
-                "Failed to remove Trinity BOOTSTRAP.md: {}",
-                e
-            ))
+            OpenBitFunError::service(format!("Failed to remove Trinity BOOTSTRAP.md: {}", e))
         })?;
     }
     Ok(())

@@ -240,6 +240,7 @@ export interface GlobalStateAPI {
     sshHost?: string
   ): Promise<WorkspaceInfo>;
   createAssistantWorkspace(): Promise<WorkspaceInfo>;
+  ensureCognitiveBeingAssistant(): Promise<WorkspaceInfo>;
   getPrimaryAssistantWorkspace(): Promise<WorkspaceInfo | null>;
   setPrimaryAssistantWorkspace(workspaceId: string): Promise<WorkspaceInfo>;
   deleteAssistantWorkspace(workspaceId: string): Promise<void>;
@@ -549,6 +550,10 @@ export function createGlobalStateAPI(): GlobalStateAPI {
 
     async createAssistantWorkspace(): Promise<WorkspaceInfo> {
       return mapWorkspaceInfo(await globalAPI.createAssistantWorkspace());
+    },
+
+    async ensureCognitiveBeingAssistant(): Promise<WorkspaceInfo> {
+      return mapWorkspaceInfo(await globalAPI.ensureCognitiveBeingAssistant());
     },
 
     async getPrimaryAssistantWorkspace(): Promise<WorkspaceInfo | null> {

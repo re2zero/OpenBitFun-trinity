@@ -2040,7 +2040,15 @@
       "memoryTimeline": "记忆时间线",
       "noMemories": "暂无记忆。",
       "trend": "认知趋势",
-      "awakenFailed": "觉醒失败：{{message}}"
+      "awakenFailed": "觉醒失败：{{message}}",
+      "createIdentityTitle": "创建身份",
+      "createIdentityDescription": "认知体在当前工作区中没有身份（例如重置工作区后）。可根据认知引擎中保存的唤醒身份重建主助理。",
+      "createIdentity": "创建身份",
+      "creatingIdentity": "创建中…",
+      "createIdentityConfirmTitle": "创建认知体身份？",
+      "createIdentityConfirmMessage": "这会向认知体工作区写入 IDENTITY.md、SOUL.md、USER.md，并将其设为主助理，同时覆盖当前的人格文件。",
+      "createIdentityMissingIdentity": "认知引擎未返回唤醒名称，请先连接后再创建身份。",
+      "createIdentityFailed": "创建身份失败：{{message}}"
     },
     "cloud": {
       "title": "云端记忆",

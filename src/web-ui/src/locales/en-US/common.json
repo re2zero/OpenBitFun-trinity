@@ -2040,7 +2040,15 @@
       "memoryTimeline": "Memory timeline",
       "noMemories": "No memories yet.",
       "trend": "Cognitive trend",
-      "awakenFailed": "Awakening failed: {{message}}"
+      "awakenFailed": "Awakening failed: {{message}}",
+      "createIdentityTitle": "Create identity",
+      "createIdentityDescription": "The cognitive being has no identity in this workspace (for example after a reset). Rebuild the primary assistant from the awakened identity held by the cognitive engine.",
+      "createIdentity": "Create identity",
+      "creatingIdentity": "Creating…",
+      "createIdentityConfirmTitle": "Create cognitive identity?",
+      "createIdentityConfirmMessage": "This writes IDENTITY.md, SOUL.md, and USER.md into the cognitive being workspace and makes it the primary assistant, overwriting the current persona files.",
+      "createIdentityMissingIdentity": "The cognitive engine did not return an awakened name; connect it before creating the identity.",
+      "createIdentityFailed": "Failed to create identity: {{message}}"
     },
     "cloud": {
       "title": "Cloud Memory",

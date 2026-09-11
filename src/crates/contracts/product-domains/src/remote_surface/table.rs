@@ -233,6 +233,7 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("editor_ai_cancel",                                           Unaudited,   Proxied,          CLI_NO_DESKTOP_IDE_SURFACE),
     op("editor_ai_stream",                                           Unaudited,   Proxied,          CLI_NO_DESKTOP_IDE_SURFACE),
     op("ensure_assistant_bootstrap",                                 Unsupported, Proxied,          CLI_NOT_IMPLEMENTED),
+    op("ensure_cognitive_being_assistant",                           Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
     op("ensure_coordinator_session",                                 Routed,      Proxied,          HANDLED),
     op("execute_tool",                                               Routed,      Proxied,          CLI_NOT_IMPLEMENTED),
     op("expand_external_prompt_command_command",                     Unsupported, Proxied,          CLI_NOT_IMPLEMENTED),

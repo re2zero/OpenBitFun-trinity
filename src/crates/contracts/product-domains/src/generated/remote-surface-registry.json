@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "digest": "fnv1a64:57f26e05119c5457",
+  "digest": "fnv1a64:cd03752ca34ec198",
   "retiredCommandPrefixes": [
     {
       "prefix": "lsp_",
@@ -1800,6 +1800,18 @@
       "id": "ensure_assistant_bootstrap",
       "surface": "tauri_command",
       "remoteWorkspace": "RemoteUnsupported",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the CLI peer host has no handler for this command"
+      }
+    },
+    {
+      "id": "ensure_cognitive_being_assistant",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
       "peer": {
         "kind": "proxied"
       },

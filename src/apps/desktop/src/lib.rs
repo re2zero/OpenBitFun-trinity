@@ -1801,6 +1801,7 @@ pub async fn run() {
             open_workspace,
             open_remote_workspace,
             create_assistant_workspace,
+            ensure_cognitive_being_assistant,
             get_primary_assistant_workspace,
             set_primary_assistant_workspace,
             delete_assistant_workspace,

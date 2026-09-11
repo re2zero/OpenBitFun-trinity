@@ -2040,7 +2040,15 @@
       "memoryTimeline": "記憶時間線",
       "noMemories": "暫無記憶。",
       "trend": "認知趨勢",
-      "awakenFailed": "覺醒失敗：{{message}}"
+      "awakenFailed": "覺醒失敗：{{message}}",
+      "createIdentityTitle": "建立身份",
+      "createIdentityDescription": "認知體在目前工作區中沒有身份（例如重設工作區後）。可依認知引擎中保存的喚醒身份重建主助理。",
+      "createIdentity": "建立身份",
+      "creatingIdentity": "建立中…",
+      "createIdentityConfirmTitle": "建立認知體身份？",
+      "createIdentityConfirmMessage": "這會向認知體工作區寫入 IDENTITY.md、SOUL.md、USER.md，並將其設為主助理，同時覆寫目前的人格檔案。",
+      "createIdentityMissingIdentity": "認知引擎未回傳喚醒名稱，請先連接後再建立身份。",
+      "createIdentityFailed": "建立身份失敗：{{message}}"
     },
     "cloud": {
       "title": "雲端記憶",

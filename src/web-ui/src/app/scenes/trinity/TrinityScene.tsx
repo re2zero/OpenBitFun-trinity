@@ -17,8 +17,11 @@ import { Button, Card, CardBody, CardHeader, Icon, OverflowText, ScrollArea, Spi
 import { Brain, CloudUpload, ShieldCheck } from 'lucide-react';
 import { useI18n } from '@/infrastructure/i18n/hooks/useI18n';
 import { useWorkspaceContext } from '@/infrastructure/contexts/WorkspaceContext';
-import { trinityAPI } from '@/infrastructure/api';
+import { trinityAPI, workspaceAPI } from '@/infrastructure/api';
+import { confirmDanger } from '@/infrastructure/confirm-dialog';
 import TrinityAwakenDialog from '@/app/components/TrinityAwakenGate/TrinityAwakenDialog';
+import { buildCognitiveIdentityFiles } from './cognitiveIdentityTemplate';
+import { needsCognitiveIdentity } from './cognitiveIdentityStatus';
 import {
   emotionLabelKey,
   focusLabelKey,
@@ -84,9 +87,31 @@ const TrendSparkline: React.FC<{ points: number[] }> = ({ points }) => {
   );
 };
 
+/**
+ * Drops the generic bootstrap prompt — the cognitive being's identity replaces
+ * it as the first-conversation gate. A missing file is not an error.
+ */
+async function removeBootstrapFile(workspaceRoot: string): Promise<void> {
+  const base = workspaceRoot.replace(/[\\/]+$/, '');
+  try {
+    await workspaceAPI.deleteFile(`${base}/BOOTSTRAP.md`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!/does not exist|no such file|not found/i.test(message)) {
+      throw error;
+    }
+  }
+}
+
 const TrinityScene: React.FC = () => {
   const { t } = useI18n('common');
-  const { currentWorkspace } = useWorkspaceContext();
+  const {
+    currentWorkspace,
+    assistantWorkspacesList,
+    primaryAssistantWorkspaceId,
+    ensureCognitiveBeingAssistant,
+    setPrimaryAssistantWorkspace,
+  } = useWorkspaceContext();
   const phase = useTrinityPhase();
   const psi = useTrinityStore(s => s.psi);
   const identity = useTrinityStore(s => s.identity);
@@ -103,6 +128,8 @@ const TrinityScene: React.FC = () => {
 
   const [awakenDialogOpen, setAwakenDialogOpen] = useState(false);
   const [forgetPendingId, setForgetPendingId] = useState<string | null>(null);
+  const [creatingIdentity, setCreatingIdentity] = useState(false);
+  const [createIdentityError, setCreateIdentityError] = useState<string | null>(null);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<TrinityMemoryEntry[] | null>(null);
@@ -125,6 +152,11 @@ const TrinityScene: React.FC = () => {
   const awakenWorkspacePath = currentWorkspace?.assistantId === 'trinity'
     ? currentWorkspace.rootPath
     : undefined;
+  const shouldCreateIdentity = needsCognitiveIdentity(
+    phase,
+    assistantWorkspacesList,
+    primaryAssistantWorkspaceId,
+  );
 
   useTrinityAutoRefresh(SCENE_POLL_INTERVAL_MS);
 
@@ -276,6 +308,42 @@ const TrinityScene: React.FC = () => {
     }
   }, [loadCloud]);
 
+  const handleCreateIdentity = useCallback(async () => {
+    if (creatingIdentity) return;
+    const name = identity?.name?.trim();
+    const userName = identity?.user_name?.trim();
+    if (!name || !userName) {
+      setCreateIdentityError(t('trinity.scene.createIdentityMissingIdentity'));
+      return;
+    }
+
+    const confirmed = await confirmDanger(
+      t('trinity.scene.createIdentityConfirmTitle'),
+      t('trinity.scene.createIdentityConfirmMessage'),
+      {
+        confirmText: t('trinity.scene.createIdentity'),
+        cancelText: t('actions.cancel'),
+      },
+    );
+    if (!confirmed) return;
+
+    setCreatingIdentity(true);
+    setCreateIdentityError(null);
+    try {
+      const workspace = await ensureCognitiveBeingAssistant();
+      const files = buildCognitiveIdentityFiles({ name, userName, persona: identity?.persona });
+      for (const [fileName, content] of Object.entries(files)) {
+        await workspaceAPI.writeFileContent(workspace.rootPath, fileName, content);
+      }
+      await removeBootstrapFile(workspace.rootPath);
+      await setPrimaryAssistantWorkspace(workspace.id);
+    } catch (error) {
+      setCreateIdentityError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setCreatingIdentity(false);
+    }
+  }, [creatingIdentity, ensureCognitiveBeingAssistant, identity, setPrimaryAssistantWorkspace, t]);
+
   const shownMemories = searchResults ?? memories;
   const lastTimelineTs = memories.length > 0 ? memories[memories.length - 1]?.timestamp : undefined;
   const canLoadEarlier = searchResults == null
@@ -339,6 +407,38 @@ const TrinityScene: React.FC = () => {
                 >
                   {t('trinity.scene.awaken')}
                 </Button>
+              </CardBody>
+            </Card>
+          )}
+
+          {shouldCreateIdentity && (
+            <Card appearance="raised" padding="md" gap="sm" className="openbitfun-trinity-scene__identity">
+              <CardHeader
+                contentAlign="center"
+                title={<h2>{t('trinity.scene.createIdentityTitle')}</h2>}
+              />
+              <CardBody>
+                <p className="openbitfun-trinity-scene__identity-description">
+                  {t('trinity.scene.createIdentityDescription')}
+                </p>
+                <Button
+                  variant="primary"
+                  leadingIcon={<Icon name="spark" size="sm" />}
+                  disabled={creatingIdentity}
+                  onClick={() => { void handleCreateIdentity(); }}
+                  data-testid="trinity-create-identity"
+                >
+                  {creatingIdentity ? t('trinity.scene.creatingIdentity') : t('trinity.scene.createIdentity')}
+                </Button>
+                {createIdentityError && (
+                  <p
+                    className="openbitfun-trinity-scene__identity-error"
+                    role="alert"
+                    data-testid="trinity-create-identity-error"
+                  >
+                    {t('trinity.scene.createIdentityFailed', { message: createIdentityError })}
+                  </p>
+                )}
               </CardBody>
             </Card>
           )}

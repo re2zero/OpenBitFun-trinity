@@ -36,6 +36,7 @@ export const WorkspaceProvider: React.FC<WorkspaceProviderProps> = ({ children }
         ),
         openWorkspace: async (path: string) => workspaceManager.openWorkspace(path),
         createAssistantWorkspace: async () => workspaceManager.createAssistantWorkspace(),
+        ensureCognitiveBeingAssistant: async () => workspaceManager.ensureCognitiveBeingAssistant(),
         setPrimaryAssistantWorkspace: async (workspaceId: string) =>
           workspaceManager.setPrimaryAssistantWorkspace(workspaceId),
         closeWorkspace: async () => workspaceManager.closeWorkspace(),
@@ -89,6 +90,7 @@ export const WorkspaceProvider: React.FC<WorkspaceProviderProps> = ({ children }
         assistantWorkspacesList: [],
         openWorkspace: async (path: string) => workspaceManager.openWorkspace(path),
         createAssistantWorkspace: async () => workspaceManager.createAssistantWorkspace(),
+        ensureCognitiveBeingAssistant: async () => workspaceManager.ensureCognitiveBeingAssistant(),
         setPrimaryAssistantWorkspace: async (workspaceId: string) =>
           workspaceManager.setPrimaryAssistantWorkspace(workspaceId),
         closeWorkspace: async () => workspaceManager.closeWorkspace(),
@@ -236,6 +238,10 @@ export const WorkspaceProvider: React.FC<WorkspaceProviderProps> = ({ children }
     return await workspaceManager.createAssistantWorkspace();
   }, []);
 
+  const ensureCognitiveBeingAssistant = useCallback(async (): Promise<WorkspaceInfo> => {
+    return await workspaceManager.ensureCognitiveBeingAssistant();
+  }, []);
+
   const setPrimaryAssistantWorkspace = useCallback(
     async (workspaceId: string): Promise<WorkspaceInfo> => {
       return await workspaceManager.setPrimaryAssistantWorkspace(workspaceId);
@@ -323,6 +329,7 @@ export const WorkspaceProvider: React.FC<WorkspaceProviderProps> = ({ children }
       ),
       openWorkspace,
       createAssistantWorkspace,
+      ensureCognitiveBeingAssistant,
       setPrimaryAssistantWorkspace,
       closeWorkspace,
       closeWorkspaceById,
@@ -344,6 +351,7 @@ export const WorkspaceProvider: React.FC<WorkspaceProviderProps> = ({ children }
     state,
     openWorkspace,
     createAssistantWorkspace,
+    ensureCognitiveBeingAssistant,
     setPrimaryAssistantWorkspace,
     closeWorkspace,
     closeWorkspaceById,
