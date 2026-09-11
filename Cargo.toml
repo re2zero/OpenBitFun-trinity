@@ -55,6 +55,11 @@ members = [
 
 exclude = [
     "OpenBitFun-Installer/src-tauri",
+    # Vendored `[patch.crates-io]` replacement for leptonica-sys. It is a
+    # standalone package (auto-generated manifest, no `[workspace]` table), so
+    # it must be excluded or cargo refuses to resolve it from inside the
+    # workspace tree.
+    "vendor/leptonica-sys",
 ]
 
 resolver = "2"

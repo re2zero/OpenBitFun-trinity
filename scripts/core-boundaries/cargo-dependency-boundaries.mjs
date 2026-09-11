@@ -22,6 +22,21 @@ const SKIPPED_DIRECTORIES = new Set([
   'target',
 ]);
 
+// Third-party crates vendored as `[patch.crates-io]` replacements live inside
+// the repository tree but are not repository packages: they carry
+// cargo-normalized upstream manifests and belong to no crate-layout layer.
+// Their consumption is still validated through the patched cargo graph.
+const VENDORED_CRATE_DIRECTORY = 'vendor';
+
+function isRepositoryOwnedPath(root, path) {
+  const repoPath = repositoryPath(root, path);
+  if (repoPath === null || repoPath === '') {
+    return false;
+  }
+  return repoPath !== VENDORED_CRATE_DIRECTORY
+    && !repoPath.startsWith(`${VENDORED_CRATE_DIRECTORY}/`);
+}
+
 const ALLOWED_TARGET_LAYERS = new Map([
   ['apps', new Set(['interfaces', 'assembly', 'adapters', 'services', 'execution', 'contracts'])],
   ['interfaces', new Set(['interfaces', 'assembly', 'adapters', 'services', 'execution', 'contracts'])],
@@ -1326,7 +1341,7 @@ export function findCargoLayerViolations(
   const declaredDependencies = [];
   for (const sourcePackage of packages) {
     for (const dependency of sourcePackage.dependencies ?? []) {
-      if (!dependency.path || repositoryPath(root, dependency.path) === null) {
+      if (!dependency.path || !isRepositoryOwnedPath(root, dependency.path)) {
         continue;
       }
 
@@ -2526,13 +2541,13 @@ function resolvedDependencyRecords(metadata, root) {
 
   for (const node of metadata.resolve?.nodes ?? []) {
     const sourcePackage = packageById.get(node.id);
-    if (!sourcePackage || repositoryPath(root, sourcePackage.manifest_path) === null) {
+    if (!sourcePackage || !isRepositoryOwnedPath(root, sourcePackage.manifest_path)) {
       continue;
     }
 
     for (const dependency of node.deps ?? []) {
       const targetPackage = packageById.get(dependency.pkg);
-      if (!targetPackage || repositoryPath(root, targetPackage.manifest_path) === null) {
+      if (!targetPackage || !isRepositoryOwnedPath(root, targetPackage.manifest_path)) {
         continue;
       }
 
@@ -2614,7 +2629,7 @@ export function collectCargoMetadataGraph({
     });
     const workspaceMemberIds = new Set(metadata.workspace_members ?? []);
     for (const pkg of metadata.packages ?? []) {
-      if (repositoryPath(root, pkg.manifest_path) === null) {
+      if (!isRepositoryOwnedPath(root, pkg.manifest_path)) {
         continue;
       }
       const packageManifestKey = normalizedPath(pkg.manifest_path);
