@@ -56,7 +56,7 @@ const TrinityAwakenDialog: React.FC<TrinityAwakenDialogProps> = ({ open, onClose
           persona,
         });
         for (const [fileName, content] of Object.entries(files)) {
-          await workspaceAPI.writeFileContent(base, fileName, content);
+          await workspaceAPI.writeFileContent(base, `${base}/${fileName}`, content);
         }
       }
       await refresh();

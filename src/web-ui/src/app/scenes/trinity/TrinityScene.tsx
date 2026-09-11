@@ -336,9 +336,12 @@ const TrinityScene: React.FC = () => {
     setCreateIdentityError(null);
     try {
       const workspace = await ensureCognitiveBeingAssistant();
+      // `write_file_content` resolves `filePath` as-is, so relative names land
+      // in the process CWD. Join the workspace root like personaDocFullPath.
+      const base = workspace.rootPath.replace(/[\\/]+$/, '');
       const files = buildCognitiveIdentityFiles({ name, userName, persona: identity?.persona });
       for (const [fileName, content] of Object.entries(files)) {
-        await workspaceAPI.writeFileContent(workspace.rootPath, fileName, content);
+        await workspaceAPI.writeFileContent(base, `${base}/${fileName}`, content);
       }
       await removeBootstrapFile(workspace.rootPath);
       await setPrimaryAssistantWorkspace(workspace.id);
