@@ -1756,9 +1756,8 @@ impl ExecutionEngine {
                 None,
             )
             .await?;
-        // Optional host-level cognitive decoration (no-op when unregistered).
-        let system_prompt =
-            super::cognitive_hooks::decorate_system_prompt(system_prompt).await;
+        // Optional host-level cognitive protocol (no-op when unregistered).
+        let system_prompt = super::cognitive_injector::decorate_system_prompt(system_prompt).await;
 
         Self::log_turn_prompt_scaffold(
             &input.context.session_id,
@@ -2663,8 +2662,6 @@ impl ExecutionEngine {
             }
         };
         let ai_client = apply_agent_temperature_override(current_agent.as_ref(), ai_client);
-        // Optional host-level sampling override (no-op when unregistered).
-        let ai_client = super::cognitive_hooks::apply_sampling_params_override(ai_client).await;
         Self::validate_frozen_model_contract(context).await?;
         Self::validate_frozen_reasoning_contract(context, ai_client.as_ref())?;
         let model_request_context = Self::model_request_context(
@@ -3637,8 +3634,6 @@ impl ExecutionEngine {
             }
         };
         let ai_client = apply_agent_temperature_override(current_agent.as_ref(), ai_client);
-        // Optional host-level sampling override (no-op when unregistered).
-        let ai_client = super::cognitive_hooks::apply_sampling_params_override(ai_client).await;
         Self::validate_frozen_model_contract(&context).await?;
         Self::validate_frozen_reasoning_contract(&context, ai_client.as_ref())?;
         let model_request_context = Self::model_request_context(
@@ -4288,6 +4283,25 @@ impl ExecutionEngine {
                 &send_prepended_reminders,
             )
             .await?;
+
+            // Optional per-turn cognitive state: prepend to the latest user
+            // message so the system prompt prefix stays byte-stable.
+            let latest_user_text = messages
+                .iter()
+                .rev()
+                .find(|message| message.role == MessageRole::User)
+                .map(|message| match &message.content {
+                    MessageContent::Text(text) => text.as_str(),
+                    MessageContent::Multimodal { text, .. } => text.as_str(),
+                    _ => "",
+                })
+                .unwrap_or("");
+            let ai_messages = super::cognitive_injector::decorate_latest_user_message(
+                ai_messages,
+                latest_user_text,
+                &context.dialog_turn_id,
+            )
+            .await;
 
             let round_lifecycle =
                 active_round_lifecycle.get_or_insert_with(ModelRoundLifecycle::new);

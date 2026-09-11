@@ -1,9 +1,14 @@
-//! Trinity implementations of the generic cognitive hooks.
+//! Trinity implementation of the core cognitive injector.
 //!
-//! - `TrinityInjector` decorates the per-turn system prompt with the static
-//!   identity + NAP protocol block and the live PSI cognitive state.
-//! - `TrinitySamplingParams` supplies the per-turn sampling temperature from
-//!   the PSI engine.
+//! Two channels, mirroring the cognitive engine's own contract:
+//!
+//! - `cognitive_protocol` returns the session-stable protocol (identity + NAP
+//!   + cognitive instructions). The execution engine prepends it to the system
+//!   prompt; the daemon returns the same bytes every turn so the prompt prefix
+//!   stays cacheable.
+//! - `cognitive_state_for` returns the live PSI state for the current user
+//!   message. The execution engine prepends it to the latest user message, not
+//!   the system prompt, so per-turn state never invalidates the cached prefix.
 //!
 //! Both degrade gracefully: when the daemon is unreachable they return `None`
 //! and the execution engine proceeds unchanged.
@@ -13,109 +18,69 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use openbitfun_core::agentic::execution::cognitive_hooks::{
-    SamplingParamsProvider, TurnPromptDecorator,
-};
+use openbitfun_core::agentic::execution::cognitive_injector::CognitiveInjector;
 
 use super::backend;
 
-/// Static prompt cache TTL: the identity + NAP block is stable across turns.
-const STATIC_PROMPT_TTL: Duration = Duration::from_secs(60);
-/// Per-turn cognitive state TTL: one user turn usually spans several rounds.
-const COGNITIVE_STATE_TTL: Duration = Duration::from_secs(5);
+/// Turn-level state cache TTL: tool rounds inside one user turn are usually
+/// closer together than this, so the same turn reuses one state snapshot.
+const TURN_TTL: Duration = Duration::from_secs(5);
 
 pub(crate) struct TrinityInjector {
-    static_cache: Mutex<Option<(String, Instant)>>,
-    state_cache: Mutex<Option<(String, Instant)>>,
-}
-
-impl Default for TrinityInjector {
-    fn default() -> Self {
-        Self::new()
-    }
+    /// Turn-level cache: ((turn_key, user_message) fingerprint, state, at).
+    /// A new turn or a changed message invalidates it immediately.
+    turn_cache: Mutex<Option<((String, String), String, Instant)>>,
 }
 
 impl TrinityInjector {
     pub(crate) fn new() -> Self {
         Self {
-            static_cache: Mutex::new(None),
-            state_cache: Mutex::new(None),
+            turn_cache: Mutex::new(None),
         }
     }
+}
 
-    async fn static_prompt_cached(&self) -> Option<String> {
-        if let Ok(guard) = self.static_cache.lock() {
-            if let Some((prompt, at)) = guard.as_ref() {
-                if at.elapsed() < STATIC_PROMPT_TTL {
-                    return Some(prompt.clone());
+#[async_trait]
+impl CognitiveInjector for TrinityInjector {
+    /// Session-stable cognitive protocol (identity + NAP + cognitive tools).
+    async fn cognitive_protocol(&self) -> Option<String> {
+        backend::static_prompt().await
+    }
+
+    /// Live cognitive state without user-message context.
+    async fn cognitive_state(&self) -> Option<String> {
+        self.cognitive_state_for("", "").await
+    }
+
+    /// Live cognitive state for the current user message and turn.
+    async fn cognitive_state_for(&self, user_message: &str, turn_key: &str) -> Option<String> {
+        if let Ok(guard) = self.turn_cache.lock() {
+            if let Some(((cached_turn, cached_msg), text, at)) = guard.as_ref() {
+                if at.elapsed() < TURN_TTL && cached_turn == turn_key && cached_msg == user_message
+                {
+                    return Some(text.clone());
                 }
             }
         }
-        let prompt = backend::static_prompt().await?;
-        if let Ok(mut guard) = self.static_cache.lock() {
-            *guard = Some((prompt.clone(), Instant::now()));
-        }
-        Some(prompt)
-    }
 
-    async fn cognitive_state_cached(&self) -> Option<String> {
-        if let Ok(guard) = self.state_cache.lock() {
-            if let Some((state, at)) = guard.as_ref() {
-                if at.elapsed() < COGNITIVE_STATE_TTL {
-                    return Some(state.clone());
-                }
-            }
-        }
-        let state = backend::cognitive_state_block().await?;
-        if let Ok(mut guard) = self.state_cache.lock() {
-            *guard = Some((state.clone(), Instant::now()));
+        let state = backend::cognitive_state_block(user_message, turn_key).await?;
+        if let Ok(mut guard) = self.turn_cache.lock() {
+            *guard = Some((
+                (turn_key.to_string(), user_message.to_string()),
+                state.clone(),
+                Instant::now(),
+            ));
         }
         Some(state)
     }
 }
 
-#[async_trait]
-impl TurnPromptDecorator for TrinityInjector {
-    async fn decorate_system_prompt(&self) -> Option<String> {
-        let mut parts = Vec::new();
-        if let Some(identity) = self.static_prompt_cached().await {
-            parts.push(identity);
-        }
-        if let Some(state) = self.cognitive_state_cached().await {
-            parts.push(state);
-        }
-        if parts.is_empty() {
-            None
-        } else {
-            Some(parts.join("\n\n"))
-        }
-    }
-}
-
-pub(crate) struct TrinitySamplingParams;
-
-#[async_trait]
-impl SamplingParamsProvider for TrinitySamplingParams {
-    async fn sampling_temperature(&self) -> Option<f64> {
-        backend::sampling_temperature().await
-    }
-}
-
-/// Register both hooks into the execution engine (idempotent).
-pub(crate) fn register_cognitive_hooks() {
+/// Register the cognitive injector (idempotent).
+pub(crate) fn register_trinity_injector() {
     let injector = Arc::new(TrinityInjector::new());
-    if openbitfun_core::agentic::execution::cognitive_hooks::register_turn_prompt_decorator(
-        injector,
-    ) {
-        log::info!("[trinity] turn prompt decorator registered");
+    if openbitfun_core::agentic::execution::cognitive_injector::set_cognitive_injector(injector) {
+        log::info!("[trinity] cognitive injector registered");
     } else {
-        log::warn!("[trinity] turn prompt decorator already registered, skipped");
-    }
-    if openbitfun_core::agentic::execution::cognitive_hooks::register_sampling_params_provider(
-        Arc::new(TrinitySamplingParams),
-    ) {
-        log::info!("[trinity] sampling params provider registered");
-    } else {
-        log::warn!("[trinity] sampling params provider already registered, skipped");
+        log::warn!("[trinity] cognitive injector already registered, skipped");
     }
 }

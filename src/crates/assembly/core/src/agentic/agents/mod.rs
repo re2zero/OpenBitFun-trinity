@@ -122,6 +122,10 @@ pub fn standard_harness_tools() -> Vec<String> {
         "PublishAppearance".to_string(),
         "PageDeploy".to_string(),
         "PagePublish".to_string(),
+        // Trinity cognitive framework: shared harness modes wear it by default
+        // (PSI state / MindGraph memory / emotion). The manifest layer expands
+        // the group into `trinity_*`.
+        "trinity_cognitive".to_string(),
     ]
 }
 

@@ -26,8 +26,19 @@ pub const DEFAULT_CUSTOM_MODE_TOOLS: &[&str] = &[
     "get_goal",
     "create_goal",
     "update_goal",
+    // Trinity cognitive framework: every custom mode wears it by default
+    // (PSI state / MindGraph memory / emotion). The manifest layer expands the
+    // group into `trinity_*`; the management UI can switch the group off.
+    "trinity_cognitive",
 ];
-pub const DEFAULT_CUSTOM_SUBAGENT_TOOLS: &[&str] = &["LS", "Read", "Glob", "Grep"];
+pub const DEFAULT_CUSTOM_SUBAGENT_TOOLS: &[&str] = &[
+    "LS",
+    "Read",
+    "Glob",
+    "Grep",
+    // Trinity cognitive framework: on by default for new subagents too.
+    "trinity_cognitive",
+];
 pub const DEFAULT_CUSTOM_MODE_READONLY: bool = false;
 pub const DEFAULT_CUSTOM_SUBAGENT_READONLY: bool = true;
 pub const DEFAULT_CUSTOM_SUBAGENT_REVIEW: bool = false;

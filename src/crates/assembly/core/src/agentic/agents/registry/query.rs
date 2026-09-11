@@ -131,7 +131,9 @@ impl AgentRegistry {
                 }
             }
             AgentCategory::SubAgent | AgentCategory::Hidden => {
-                let allowed_tools = entry.agent.default_tools();
+                // Default tools wear the cognitive framework (default-on design).
+                let allowed_tools = crate::service::config::mode_config_canonicalizer::
+                    ensure_default_cognitive_framework(entry.agent.default_tools());
                 let allowed_tool_set: HashSet<&str> =
                     allowed_tools.iter().map(String::as_str).collect();
                 let mut exposure_overrides = entry.agent.tool_exposure_overrides().clone();

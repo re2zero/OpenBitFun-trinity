@@ -51,6 +51,9 @@ impl ClawMode {
                 "PublishAppearance".to_string(),
                 "PageDeploy".to_string(),
                 "PagePublish".to_string(),
+                // Trinity cognitive framework: one atomic group, expanded by the
+                // manifest layer into the trinity_* cognitive tools.
+                "trinity_cognitive".to_string(),
             ],
         }
     }

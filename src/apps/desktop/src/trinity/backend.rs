@@ -64,7 +64,9 @@ impl TrinityBackend {
     /// Global shared backend (single connection shared by tools and injectors).
     pub(crate) fn global() -> Arc<Self> {
         static GLOBAL: std::sync::OnceLock<Arc<TrinityBackend>> = std::sync::OnceLock::new();
-        GLOBAL.get_or_init(|| Arc::new(TrinityBackend::from_env())).clone()
+        GLOBAL
+            .get_or_init(|| Arc::new(TrinityBackend::from_env()))
+            .clone()
     }
 
     pub(crate) async fn call(&self, method: &str, params: Value) -> Result<Value, String> {
@@ -212,7 +214,9 @@ pub(crate) async fn ensure_trinityd_running() -> Result<u16, String> {
         }
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
-    Err(format!("trinityd did not become ready on port {port} within 15s"))
+    Err(format!(
+        "trinityd did not become ready on port {port} within 15s"
+    ))
 }
 
 /// Fetch the static cognitive identity + NAP protocol block (cached by caller).
@@ -220,7 +224,7 @@ pub(crate) async fn static_prompt() -> Option<String> {
     let backend = TrinityBackend::global();
     match backend.call("get_static_prompt", json!({})).await {
         Ok(v) => v
-            .get("prompt")
+            .get("static_system_prompt")
             .and_then(|p| p.as_str())
             .map(str::to_owned),
         Err(e) => {
@@ -230,30 +234,22 @@ pub(crate) async fn static_prompt() -> Option<String> {
     }
 }
 
-/// Fetch the per-turn cognitive state block (prepended to the user message).
-pub(crate) async fn cognitive_state_block() -> Option<String> {
+/// Fetch the per-turn cognitive state (prepended to the latest user message).
+///
+/// Carries the current user message and turn id so the engine can classify the
+/// real input and deduplicate its work across the tool rounds of one turn.
+pub(crate) async fn cognitive_state_block(user_message: &str, turn_id: &str) -> Option<String> {
     let backend = TrinityBackend::global();
-    match backend.call("before_turn", json!({})).await {
-        Ok(v) => v
-            .get("cognitive_state")
-            .map(|s| s.to_string()),
+    match backend
+        .call(
+            "before_turn",
+            json!({ "user_message": user_message, "turn_id": turn_id }),
+        )
+        .await
+    {
+        Ok(v) => v.get("cognitive_state_text").map(|s| s.to_string()),
         Err(e) => {
             log::warn!("[trinity] before_turn failed: {e}");
-            None
-        }
-    }
-}
-
-/// Fetch the per-turn sampling temperature from the PSI engine.
-pub(crate) async fn sampling_temperature() -> Option<f64> {
-    let backend = TrinityBackend::global();
-    match backend.call("before_turn", json!({})).await {
-        Ok(v) => v
-            .get("sampling_params")
-            .and_then(|p| p.get("temperature"))
-            .and_then(|t| t.as_f64()),
-        Err(e) => {
-            log::warn!("[trinity] sampling temperature fetch failed: {e}");
             None
         }
     }
