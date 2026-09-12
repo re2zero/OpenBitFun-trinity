@@ -22,6 +22,7 @@
 
 pub mod api;
 pub mod appearance;
+mod beings;
 mod builtin_browser_host;
 pub mod computer_use;
 pub mod crash_diagnostics;
@@ -1861,6 +1862,10 @@ pub async fn run() {
             api::trinity_api::trinity_llm_set_config,
             api::trinity_api::trinity_llm_test_connection,
             api::trinity_api::trinity_shutdown,
+            api::being_api::get_core_being,
+            api::being_api::list_beings,
+            api::being_api::delete_assistant_being,
+            api::being_api::get_cognitive_framework_info,
             api::system_api::open_html_file_in_browser,
             restart_app,
             send_system_notification,

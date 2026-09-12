@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
-  "catalogDigest": "896281a3cd5cac2b50ec607988e04624224444911ddb2d58ba59a5d7d06493c5",
-  "count": 210,
+  "catalogDigest": "5e40101b299304bdbadfc3c72701397320fa212fe65e80b772e0b1851a557c7b",
+  "count": 217,
   "reasonCounts": {
     "externalAuth": 4,
-    "secretEntry": 5,
-    "unstructuredInteraction": 183,
+    "secretEntry": 7,
+    "unstructuredInteraction": 188,
     "visualSelection": 18
   },
   "entries": [
@@ -2418,6 +2418,127 @@
       ]
     },
     {
+      "capabilityId": "feature.trinity",
+      "itemId": "awaken",
+      "titleZh": "完成觉醒仪式：命名核心认知体、认主并确认人格预设",
+      "titleEn": "Complete the awaken ceremony: name the core being, bind its owner, and confirm the persona preset",
+      "reasonCode": "unstructuredInteraction",
+      "reasonZh": "“完成觉醒仪式：命名核心认知体、认主并确认人格预设”由多个实时状态相关步骤组成，目前没有一个能确定完成整个流程的单一结构化 Command；Agent 会打开精确入口，并把后续交互保留在用户可见界面。",
+      "reasonEn": "“Complete the awaken ceremony: name the core being, bind its owner, and confirm the persona preset” spans multiple live-state-dependent steps and currently has no single structured Command that can deterministically complete the whole workflow; the Agent opens the exact entry and keeps the remaining interaction visible to the user.",
+      "presentationTarget": {
+        "kind": "scene",
+        "sceneId": "trinity"
+      },
+      "evidence": [
+        "command:trinity_awaken",
+        "source:src/web-ui/src/locales/zh-CN/common.json#trinity.scene.awakenTitle"
+      ]
+    },
+    {
+      "capabilityId": "feature.trinity",
+      "itemId": "state",
+      "titleZh": "查看实时认知状态：情绪效价、需求强度、注意力焦点与置信度",
+      "titleEn": "Inspect the live cognitive state: emotion valence, need strengths, attention focus, and confidence",
+      "reasonCode": "unstructuredInteraction",
+      "reasonZh": "“查看实时认知状态：情绪效价、需求强度、注意力焦点与置信度”由多个实时状态相关步骤组成，目前没有一个能确定完成整个流程的单一结构化 Command；Agent 会打开精确入口，并把后续交互保留在用户可见界面。",
+      "reasonEn": "“Inspect the live cognitive state: emotion valence, need strengths, attention focus, and confidence” spans multiple live-state-dependent steps and currently has no single structured Command that can deterministically complete the whole workflow; the Agent opens the exact entry and keeps the remaining interaction visible to the user.",
+      "presentationTarget": {
+        "kind": "scene",
+        "sceneId": "trinity"
+      },
+      "evidence": [
+        "command:trinity_get_cognitive_state",
+        "command:trinity_express",
+        "command:trinity_self_perception",
+        "command:trinity_cognition_history",
+        "source:src/web-ui/src/locales/zh-CN/common.json#trinity.being.state"
+      ]
+    },
+    {
+      "capabilityId": "feature.trinity",
+      "itemId": "memory",
+      "titleZh": "检索、新增、强化与遗忘长期记忆，并翻看记忆时间线",
+      "titleEn": "Search, add, reinforce, and forget long-term memories, and browse the memory timeline",
+      "reasonCode": "unstructuredInteraction",
+      "reasonZh": "“检索、新增、强化与遗忘长期记忆，并翻看记忆时间线”由多个实时状态相关步骤组成，目前没有一个能确定完成整个流程的单一结构化 Command；Agent 会打开精确入口，并把后续交互保留在用户可见界面。",
+      "reasonEn": "“Search, add, reinforce, and forget long-term memories, and browse the memory timeline” spans multiple live-state-dependent steps and currently has no single structured Command that can deterministically complete the whole workflow; the Agent opens the exact entry and keeps the remaining interaction visible to the user.",
+      "presentationTarget": {
+        "kind": "scene",
+        "sceneId": "trinity"
+      },
+      "evidence": [
+        "command:trinity_memory_timeline",
+        "command:trinity_recall_memory",
+        "command:trinity_memorize",
+        "command:trinity_memory_stats",
+        "command:trinity_reinforce_memory",
+        "command:trinity_forget_memory",
+        "source:src/web-ui/src/locales/zh-CN/common.json#trinity.scene.memoryTimeline"
+      ]
+    },
+    {
+      "capabilityId": "feature.trinity",
+      "itemId": "being",
+      "titleZh": "查看核心认知体身份（名字、认主、人格）并管理助理列表",
+      "titleEn": "Inspect the core being identity (name, owner, persona) and manage the assistant list",
+      "reasonCode": "unstructuredInteraction",
+      "reasonZh": "“查看核心认知体身份（名字、认主、人格）并管理助理列表”由多个实时状态相关步骤组成，目前没有一个能确定完成整个流程的单一结构化 Command；Agent 会打开精确入口，并把后续交互保留在用户可见界面。",
+      "reasonEn": "“Inspect the core being identity (name, owner, persona) and manage the assistant list” spans multiple live-state-dependent steps and currently has no single structured Command that can deterministically complete the whole workflow; the Agent opens the exact entry and keeps the remaining interaction visible to the user.",
+      "presentationTarget": {
+        "kind": "scene",
+        "sceneId": "trinity"
+      },
+      "evidence": [
+        "command:get_core_being",
+        "command:list_beings",
+        "command:delete_assistant_being",
+        "command:ensure_cognitive_being_assistant",
+        "source:src/web-ui/src/locales/zh-CN/common.json#trinity.being.title"
+      ]
+    },
+    {
+      "capabilityId": "feature.trinity",
+      "itemId": "cloud",
+      "titleZh": "注册登录云端记忆，设置主密钥，并同步、备份或恢复认知体记忆",
+      "titleEn": "Sign up, log in, set the master key, and sync, back up, or restore cloud memory",
+      "reasonCode": "secretEntry",
+      "reasonZh": "云端记忆使用账户口令与主密钥，属于必须由用户在界面内亲自输入的交互；Agent 会打开 Trinity 场景的云端记忆面板。",
+      "reasonEn": "Cloud memory uses an account passphrase and master key that must be entered by the user in the UI; the Agent opens the Cloud Memory panel in the Trinity scene.",
+      "presentationTarget": {
+        "kind": "scene",
+        "sceneId": "trinity"
+      },
+      "evidence": [
+        "command:trinity_cloud_signup",
+        "command:trinity_cloud_login",
+        "command:trinity_cloud_status",
+        "command:trinity_cloud_sync_now",
+        "command:trinity_cloud_backup",
+        "command:trinity_cloud_restore",
+        "command:trinity_cloud_setup_key",
+        "source:src/web-ui/src/locales/zh-CN/common.json#trinity.cloud.title"
+      ]
+    },
+    {
+      "capabilityId": "feature.trinity",
+      "itemId": "engine",
+      "titleZh": "查看认知引擎运行状态，启用或停用认知框架工具组",
+      "titleEn": "Inspect cognitive-engine status and enable or disable the cognitive framework tool group",
+      "reasonCode": "unstructuredInteraction",
+      "reasonZh": "“查看认知引擎运行状态，启用或停用认知框架工具组”由多个实时状态相关步骤组成，目前没有一个能确定完成整个流程的单一结构化 Command；Agent 会打开精确入口，并把后续交互保留在用户可见界面。",
+      "reasonEn": "“Inspect cognitive-engine status and enable or disable the cognitive framework tool group” spans multiple live-state-dependent steps and currently has no single structured Command that can deterministically complete the whole workflow; the Agent opens the exact entry and keeps the remaining interaction visible to the user.",
+      "presentationTarget": {
+        "kind": "scene",
+        "sceneId": "trinity"
+      },
+      "evidence": [
+        "command:trinity_get_status",
+        "command:trinity_shutdown",
+        "command:get_cognitive_framework_info",
+        "source:src/crates/assembly/core/src/agentic/tools/manifest_resolver.rs#COGNITIVE_FRAMEWORK_TOOL_ID"
+      ]
+    },
+    {
       "capabilityId": "setting.application.general",
       "itemId": "manual-update",
       "titleZh": "手动检查并后台下载更新，确认后安装并重启，或稍后从关于页面安装",
@@ -2822,6 +2943,25 @@
         "command:reset_memory",
         "source:src/web-ui/src/locales/zh-CN/settings/memory.json#actions.resetSettings",
         "command:reset_config"
+      ]
+    },
+    {
+      "capabilityId": "setting.ai.trinity",
+      "itemId": "llm",
+      "titleZh": "填写并保存认知引擎的 API 地址、模型与 API 密钥，并测试连接",
+      "titleEn": "Fill in and save the engine API base URL, model, and API key, and test the connection",
+      "reasonCode": "secretEntry",
+      "reasonZh": "API 密钥属于必须由用户在界面内亲自输入的凭证；Agent 会打开认知引擎设置页供用户填写。",
+      "reasonEn": "The API key is a credential that must be entered by the user in the UI; the Agent opens the Cognitive Engine settings page.",
+      "presentationTarget": {
+        "kind": "settings",
+        "pageId": "ai.trinity"
+      },
+      "evidence": [
+        "command:trinity_llm_get_config",
+        "command:trinity_llm_set_config",
+        "command:trinity_llm_test_connection",
+        "source:src/web-ui/src/locales/zh-CN/settings.json#trinity.engine.llmSection"
       ]
     },
     {

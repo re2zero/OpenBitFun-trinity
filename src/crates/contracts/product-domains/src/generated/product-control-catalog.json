@@ -4,7 +4,7 @@
   "title": "OpenBitFun Playbook",
   "origin": "https://playbook.openbitfun.com",
   "source": "src/shared/interactive-capabilities/catalog.json",
-  "digest": "896281a3cd5cac2b50ec607988e04624224444911ddb2d58ba59a5d7d06493c5",
+  "digest": "5e40101b299304bdbadfc3c72701397320fa212fe65e80b772e0b1851a557c7b",
   "ownerDigest": "c0e5c187cf62bc6ed06196ce8520b3eb427bf268cf24659b72d2552fb1d99c54",
   "searchAcceptance": [
     {
@@ -135,14 +135,14 @@
     }
   ],
   "counts": {
-    "features": 22,
-    "settings": 21,
-    "userFacing": 43,
-    "documentedItems": 319,
+    "features": 23,
+    "settings": 22,
+    "userFacing": 45,
+    "documentedItems": 326,
     "controlCoverage": {
       "direct": 48,
       "delegated": 61,
-      "interactive": 210,
+      "interactive": 217,
       "unsupported": 0
     }
   },
@@ -10594,6 +10594,332 @@
       }
     },
     {
+      "id": "feature.trinity:query",
+      "capabilityId": "feature.trinity",
+      "itemIds": [
+        "awaken",
+        "state",
+        "memory",
+        "being",
+        "cloud",
+        "engine"
+      ],
+      "kind": "query",
+      "risk": "read",
+      "executionHost": "productHost",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": true
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": true
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "valueSource": {
+        "kind": "static"
+      },
+      "presentationTarget": {
+        "kind": "scene",
+        "sceneId": "trinity"
+      }
+    },
+    {
+      "id": "feature.trinity:open:awaken",
+      "capabilityId": "feature.trinity",
+      "itemIds": [
+        "awaken"
+      ],
+      "kind": "open",
+      "risk": "ui",
+      "executionHost": "presentationSurface",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1",
+            "product_control_presentation_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "openReason": "unstructuredInteraction",
+      "presentationTarget": {
+        "kind": "scene",
+        "sceneId": "trinity"
+      }
+    },
+    {
+      "id": "feature.trinity:open:state",
+      "capabilityId": "feature.trinity",
+      "itemIds": [
+        "state"
+      ],
+      "kind": "open",
+      "risk": "ui",
+      "executionHost": "presentationSurface",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1",
+            "product_control_presentation_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "openReason": "unstructuredInteraction",
+      "presentationTarget": {
+        "kind": "scene",
+        "sceneId": "trinity"
+      }
+    },
+    {
+      "id": "feature.trinity:open:memory",
+      "capabilityId": "feature.trinity",
+      "itemIds": [
+        "memory"
+      ],
+      "kind": "open",
+      "risk": "ui",
+      "executionHost": "presentationSurface",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1",
+            "product_control_presentation_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "openReason": "unstructuredInteraction",
+      "presentationTarget": {
+        "kind": "scene",
+        "sceneId": "trinity"
+      }
+    },
+    {
+      "id": "feature.trinity:open:being",
+      "capabilityId": "feature.trinity",
+      "itemIds": [
+        "being"
+      ],
+      "kind": "open",
+      "risk": "ui",
+      "executionHost": "presentationSurface",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1",
+            "product_control_presentation_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "openReason": "unstructuredInteraction",
+      "presentationTarget": {
+        "kind": "scene",
+        "sceneId": "trinity"
+      }
+    },
+    {
+      "id": "feature.trinity:open:cloud",
+      "capabilityId": "feature.trinity",
+      "itemIds": [
+        "cloud"
+      ],
+      "kind": "open",
+      "risk": "ui",
+      "executionHost": "presentationSurface",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1",
+            "product_control_presentation_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "openReason": "secretEntry",
+      "presentationTarget": {
+        "kind": "scene",
+        "sceneId": "trinity"
+      }
+    },
+    {
+      "id": "feature.trinity:open:engine",
+      "capabilityId": "feature.trinity",
+      "itemIds": [
+        "engine"
+      ],
+      "kind": "open",
+      "risk": "ui",
+      "executionHost": "presentationSurface",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1",
+            "product_control_presentation_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "openReason": "unstructuredInteraction",
+      "presentationTarget": {
+        "kind": "scene",
+        "sceneId": "trinity"
+      }
+    },
+    {
       "id": "setting.application.general:query",
       "capabilityId": "setting.application.general",
       "itemIds": [
@@ -14669,6 +14995,97 @@
       "presentationTarget": {
         "kind": "settings",
         "pageId": "ai.memory"
+      }
+    },
+    {
+      "id": "setting.ai.trinity:query",
+      "capabilityId": "setting.ai.trinity",
+      "itemIds": [
+        "llm"
+      ],
+      "kind": "query",
+      "risk": "read",
+      "executionHost": "productHost",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": true
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": true
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "valueSource": {
+        "kind": "static"
+      },
+      "presentationTarget": {
+        "kind": "settings",
+        "pageId": "ai.trinity"
+      }
+    },
+    {
+      "id": "setting.ai.trinity:open:llm",
+      "capabilityId": "setting.ai.trinity",
+      "itemIds": [
+        "llm"
+      ],
+      "kind": "open",
+      "risk": "ui",
+      "executionHost": "presentationSurface",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1",
+            "product_control_presentation_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "openReason": "secretEntry",
+      "presentationTarget": {
+        "kind": "settings",
+        "pageId": "ai.trinity"
       }
     },
     {
@@ -24727,6 +25144,195 @@
       "docsUrl": "https://playbook.openbitfun.com/capabilities/feature.desktop-pet/"
     },
     {
+      "id": "feature.trinity",
+      "kind": "feature",
+      "categoryId": "assistant",
+      "titleZh": "认知体（Trinity 认知引擎）",
+      "titleEn": "Cognitive being (Trinity cognitive engine)",
+      "summaryZh": "接入 Trinity 认知引擎：唤醒核心认知体、查看实时认知状态、检索与固化长期记忆、同步云端记忆，并管理认知体身份与认知框架工具组。",
+      "summaryEn": "Connect the Trinity cognitive engine: awaken the core being, inspect live cognitive state, search and consolidate long-term memory, sync cloud memory, and manage the being identity and the cognitive framework tool group.",
+      "keywordsZh": [
+        "认知体",
+        "银月",
+        "Trinity",
+        "认知引擎",
+        "PSI",
+        "情绪",
+        "需求",
+        "记忆",
+        "云端记忆",
+        "觉醒"
+      ],
+      "keywordsEn": [
+        "cognitive being",
+        "Trinity",
+        "cognitive engine",
+        "PSI",
+        "emotion",
+        "needs",
+        "memory",
+        "cloud memory",
+        "awaken"
+      ],
+      "highlightsZh": [
+        "唤醒并命名核心认知体",
+        "查看情绪、需求、焦点与置信度",
+        "检索、新增、强化与遗忘长期记忆",
+        "注册登录并同步云端记忆"
+      ],
+      "highlightsEn": [
+        "Awaken and name the core being",
+        "Inspect emotion, needs, focus, and confidence",
+        "Search, add, reinforce, and forget long-term memories",
+        "Sign up, log in, and sync cloud memory"
+      ],
+      "items": [
+        {
+          "id": "awaken",
+          "titleZh": "完成觉醒仪式：命名核心认知体、认主并确认人格预设",
+          "titleEn": "Complete the awaken ceremony: name the core being, bind its owner, and confirm the persona preset",
+          "control": {
+            "kind": "open",
+            "reasonCode": "unstructuredInteraction",
+            "reasonZh": "“完成觉醒仪式：命名核心认知体、认主并确认人格预设”由多个实时状态相关步骤组成，目前没有一个能确定完成整个流程的单一结构化 Command；Agent 会打开精确入口，并把后续交互保留在用户可见界面。",
+            "reasonEn": "“Complete the awaken ceremony: name the core being, bind its owner, and confirm the persona preset” spans multiple live-state-dependent steps and currently has no single structured Command that can deterministically complete the whole workflow; the Agent opens the exact entry and keeps the remaining interaction visible to the user."
+          }
+        },
+        {
+          "id": "state",
+          "titleZh": "查看实时认知状态：情绪效价、需求强度、注意力焦点与置信度",
+          "titleEn": "Inspect the live cognitive state: emotion valence, need strengths, attention focus, and confidence",
+          "control": {
+            "kind": "open",
+            "reasonCode": "unstructuredInteraction",
+            "reasonZh": "“查看实时认知状态：情绪效价、需求强度、注意力焦点与置信度”由多个实时状态相关步骤组成，目前没有一个能确定完成整个流程的单一结构化 Command；Agent 会打开精确入口，并把后续交互保留在用户可见界面。",
+            "reasonEn": "“Inspect the live cognitive state: emotion valence, need strengths, attention focus, and confidence” spans multiple live-state-dependent steps and currently has no single structured Command that can deterministically complete the whole workflow; the Agent opens the exact entry and keeps the remaining interaction visible to the user."
+          }
+        },
+        {
+          "id": "memory",
+          "titleZh": "检索、新增、强化与遗忘长期记忆，并翻看记忆时间线",
+          "titleEn": "Search, add, reinforce, and forget long-term memories, and browse the memory timeline",
+          "control": {
+            "kind": "open",
+            "reasonCode": "unstructuredInteraction",
+            "reasonZh": "“检索、新增、强化与遗忘长期记忆，并翻看记忆时间线”由多个实时状态相关步骤组成，目前没有一个能确定完成整个流程的单一结构化 Command；Agent 会打开精确入口，并把后续交互保留在用户可见界面。",
+            "reasonEn": "“Search, add, reinforce, and forget long-term memories, and browse the memory timeline” spans multiple live-state-dependent steps and currently has no single structured Command that can deterministically complete the whole workflow; the Agent opens the exact entry and keeps the remaining interaction visible to the user."
+          }
+        },
+        {
+          "id": "being",
+          "titleZh": "查看核心认知体身份（名字、认主、人格）并管理助理列表",
+          "titleEn": "Inspect the core being identity (name, owner, persona) and manage the assistant list",
+          "control": {
+            "kind": "open",
+            "reasonCode": "unstructuredInteraction",
+            "reasonZh": "“查看核心认知体身份（名字、认主、人格）并管理助理列表”由多个实时状态相关步骤组成，目前没有一个能确定完成整个流程的单一结构化 Command；Agent 会打开精确入口，并把后续交互保留在用户可见界面。",
+            "reasonEn": "“Inspect the core being identity (name, owner, persona) and manage the assistant list” spans multiple live-state-dependent steps and currently has no single structured Command that can deterministically complete the whole workflow; the Agent opens the exact entry and keeps the remaining interaction visible to the user."
+          }
+        },
+        {
+          "id": "cloud",
+          "titleZh": "注册登录云端记忆，设置主密钥，并同步、备份或恢复认知体记忆",
+          "titleEn": "Sign up, log in, set the master key, and sync, back up, or restore cloud memory",
+          "control": {
+            "kind": "open",
+            "reasonCode": "secretEntry",
+            "reasonZh": "云端记忆使用账户口令与主密钥，属于必须由用户在界面内亲自输入的交互；Agent 会打开 Trinity 场景的云端记忆面板。",
+            "reasonEn": "Cloud memory uses an account passphrase and master key that must be entered by the user in the UI; the Agent opens the Cloud Memory panel in the Trinity scene."
+          }
+        },
+        {
+          "id": "engine",
+          "titleZh": "查看认知引擎运行状态，启用或停用认知框架工具组",
+          "titleEn": "Inspect cognitive-engine status and enable or disable the cognitive framework tool group",
+          "control": {
+            "kind": "open",
+            "reasonCode": "unstructuredInteraction",
+            "reasonZh": "“查看认知引擎运行状态，启用或停用认知框架工具组”由多个实时状态相关步骤组成，目前没有一个能确定完成整个流程的单一结构化 Command；Agent 会打开精确入口，并把后续交互保留在用户可见界面。",
+            "reasonEn": "“Inspect cognitive-engine status and enable or disable the cognitive framework tool group” spans multiple live-state-dependent steps and currently has no single structured Command that can deterministically complete the whole workflow; the Agent opens the exact entry and keeps the remaining interaction visible to the user."
+          }
+        }
+      ],
+      "stepsZh": [
+        "打开 Trinity 场景",
+        "查看认知体状态、记忆与身份",
+        "需要时执行觉醒仪式或配置认知引擎"
+      ],
+      "stepsEn": [
+        "Open the Trinity scene",
+        "Inspect being state, memories, and identity",
+        "Run the awaken ceremony or configure the engine when needed"
+      ],
+      "agentExamplesZh": [
+        "你现在的认知状态怎么样",
+        "回忆一下我们之前关于发布的决定",
+        "把这条经验记住"
+      ],
+      "agentExamplesEn": [
+        "What is your cognitive state right now",
+        "Recall our earlier decision about the release",
+        "Remember this lesson"
+      ],
+      "destination": {
+        "kind": "scene",
+        "sceneId": "trinity"
+      },
+      "operations": [],
+      "options": [],
+      "searchTerms": [
+        "feature.trinity",
+        "认知体（Trinity 认知引擎）",
+        "Cognitive being (Trinity cognitive engine)",
+        "AI 与协作",
+        "AI & collaboration",
+        "认知体",
+        "银月",
+        "Trinity",
+        "认知引擎",
+        "PSI",
+        "情绪",
+        "需求",
+        "记忆",
+        "云端记忆",
+        "觉醒",
+        "cognitive being",
+        "cognitive engine",
+        "emotion",
+        "needs",
+        "memory",
+        "cloud memory",
+        "awaken",
+        "唤醒并命名核心认知体",
+        "查看情绪、需求、焦点与置信度",
+        "检索、新增、强化与遗忘长期记忆",
+        "注册登录并同步云端记忆",
+        "Awaken and name the core being",
+        "Inspect emotion, needs, focus, and confidence",
+        "Search, add, reinforce, and forget long-term memories",
+        "Sign up, log in, and sync cloud memory",
+        "完成觉醒仪式：命名核心认知体、认主并确认人格预设",
+        "Complete the awaken ceremony: name the core being, bind its owner, and confirm the persona preset",
+        "查看实时认知状态：情绪效价、需求强度、注意力焦点与置信度",
+        "Inspect the live cognitive state: emotion valence, need strengths, attention focus, and confidence",
+        "检索、新增、强化与遗忘长期记忆，并翻看记忆时间线",
+        "Search, add, reinforce, and forget long-term memories, and browse the memory timeline",
+        "查看核心认知体身份（名字、认主、人格）并管理助理列表",
+        "Inspect the core being identity (name, owner, persona) and manage the assistant list",
+        "注册登录云端记忆，设置主密钥，并同步、备份或恢复认知体记忆",
+        "Sign up, log in, set the master key, and sync, back up, or restore cloud memory",
+        "查看认知引擎运行状态，启用或停用认知框架工具组",
+        "Inspect cognitive-engine status and enable or disable the cognitive framework tool group",
+        "你现在的认知状态怎么样",
+        "回忆一下我们之前关于发布的决定",
+        "把这条经验记住",
+        "What is your cognitive state right now",
+        "Recall our earlier decision about the release",
+        "Remember this lesson"
+      ],
+      "docsUrl": "https://playbook.openbitfun.com/capabilities/feature.trinity/"
+    },
+    {
       "id": "setting.application.general",
       "kind": "setting",
       "categoryId": "application",
@@ -27290,6 +27896,108 @@
         "Open Memory settings"
       ],
       "docsUrl": "https://playbook.openbitfun.com/capabilities/setting.ai.memory/"
+    },
+    {
+      "id": "setting.ai.trinity",
+      "kind": "setting",
+      "categoryId": "assistant",
+      "titleZh": "认知引擎",
+      "titleEn": "Cognitive engine",
+      "summaryZh": "配置 Trinity 认知引擎自己使用的模型：API 地址、模型名与 API 密钥，并可测试连接。",
+      "summaryEn": "Configure the model the Trinity cognitive engine uses: API base URL, model name, and API key, with a connection test.",
+      "keywordsZh": [
+        "认知引擎",
+        "Trinity",
+        "API 地址",
+        "模型",
+        "API 密钥",
+        "测试连接"
+      ],
+      "keywordsEn": [
+        "cognitive engine",
+        "Trinity",
+        "API base URL",
+        "model",
+        "API key",
+        "connection test"
+      ],
+      "highlightsZh": [
+        "设置认知引擎的 API 地址与模型",
+        "填写 API 密钥",
+        "保存前测试连接"
+      ],
+      "highlightsEn": [
+        "Set the engine API base URL and model",
+        "Enter the API key",
+        "Test the connection before saving"
+      ],
+      "items": [
+        {
+          "id": "llm",
+          "titleZh": "填写并保存认知引擎的 API 地址、模型与 API 密钥，并测试连接",
+          "titleEn": "Fill in and save the engine API base URL, model, and API key, and test the connection",
+          "control": {
+            "kind": "open",
+            "reasonCode": "secretEntry",
+            "reasonZh": "API 密钥属于必须由用户在界面内亲自输入的凭证；Agent 会打开认知引擎设置页供用户填写。",
+            "reasonEn": "The API key is a credential that must be entered by the user in the UI; the Agent opens the Cognitive Engine settings page."
+          }
+        }
+      ],
+      "stepsZh": [
+        "打开设置",
+        "进入“AI > 认知引擎”",
+        "填写 API 地址、模型与密钥并保存或测试连接"
+      ],
+      "stepsEn": [
+        "Open Settings",
+        "Go to AI > Cognitive engine",
+        "Fill in the API base URL, model, and key, then save or test the connection"
+      ],
+      "agentExamplesZh": [
+        "打开认知引擎设置",
+        "配置认知引擎使用的模型"
+      ],
+      "agentExamplesEn": [
+        "Open the cognitive engine settings",
+        "Configure the model the cognitive engine uses"
+      ],
+      "destination": {
+        "kind": "settings",
+        "pageId": "ai.trinity"
+      },
+      "operations": [],
+      "options": [],
+      "searchTerms": [
+        "setting.ai.trinity",
+        "认知引擎",
+        "Cognitive engine",
+        "AI 与协作",
+        "AI & collaboration",
+        "Trinity",
+        "API 地址",
+        "模型",
+        "API 密钥",
+        "测试连接",
+        "cognitive engine",
+        "API base URL",
+        "model",
+        "API key",
+        "connection test",
+        "设置认知引擎的 API 地址与模型",
+        "填写 API 密钥",
+        "保存前测试连接",
+        "Set the engine API base URL and model",
+        "Enter the API key",
+        "Test the connection before saving",
+        "填写并保存认知引擎的 API 地址、模型与 API 密钥，并测试连接",
+        "Fill in and save the engine API base URL, model, and API key, and test the connection",
+        "打开认知引擎设置",
+        "配置认知引擎使用的模型",
+        "Open the cognitive engine settings",
+        "Configure the model the cognitive engine uses"
+      ],
+      "docsUrl": "https://playbook.openbitfun.com/capabilities/setting.ai.trinity/"
     },
     {
       "id": "setting.workspace.session",

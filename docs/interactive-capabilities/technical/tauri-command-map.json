@@ -1,11 +1,11 @@
 {
   "schemaVersion": 2,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
-  "catalogDigest": "896281a3cd5cac2b50ec607988e04624224444911ddb2d58ba59a5d7d06493c5",
-  "commandCount": 643,
+  "catalogDigest": "5e40101b299304bdbadfc3c72701397320fa212fe65e80b772e0b1851a557c7b",
+  "commandCount": 671,
   "coverage": {
-    "commandCount": 643,
-    "documentedCommandCount": 607,
+    "commandCount": 671,
+    "documentedCommandCount": 635,
     "implementationCommandCount": 36,
     "implementationDigest": "c9bbc0f2ca3695d8c18cff285386edeba7bcf3b11120adb57509a80b09ee3297"
   },
@@ -1620,6 +1620,22 @@
       "remoteWorkspacePolicy": "LegacyUnaudited"
     },
     {
+      "id": "delete_assistant_being",
+      "moduleId": "being",
+      "capabilityId": "feature.trinity",
+      "capabilityIds": [
+        "feature.trinity"
+      ],
+      "documentedItemIds": [
+        "feature.trinity:being"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::being_api::delete_assistant_being",
+      "sourceFile": "src/apps/desktop/src/api/being_api.rs",
+      "signature": "fn delete_assistant_being(request: DeleteAssistantBeingRequest) -> Result<(), String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
       "id": "delete_assistant_workspace",
       "moduleId": "commands",
       "capabilityId": "feature.personal-assistants",
@@ -2179,6 +2195,22 @@
       "remoteWorkspacePolicy": "RemoteUnsupported"
     },
     {
+      "id": "ensure_cognitive_being_assistant",
+      "moduleId": "commands",
+      "capabilityId": "feature.trinity",
+      "capabilityIds": [
+        "feature.trinity"
+      ],
+      "documentedItemIds": [
+        "feature.trinity:being"
+      ],
+      "visibility": "documented",
+      "rustPath": "ensure_cognitive_being_assistant",
+      "sourceFile": "src/apps/desktop/src/api/commands.rs",
+      "signature": "fn ensure_cognitive_being_assistant( state: State<'_, AppState>, app: tauri::AppHandle, _request: EnsureCognitiveBeingAssistantRequest, ) -> Result<WorkspaceInfoDto, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
       "id": "ensure_coordinator_session",
       "moduleId": "agentic",
       "capabilityId": "feature.ai-assistant",
@@ -2691,6 +2723,22 @@
       "remoteWorkspacePolicy": "LocalOnly"
     },
     {
+      "id": "get_cognitive_framework_info",
+      "moduleId": "being",
+      "capabilityId": "feature.trinity",
+      "capabilityIds": [
+        "feature.trinity"
+      ],
+      "documentedItemIds": [
+        "feature.trinity:engine"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::being_api::get_cognitive_framework_info",
+      "sourceFile": "src/apps/desktop/src/api/being_api.rs",
+      "signature": "fn get_cognitive_framework_info() -> Result<CognitiveFrameworkInfo, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
       "id": "get_config",
       "moduleId": "config",
       "capabilityId": "setting.application.general",
@@ -2717,6 +2765,22 @@
       "sourceFile": "src/apps/desktop/src/api/config_api.rs",
       "signature": "fn get_configs( state: State<'_, AppState>, startup_trace: State<'_, DesktopStartupTrace>, request: GetConfigsRequest, ) -> Result<BTreeMap<String, Value>, String>",
       "remoteWorkspacePolicy": "LegacyUnaudited"
+    },
+    {
+      "id": "get_core_being",
+      "moduleId": "being",
+      "capabilityId": "feature.trinity",
+      "capabilityIds": [
+        "feature.trinity"
+      ],
+      "documentedItemIds": [
+        "feature.trinity:being"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::being_api::get_core_being",
+      "sourceFile": "src/apps/desktop/src/api/being_api.rs",
+      "signature": "fn get_core_being() -> Result<CoreBeingInfo, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
       "id": "get_current_workspace",
@@ -4764,6 +4828,22 @@
       "sourceFile": "src/apps/desktop/src/api/agentic_api.rs",
       "signature": "fn list_background_command_activities( request: ListBackgroundCommandActivitiesRequest, ) -> Result<ListBackgroundCommandOutputResponse, String>",
       "remoteWorkspacePolicy": "LegacyUnaudited"
+    },
+    {
+      "id": "list_beings",
+      "moduleId": "being",
+      "capabilityId": "feature.trinity",
+      "capabilityIds": [
+        "feature.trinity"
+      ],
+      "documentedItemIds": [
+        "feature.trinity:being"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::being_api::list_beings",
+      "sourceFile": "src/apps/desktop/src/api/being_api.rs",
+      "signature": "fn list_beings() -> Result<Vec<BeingSummary>, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
       "id": "list_cron_jobs",
@@ -9835,6 +9915,374 @@
       "rustPath": "api::announcement_api::trigger_announcement",
       "sourceFile": "src/apps/desktop/src/api/announcement_api.rs",
       "signature": "fn trigger_announcement( state: State<'_, AppState>, request: AnnouncementIdRequest, ) -> Result<Option<AnnouncementCard>, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "trinity_awaken",
+      "moduleId": "trinity",
+      "capabilityId": "feature.trinity",
+      "capabilityIds": [
+        "feature.trinity"
+      ],
+      "documentedItemIds": [
+        "feature.trinity:awaken"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::trinity_api::trinity_awaken",
+      "sourceFile": "src/apps/desktop/src/api/trinity_api.rs",
+      "signature": "fn trinity_awaken( _state: State<'_, crate::api::app_state::AppState>, request: Option<TrinityRequest>, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "trinity_cloud_backup",
+      "moduleId": "trinity",
+      "capabilityId": "feature.trinity",
+      "capabilityIds": [
+        "feature.trinity"
+      ],
+      "documentedItemIds": [
+        "feature.trinity:cloud"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::trinity_api::trinity_cloud_backup",
+      "sourceFile": "src/apps/desktop/src/api/trinity_api.rs",
+      "signature": "fn trinity_cloud_backup( _state: State<'_, crate::api::app_state::AppState>, request: Option<TrinityRequest>, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "trinity_cloud_login",
+      "moduleId": "trinity",
+      "capabilityId": "feature.trinity",
+      "capabilityIds": [
+        "feature.trinity"
+      ],
+      "documentedItemIds": [
+        "feature.trinity:cloud"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::trinity_api::trinity_cloud_login",
+      "sourceFile": "src/apps/desktop/src/api/trinity_api.rs",
+      "signature": "fn trinity_cloud_login( _state: State<'_, crate::api::app_state::AppState>, request: Option<TrinityRequest>, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "trinity_cloud_restore",
+      "moduleId": "trinity",
+      "capabilityId": "feature.trinity",
+      "capabilityIds": [
+        "feature.trinity"
+      ],
+      "documentedItemIds": [
+        "feature.trinity:cloud"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::trinity_api::trinity_cloud_restore",
+      "sourceFile": "src/apps/desktop/src/api/trinity_api.rs",
+      "signature": "fn trinity_cloud_restore( _state: State<'_, crate::api::app_state::AppState>, request: Option<TrinityRequest>, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "trinity_cloud_setup_key",
+      "moduleId": "trinity",
+      "capabilityId": "feature.trinity",
+      "capabilityIds": [
+        "feature.trinity"
+      ],
+      "documentedItemIds": [
+        "feature.trinity:cloud"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::trinity_api::trinity_cloud_setup_key",
+      "sourceFile": "src/apps/desktop/src/api/trinity_api.rs",
+      "signature": "fn trinity_cloud_setup_key( _state: State<'_, crate::api::app_state::AppState>, request: Option<TrinityRequest>, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "trinity_cloud_signup",
+      "moduleId": "trinity",
+      "capabilityId": "feature.trinity",
+      "capabilityIds": [
+        "feature.trinity"
+      ],
+      "documentedItemIds": [
+        "feature.trinity:cloud"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::trinity_api::trinity_cloud_signup",
+      "sourceFile": "src/apps/desktop/src/api/trinity_api.rs",
+      "signature": "fn trinity_cloud_signup( _state: State<'_, crate::api::app_state::AppState>, request: Option<TrinityRequest>, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "trinity_cloud_status",
+      "moduleId": "trinity",
+      "capabilityId": "feature.trinity",
+      "capabilityIds": [
+        "feature.trinity"
+      ],
+      "documentedItemIds": [
+        "feature.trinity:cloud"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::trinity_api::trinity_cloud_status",
+      "sourceFile": "src/apps/desktop/src/api/trinity_api.rs",
+      "signature": "fn trinity_cloud_status( _state: State<'_, crate::api::app_state::AppState>, request: Option<TrinityRequest>, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "trinity_cloud_sync_now",
+      "moduleId": "trinity",
+      "capabilityId": "feature.trinity",
+      "capabilityIds": [
+        "feature.trinity"
+      ],
+      "documentedItemIds": [
+        "feature.trinity:cloud"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::trinity_api::trinity_cloud_sync_now",
+      "sourceFile": "src/apps/desktop/src/api/trinity_api.rs",
+      "signature": "fn trinity_cloud_sync_now( _state: State<'_, crate::api::app_state::AppState>, request: Option<TrinityRequest>, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "trinity_cognition_history",
+      "moduleId": "trinity",
+      "capabilityId": "feature.trinity",
+      "capabilityIds": [
+        "feature.trinity"
+      ],
+      "documentedItemIds": [
+        "feature.trinity:state"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::trinity_api::trinity_cognition_history",
+      "sourceFile": "src/apps/desktop/src/api/trinity_api.rs",
+      "signature": "fn trinity_cognition_history( _state: State<'_, crate::api::app_state::AppState>, request: Option<TrinityRequest>, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "trinity_express",
+      "moduleId": "trinity",
+      "capabilityId": "feature.trinity",
+      "capabilityIds": [
+        "feature.trinity"
+      ],
+      "documentedItemIds": [
+        "feature.trinity:state"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::trinity_api::trinity_express",
+      "sourceFile": "src/apps/desktop/src/api/trinity_api.rs",
+      "signature": "fn trinity_express( _state: State<'_, crate::api::app_state::AppState>, request: Option<TrinityRequest>, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "trinity_forget_memory",
+      "moduleId": "trinity",
+      "capabilityId": "feature.trinity",
+      "capabilityIds": [
+        "feature.trinity"
+      ],
+      "documentedItemIds": [
+        "feature.trinity:memory"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::trinity_api::trinity_forget_memory",
+      "sourceFile": "src/apps/desktop/src/api/trinity_api.rs",
+      "signature": "fn trinity_forget_memory( _state: State<'_, crate::api::app_state::AppState>, request: Option<TrinityRequest>, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "trinity_get_cognitive_state",
+      "moduleId": "trinity",
+      "capabilityId": "feature.trinity",
+      "capabilityIds": [
+        "feature.trinity"
+      ],
+      "documentedItemIds": [
+        "feature.trinity:state"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::trinity_api::trinity_get_cognitive_state",
+      "sourceFile": "src/apps/desktop/src/api/trinity_api.rs",
+      "signature": "fn trinity_get_cognitive_state( _state: State<'_, crate::api::app_state::AppState>, request: Option<TrinityRequest>, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "trinity_get_status",
+      "moduleId": "trinity",
+      "capabilityId": "feature.trinity",
+      "capabilityIds": [
+        "feature.trinity"
+      ],
+      "documentedItemIds": [
+        "feature.trinity:engine"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::trinity_api::trinity_get_status",
+      "sourceFile": "src/apps/desktop/src/api/trinity_api.rs",
+      "signature": "fn trinity_get_status( _state: State<'_, crate::api::app_state::AppState>, request: Option<TrinityRequest>, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "trinity_llm_get_config",
+      "moduleId": "trinity",
+      "capabilityId": "setting.ai.trinity",
+      "capabilityIds": [
+        "setting.ai.trinity"
+      ],
+      "documentedItemIds": [
+        "setting.ai.trinity:llm"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::trinity_api::trinity_llm_get_config",
+      "sourceFile": "src/apps/desktop/src/api/trinity_api.rs",
+      "signature": "fn trinity_llm_get_config( _state: State<'_, crate::api::app_state::AppState>, request: Option<TrinityRequest>, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "trinity_llm_set_config",
+      "moduleId": "trinity",
+      "capabilityId": "setting.ai.trinity",
+      "capabilityIds": [
+        "setting.ai.trinity"
+      ],
+      "documentedItemIds": [
+        "setting.ai.trinity:llm"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::trinity_api::trinity_llm_set_config",
+      "sourceFile": "src/apps/desktop/src/api/trinity_api.rs",
+      "signature": "fn trinity_llm_set_config( _state: State<'_, crate::api::app_state::AppState>, request: Option<TrinityRequest>, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "trinity_llm_test_connection",
+      "moduleId": "trinity",
+      "capabilityId": "setting.ai.trinity",
+      "capabilityIds": [
+        "setting.ai.trinity"
+      ],
+      "documentedItemIds": [
+        "setting.ai.trinity:llm"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::trinity_api::trinity_llm_test_connection",
+      "sourceFile": "src/apps/desktop/src/api/trinity_api.rs",
+      "signature": "fn trinity_llm_test_connection( _state: State<'_, crate::api::app_state::AppState>, request: Option<TrinityRequest>, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "trinity_memorize",
+      "moduleId": "trinity",
+      "capabilityId": "feature.trinity",
+      "capabilityIds": [
+        "feature.trinity"
+      ],
+      "documentedItemIds": [
+        "feature.trinity:memory"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::trinity_api::trinity_memorize",
+      "sourceFile": "src/apps/desktop/src/api/trinity_api.rs",
+      "signature": "fn trinity_memorize( _state: State<'_, crate::api::app_state::AppState>, request: Option<TrinityRequest>, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "trinity_memory_stats",
+      "moduleId": "trinity",
+      "capabilityId": "feature.trinity",
+      "capabilityIds": [
+        "feature.trinity"
+      ],
+      "documentedItemIds": [
+        "feature.trinity:memory"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::trinity_api::trinity_memory_stats",
+      "sourceFile": "src/apps/desktop/src/api/trinity_api.rs",
+      "signature": "fn trinity_memory_stats( _state: State<'_, crate::api::app_state::AppState>, request: Option<TrinityRequest>, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "trinity_memory_timeline",
+      "moduleId": "trinity",
+      "capabilityId": "feature.trinity",
+      "capabilityIds": [
+        "feature.trinity"
+      ],
+      "documentedItemIds": [
+        "feature.trinity:memory"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::trinity_api::trinity_memory_timeline",
+      "sourceFile": "src/apps/desktop/src/api/trinity_api.rs",
+      "signature": "fn trinity_memory_timeline( _state: State<'_, crate::api::app_state::AppState>, request: Option<TrinityRequest>, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "trinity_recall_memory",
+      "moduleId": "trinity",
+      "capabilityId": "feature.trinity",
+      "capabilityIds": [
+        "feature.trinity"
+      ],
+      "documentedItemIds": [
+        "feature.trinity:memory"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::trinity_api::trinity_recall_memory",
+      "sourceFile": "src/apps/desktop/src/api/trinity_api.rs",
+      "signature": "fn trinity_recall_memory( _state: State<'_, crate::api::app_state::AppState>, request: Option<TrinityRequest>, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "trinity_reinforce_memory",
+      "moduleId": "trinity",
+      "capabilityId": "feature.trinity",
+      "capabilityIds": [
+        "feature.trinity"
+      ],
+      "documentedItemIds": [
+        "feature.trinity:memory"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::trinity_api::trinity_reinforce_memory",
+      "sourceFile": "src/apps/desktop/src/api/trinity_api.rs",
+      "signature": "fn trinity_reinforce_memory( _state: State<'_, crate::api::app_state::AppState>, request: Option<TrinityRequest>, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "trinity_self_perception",
+      "moduleId": "trinity",
+      "capabilityId": "feature.trinity",
+      "capabilityIds": [
+        "feature.trinity"
+      ],
+      "documentedItemIds": [
+        "feature.trinity:state"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::trinity_api::trinity_self_perception",
+      "sourceFile": "src/apps/desktop/src/api/trinity_api.rs",
+      "signature": "fn trinity_self_perception( _state: State<'_, crate::api::app_state::AppState>, request: Option<TrinityRequest>, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "trinity_shutdown",
+      "moduleId": "trinity",
+      "capabilityId": "feature.trinity",
+      "capabilityIds": [
+        "feature.trinity"
+      ],
+      "documentedItemIds": [
+        "feature.trinity:engine"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::trinity_api::trinity_shutdown",
+      "sourceFile": "src/apps/desktop/src/api/trinity_api.rs",
+      "signature": "fn trinity_shutdown( _state: State<'_, crate::api::app_state::AppState>, request: Option<TrinityRequest>, ) -> Result<Value, String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
