@@ -212,6 +212,8 @@
       "permissionInherited": "Tool-dependent",
       "permissionInheritedHint": "A skill's actual access is determined by the tools it invokes and their approval rules.",
       "noDescription": "No description provided",
+      "cognitiveFramework": "Cognitive framework",
+      "cognitiveFrameworkHint": "System-embedded cognitive capabilities: PSI state, MindGraph long-term memory, and emotional expression. Turning it off removes this tool group from the assistant.",
       "openCapabilityDetail": "Open details for {{name}}",
       "toggleCapability": "Toggle {{name}}",
       "toggleServerGroup": "Expand or collapse {{name}}",

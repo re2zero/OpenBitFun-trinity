@@ -43,7 +43,10 @@ import { useI18n } from '@/infrastructure/i18n';
 import { notificationService } from '@/shared/notification-system';
 import type { ToolInfo } from '@/shared/types/agent-api';
 import { createLogger } from '@/shared/utils/logger';
-import { isUserSelectableToolName } from '@/shared/utils/toolVisibility';
+import {
+  COGNITIVE_FRAMEWORK_TOOL_ID,
+  isUserSelectableToolName,
+} from '@/shared/utils/toolVisibility';
 import { useNurseryStore } from '../nurseryStore';
 import {
   differsFromProductDefault,
@@ -382,8 +385,23 @@ const AssistantDefaultsPage: React.FC = () => {
   }, [assistantModeConfig, getMcpStatusLabel, mcpServers, t]);
 
   const builtinRows = useMemo(
-    () => builtinTools.map((tool) => buildToolRow(tool, false)),
-    [buildToolRow, builtinTools],
+    () => {
+      // The cognitive framework is one group id, not five loose tools: render
+      // it as a single row so it stays visible and switchable.
+      const cognitiveFrameworkTool: ToolInfo = {
+        name: COGNITIVE_FRAMEWORK_TOOL_ID,
+        description: t('nursery.template.cognitiveFrameworkHint'),
+        input_schema: {},
+        is_readonly: true,
+        is_concurrency_safe: false,
+      };
+      const cognitiveFrameworkRow = {
+        ...buildToolRow(cognitiveFrameworkTool, false),
+        name: t('nursery.template.cognitiveFramework'),
+      };
+      return [cognitiveFrameworkRow, ...builtinTools.map((tool) => buildToolRow(tool, false))];
+    },
+    [buildToolRow, builtinTools, t],
   );
   const mcpRows = useMemo(
     () => mcpTools.map((tool) => buildToolRow(tool, true)),

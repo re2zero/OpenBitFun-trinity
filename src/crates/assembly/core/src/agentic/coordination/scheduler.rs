@@ -2637,6 +2637,9 @@ fn agent_dialog_turn_prepended_messages(
             let kind = match reminder.kind.as_str() {
                 "session_message_request" => InternalReminderKind::SessionMessageRequest,
                 "scheduled_job" => InternalReminderKind::ScheduledJob,
+                // Trinity cognitive framework: the desktop host prepends the
+                // live PSI state at turn start (see its agentic_api).
+                "trinity_cognitive" => InternalReminderKind::Generic,
                 other => {
                     return Err(PortError::new(
                         PortErrorKind::InvalidRequest,
@@ -4829,6 +4832,21 @@ mod tests {
         assert_eq!(
             messages[0].internal_reminder_kind(),
             Some(InternalReminderKind::ScheduledJob)
+        );
+    }
+
+    #[test]
+    fn agent_dialog_turn_prepended_reminders_preserve_cognitive_state_kind() {
+        let messages = agent_dialog_turn_prepended_messages(&[AgentDialogPrependedReminder {
+            kind: "trinity_cognitive".to_string(),
+            text: "cognitive state".to_string(),
+        }])
+        .expect("cognitive state reminder should be supported");
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(
+            messages[0].internal_reminder_kind(),
+            Some(InternalReminderKind::Generic)
         );
     }
 

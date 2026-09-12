@@ -2289,7 +2289,11 @@ pub async fn start_dialog_turn(
     runtime: State<'_, DesktopRuntimeContext>,
     request: StartDialogTurnRequest,
 ) -> Result<StartDialogTurnResponse, String> {
-    let runtime_request = desktop_dialog_turn_request(request)?;
+    let mut runtime_request = desktop_dialog_turn_request(request)?;
+
+    // Trinity cognitive framework: prepend the live PSI state so every agent
+    // sees it at turn start, not only the cognitive-being assistant.
+    inject_cognitive_reminder(&mut runtime_request).await;
 
     runtime
         .agent_runtime()
@@ -2301,6 +2305,39 @@ pub async fn start_dialog_turn(
         success: true,
         message: "Dialog turn started".to_string(),
     })
+}
+
+/// Prepend the live Trinity cognitive state as a turn-start reminder.
+///
+/// Numbers are rendered with one decimal place. Failures stay silent: a missing
+/// daemon must never block a dialog turn.
+async fn inject_cognitive_reminder(request: &mut AgentDialogTurnRequest) {
+    use crate::trinity::numeric::to_json_one_decimal;
+    use openbitfun_runtime_ports::AgentDialogPrependedReminder;
+
+    let backend = crate::trinity::backend::TrinityBackend::global();
+    let state = match backend
+        .call("get_cognitive_state", serde_json::json!({}))
+        .await
+    {
+        Ok(state) => state,
+        Err(_) => return,
+    };
+    let express = backend
+        .call("express", serde_json::json!({}))
+        .await
+        .unwrap_or(serde_json::Value::Null);
+
+    request
+        .prepended_reminders
+        .push(AgentDialogPrependedReminder {
+            kind: "trinity_cognitive".to_string(),
+            text: format!(
+                "[Trinity cognitive state] {}\n{}",
+                to_json_one_decimal(&state),
+                to_json_one_decimal(&express),
+            ),
+        });
 }
 
 fn desktop_dialog_turn_request(

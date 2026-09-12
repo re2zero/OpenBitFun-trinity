@@ -14,6 +14,7 @@
 
 pub(crate) mod backend;
 pub(crate) mod injector;
+pub(crate) mod numeric;
 pub(crate) mod tools;
 
 /// Bring up the Trinity cognitive engine and register its injector/tools.

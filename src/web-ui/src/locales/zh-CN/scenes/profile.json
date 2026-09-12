@@ -212,6 +212,8 @@
       "permissionInherited": "由工具决定",
       "permissionInheritedHint": "技能实际能做什么，取决于它调用的工具及对应的审批规则。",
       "noDescription": "暂未提供说明",
+      "cognitiveFramework": "认知框架",
+      "cognitiveFrameworkHint": "系统内嵌认知能力：PSI 认知状态、MindGraph 长期记忆与情绪表达。关闭后该助理不再佩戴这组工具。",
       "openCapabilityDetail": "查看 {{name}} 的详情",
       "toggleCapability": "切换 {{name}}",
       "toggleServerGroup": "展开或收起 {{name}}",
