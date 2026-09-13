@@ -50,7 +50,7 @@
   &__daemon-badge {
     flex-shrink: 0;
     padding: 2px 10px;
-    border-radius: var(--openbitfun-radius-full);
+    border-radius: var(--openbitfun-radius-pill);
     background: var(--openbitfun-color-surface-raised);
     border: 1px solid var(--openbitfun-color-border-default);
     color: var(--openbitfun-color-content-muted);
@@ -64,21 +64,21 @@
     }
 
     &[data-openbitfun-state='offline'] {
-      color: var(--openbitfun-color-text-danger);
+      color: var(--openbitfun-color-status-danger-content);
       border-color: currentcolor;
     }
   }
 
   &__subtitle {
     margin: 0;
-    color: var(--openbitfun-color-text-muted);
+    color: var(--openbitfun-color-content-muted);
     font-size: var(--openbitfun-font-size-sm);
   }
 
   &__offline {
     p {
       margin: 0;
-      color: var(--openbitfun-color-text-danger);
+      color: var(--openbitfun-color-status-danger-content);
     }
   }
 
@@ -91,7 +91,7 @@
   &__awaken {
     p {
       margin: 0;
-      color: var(--openbitfun-color-text-muted);
+      color: var(--openbitfun-color-content-muted);
     }
   }
 
@@ -99,13 +99,13 @@
 
   &__identity-description {
     margin: 0;
-    color: var(--openbitfun-color-text-muted);
+    color: var(--openbitfun-color-content-muted);
     font-size: var(--openbitfun-font-size-sm);
   }
 
   &__identity-error {
     margin: var(--openbitfun-space-2) 0 0;
-    color: var(--openbitfun-color-text-danger);
+    color: var(--openbitfun-color-status-danger-content);
     font-size: var(--openbitfun-font-size-sm);
   }
 
@@ -116,7 +116,7 @@
     flex-wrap: wrap;
     gap: var(--openbitfun-space-1) var(--openbitfun-space-4);
     font-size: var(--openbitfun-font-size-sm);
-    color: var(--openbitfun-color-text-muted);
+    color: var(--openbitfun-color-content-muted);
   }
 
   // ── Emotion hero ────────────────────────────
@@ -163,7 +163,7 @@
 
   &__hero-focus,
   &__hero-meta {
-    color: var(--openbitfun-color-text-muted);
+    color: var(--openbitfun-color-content-muted);
     font-size: var(--openbitfun-font-size-sm);
     font-variant-numeric: tabular-nums;
   }
@@ -193,13 +193,13 @@
   &__need-label {
     width: 44px;
     flex: 0 0 auto;
-    color: var(--openbitfun-color-text-muted);
+    color: var(--openbitfun-color-content-muted);
   }
 
   &__need-track {
     flex: 1 1 auto;
     height: 6px;
-    border-radius: var(--openbitfun-radius-full);
+    border-radius: var(--openbitfun-radius-pill);
     background: var(--openbitfun-color-surface-raised);
     overflow: hidden;
   }
@@ -207,12 +207,17 @@
   &__need-fill {
     display: block;
     height: 100%;
-    border-radius: var(--openbitfun-radius-full);
-    background: var(--openbitfun-color-accent);
+    border-radius: var(--openbitfun-radius-pill);
+    background: var(--openbitfun-color-accent-default);
     transition: width var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard);
 
-    &[data-openbitfun-attention='low'] {
+    // One hue per need state, shared with the sidebar being panel.
+    &[data-openbitfun-need-state='low'] {
       background: var(--openbitfun-color-status-warning-content);
+    }
+
+    &[data-openbitfun-need-state='high'] {
+      background: var(--openbitfun-color-status-success-content);
     }
   }
 
@@ -220,7 +225,7 @@
     width: 44px;
     flex: 0 0 auto;
     text-align: right;
-    color: var(--openbitfun-color-text-muted);
+    color: var(--openbitfun-color-content-muted);
     font-variant-numeric: tabular-nums;
   }
 
@@ -240,13 +245,13 @@
     display: block;
     width: 100%;
     height: 32px;
-    color: var(--openbitfun-color-accent);
+    color: var(--openbitfun-color-accent-default);
   }
 
   &__memory-scale {
     margin-top: var(--openbitfun-space-3);
     font-size: var(--openbitfun-font-size-sm);
-    color: var(--openbitfun-color-text-muted);
+    color: var(--openbitfun-color-content-muted);
   }
 
   // ── Cognitive framework ─────────────────────
@@ -256,7 +261,7 @@
     align-items: center;
     gap: var(--openbitfun-space-2);
     font-size: var(--openbitfun-font-size-sm);
-    color: var(--openbitfun-color-text-muted);
+    color: var(--openbitfun-color-content-muted);
   }
 
   &__framework-id {
@@ -292,7 +297,7 @@
 
   &__framework-tool-desc {
     font-size: var(--openbitfun-font-size-sm);
-    color: var(--openbitfun-color-text-muted);
+    color: var(--openbitfun-color-content-muted);
   }
 
   &__framework-being {
@@ -320,7 +325,7 @@
     }
 
     dt {
-      color: var(--openbitfun-color-text-muted);
+      color: var(--openbitfun-color-content-muted);
     }
 
     dd {
@@ -332,7 +337,7 @@
   &__framework-soul {
     margin: var(--openbitfun-space-3) 0 0;
     font-size: var(--openbitfun-font-size-sm);
-    color: var(--openbitfun-color-text-muted);
+    color: var(--openbitfun-color-content-muted);
     white-space: pre-wrap;
   }
 
@@ -340,13 +345,13 @@
 
   &__cloud-desc {
     margin: 0 0 var(--openbitfun-space-3);
-    color: var(--openbitfun-color-text-muted);
+    color: var(--openbitfun-color-content-muted);
     font-size: var(--openbitfun-font-size-sm);
   }
 
   &__cloud-unavailable {
     margin: 0;
-    color: var(--openbitfun-color-text-muted);
+    color: var(--openbitfun-color-content-muted);
     font-size: var(--openbitfun-font-size-sm);
   }
 
@@ -363,7 +368,7 @@
     font-size: var(--openbitfun-font-size-sm);
 
     > span {
-      color: var(--openbitfun-color-text-muted);
+      color: var(--openbitfun-color-content-muted);
     }
   }
 
@@ -384,7 +389,7 @@
     flex-wrap: wrap;
     gap: var(--openbitfun-space-1) var(--openbitfun-space-3);
     font-size: var(--openbitfun-font-size-sm);
-    color: var(--openbitfun-color-text-muted);
+    color: var(--openbitfun-color-content-muted);
 
     [data-openbitfun-state='online'] {
       color: var(--openbitfun-color-status-success-content);
@@ -404,7 +409,7 @@
 
   &__cloud-message {
     margin: var(--openbitfun-space-2) 0 0;
-    color: var(--openbitfun-color-text-muted);
+    color: var(--openbitfun-color-content-muted);
     font-size: var(--openbitfun-font-size-sm);
   }
 
@@ -453,7 +458,7 @@
     margin: 0 0 var(--openbitfun-space-2);
     font-size: var(--openbitfun-font-size-xs);
     font-weight: 600;
-    color: var(--openbitfun-color-text-muted);
+    color: var(--openbitfun-color-content-muted);
   }
 
   &__memory-list {
@@ -485,11 +490,11 @@
   &__memory-layer {
     flex: 0 0 auto;
     padding: 1px 8px;
-    border-radius: var(--openbitfun-radius-full);
-    background: var(--openbitfun-color-surface);
+    border-radius: var(--openbitfun-radius-pill);
+    background: var(--openbitfun-color-surface-subtle);
     border: 1px solid var(--openbitfun-color-border-default);
     font-size: var(--openbitfun-font-size-xs);
-    color: var(--openbitfun-color-text-muted);
+    color: var(--openbitfun-color-content-muted);
   }
 
   &__memory-layer[data-openbitfun-layer='interaction'] {
@@ -506,14 +511,14 @@
 
   &__memory-strength {
     flex: 0 0 auto;
-    color: var(--openbitfun-color-text-muted);
+    color: var(--openbitfun-color-content-muted);
     font-size: var(--openbitfun-font-size-xs);
     font-variant-numeric: tabular-nums;
   }
 
   &__memory-time {
     flex: 0 0 auto;
-    color: var(--openbitfun-color-text-muted);
+    color: var(--openbitfun-color-content-muted);
     font-size: var(--openbitfun-font-size-xs);
     font-variant-numeric: tabular-nums;
   }
@@ -537,18 +542,18 @@
     border: none;
     border-radius: var(--openbitfun-radius-sm);
     background: transparent;
-    color: var(--openbitfun-color-text-muted);
+    color: var(--openbitfun-color-content-muted);
     cursor: pointer;
 
     &:hover,
     &:focus-visible {
-      background: var(--openbitfun-color-surface);
+      background: var(--openbitfun-color-surface-subtle);
       color: var(--openbitfun-color-content-primary);
     }
 
     &.is-armed {
-      color: var(--openbitfun-color-text-danger);
-      background: var(--openbitfun-color-surface);
+      color: var(--openbitfun-color-status-danger-content);
+      background: var(--openbitfun-color-surface-subtle);
     }
   }
 
@@ -561,13 +566,13 @@
   &__timeline-end {
     margin: var(--openbitfun-space-2) 0 0;
     text-align: center;
-    color: var(--openbitfun-color-text-muted);
+    color: var(--openbitfun-color-content-muted);
     font-size: var(--openbitfun-font-size-xs);
   }
 
   &__empty {
     margin: 0;
-    color: var(--openbitfun-color-text-muted);
+    color: var(--openbitfun-color-content-muted);
     font-size: var(--openbitfun-font-size-sm);
   }
 }

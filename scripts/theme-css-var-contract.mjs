@@ -211,6 +211,11 @@ export const COLOR_DOMAIN_RULES = [
     label: 'Product identity effects',
     pathParts: ['app/components/SplashScreen'],
   },
+  {
+    key: 'cognitiveEmotion',
+    label: 'Cognitive emotion hues',
+    pathParts: ['app/styles/cognitive-emotion'],
+  },
 ];
 
 export const COLOR_DOMAIN_KEYS = [
@@ -313,6 +318,12 @@ export const COLOR_DOMAIN_CONTRACTS = [
     owner: 'src/web-ui/src/app/components/SplashScreen',
     reason: 'The product splash owns identity-specific decorative gradients that remain separate from interactive UI state semantics.',
     mergePolicy: 'Keep only brand identity effects here and promote any reusable interface state to a canonical semantic theme token.',
+  },
+  {
+    key: 'cognitiveEmotion',
+    owner: 'src/web-ui/src/app/styles/cognitive-emotion.scss',
+    reason: 'The cognitive engine reports seven discrete emotional valences, and every cognitive surface (sidebar being panel and full being console) must paint the same valence with the same hue so one being reads consistently across the app; no semantic or component token carries a per-valence palette.',
+    mergePolicy: 'Keep exactly the seven valence hues in the one shared mixin, and promote them to canonical theme tokens if the valence palette ever becomes themeable.',
   },
 ];
 

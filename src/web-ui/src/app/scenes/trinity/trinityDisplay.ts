@@ -76,6 +76,22 @@ export type NeedKey = (typeof NEED_KEYS)[number];
 /** Needs at or below this level are highlighted as unmet in the UI. */
 export const NEED_ATTENTION_THRESHOLD = 0.4;
 
+/** Needs at or above this level read as satisfied. */
+export const NEED_SATISFIED_THRESHOLD = 0.8;
+
+/**
+ * Visual state of one need bar. `low` asks for attention, `high` marks a
+ * satisfied drive, `normal` is the healthy middle band; each state has its own
+ * color in the need-bar styles shared by the sidebar panel and the full scene.
+ */
+export type NeedState = 'low' | 'normal' | 'high';
+
+export function needState(value: number): NeedState {
+  if (value <= NEED_ATTENTION_THRESHOLD) return 'low';
+  if (value >= NEED_SATISFIED_THRESHOLD) return 'high';
+  return 'normal';
+}
+
 /** Canonical percentage rendering — always one decimal place (99.4%). */
 export function formatPercent(value: number): string {
   return `${(value * 100).toFixed(1)}%`;

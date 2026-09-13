@@ -5,7 +5,7 @@
 
   &__description {
     margin: 0;
-    color: var(--openbitfun-color-text-muted);
+    color: var(--openbitfun-color-content-muted);
     font-size: var(--openbitfun-font-size-sm);
   }
 
@@ -16,13 +16,13 @@
     font-size: var(--openbitfun-font-size-sm);
 
     span {
-      color: var(--openbitfun-color-text-muted);
+      color: var(--openbitfun-color-content-muted);
     }
   }
 
   &__error {
     margin: 0;
-    color: var(--openbitfun-color-text-danger);
+    color: var(--openbitfun-color-status-danger-content);
     font-size: var(--openbitfun-font-size-sm);
     word-break: break-word;
   }

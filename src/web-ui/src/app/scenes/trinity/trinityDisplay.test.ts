@@ -1,6 +1,28 @@
 import { describe, expect, it } from 'vitest';
 
-import { EMOTION_VALENCES, formatPercent, valenceScore } from './trinityDisplay';
+import {
+  EMOTION_VALENCES,
+  formatPercent,
+  needState,
+  valenceScore,
+} from './trinityDisplay';
+
+describe('needState', () => {
+  it('flags needs that ask for attention', () => {
+    expect(needState(0)).toBe('low');
+    expect(needState(0.4)).toBe('low');
+  });
+
+  it('marks satisfied drives', () => {
+    expect(needState(0.8)).toBe('high');
+    expect(needState(1)).toBe('high');
+  });
+
+  it('keeps the middle band neutral', () => {
+    expect(needState(0.41)).toBe('normal');
+    expect(needState(0.79)).toBe('normal');
+  });
+});
 
 describe('valenceScore', () => {
   it('mirrors the cognitive engine EmotionalValence::as_f64 scale', () => {

@@ -31,8 +31,8 @@ import {
   focusLabelKey,
   formatMemoryTime,
   formatPercent,
-  NEED_ATTENTION_THRESHOLD,
   NEED_KEYS,
+  needState,
   normalizeMemoryItems,
   personaLabel,
   TrinityMemoryEntry,
@@ -527,7 +527,7 @@ const TrinityScene: React.FC = () => {
                               className="openbitfun-trinity-scene__need-fill"
                               style={{ width: `${value * 100}%` }}
                               data-openbitfun-need={key}
-                              data-openbitfun-attention={value <= NEED_ATTENTION_THRESHOLD ? 'low' : undefined}
+                              data-openbitfun-need-state={needState(value)}
                             />
                           </span>
                           <span className="openbitfun-trinity-scene__need-value">

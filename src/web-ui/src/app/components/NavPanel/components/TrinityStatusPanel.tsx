@@ -23,7 +23,7 @@ import {
   emotionLabelKey,
   focusLabelKey,
   formatPercent,
-  NEED_ATTENTION_THRESHOLD,
+  needState,
   NEED_KEYS,
 } from '@/app/scenes/trinity/trinityDisplay';
 import TrinityAwakenDialog from '@/app/components/TrinityAwakenGate/TrinityAwakenDialog';
@@ -162,7 +162,7 @@ const TrinityStatusPanel: React.FC<TrinityStatusPanelProps> = ({ open, onOpenCha
                         className="openbitfun-nav-panel__trinity-panel-need-fill"
                         style={{ width: `${value * 100}%` }}
                         data-openbitfun-need={key}
-                        data-openbitfun-attention={value <= NEED_ATTENTION_THRESHOLD ? 'low' : undefined}
+                        data-openbitfun-need-state={needState(value)}
                       />
                     </span>
                     <span className="openbitfun-nav-panel__trinity-panel-need-value">

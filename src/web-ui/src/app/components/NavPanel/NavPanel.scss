@@ -2954,7 +2954,7 @@ $_section-header-height: 22px;
 .openbitfun-nav-panel__trinity-panel-phase {
   margin-left: var(--openbitfun-space-2);
   padding: 1px 8px;
-  border-radius: var(--openbitfun-radius-full);
+  border-radius: var(--openbitfun-radius-pill);
   border: 1px solid var(--openbitfun-color-border-default);
   color: var(--openbitfun-color-content-muted);
   font-size: var(--openbitfun-type-overline-sm-font-size);
@@ -3066,7 +3066,7 @@ $_section-header-height: 22px;
 .openbitfun-nav-panel__trinity-panel-need-track {
   flex: 1 1 auto;
   height: 4px;
-  border-radius: var(--openbitfun-radius-full);
+  border-radius: var(--openbitfun-radius-pill);
   background: var(--openbitfun-color-surface-raised);
   overflow: hidden;
 }
@@ -3074,12 +3074,17 @@ $_section-header-height: 22px;
 .openbitfun-nav-panel__trinity-panel-need-fill {
   display: block;
   height: 100%;
-  border-radius: var(--openbitfun-radius-full);
+  border-radius: var(--openbitfun-radius-pill);
   background: var(--openbitfun-color-accent-default);
   transition: width var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard);
 
-  &[data-openbitfun-attention='low'] {
+  // One hue per need state, shared with the full being console.
+  &[data-openbitfun-need-state='low'] {
     background: var(--openbitfun-color-status-warning-content);
+  }
+
+  &[data-openbitfun-need-state='high'] {
+    background: var(--openbitfun-color-status-success-content);
   }
 }
 
