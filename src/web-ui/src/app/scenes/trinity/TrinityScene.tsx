@@ -1,15 +1,16 @@
 /**
  * Cognitive Being scene — full-surface console for the Trinity engine.
  *
- * Phase-gated (see docs/bitfun-trinity-cognitive-ui-design.md):
+ * Phase-gated (see the Trinity repo cognitive UI design doc):
  * - offline: identity header + "engine disconnected" hint only
  * - dormant: awakening card only (opens the shared TrinityAwakenDialog) —
  *   memory and cloud consoles are meaningless before the being exists
  * - awake:   cognitive-state card (emotion hero, need bars at one decimal
- *   place, valence trend sparkline) + cloud-sync card (three-step machine:
- *   signup/login → key ceremony → sync/backup/restore) + memory console
- *   (search, manual add, cursor-paginated full-text timeline with
- *   reinforce/forget management)
+ *   place, valence trend sparkline) + cognitive-framework card (registered
+ *   cognitive tools and the core being from the identity registry) +
+ *   cloud-sync card (three-step machine: signup/login → key ceremony →
+ *   sync/backup/restore) + memory console (search, manual add,
+ *   cursor-paginated full-text timeline with reinforce/forget management)
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
@@ -35,6 +36,7 @@ import {
   normalizeMemoryItems,
   personaLabel,
   TrinityMemoryEntry,
+  valenceScore,
 } from './trinityDisplay';
 import {
   useTrinityStore,
@@ -42,6 +44,7 @@ import {
   useTrinityAutoRefresh,
   TrinityCloudStatus,
 } from './trinityStore';
+import type { CognitiveFrameworkInfo } from '@/infrastructure/api/service-api/TrinityAPI';
 import './TrinityScene.scss';
 
 const TIMELINE_LIMIT = 50;
@@ -53,9 +56,11 @@ const FORGET_CONFIRM_TIMEOUT_MS = 3000;
 /** Assistant workspaces chat through Claw sessions, matching the sidebar action. */
 const ASSISTANT_SESSION_MODE = 'Claw';
 
+/** One `cognition_history` point, as the daemon reports it. */
 interface HistoryPoint {
   ts?: number;
-  emotion?: { valence?: number };
+  cycle?: number;
+  emotion?: { valence?: string; arousal?: number; dominance?: number };
 }
 
 /** Minimal inline sparkline; hides itself when there is nothing to draw. */
@@ -130,6 +135,7 @@ const TrinityScene: React.FC = () => {
   const [history, setHistory] = useState<HistoryPoint[]>([]);
   const [cloudBusy, setCloudBusy] = useState<string | null>(null);
   const [cloudMessage, setCloudMessage] = useState<string | null>(null);
+  const [framework, setFramework] = useState<CognitiveFrameworkInfo | null>(null);
 
   const [awakenDialogOpen, setAwakenDialogOpen] = useState(false);
   const [forgetPendingId, setForgetPendingId] = useState<string | null>(null);
@@ -188,11 +194,17 @@ const TrinityScene: React.FC = () => {
     }
   }, []);
 
+  // Cognitive framework group: registered tools + the core being identity.
+  const loadFramework = useCallback(async () => {
+    setFramework(await trinityAPI.getCognitiveFrameworkInfo());
+  }, []);
+
   useEffect(() => {
     void loadMemories();
     void loadHistory();
     void loadCloud();
-  }, [loadCloud, loadHistory, loadMemories]);
+    void loadFramework();
+  }, [loadCloud, loadFramework, loadHistory, loadMemories]);
 
   useEffect(() => {
     if (forgetPendingId == null) return undefined;
@@ -201,7 +213,9 @@ const TrinityScene: React.FC = () => {
   }, [forgetPendingId]);
 
   const trendPoints = useMemo(
-    () => history.map(p => p?.emotion?.valence).filter((v): v is number => typeof v === 'number'),
+    () => history
+      .map(point => valenceScore(point?.emotion?.valence))
+      .filter((score): score is number => score !== null),
     [history],
   );
 
@@ -390,7 +404,7 @@ const TrinityScene: React.FC = () => {
                 variant="outline"
                 size="sm"
                 leadingIcon={<Icon name="refresh" size="sm" />}
-                onClick={() => { void loadMemories(); void loadHistory(); void loadCloud(); }}
+                onClick={() => { void loadMemories(); void loadHistory(); void loadCloud(); void loadFramework(); }}
                 data-testid="trinity-scene-refresh"
               >
                 {t('trinity.scene.refresh')}
@@ -542,6 +556,78 @@ const TrinityScene: React.FC = () => {
                   )}
                 </CardBody>
               </Card>
+
+              {framework && (
+                <Card
+                  appearance="raised"
+                  padding="md"
+                  gap="sm"
+                  className="openbitfun-trinity-scene__framework"
+                >
+                  <CardHeader
+                    contentAlign="center"
+                    title={<h2>{t('trinity.framework.title')}</h2>}
+                  />
+                  <CardBody>
+                    <div className="openbitfun-trinity-scene__framework-group">
+                      <span className="openbitfun-trinity-scene__framework-id">{framework.id}</span>
+                      <span className="openbitfun-trinity-scene__framework-count">
+                        {t('trinity.framework.toolCount', { count: framework.tools.length })}
+                      </span>
+                    </div>
+                    <ul className="openbitfun-trinity-scene__framework-tools">
+                      {framework.tools.map(tool => (
+                        <li
+                          className="openbitfun-trinity-scene__framework-tool"
+                          key={tool.name}
+                          data-testid={`trinity-framework-tool-${tool.name}`}
+                        >
+                          <span className="openbitfun-trinity-scene__framework-tool-name">
+                            {tool.name}
+                          </span>
+                          <span className="openbitfun-trinity-scene__framework-tool-desc">
+                            {tool.description}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                    {framework.being && (
+                      <div className="openbitfun-trinity-scene__framework-being">
+                        <h3>{t('trinity.framework.being')}</h3>
+                        <dl className="openbitfun-trinity-scene__framework-fields">
+                          <div>
+                            <dt>{t('trinity.framework.beingName')}</dt>
+                            <dd>{framework.being.name}</dd>
+                          </div>
+                          {framework.being.userName && (
+                            <div>
+                              <dt>{t('trinity.framework.beingOwner')}</dt>
+                              <dd>{framework.being.userName}</dd>
+                            </div>
+                          )}
+                          <div>
+                            <dt>{t('trinity.framework.beingPersona')}</dt>
+                            <dd>{personaLabel(framework.being.persona, t)}</dd>
+                          </div>
+                          <div>
+                            <dt>{t('trinity.framework.beingAwakening')}</dt>
+                            <dd>
+                              {framework.being.awakened
+                                ? t('trinity.framework.awakened')
+                                : t('trinity.framework.notAwakened')}
+                            </dd>
+                          </div>
+                        </dl>
+                        {framework.being.soulExcerpt && (
+                          <p className="openbitfun-trinity-scene__framework-soul">
+                            {framework.being.soulExcerpt}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </CardBody>
+                </Card>
+              )}
 
               <CloudCard
                 cloudStatus={cloudStatus}

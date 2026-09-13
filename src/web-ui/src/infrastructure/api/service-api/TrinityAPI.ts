@@ -9,6 +9,35 @@
 import { api } from './ApiClient';
 import { createTauriCommandError } from '../errors/TauriCommandError';
 
+/** One tool exposed by the cognitive framework group. */
+export interface CognitiveFrameworkTool {
+  name: string;
+  description: string;
+}
+
+/** Core cognitive being read from the engine-owned identity registry. */
+export interface CoreBeingInfo {
+  id: string;
+  name: string;
+  userName: string;
+  persona: string;
+  awakened: boolean;
+  awakenedAt: number | null;
+  createdAt: number;
+  soulExcerpt: string;
+}
+
+/**
+ * Cognitive framework group: the registered cognitive tools, the live PSI state
+ * and the core being. `cognitiveState` mirrors `getCognitiveState()`.
+ */
+export interface CognitiveFrameworkInfo {
+  id: string;
+  tools: CognitiveFrameworkTool[];
+  cognitiveState: Record<string, unknown> | null;
+  being: CoreBeingInfo | null;
+}
+
 export class TrinityAPI {
   private async invoke(command: string, params: Record<string, unknown> = {}): Promise<any> {
     try {
@@ -122,6 +151,21 @@ export class TrinityAPI {
 
   async shutdown(params: Record<string, unknown> = {}): Promise<any> {
     return this.invoke('trinity_shutdown', params);
+  }
+
+  // ── Cognitive framework ────────────────────────────────────────
+
+  /**
+   * Cognitive framework group (tools + live state + core being). Returns null
+   * while the daemon or the identity registry is unreadable, so callers can
+   * render the rest of the console with the section omitted.
+   */
+  async getCognitiveFrameworkInfo(): Promise<CognitiveFrameworkInfo | null> {
+    try {
+      return (await api.invoke('get_cognitive_framework_info')) as CognitiveFrameworkInfo;
+    } catch {
+      return null;
+    }
   }
 }
 

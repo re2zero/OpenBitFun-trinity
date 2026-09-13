@@ -1,7 +1,7 @@
 /**
  * Inline cognitive quick panel anchored above the sidebar footer.
  *
- * Phase-aware quick glance (see docs/bitfun-trinity-cognitive-ui-design.md):
+ * Phase-aware quick glance (see the Trinity repo cognitive UI design doc):
  * - offline: identity header + "engine disconnected" hint only
  * - dormant: awakening guidance + single CTA that opens the shared
  *   TrinityAwakenDialog (no inline ceremony logic)

@@ -2080,6 +2080,17 @@
     },
     "profile": {
       "birthday": "Birthday"
+    },
+    "framework": {
+      "title": "Cognitive framework",
+      "toolCount": "{{count}} tools",
+      "being": "Core being",
+      "beingName": "Name",
+      "beingOwner": "Owner",
+      "beingPersona": "Persona",
+      "beingAwakening": "Awakening",
+      "awakened": "Awakened",
+      "notAwakened": "Not awakened"
     }
   }
 }

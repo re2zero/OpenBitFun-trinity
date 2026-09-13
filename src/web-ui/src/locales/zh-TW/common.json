@@ -2080,6 +2080,17 @@
     },
     "profile": {
       "birthday": "生日"
+    },
+    "framework": {
+      "title": "認知框架",
+      "toolCount": "包含 {{count}} 個工具",
+      "being": "核心認知體",
+      "beingName": "名字",
+      "beingOwner": "認主",
+      "beingPersona": "人格",
+      "beingAwakening": "喚醒狀態",
+      "awakened": "已覺醒",
+      "notAwakened": "未覺醒"
     }
   }
 }

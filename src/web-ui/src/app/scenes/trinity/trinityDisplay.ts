@@ -23,6 +23,35 @@ export function emotionLabelKey(valence: string | undefined | null): string {
   return EMOTION_VALENCES.includes(valence as EmotionValence) ? (valence as string) : 'neutral';
 }
 
+/**
+ * Numeric position of a valence on the engine's positive→negative axis.
+ *
+ * Mirrors `EmotionalValence::as_f64` in the cognitive engine: the cognition
+ * history payload carries the valence as a label only (no numeric counterpart),
+ * so the trend sparkline plots that axis score. Unknown labels return null and
+ * are dropped from the series.
+ */
+export function valenceScore(valence: string | undefined | null): number | null {
+  switch (valence) {
+    case 'positive_high':
+      return 1;
+    case 'positive_mild':
+      return 0.5;
+    case 'neutral':
+      return 0;
+    case 'negative_mild':
+      return -0.5;
+    case 'negative_high':
+      return -1;
+    case 'curious':
+      return 0.3;
+    case 'confused':
+      return -0.2;
+    default:
+      return null;
+  }
+}
+
 export const FOCUSES = ['respond', 'reflect', 'explore', 'plan', 'idle'] as const;
 
 /** Raw focus string → i18n key suffix under `trinity.focus.*`. */

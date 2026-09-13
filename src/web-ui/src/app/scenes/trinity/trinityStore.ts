@@ -8,7 +8,7 @@
  * - cloud:     independent sub-machine (unavailable / unregistered / key
  *              pending / ready); only meaningful while awake
  *
- * Derived phase (see docs/bitfun-trinity-cognitive-ui-design.md):
+ * Derived phase (see the Trinity repo cognitive UI design doc):
  *   offline = disconnected · dormant = connected && !awakened · awake = otherwise
  *
  * Polling is declared per surface via `useTrinityAutoRefresh(intervalMs)`;

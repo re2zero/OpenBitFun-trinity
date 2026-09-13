@@ -9,7 +9,7 @@
 #   3. reuse the standard desktop deb entry point
 #
 # Env overrides:
-#   TRINITY_DIR   trinity repo checkout (default: ../trinity next to BitFun)
+#   TRINITY_DIR   trinity repo checkout (default: ../trinity next to OpenBitFun)
 #   SKIP_TRINITYD_BUILD=1  reuse an already-built trinityd binary
 set -euo pipefail
 
@@ -17,7 +17,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [[ -n "${TRINITY_DIR:-}" ]]; then
   TRINITY_DIR="$TRINITY_DIR"
 else
-  # Probe common checkouts next to / near the BitFun repo.
+  # Probe common checkouts next to / near the OpenBitFun repo.
   for candidate in "$ROOT/../trinity" "$ROOT/../sublime/trinity"; do
     if [[ -f "$candidate/Cargo.toml" && -d "$candidate/trinityd" ]]; then
       TRINITY_DIR="$(cd "$candidate" && pwd)"
