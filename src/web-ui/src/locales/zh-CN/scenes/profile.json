@@ -268,7 +268,8 @@
         "basic": "基础信息",
         "status": "状态",
         "permissions": "权限与运行方式",
-        "management": "管理"
+        "management": "管理",
+        "cognitiveTools": "包含工具"
       },
       "detailFields": {
         "fullName": "完整名称",

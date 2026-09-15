@@ -2082,15 +2082,7 @@
       "birthday": "生日"
     },
     "framework": {
-      "title": "认知框架",
-      "toolCount": "包含 {{count}} 个工具",
-      "being": "核心认知体",
-      "beingName": "名字",
-      "beingOwner": "认主",
-      "beingPersona": "人格",
-      "beingAwakening": "唤醒状态",
-      "awakened": "已觉醒",
-      "notAwakened": "未觉醒"
+      "chip": "认知框架 · {{count}} 个工具"
     }
   }
 }

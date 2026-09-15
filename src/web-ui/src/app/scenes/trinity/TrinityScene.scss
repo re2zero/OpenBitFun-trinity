@@ -254,91 +254,16 @@
     color: var(--openbitfun-color-content-muted);
   }
 
-  // ── Cognitive framework ─────────────────────
+  // ── Cognitive framework chip ────────────────
 
-  &__framework-group {
-    display: flex;
-    align-items: center;
-    gap: var(--openbitfun-space-2);
-    font-size: var(--openbitfun-font-size-sm);
-    color: var(--openbitfun-color-content-muted);
-  }
-
-  &__framework-id {
-    padding: 0 var(--openbitfun-space-1);
+  // The panel only reports that the framework is wired up; the tool list and
+  // its switch live in the assistant defaults page.
+  &__framework-chip {
+    padding: 1px 8px;
     border: 1px solid var(--openbitfun-color-border-default);
-    border-radius: var(--openbitfun-radius-sm);
-    background: var(--openbitfun-color-surface-raised);
-  }
-
-  &__framework-tools {
-    display: flex;
-    flex-direction: column;
-    gap: var(--openbitfun-space-2);
-    margin: var(--openbitfun-space-3) 0 0;
-    padding: 0;
-    list-style: none;
-  }
-
-  &__framework-tool {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding: var(--openbitfun-space-2) var(--openbitfun-space-3);
-    border: 1px solid var(--openbitfun-color-border-default);
-    border-radius: var(--openbitfun-radius-md);
-    background: var(--openbitfun-color-surface-raised);
-  }
-
-  &__framework-tool-name {
-    font-size: var(--openbitfun-font-size-sm);
-    font-weight: 600;
-  }
-
-  &__framework-tool-desc {
-    font-size: var(--openbitfun-font-size-sm);
+    border-radius: var(--openbitfun-radius-pill);
     color: var(--openbitfun-color-content-muted);
-  }
-
-  &__framework-being {
-    margin-top: var(--openbitfun-space-4);
-
-    h3 {
-      margin: 0 0 var(--openbitfun-space-2);
-      font-size: var(--openbitfun-font-size-sm);
-      font-weight: 600;
-    }
-  }
-
-  &__framework-fields {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-    gap: var(--openbitfun-space-2) var(--openbitfun-space-3);
-    margin: 0;
-    font-size: var(--openbitfun-font-size-sm);
-
-    div {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-      min-width: 0;
-    }
-
-    dt {
-      color: var(--openbitfun-color-content-muted);
-    }
-
-    dd {
-      margin: 0;
-      font-weight: 600;
-    }
-  }
-
-  &__framework-soul {
-    margin: var(--openbitfun-space-3) 0 0;
-    font-size: var(--openbitfun-font-size-sm);
-    color: var(--openbitfun-color-content-muted);
-    white-space: pre-wrap;
+    font-size: var(--openbitfun-type-overline-sm-font-size);
   }
 
   // ── Cloud memory console ────────────────────

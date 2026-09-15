@@ -268,7 +268,8 @@
         "basic": "Basic information",
         "status": "Status",
         "permissions": "Permissions and operation",
-        "management": "Management"
+        "management": "Management",
+        "cognitiveTools": "Included tools"
       },
       "detailFields": {
         "fullName": "Full name",

@@ -5,12 +5,13 @@
  * - offline: identity header + "engine disconnected" hint only
  * - dormant: awakening card only (opens the shared TrinityAwakenDialog) —
  *   memory and cloud consoles are meaningless before the being exists
- * - awake:   cognitive-state card (emotion hero, need bars at one decimal
- *   place, valence trend sparkline) + cognitive-framework card (registered
- *   cognitive tools and the core being from the identity registry) +
- *   cloud-sync card (three-step machine: signup/login → key ceremony →
- *   sync/backup/restore) + memory console (search, manual add,
- *   cursor-paginated full-text timeline with reinforce/forget management)
+ * - awake:   cloud-memory card first (the action surface: signup/login → key
+ *   ceremony → sync/backup/restore), then the cognitive-state card (emotion
+ *   hero, need bars colored per need state at one decimal place, valence trend
+ *   sparkline), then the memory console (search, manual add, cursor-paginated
+ *   full-text timeline with reinforce/forget management). The header carries a
+ *   cognitive-framework chip; the framework's tool list lives with its switch
+ *   in the assistant defaults page, not in this column.
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
@@ -113,6 +114,182 @@ async function removeBootstrapFile(workspaceRoot: string): Promise<void> {
   }
 }
 
+// ── Cloud sync card (three-step sub-machine, awake only) ────────
+
+type CloudAuthMode = 'signup' | 'login';
+
+interface CloudCardProps {
+  cloudStatus: TrinityCloudStatus | null;
+  busy: string | null;
+  message: string | null;
+  onAction: (key: string, action: () => Promise<unknown>) => Promise<void>;
+  onAfterRestore: () => Promise<void>;
+}
+
+const CloudCard: React.FC<CloudCardProps> = ({ cloudStatus, busy, message, onAction, onAfterRestore }) => {
+  const { t } = useI18n('common');
+  const [mode, setMode] = useState<CloudAuthMode>('signup');
+  const [userId, setUserId] = useState('');
+  const [password, setPassword] = useState('');
+  const [passphrase, setPassphrase] = useState('');
+
+  const registered = cloudStatus?.registered === true;
+  const keyReady = cloudStatus?.key_ready === true;
+  const disabled = busy != null;
+
+  const submitAuth = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!userId.trim() || !password || disabled) return;
+    const payload = { user_id: userId.trim(), password, device_name: 'desktop' };
+    void onAction(mode, () => (mode === 'signup'
+      ? trinityAPI.cloudSignup(payload)
+      : trinityAPI.cloudLogin(payload)));
+  };
+
+  const submitKey = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (passphrase.length < 8 || disabled) return;
+    void onAction('setup_key', () => trinityAPI.cloudSetupKey({ passphrase }));
+  };
+
+  return (
+    <Card appearance="raised" padding="md" gap="sm" className="openbitfun-trinity-scene__cloud">
+      <CardHeader
+        contentAlign="center"
+        title={<h2>{t('trinity.cloud.title')}</h2>}
+      />
+      <CardBody>
+        <p className="openbitfun-trinity-scene__cloud-desc">{t('trinity.cloud.desc')}</p>
+        {cloudStatus == null ? (
+          <p className="openbitfun-trinity-scene__cloud-unavailable">
+            {t('trinity.cloud.unavailable')}
+          </p>
+        ) : !registered ? (
+          <form className="openbitfun-trinity-scene__cloud-form" onSubmit={submitAuth}>
+            <label className="openbitfun-trinity-scene__cloud-field">
+              <span>{t('trinity.cloud.userId')}</span>
+              <input
+                className="openbitfun-config-input"
+                type="text"
+                value={userId}
+                autoComplete="username"
+                onChange={(event) => setUserId(event.target.value)}
+                data-testid="trinity-cloud-user-id"
+              />
+            </label>
+            <label className="openbitfun-trinity-scene__cloud-field">
+              <span>{t('trinity.cloud.password')}</span>
+              <input
+                className="openbitfun-config-input"
+                type="password"
+                value={password}
+                autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
+                onChange={(event) => setPassword(event.target.value)}
+                data-testid="trinity-cloud-password"
+              />
+            </label>
+            <div className="openbitfun-trinity-scene__cloud-actions">
+              <Button variant="primary" size="sm" type="submit" disabled={disabled || !userId.trim() || !password}>
+                {mode === 'signup' ? t('trinity.cloud.signup') : t('trinity.cloud.login')}
+              </Button>
+              <Button
+                variant="text"
+                size="sm"
+                type="button"
+                onClick={() => setMode(m => (m === 'signup' ? 'login' : 'signup'))}
+              >
+                {mode === 'signup' ? t('trinity.cloud.toLogin') : t('trinity.cloud.toSignup')}
+              </Button>
+            </div>
+          </form>
+        ) : !keyReady ? (
+          <form className="openbitfun-trinity-scene__cloud-form" onSubmit={submitKey}>
+            <p className="openbitfun-trinity-scene__cloud-warning">{t('trinity.cloud.keyDesc')}</p>
+            <label className="openbitfun-trinity-scene__cloud-field">
+              <span>{t('trinity.cloud.passphrase')}</span>
+              <input
+                className="openbitfun-config-input"
+                type="password"
+                value={passphrase}
+                minLength={8}
+                autoComplete="new-password"
+                onChange={(event) => setPassphrase(event.target.value)}
+                data-testid="trinity-cloud-passphrase"
+              />
+            </label>
+            <div className="openbitfun-trinity-scene__cloud-actions">
+              <Button
+                variant="primary"
+                size="sm"
+                type="submit"
+                disabled={disabled || passphrase.length < 8}
+                data-testid="trinity-cloud-setup-key"
+              >
+                {t('trinity.cloud.setupKey')}
+              </Button>
+            </div>
+          </form>
+        ) : (
+          <div className="openbitfun-trinity-scene__cloud-ready">
+            <div className="openbitfun-trinity-scene__cloud-status-lines">
+              {cloudStatus.user_id && (
+                <span>{t('trinity.cloud.userId')}: {cloudStatus.user_id}</span>
+              )}
+              {typeof cloudStatus.pending_ops === 'number' && (
+                <span>{t('trinity.cloud.pendingOps', { count: cloudStatus.pending_ops })}</span>
+              )}
+              <span data-openbitfun-state={cloudStatus.engine_running ? 'online' : 'offline'}>
+                {cloudStatus.engine_running
+                  ? t('trinity.cloud.engineRunning')
+                  : t('trinity.cloud.engineStopped')}
+              </span>
+            </div>
+            <div className="openbitfun-trinity-scene__cloud-actions">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={disabled}
+                onClick={() => { void onAction('sync_now', () => trinityAPI.cloudSyncNow()); }}
+                data-testid="trinity-cloud-sync-now"
+              >
+                {t('trinity.cloud.syncNow')}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                leadingIcon={<Icon glyph={CloudUpload} size="sm" />}
+                disabled={disabled}
+                onClick={() => { void onAction('backup', () => trinityAPI.cloudBackup()); }}
+                data-testid="trinity-cloud-backup"
+              >
+                {t('trinity.cloud.backup')}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                leadingIcon={<Icon name="arrow-down" size="sm" />}
+                disabled={disabled}
+                onClick={() => { void onAction('restore', async () => {
+                  const result = await trinityAPI.cloudRestore();
+                  await onAfterRestore();
+                  return result;
+                }); }}
+                data-testid="trinity-cloud-restore"
+              >
+                {t('trinity.cloud.restore')}
+              </Button>
+            </div>
+          </div>
+        )}
+        {busy != null && <Spinner size="sm" />}
+        {message && (
+          <p className="openbitfun-trinity-scene__cloud-message">{message}</p>
+        )}
+      </CardBody>
+    </Card>
+  );
+};
+
 const TrinityScene: React.FC = () => {
   const { t } = useI18n('common');
   const {
@@ -157,8 +334,13 @@ const TrinityScene: React.FC = () => {
   const cycleCount = psi?.cycle_count;
   const needs = psi?.needs ?? {};
   const memory = psi?.memory ?? {};
-  const identityName = identity?.name || t('trinity.being.title');
-  const persona = identity?.persona;
+  // Identity is the engine-owned being record (`beings/core`, written by the
+  // daemon) when it is readable; the daemon status payload is only the fallback
+  // for installs whose being record predates the registry.
+  const being = framework?.being ?? null;
+  const identityName = being?.name || identity?.name || t('trinity.being.title');
+  const beingOwner = being?.userName || identity?.user_name;
+  const persona = being?.persona || identity?.persona;
   // Persona files only make sense inside the Trinity assistant workspace.
   const awakenWorkspacePath = currentWorkspace?.assistantId === 'trinity'
     ? currentWorkspace.rootPath
@@ -203,8 +385,14 @@ const TrinityScene: React.FC = () => {
     void loadMemories();
     void loadHistory();
     void loadCloud();
-    void loadFramework();
-  }, [loadCloud, loadFramework, loadHistory, loadMemories]);
+  }, [loadCloud, loadHistory, loadMemories]);
+
+  // The being record only exists once the being is awake, so read the framework
+  // when the phase reaches `awake` (the awaken dialog refreshes the store, not
+  // this page's local state).
+  useEffect(() => {
+    if (phase === 'awake') void loadFramework();
+  }, [loadFramework, phase]);
 
   useEffect(() => {
     if (forgetPendingId == null) return undefined;
@@ -329,8 +517,8 @@ const TrinityScene: React.FC = () => {
 
   const handleCreateIdentity = useCallback(async () => {
     if (creatingIdentity) return;
-    const name = identity?.name?.trim();
-    const userName = identity?.user_name?.trim();
+    const name = identityName.trim();
+    const userName = beingOwner?.trim();
     if (!name || !userName) {
       setCreateIdentityError(t('trinity.scene.createIdentityMissingIdentity'));
       return;
@@ -353,7 +541,7 @@ const TrinityScene: React.FC = () => {
       // `write_file_content` resolves `filePath` as-is, so relative names land
       // in the process CWD. Join the workspace root like personaDocFullPath.
       const base = workspace.rootPath.replace(/[\\/]+$/, '');
-      const files = buildCognitiveIdentityFiles({ name, userName, persona: identity?.persona });
+      const files = buildCognitiveIdentityFiles({ name, userName, persona });
       for (const [fileName, content] of Object.entries(files)) {
         await workspaceAPI.writeFileContent(base, `${base}/${fileName}`, content);
       }
@@ -372,7 +560,15 @@ const TrinityScene: React.FC = () => {
     } finally {
       setCreatingIdentity(false);
     }
-  }, [creatingIdentity, ensureCognitiveBeingAssistant, identity, setPrimaryAssistantWorkspace, t]);
+  }, [
+    beingOwner,
+    creatingIdentity,
+    ensureCognitiveBeingAssistant,
+    identityName,
+    persona,
+    setPrimaryAssistantWorkspace,
+    t,
+  ]);
 
   const shownMemories = searchResults ?? memories;
   const lastTimelineTs = memories.length > 0 ? memories[memories.length - 1]?.timestamp : undefined;
@@ -400,6 +596,15 @@ const TrinityScene: React.FC = () => {
               >
                 {t(`trinity.phase.${phase}`)}
               </span>
+              {framework && (
+                <span
+                  className="openbitfun-trinity-scene__framework-chip"
+                  title={framework.id}
+                  data-openbitfun-part="cognitive-framework"
+                >
+                  {t('trinity.framework.chip', { count: framework.tools.length })}
+                </span>
+              )}
               <Button
                 variant="outline"
                 size="sm"
@@ -475,6 +680,17 @@ const TrinityScene: React.FC = () => {
 
           {phase === 'awake' && psi && (
             <>
+              {/* Cloud memory leads the console: it is the action surface
+                  (sign up / log in / key ceremony / sync / backup / restore),
+                  the rest of the column reports live state. */}
+              <CloudCard
+                cloudStatus={cloudStatus}
+                busy={cloudBusy}
+                message={cloudMessage}
+                onAction={runCloudAction}
+                onAfterRestore={loadMemories}
+              />
+
               <Card appearance="raised" padding="md" gap="sm" className="openbitfun-trinity-scene__state">
                 <CardHeader
                   contentAlign="center"
@@ -556,86 +772,6 @@ const TrinityScene: React.FC = () => {
                   )}
                 </CardBody>
               </Card>
-
-              {framework && (
-                <Card
-                  appearance="raised"
-                  padding="md"
-                  gap="sm"
-                  className="openbitfun-trinity-scene__framework"
-                >
-                  <CardHeader
-                    contentAlign="center"
-                    title={<h2>{t('trinity.framework.title')}</h2>}
-                  />
-                  <CardBody>
-                    <div className="openbitfun-trinity-scene__framework-group">
-                      <span className="openbitfun-trinity-scene__framework-id">{framework.id}</span>
-                      <span className="openbitfun-trinity-scene__framework-count">
-                        {t('trinity.framework.toolCount', { count: framework.tools.length })}
-                      </span>
-                    </div>
-                    <ul className="openbitfun-trinity-scene__framework-tools">
-                      {framework.tools.map(tool => (
-                        <li
-                          className="openbitfun-trinity-scene__framework-tool"
-                          key={tool.name}
-                          data-testid={`trinity-framework-tool-${tool.name}`}
-                        >
-                          <span className="openbitfun-trinity-scene__framework-tool-name">
-                            {tool.name}
-                          </span>
-                          <span className="openbitfun-trinity-scene__framework-tool-desc">
-                            {tool.description}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                    {framework.being && (
-                      <div className="openbitfun-trinity-scene__framework-being">
-                        <h3>{t('trinity.framework.being')}</h3>
-                        <dl className="openbitfun-trinity-scene__framework-fields">
-                          <div>
-                            <dt>{t('trinity.framework.beingName')}</dt>
-                            <dd>{framework.being.name}</dd>
-                          </div>
-                          {framework.being.userName && (
-                            <div>
-                              <dt>{t('trinity.framework.beingOwner')}</dt>
-                              <dd>{framework.being.userName}</dd>
-                            </div>
-                          )}
-                          <div>
-                            <dt>{t('trinity.framework.beingPersona')}</dt>
-                            <dd>{personaLabel(framework.being.persona, t)}</dd>
-                          </div>
-                          <div>
-                            <dt>{t('trinity.framework.beingAwakening')}</dt>
-                            <dd>
-                              {framework.being.awakened
-                                ? t('trinity.framework.awakened')
-                                : t('trinity.framework.notAwakened')}
-                            </dd>
-                          </div>
-                        </dl>
-                        {framework.being.soulExcerpt && (
-                          <p className="openbitfun-trinity-scene__framework-soul">
-                            {framework.being.soulExcerpt}
-                          </p>
-                        )}
-                      </div>
-                    )}
-                  </CardBody>
-                </Card>
-              )}
-
-              <CloudCard
-                cloudStatus={cloudStatus}
-                busy={cloudBusy}
-                message={cloudMessage}
-                onAction={runCloudAction}
-                onAfterRestore={loadMemories}
-              />
 
               <Card appearance="raised" padding="md" gap="sm" className="openbitfun-trinity-scene__timeline">
                 <CardHeader
@@ -830,180 +966,5 @@ const TrinityScene: React.FC = () => {
   );
 };
 
-// ── Cloud sync card (three-step sub-machine, awake only) ────────
-
-type CloudAuthMode = 'signup' | 'login';
-
-interface CloudCardProps {
-  cloudStatus: TrinityCloudStatus | null;
-  busy: string | null;
-  message: string | null;
-  onAction: (key: string, action: () => Promise<unknown>) => Promise<void>;
-  onAfterRestore: () => Promise<void>;
-}
-
-const CloudCard: React.FC<CloudCardProps> = ({ cloudStatus, busy, message, onAction, onAfterRestore }) => {
-  const { t } = useI18n('common');
-  const [mode, setMode] = useState<CloudAuthMode>('signup');
-  const [userId, setUserId] = useState('');
-  const [password, setPassword] = useState('');
-  const [passphrase, setPassphrase] = useState('');
-
-  const registered = cloudStatus?.registered === true;
-  const keyReady = cloudStatus?.key_ready === true;
-  const disabled = busy != null;
-
-  const submitAuth = (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!userId.trim() || !password || disabled) return;
-    const payload = { user_id: userId.trim(), password, device_name: 'desktop' };
-    void onAction(mode, () => (mode === 'signup'
-      ? trinityAPI.cloudSignup(payload)
-      : trinityAPI.cloudLogin(payload)));
-  };
-
-  const submitKey = (event: React.FormEvent) => {
-    event.preventDefault();
-    if (passphrase.length < 8 || disabled) return;
-    void onAction('setup_key', () => trinityAPI.cloudSetupKey({ passphrase }));
-  };
-
-  return (
-    <Card appearance="raised" padding="md" gap="sm" className="openbitfun-trinity-scene__cloud">
-      <CardHeader
-        contentAlign="center"
-        title={<h2>{t('trinity.cloud.title')}</h2>}
-      />
-      <CardBody>
-        <p className="openbitfun-trinity-scene__cloud-desc">{t('trinity.cloud.desc')}</p>
-        {cloudStatus == null ? (
-          <p className="openbitfun-trinity-scene__cloud-unavailable">
-            {t('trinity.cloud.unavailable')}
-          </p>
-        ) : !registered ? (
-          <form className="openbitfun-trinity-scene__cloud-form" onSubmit={submitAuth}>
-            <label className="openbitfun-trinity-scene__cloud-field">
-              <span>{t('trinity.cloud.userId')}</span>
-              <input
-                className="openbitfun-config-input"
-                type="text"
-                value={userId}
-                autoComplete="username"
-                onChange={(event) => setUserId(event.target.value)}
-                data-testid="trinity-cloud-user-id"
-              />
-            </label>
-            <label className="openbitfun-trinity-scene__cloud-field">
-              <span>{t('trinity.cloud.password')}</span>
-              <input
-                className="openbitfun-config-input"
-                type="password"
-                value={password}
-                autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
-                onChange={(event) => setPassword(event.target.value)}
-                data-testid="trinity-cloud-password"
-              />
-            </label>
-            <div className="openbitfun-trinity-scene__cloud-actions">
-              <Button variant="primary" size="sm" type="submit" disabled={disabled || !userId.trim() || !password}>
-                {mode === 'signup' ? t('trinity.cloud.signup') : t('trinity.cloud.login')}
-              </Button>
-              <Button
-                variant="text"
-                size="sm"
-                type="button"
-                onClick={() => setMode(m => (m === 'signup' ? 'login' : 'signup'))}
-              >
-                {mode === 'signup' ? t('trinity.cloud.toLogin') : t('trinity.cloud.toSignup')}
-              </Button>
-            </div>
-          </form>
-        ) : !keyReady ? (
-          <form className="openbitfun-trinity-scene__cloud-form" onSubmit={submitKey}>
-            <p className="openbitfun-trinity-scene__cloud-warning">{t('trinity.cloud.keyDesc')}</p>
-            <label className="openbitfun-trinity-scene__cloud-field">
-              <span>{t('trinity.cloud.passphrase')}</span>
-              <input
-                className="openbitfun-config-input"
-                type="password"
-                value={passphrase}
-                minLength={8}
-                autoComplete="new-password"
-                onChange={(event) => setPassphrase(event.target.value)}
-                data-testid="trinity-cloud-passphrase"
-              />
-            </label>
-            <div className="openbitfun-trinity-scene__cloud-actions">
-              <Button
-                variant="primary"
-                size="sm"
-                type="submit"
-                disabled={disabled || passphrase.length < 8}
-                data-testid="trinity-cloud-setup-key"
-              >
-                {t('trinity.cloud.setupKey')}
-              </Button>
-            </div>
-          </form>
-        ) : (
-          <div className="openbitfun-trinity-scene__cloud-ready">
-            <div className="openbitfun-trinity-scene__cloud-status-lines">
-              {cloudStatus.user_id && (
-                <span>{t('trinity.cloud.userId')}: {cloudStatus.user_id}</span>
-              )}
-              {typeof cloudStatus.pending_ops === 'number' && (
-                <span>{t('trinity.cloud.pendingOps', { count: cloudStatus.pending_ops })}</span>
-              )}
-              <span data-openbitfun-state={cloudStatus.engine_running ? 'online' : 'offline'}>
-                {cloudStatus.engine_running
-                  ? t('trinity.cloud.engineRunning')
-                  : t('trinity.cloud.engineStopped')}
-              </span>
-            </div>
-            <div className="openbitfun-trinity-scene__cloud-actions">
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={disabled}
-                onClick={() => { void onAction('sync_now', () => trinityAPI.cloudSyncNow()); }}
-                data-testid="trinity-cloud-sync-now"
-              >
-                {t('trinity.cloud.syncNow')}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                leadingIcon={<Icon glyph={CloudUpload} size="sm" />}
-                disabled={disabled}
-                onClick={() => { void onAction('backup', () => trinityAPI.cloudBackup()); }}
-                data-testid="trinity-cloud-backup"
-              >
-                {t('trinity.cloud.backup')}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                leadingIcon={<Icon name="arrow-down" size="sm" />}
-                disabled={disabled}
-                onClick={() => { void onAction('restore', async () => {
-                  const result = await trinityAPI.cloudRestore();
-                  await onAfterRestore();
-                  return result;
-                }); }}
-                data-testid="trinity-cloud-restore"
-              >
-                {t('trinity.cloud.restore')}
-              </Button>
-            </div>
-          </div>
-        )}
-        {busy != null && <Spinner size="sm" />}
-        {message && (
-          <p className="openbitfun-trinity-scene__cloud-message">{message}</p>
-        )}
-      </CardBody>
-    </Card>
-  );
-};
 
 export default TrinityScene;
