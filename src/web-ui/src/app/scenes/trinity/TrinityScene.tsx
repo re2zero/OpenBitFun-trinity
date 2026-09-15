@@ -600,7 +600,6 @@ const TrinityScene: React.FC = () => {
                 <span
                   className="openbitfun-trinity-scene__framework-chip"
                   title={framework.id}
-                  data-openbitfun-part="cognitive-framework"
                 >
                   {t('trinity.framework.chip', { count: framework.tools.length })}
                 </span>
