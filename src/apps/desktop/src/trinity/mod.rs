@@ -9,10 +9,17 @@
 //!
 //! Env contract:
 //!   TRINITYD_BIN         — path to the trinityd binary (spawn fallback)
-//!   TRINITY_DAEMON_PORT  — daemon TCP port (default 11656)
-//!   TRINITY_API_KEY      — daemon API key (default trinity-local-dev-key)
+//!   TRINITY_DAEMON_PORT  — daemon TCP port, forwarded to the daemon (config
+//!                          `[daemon] port` otherwise)
+//!   TRINITY_API_KEY      — daemon API key (config `[daemon] keys` otherwise)
+//!
+//! The daemon is started without CLI overrides and reads `[daemon]` from
+//! `~/.config/trinity/trinity.toml`; the host installs the packaged factory
+//! configuration there on first run and derives its own port and key from the
+//! same file. See [`config`].
 
 pub(crate) mod backend;
+pub(crate) mod config;
 pub(crate) mod injector;
 pub(crate) mod numeric;
 pub(crate) mod tools;

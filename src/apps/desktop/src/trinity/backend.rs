@@ -15,9 +15,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-/// Port the host probes when `TRINITY_DAEMON_PORT` is unset. The spawned
-/// daemon takes its own port from its config, so this must match `daemon.port`.
-pub(crate) const DEFAULT_DAEMON_PORT: u16 = 11656;
+use super::config;
 
 const FRAME_HEADER_LEN: usize = 4;
 const MAX_FRAME_LEN: usize = 10_000_000;
@@ -56,7 +54,7 @@ fn owned_daemon_slot() -> &'static Mutex<Option<OwnedDaemon>> {
 
 /// Resolve the daemon API key so the background and exit paths agree.
 fn daemon_key() -> String {
-    std::env::var("TRINITY_API_KEY").unwrap_or_else(|_| "trinity-local-dev-key".to_string())
+    config::daemon_key()
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -93,10 +91,7 @@ impl TrinityBackend {
     pub(crate) fn from_env() -> Self {
         Self {
             host: "127.0.0.1".to_string(),
-            port: std::env::var("TRINITY_DAEMON_PORT")
-                .ok()
-                .and_then(|p| p.parse().ok())
-                .unwrap_or(DEFAULT_DAEMON_PORT),
+            port: config::daemon_port(),
             key: daemon_key(),
             conn: tokio::sync::Mutex::new(None),
         }
@@ -301,11 +296,16 @@ fn bind_daemon_to_host_lifetime(command: &mut std::process::Command) {
 
 /// Ensure a Trinity daemon is running. Reuses an already-listening daemon;
 /// otherwise spawns `trinityd` and waits for the port (up to ~15s).
+///
+/// The daemon reads `[daemon]` from its own config, so a usable config is
+/// installed here first and the port and key are derived from the same file.
+/// Without one a fresh install has no config at all and the daemon falls back to
+/// stdio mode, where it never opens a port.
 pub(crate) async fn ensure_trinityd_running() -> Result<u16, String> {
-    let port = std::env::var("TRINITY_DAEMON_PORT")
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(DEFAULT_DAEMON_PORT);
+    // Deferred: a daemon someone else already started is reused even when this
+    // host's config is unusable.
+    let config_error = config::ensure_user_config().err();
+    let port = config::daemon_port();
 
     if probe_port(port).await {
         // A listener that already exists is not ours: it may have been started
@@ -314,6 +314,10 @@ pub(crate) async fn ensure_trinityd_running() -> Result<u16, String> {
         // repeated calls do not orphan the daemon this process spawned.
         log::info!("[trinity] daemon already running on port {port}, reusing");
         return Ok(port);
+    }
+
+    if let Some(error) = config_error {
+        return Err(error);
     }
 
     let bin = locate_trinityd()
@@ -349,10 +353,17 @@ pub(crate) async fn ensure_trinityd_running() -> Result<u16, String> {
     }
 
     log::info!("[trinity] spawning trinityd: {}", bin.display());
-    // No CLI overrides: the daemon reads its own config (`[daemon]` in
-    // `~/.config/trinity/trinity.toml`). The `port` probed above therefore has
-    // to match the configured `daemon.port`.
+    // No CLI overrides in the normal path: the daemon reads `[daemon]` from the
+    // config installed above, which is also where `port` and the API key come
+    // from. An explicit `TRINITY_DAEMON_PORT` has to be forwarded, or the host
+    // would probe a port this daemon never opens.
     let mut command = openbitfun_core::util::process_manager::create_command(&bin);
+    if let Some(override_port) = config::env_port_override() {
+        command.arg("--port").arg(override_port.to_string());
+    }
+    // Without this the daemon inherits the host's stdin. A daemon that fell back
+    // to its stdio mode would then block on it forever instead of failing.
+    command.stdin(std::process::Stdio::null());
     bind_daemon_to_host_lifetime(&mut command);
     let child = command
         .spawn()
@@ -368,11 +379,52 @@ pub(crate) async fn ensure_trinityd_running() -> Result<u16, String> {
             log::info!("[trinity] daemon ready on port {port}");
             return Ok(port);
         }
+        // A child that already exited will never open the port. Stop waiting,
+        // report why, and reap it so it cannot linger as a zombie.
+        if let Some(status) = reap_exited_child() {
+            return Err(daemon_exited_error(status));
+        }
         tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    if let Some(status) = reap_exited_child() {
+        return Err(daemon_exited_error(status));
     }
     Err(format!(
         "trinityd did not become ready on port {port} within 15s"
     ))
+}
+
+/// Reap an already-exited tracked child and clear the slot.
+///
+/// Nothing else waits on this child: while it is tracked, an exited process
+/// stays a zombie for the rest of the host's lifetime.
+fn reap_exited_child() -> Option<std::process::ExitStatus> {
+    let mut slot = owned_daemon_slot()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let exited = match slot.as_mut() {
+        Some(owned) => match owned.child.try_wait() {
+            Ok(Some(status)) => Some(status),
+            Ok(None) => None,
+            Err(e) => {
+                log::warn!("[trinity] could not check the daemon child: {e}");
+                None
+            }
+        },
+        None => None,
+    };
+    if exited.is_some() {
+        *slot = None;
+    }
+    exited
+}
+
+fn daemon_exited_error(status: std::process::ExitStatus) -> String {
+    let log_dir = dirs::cache_dir()
+        .map(|d| d.join("trinity"))
+        .map(|d| d.display().to_string())
+        .unwrap_or_else(|| "the trinity cache directory".to_string());
+    format!("trinityd exited immediately ({status}); its own log under {log_dir} says why")
 }
 
 /// Shut down the Trinity daemon this process spawned (graceful, kill fallback).
