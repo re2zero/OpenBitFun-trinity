@@ -2413,6 +2413,24 @@ pub(crate) async fn perform_process_exit_cleanup() -> bool {
     }
 
     log::info!("Desktop process graceful shutdown started");
+    // Stop the trinityd daemon this process spawned. Runs on a blocking thread
+    // so the ~2.5s graceful wait never occupies a tokio worker. The outer
+    // timeout only bounds how long cleanup waits for that task: a
+    // spawn_blocking task is not cancellable, so the real bound is enforced
+    // inside the shutdown function itself. An independent or probed daemon is
+    // left untouched.
+    match tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::task::spawn_blocking(crate::trinity::backend::shutdown_owned_trinityd),
+    )
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => log::warn!("[trinity] daemon shutdown task failed: {error}"),
+        Err(_elapsed) => {
+            log::warn!("[trinity] daemon shutdown timed out after 5s; continuing exit")
+        }
+    }
     match openbitfun_core::plugin_host::shutdown_configured_plugin_host().await {
         Ok(Some(report)) => log::info!(
             "Desktop plugin host shutdown completed: generation={}, disposition={:?}, rpc_completed={}, exit_code={:?}, duration_ms={}",
@@ -2463,6 +2481,8 @@ pub(crate) fn perform_process_exit_cleanup_emergency() -> bool {
         search_service.shutdown_blocking();
     }
     openbitfun_core::util::process_manager::cleanup_all_processes();
+    // Panic/exit path: kill the owned trinityd child without the graceful wait.
+    crate::trinity::backend::kill_owned_trinityd_now();
     api::remote_connect_api::cleanup_on_exit();
     true
 }
