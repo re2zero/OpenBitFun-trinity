@@ -14,6 +14,7 @@ import {
   writeFileSync,
 } from 'fs';
 import { ensureFlashgrepBinary } from './prepare-flashgrep-resource.mjs';
+import { configureLinuxOcrAbiLinkage } from './prepare-linux-ocr-abi.mjs';
 import { extractProductConfigArg } from './product-customization/cli.mjs';
 import { productBuildEnvironment } from './product-customization/projections.mjs';
 import { resolveProductDefinition } from './product-customization/resolver.mjs';
@@ -53,6 +54,9 @@ async function main() {
     desktopDir,
   );
   process.env.FLASHGREP_DAEMON_BIN = flashgrepBinary;
+  // The deb declares its leptonica runtime dependency by package name, so the
+  // link step has to follow that generation instead of the build host's.
+  configureLinuxOcrAbiLinkage({ target: optionValue(forward, '--target') });
   // Tauri CLI reads CI and rejects numeric "1" (common in CI providers).
   process.env.CI = 'true';
   if (process.platform === 'darwin' && requestsDmgBundle(forward)) {
