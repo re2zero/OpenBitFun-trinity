@@ -942,6 +942,11 @@ pub async fn run() {
                 trinity::init().await;
             });
 
+            // Signals bypass the Tauri event loop, so an external `kill` or a
+            // session manager stopping this app's unit would end the process
+            // without running any exit cleanup.
+            install_termination_signal_handler(app.handle());
+
             let bundled_frontend = if cfg!(debug_assertions) {
                 let development_dist = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                     .join("../../..")
@@ -2400,6 +2405,12 @@ static PROCESS_EXIT_CLEANUP_COMPLETE: AtomicBool = AtomicBool::new(false);
 static DESKTOP_EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 static PROCESS_EXIT_CLEANUP_NOTIFY: OnceLock<tokio::sync::Notify> = OnceLock::new();
 
+/// Upper bound for the Trinity daemon shutdown on the exit path. The blocking
+/// shutdown needs up to ~8s in its worst case (1.5s connect + 2s write + 2s
+/// read + 2.5s wait), so this deadline sits above it and only guards against a
+/// wedged daemon.
+const TRINITY_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(10);
+
 pub(crate) async fn perform_process_exit_cleanup() -> bool {
     let notify = PROCESS_EXIT_CLEANUP_NOTIFY.get_or_init(tokio::sync::Notify::new);
     if PROCESS_EXIT_CLEANUP_STARTED.swap(true, Ordering::AcqRel) {
@@ -2414,13 +2425,10 @@ pub(crate) async fn perform_process_exit_cleanup() -> bool {
 
     log::info!("Desktop process graceful shutdown started");
     // Stop the trinityd daemon this process spawned. Runs on a blocking thread
-    // so the ~2.5s graceful wait never occupies a tokio worker. The outer
-    // timeout only bounds how long cleanup waits for that task: a
-    // spawn_blocking task is not cancellable, so the real bound is enforced
-    // inside the shutdown function itself. An independent or probed daemon is
-    // left untouched.
+    // so the ~2.5s graceful wait never occupies a tokio worker. An independent
+    // or probed daemon is left untouched.
     match tokio::time::timeout(
-        Duration::from_secs(5),
+        TRINITY_SHUTDOWN_DEADLINE,
         tokio::task::spawn_blocking(crate::trinity::backend::shutdown_owned_trinityd),
     )
     .await
@@ -2428,7 +2436,14 @@ pub(crate) async fn perform_process_exit_cleanup() -> bool {
         Ok(Ok(())) => {}
         Ok(Err(error)) => log::warn!("[trinity] daemon shutdown task failed: {error}"),
         Err(_elapsed) => {
-            log::warn!("[trinity] daemon shutdown timed out after 5s; continuing exit")
+            // A `spawn_blocking` task cannot be cancelled, so it may still be
+            // running. Kill the tracked child here so a slow daemon cannot
+            // outlive the host. The call is idempotent: it takes the slot.
+            log::warn!(
+                "[trinity] daemon shutdown timed out after {}s; killing the owned daemon",
+                TRINITY_SHUTDOWN_DEADLINE.as_secs()
+            );
+            crate::trinity::backend::kill_owned_trinityd_now();
         }
     }
     match openbitfun_core::plugin_host::shutdown_configured_plugin_host().await {
@@ -2485,6 +2500,50 @@ pub(crate) fn perform_process_exit_cleanup_emergency() -> bool {
     crate::trinity::backend::kill_owned_trinityd_now();
     api::remote_connect_api::cleanup_on_exit();
     true
+}
+
+/// Run exit cleanup when the process is terminated by a signal instead of one of
+/// its own exit paths.
+///
+/// Signals are delivered outside the Tauri event loop, so without a handler the
+/// process dies on the default disposition with every cleanup step skipped,
+/// leaving any Trinity daemon this host spawned running. The handler performs
+/// the emergency cleanup (which kills that daemon) and then exits normally.
+fn install_termination_signal_handler(app: &tauri::AppHandle) {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut terminate = match signal(SignalKind::terminate()) {
+                Ok(stream) => stream,
+                Err(error) => {
+                    log::warn!("Cannot observe SIGTERM: {}", error);
+                    return;
+                }
+            };
+            let mut interrupt = match signal(SignalKind::interrupt()) {
+                Ok(stream) => stream,
+                Err(error) => {
+                    log::warn!("Cannot observe SIGINT: {}", error);
+                    return;
+                }
+            };
+            let signal = tokio::select! {
+                _ = terminate.recv() => "SIGTERM",
+                _ = interrupt.recv() => "SIGINT",
+            };
+            log::warn!("Desktop termination signal received: {signal}; running emergency cleanup");
+            crash_diagnostics::mark_clean_shutdown(signal);
+            perform_process_exit_cleanup_emergency();
+            app.exit(0);
+        });
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = app;
+    }
 }
 
 fn configure_workspace_search_daemon_env() -> Option<std::path::PathBuf> {

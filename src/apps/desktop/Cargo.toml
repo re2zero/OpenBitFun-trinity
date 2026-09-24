@@ -51,7 +51,7 @@ alloc-no-stdlib = { workspace = true }
 alloc-stdlib = { workspace = true }
 
 # Inherited from workspace
-tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
@@ -148,6 +148,7 @@ devtools = ["tauri/devtools", "openbitfun-webdriver/embedded"]
 [target.'cfg(target_os = "linux")'.dependencies]
 atspi = { workspace = true }
 leptess = { workspace = true }
+libc = { workspace = true }
 
 [lints]
 workspace = true

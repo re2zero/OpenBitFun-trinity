@@ -15,7 +15,8 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
-/// Default daemon port when neither env nor config provides one.
+/// Port the host probes when `TRINITY_DAEMON_PORT` is unset. The spawned
+/// daemon takes its own port from its config, so this must match `daemon.port`.
 pub(crate) const DEFAULT_DAEMON_PORT: u16 = 11656;
 
 const FRAME_HEADER_LEN: usize = 4;
@@ -256,6 +257,48 @@ pub(crate) fn locate_trinityd() -> Option<std::path::PathBuf> {
     None
 }
 
+/// Ask the kernel to terminate the daemon when this host dies.
+///
+/// The host only reaches its shutdown path on its own exit routes. A crash or an
+/// external `SIGTERM` ends the process without running any of that code and used
+/// to leave the daemon holding the port, after which every later host instance
+/// found a listener it did not own and could never shut down again. Arming
+/// `PR_SET_PDEATHSIG` covers every kind of host death, including abnormal ones.
+///
+/// `SIGINT` rather than `SIGTERM`: the daemon only installs a handler for the
+/// former, and that handler runs its graceful path (`server.stop()` followed by
+/// `save_rsi_state()`), the same one the `daemon.shutdown` frame triggers.
+/// `SIGTERM` has no handler and would kill it outright.
+/// Linux-only: no other platform offers an equivalent.
+fn bind_daemon_to_host_lifetime(command: &mut std::process::Command) {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+
+        let host_pid = std::process::id() as libc::pid_t;
+        // SAFETY: the closure runs between `fork` and `exec`, where only
+        // async-signal-safe calls are sound. `prctl`, `getppid` and `_exit` are
+        // raw syscalls: no allocation, no locking.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGINT) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // The host may have died before the signal was armed, in which
+                // case nothing will ever be delivered.
+                if libc::getppid() != host_pid {
+                    libc::_exit(1);
+                }
+                Ok(())
+            });
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = command;
+    }
+}
+
 /// Ensure a Trinity daemon is running. Reuses an already-listening daemon;
 /// otherwise spawns `trinityd` and waits for the port (up to ~15s).
 pub(crate) async fn ensure_trinityd_running() -> Result<u16, String> {
@@ -306,12 +349,12 @@ pub(crate) async fn ensure_trinityd_running() -> Result<u16, String> {
     }
 
     log::info!("[trinity] spawning trinityd: {}", bin.display());
-    // Force daemon mode on the port we probe, so a user config that disables
-    // `[daemon]` cannot leave the spawned process silent on stdio.
-    let child = openbitfun_core::util::process_manager::create_command(&bin)
-        .arg("--daemon")
-        .arg("--port")
-        .arg(port.to_string())
+    // No CLI overrides: the daemon reads its own config (`[daemon]` in
+    // `~/.config/trinity/trinity.toml`). The `port` probed above therefore has
+    // to match the configured `daemon.port`.
+    let mut command = openbitfun_core::util::process_manager::create_command(&bin);
+    bind_daemon_to_host_lifetime(&mut command);
+    let child = command
         .spawn()
         .map_err(|e| format!("spawn trinityd {}: {e}", bin.display()))?;
     // Track the child handle (instead of forgetting it) so host exit can shut
