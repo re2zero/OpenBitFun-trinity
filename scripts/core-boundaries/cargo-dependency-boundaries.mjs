@@ -15,6 +15,7 @@ const SKIPPED_DIRECTORIES = new Set([
   '.claude',
   '.cursor',
   '.git',
+  '.kilo',
   '.targets',
   '.tmp',
   '.worktrees',
@@ -61,6 +62,13 @@ function repositoryPath(root, path) {
     return null;
   }
   return result;
+}
+
+// This crates.io source is patched only to select the product TLS provider.
+// It is an external dependency, not an OpenBitFun runtime owner. Resolved
+// feature checks below still include it and its full dependency closure.
+function isVendoredExternalManifest(root, manifestPath) {
+  return repositoryPath(root, manifestPath) === 'third_party/eioc/Cargo.toml';
 }
 
 function layerForManifest(manifestPath, { root, crateLayoutRules }) {
@@ -160,6 +168,7 @@ const SERVICES_INTEGRATIONS_TOKIO_FEATURES = new Map([
   ['miniapp-storage', ['fs', 'time']],
   ['miniapp-runtime', ['fs', 'io-util', 'net', 'process', 'rt', 'sync', 'time']],
   ['miniapp-market', ['fs', 'io-util', 'net', 'process', 'rt', 'sync', 'time']],
+  ['skillhub', ['fs', 'io-util']],
   ['plugin-source', ['fs', 'rt', 'sync', 'time']],
   ['hook-import', ['fs', 'sync']],
   ['remote-connect', ['fs', 'io-util', 'net', 'process', 'rt', 'sync', 'time']],
@@ -175,7 +184,7 @@ const SERVICES_INTEGRATIONS_TOKIO_FEATURES = new Map([
 const SERVICES_CORE_TOKIO_FEATURES = new Map([
   ['credential-vault', ['fs', 'io-util', 'rt']],
   ['diff', ['rt', 'time']],
-  ['filesystem', ['fs', 'rt']],
+  ['filesystem', ['fs', 'rt', 'sync']],
   ['json-io', ['fs', 'rt', 'sync', 'time']],
   ['local-storage', ['fs', 'rt', 'sync', 'time']],
   ['permission', ['rt']],
@@ -184,6 +193,7 @@ const SERVICES_CORE_TOKIO_FEATURES = new Map([
   ['workspace-instructions', ['fs', 'io-util', 'rt']],
   ['workspace-text-runtime', ['rt']],
   ['workspace-runtime', ['fs', 'io-util', 'process', 'rt', 'sync', 'time']],
+  ['workspace-transfer', ['fs', 'io-util', 'rt', 'sync']],
 ]);
 const SERVICES_CORE_BASE_TOKIO_FEATURES = [];
 const SERVICES_INTEGRATIONS_TOKIO_AGGREGATES = new Set(['product-full']);
@@ -546,6 +556,13 @@ const THIRD_PARTY_CAPABILITY_PROFILES = new Map([
   ['image', {
     label: 'Image',
     packages: new Map([
+      ['openbitfun-services-core', dependencyProfile([], {
+        optional: true,
+        useDefaultFeatures: false,
+        ownerFeatureCapabilities: new Map([
+          ['pet-packages', ['gif', 'jpeg', 'png', 'webp']],
+        ]),
+      })],
       ['openbitfun-cli', dependencyProfile(['gif', 'jpeg', 'png', 'webp'], {
         useDefaultFeatures: false,
       })],
@@ -553,7 +570,9 @@ const THIRD_PARTY_CAPABILITY_PROFILES = new Map([
         optional: true,
         useDefaultFeatures: false,
       })],
-      ['openbitfun-desktop', dependencyProfile(['jpeg', 'png'], {
+      // Desktop owns bounded controller-local drag thumbnail decoding.
+      // Keep only its raster input formats and PNG/JPEG output codecs.
+      ['openbitfun-desktop', dependencyProfile(['bmp', 'gif', 'jpeg', 'png', 'webp'], {
         useDefaultFeatures: false,
       })],
       ['openbitfun-miniapp-market-service', dependencyProfile(['jpeg', 'png', 'webp'], {
@@ -579,7 +598,9 @@ const THIRD_PARTY_CAPABILITY_PROFILES = new Map([
   ['tokio-tungstenite', {
     label: 'Tokio Tungstenite',
     packages: new Map([
-      ['openbitfun-core', dependencyProfile([], { optional: true })],
+      ['openbitfun-core', { ...dependencyProfile([], { optional: true }),
+        devProfile: dependencyProfile([], { kind: 'dev' }),
+      }],
       // Loopback WebSocket lifecycle regressions only; the relay runtime is
       // an Axum server and does not acquire a TLS/client capability.
       ['openbitfun-relay-service', dependencyProfile(['connect', 'handshake'], {
@@ -734,6 +755,14 @@ function featureOwnedDependencyViolations(pkg, dependencyName, label, profile) {
 
 function thirdPartyDependencyProfileViolations(pkg, dependencyName, policy, profile) {
   const violations = [];
+  // A separately reviewed test client must not broaden the runtime edge.
+  if (profile.devProfile) {
+    const development = (pkg.dependencies ?? []).filter(dep => dep.name === dependencyName && dep.kind === 'dev');
+    if (development.length) violations.push(...thirdPartyDependencyProfileViolations(
+      { ...pkg, dependencies: development, features: {} }, dependencyName, policy, profile.devProfile,
+    ));
+    pkg = { ...pkg, dependencies: (pkg.dependencies ?? []).filter(dep => dep.name !== dependencyName || dep.kind !== 'dev') };
+  }
   const dependencies = (pkg.dependencies ?? []).filter(
     (dependency) => dependency.name === dependencyName,
   );
@@ -1049,6 +1078,7 @@ export function findServicesIntegrationsReqwestFeatureViolations(pkg) {
     ['browser-control', ['reqwest/json']],
     ['mcp', ['reqwest/json', 'reqwest/stream']],
     ['miniapp-market', ['reqwest/json', 'reqwest/query', 'reqwest/stream']],
+    ['skillhub', ['reqwest/json', 'reqwest/query', 'reqwest/stream']],
     ['miniapp-runtime', ['reqwest/stream']],
     ['models-dev', ['reqwest/system-proxy']],
     ['remote-connect', ['reqwest/json', 'reqwest/multipart', 'reqwest/query']],
@@ -1429,8 +1459,10 @@ export function findProductEntrypointCoreFeatureViolations(
     'tools-image-analysis',
     'tools-agent-control',
   ];
+  const CORE_TEST_SUPPORT_FEATURE = 'test-support';
   const reviewedCoreFeatureClosures = new Map([
     ['openbitfun-cli', [
+      'tools-pages',
       ...coreCompatibilityReviewedFeatures,
       'product-search',
       'remote-connect',
@@ -1496,6 +1528,7 @@ export function findProductEntrypointCoreFeatureViolations(
   ];
   const reviewedActiveCoreFeatureClosures = new Map([
     ['openbitfun-cli', [
+      'tools-pages',
       ...acpActiveCoreFeatures,
       'i18n-runtime',
       'plugin-runtime',
@@ -1677,6 +1710,21 @@ export function findProductEntrypointCoreFeatureViolations(
       }
       const roleOwnedAcpDependency =
         sourcePackage.name === 'openbitfun-acp' && dependency.optional === true;
+      if (dependency.kind === 'dev') {
+        // A `[dev-dependencies]` edge on openbitfun-core only widens the test
+        // build. It may switch on Core test-support constructors (isolated
+        // workspace catalogs for in-process fixtures) and nothing else; the
+        // product capability closure is owned by the normal dependency edge.
+        const devSelectedFeatures = [...new Set(dependency.features ?? [])].sort();
+        if (devSelectedFeatures.length !== 1 || devSelectedFeatures[0] !== CORE_TEST_SUPPORT_FEATURE) {
+          violations.push({
+            path: sourcePackage.manifest_path,
+            line: 1,
+            message: `${sourcePackage.name} openbitfun-core dev-dependency may select only ${CORE_TEST_SUPPORT_FEATURE}, not [${devSelectedFeatures.join(', ')}]`,
+          });
+        }
+        continue;
+      }
       if (
         !roleOwnedAcpDependency
         && (!Array.isArray(dependency.features) || dependency.features.length === 0)
@@ -2494,7 +2542,8 @@ export function discoverCargoManifestPaths(root) {
         }
         continue;
       }
-      if (entry.isFile() && entry.name === 'Cargo.toml') {
+      if (entry.isFile() && entry.name === 'Cargo.toml'
+        && !isVendoredExternalManifest(root, join(directory, entry.name))) {
         manifests.push(join(directory, entry.name));
       }
     }
@@ -2633,6 +2682,10 @@ export function collectCargoMetadataGraph({
         continue;
       }
       const packageManifestKey = normalizedPath(pkg.manifest_path);
+      if (isVendoredExternalManifest(root, pkg.manifest_path)
+        && pkg.name === 'eioc' && pkg.version === '0.5.0' && !workspaceMemberIds.has(pkg.id)) {
+        continue;
+      }
       if (workspaceMemberIds.has(pkg.id)) {
         coveredManifests.add(packageManifestKey);
       }

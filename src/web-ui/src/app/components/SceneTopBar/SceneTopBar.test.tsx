@@ -151,11 +151,11 @@ describe('SceneTopBar', () => {
     it.each([0, 1, 2, 8])('allows dragging and maximizing empty chrome with %i open tabs', async tabCount => {
       const toolbar = renderBar(tabCount);
       const tabList = toolbar.querySelector('[role="tablist"]')!;
-      const dragSpace = toolbar.querySelector('.openbitfun-scene-top-bar__drag-space')!;
-      expect(dragSpace).not.toBeNull();
-      expect(tabList.contains(dragSpace)).toBe(false);
+      const leading = toolbar.querySelector(':scope > [data-openbitfun-part="leading"]')!;
+      expect(leading.children).toHaveLength(1);
+      expect(leading.firstElementChild).toBe(tabList);
 
-      for (const target of [toolbar, tabList, dragSpace]) {
+      for (const target of [toolbar, leading, tabList]) {
         await mouseDown(target);
         doubleClick(target);
       }
@@ -163,25 +163,19 @@ describe('SceneTopBar', () => {
       expect(maximize).toHaveBeenCalledTimes(3);
     });
 
-    it('keeps the single tab label draggable and updates the boundary when another tab opens or closes', async () => {
-      const toolbar = renderBar();
-      const label = () => toolbar.querySelector('[role="tab"] [data-openbitfun-part="label"] span')!;
-      await mouseDown(label());
-      doubleClick(label());
-      expect(startDragging).toHaveBeenCalledOnce();
-      expect(maximize).toHaveBeenCalledOnce();
-
-      renderBar(2);
-      await mouseDown(label());
-      doubleClick(label());
-      expect(startDragging).toHaveBeenCalledOnce();
-      expect(maximize).toHaveBeenCalledOnce();
-
-      renderBar(1);
-      await mouseDown(label());
-      doubleClick(label());
-      expect(startDragging).toHaveBeenCalledTimes(2);
-      expect(maximize).toHaveBeenCalledTimes(2);
+    it('excludes the whole tab from window gestures as other tabs open and close', async () => {
+      for (const tabCount of [1, 2, 1]) {
+        const toolbar = renderBar(tabCount);
+        const tab = toolbar.querySelector('[role="tab"]')!;
+        const label = tab.querySelector('[data-openbitfun-part="label"] span')!;
+        const item = tab.closest('[data-openbitfun-part="item"]')!;
+        for (const target of [tab, label, item]) {
+          await mouseDown(target);
+          doubleClick(target);
+        }
+        expect(startDragging).not.toHaveBeenCalled();
+        expect(maximize).not.toHaveBeenCalled();
+      }
     });
 
     it('leaves multi-tab labels and item padding to tab interaction', async () => {
@@ -234,12 +228,11 @@ describe('SceneTopBar', () => {
       expect(maximize).not.toHaveBeenCalled();
     });
 
-    it('does not expose native window gestures or reserve desktop space in a browser runtime', async () => {
+    it('does not expose native window gestures in a browser runtime', async () => {
       vi.stubGlobal('__TAURI_INTERNALS__', undefined);
       const toolbar = renderBar(2);
       await mouseDown(toolbar);
       doubleClick(toolbar);
-      expect(toolbar.querySelector('.openbitfun-scene-top-bar__drag-space')).toBeNull();
       expect(startDragging).not.toHaveBeenCalled();
       expect(maximize).not.toHaveBeenCalled();
     });

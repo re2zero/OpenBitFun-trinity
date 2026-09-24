@@ -1,3 +1,5 @@
+import { StartupRevealPreference } from '../services/StartupRevealPreference';
+import { StartupBrandReveal } from './components/StartupBrandReveal';
 import { AppRootPresentation } from './components/AppRootPresentation';
 import { WatchProvisionCard } from './components/WatchProvisionCard';
 import { ArkUiAppRootHostAdapter } from './host/AppRootHostAdapter';
@@ -6,6 +8,7 @@ import { AppRootRuntime } from './runtime/AppRootRuntime';
 @Entry
 @ComponentV2
 struct AppRoot {
+  @Local showStartupBrand: boolean = false;
   private readonly hostAdapter: ArkUiAppRootHostAdapter = new ArkUiAppRootHostAdapter();
   private readonly runtime: AppRootRuntime = new AppRootRuntime(this.hostAdapter);
 
@@ -14,6 +17,7 @@ struct AppRoot {
     if (!hostContext) {
       throw new Error('App root host context is unavailable.');
     }
+    this.showStartupBrand = StartupRevealPreference.claim(hostContext);
     this.hostAdapter.attach(hostContext, this.getUIContext());
     await this.runtime.aboutToAppear();
   }
@@ -23,6 +27,7 @@ struct AppRoot {
   }
 
   onPageHide(): void {
+    this.showStartupBrand = false;
     this.runtime.onPageHide();
   }
 
@@ -31,6 +36,11 @@ struct AppRoot {
   }
 
   onBackPress(): boolean {
+    if (this.runtime.miniAppViewModel.state.visible) {
+      if (this.runtime.miniAppViewModel.state.appId) this.runtime.miniAppViewModel.actions.back();
+      else this.runtime.miniAppViewModel.close();
+      return true;
+    }
     return this.runtime.handleRootBack();
   }
 
@@ -38,6 +48,8 @@ struct AppRoot {
     Stack() {
       AppRootPresentation({
         shellState: this.runtime.appShellState,
+        miniAppState: this.runtime.miniAppViewModel.state,
+        miniAppActions: this.runtime.miniAppViewModel.actions,
         navigationStack: this.runtime.navigationStack,
         remotePageState: this.runtime.remotePageState,
         deviceDirectoryState: this.runtime.deviceDirectoryState,
@@ -46,6 +58,10 @@ struct AppRoot {
         deviceId: this.runtime.remoteConnectionController.getDeviceId(),
         actions: this.runtime.presentationActions
       })
+
+      if (this.showStartupBrand) {
+        StartupBrandReveal({ onFinished: () => { this.showStartupBrand = false; } })
+      }
 
       // Sits above every route on purpose: a watch waiting for approval must
       // not be hidden behind whatever screen the phone happens to be on.

@@ -4,6 +4,8 @@ import { createRoot, type Root } from 'react-dom/client';
 import { Simulate } from 'react-dom/test-utils';
 import RichTextInput, { type RichTextInputElement } from './RichTextInput';
 import type { ContextItem } from '../../shared/types/context';
+import { createMcpPromptReference } from '../utils/mcpPromptReference';
+import { composerPresentationToEditorText, parseComposerPresentation } from '../utils/composerPresentation';
 
 type HarnessHandle = {
   setValue: (value: string) => void;
@@ -136,17 +138,36 @@ describeWithJsdom('RichTextInput external sync', () => {
 
   function paste(
     editor: HTMLDivElement,
-    options: { items?: Array<{ kind: string; type: string; getAsFile: () => File | null }>; types?: string[]; text?: string },
+    options: {
+      items?: Array<{ kind: string; type: string; getAsFile: () => File | null }>;
+      types?: string[];
+      text?: string;
+      html?: string;
+    },
   ) {
     const event = new window.Event('paste', { bubbles: true, cancelable: true });
     Object.defineProperty(event, 'clipboardData', {
       value: {
         items: options.items ?? [],
         types: options.types ?? [],
-        getData: (type: string) => type === 'text/plain' ? options.text ?? '' : '',
+        getData: (type: string) => {
+          if (type === 'text/plain') return options.text ?? '';
+          if (type === 'text/html') return options.html ?? '';
+          return '';
+        },
       },
     });
     editor.dispatchEvent(event);
+  }
+
+  function copy(editor: HTMLDivElement) {
+    const clipboard = new Map<string, string>();
+    const event = new window.Event('copy', { bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'clipboardData', {
+      value: { setData: (type: string, value: string) => clipboard.set(type, value) },
+    });
+    editor.dispatchEvent(event);
+    return clipboard;
   }
 
   function setCaret(editor: HTMLDivElement, offset: number) {
@@ -259,6 +280,89 @@ describeWithJsdom('RichTextInput external sync', () => {
     setCaret(editor, editor.firstChild?.textContent?.length ?? 0);
     paste(editor, { types: ['text/plain'], text: 'long text content' });
     expect(editor.querySelector('[data-large-paste-placeholder]')).toBeTruthy();
+  });
+
+  it('rebuilds capsules from pasted inline token text', async () => {
+    const onChange = vi.fn();
+    await act(async () => {
+      root.render(
+        <RichTextInput
+          value=""
+          onChange={onChange}
+          contexts={emptyContexts}
+          onRemoveContext={() => {}}
+        />,
+      );
+    });
+    const editor = container.querySelector('.rich-text-input') as HTMLDivElement;
+    setCaret(editor, 0);
+
+    paste(editor, { types: ['text/plain'], text: 'run [$pdf] and [$doc] please' });
+
+    const pills = Array.from(
+      editor.querySelectorAll<HTMLElement>('[data-inline-token-type="skill-ref"]'),
+    );
+    expect(pills.map(pill => pill.dataset.tagFormat)).toEqual(['[$pdf]', '[$doc]']);
+    expect(editor.textContent).toBe('run pdf× and doc× please');
+    expect(onChange).toHaveBeenLastCalledWith('run [$pdf] and [$doc] please', emptyContexts);
+  });
+
+  it('restores capsules from the composer clipboard payload of a copied message', async () => {
+    const onChange = vi.fn();
+    await act(async () => {
+      root.render(
+        <RichTextInput
+          value=""
+          onChange={onChange}
+          contexts={emptyContexts}
+          onRemoveContext={() => {}}
+        />,
+      );
+    });
+    const editor = container.querySelector('.rich-text-input') as HTMLDivElement;
+    setCaret(editor, 0);
+
+    paste(editor, {
+      types: ['text/plain', 'text/html'],
+      text: '[Skill: pdf] summarize it',
+      html: '<div data-openbitfun-composer-clipboard="1" '
+        + 'data-openbitfun-composer-clipboard-tokens="[$pdf] summarize it">'
+        + '[Skill: pdf] summarize it</div>',
+    });
+
+    expect(editor.querySelector<HTMLElement>('[data-inline-token-type="skill-ref"]')?.dataset.tagFormat)
+      .toBe('[$pdf]');
+    expect(onChange).toHaveBeenLastCalledWith('[$pdf] summarize it', emptyContexts);
+  });
+
+  it('copies a selection as composer token text with a marked payload', async () => {
+    const inputRef = createRef<RichTextInputElement>();
+    await act(async () => {
+      root.render(
+        <RichTextInput
+          ref={inputRef}
+          value="compare [$pdf] with [$doc]"
+          onChange={() => {}}
+          contexts={emptyContexts}
+          onRemoveContext={() => {}}
+        />,
+      );
+    });
+    const editor = inputRef.current!;
+
+    const selection = window.getSelection()!;
+    const range = document.createRange();
+    range.selectNodeContents(editor);
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    const clipboard = copy(editor);
+
+    expect(clipboard.get('text/plain')).toBe('compare [$pdf] with [$doc]');
+    const html = clipboard.get('text/html') ?? '';
+    expect(html).toContain('data-openbitfun-composer-clipboard="1"');
+    expect(html).toContain('data-openbitfun-composer-clipboard-tokens="compare [$pdf] with [$doc]"');
+    expect(html).not.toContain('rich-text-tag-pill__remove');
   });
 
   it('keeps the existing DOM node when parent echoes local input', async () => {
@@ -737,6 +841,68 @@ describeWithJsdom('RichTextInput external sync', () => {
 
     expect(onChange).toHaveBeenLastCalledWith('', emptyContexts);
     expect(editor?.textContent).toBe('');
+  });
+
+  it('replaces @ with an MCP service capsule while sending the exact reference', async () => {
+    const onChange = vi.fn();
+    const reference = createMcpPromptReference({ serverName: 'Docs', serverId: 'docs-private-id' });
+    await act(async () => root.render(
+      <RichTextInput value="Please use @docs" onChange={onChange} contexts={emptyContexts} onRemoveContext={() => {}} />,
+    ));
+    const editor = container.querySelector('.rich-text-input') as RichTextInputElement;
+    setCaret(editor, 'Please use @docs'.length);
+    await act(async () => editor.dispatchEvent(new window.Event('input', { bubbles: true })));
+    await act(async () => editor.replaceActiveContextTrigger?.(reference));
+    expect(onChange).toHaveBeenLastCalledWith(`Please use ${reference}`, emptyContexts);
+    const capsule = editor.querySelector<HTMLElement>('[data-inline-token-type="mcp-ref"]');
+    expect(capsule?.querySelector('[data-openbitfun-part="tagText"]')?.textContent).toBe('Docs');
+    expect(capsule?.querySelector('[data-openbitfun-part="tagBadge"] svg')).not.toBeNull();
+    expect(capsule?.getAttribute('contenteditable')).toBe('false');
+    expect(capsule?.dataset.tagFormat).toBe(reference);
+    expect(editor.textContent).not.toContain('server:');
+    expect(editor.textContent).not.toContain('docs-private-id');
+    expect(editor.textContent).not.toContain('@docs');
+  });
+
+  it('restores MCP capsules from legacy plain-text drafts and preserves the text presentation shape', async () => {
+    const first = createMcpPromptReference({ serverName: 'Docs', serverId: 'one' });
+    const second = createMcpPromptReference({ serverName: 'Docs', serverId: 'two' });
+    const value = `Compare ${first} with ${second} please.`;
+    const inputRef = createRef<RichTextInputElement>();
+    await act(async () => root.render(<RichTextInput ref={inputRef} value={value} onChange={() => {}} contexts={emptyContexts} onRemoveContext={() => {}} />));
+    const presentation = inputRef.current!.getComposerPresentation!()!;
+    expect(presentation.segments).toEqual([{ kind: 'text', text: value }]);
+    expect(parseComposerPresentation(presentation)).toEqual(presentation);
+    expect(composerPresentationToEditorText(presentation)).toBe(value);
+    await act(async () => {
+      inputRef.current!.replaceChildren();
+      inputRef.current!.restoreComposerPresentation!(presentation);
+    });
+    const pills = inputRef.current!.querySelectorAll<HTMLElement>('[data-inline-token-type="mcp-ref"]');
+    expect(Array.from(pills, pill => pill.dataset.tagFormat)).toEqual([first, second]);
+    expect(inputRef.current!.textContent).toBe('Compare Docs× with Docs× please.');
+  });
+
+  it.each(['remove-button', 'Backspace'])('removes an MCP capsule atomically with %s', async method => {
+    const onChange = vi.fn();
+    const reference = createMcpPromptReference({ serverName: 'Docs', serverId: 'docs' });
+    await act(async () => root.render(<RichTextInput value={`before ${reference}`} onChange={onChange} contexts={emptyContexts} onRemoveContext={() => {}} />));
+    const editor = container.querySelector('.rich-text-input') as RichTextInputElement;
+    await act(async () => {
+      if (method === 'remove-button') {
+        editor.querySelector<HTMLButtonElement>('[data-inline-token-type="mcp-ref"] button')!.click();
+      } else {
+        const range = document.createRange();
+        range.selectNodeContents(editor);
+        range.collapse(false);
+        const selection = window.getSelection()!;
+        selection.removeAllRanges();
+        selection.addRange(range);
+        editor.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Backspace', bubbles: true, cancelable: true }));
+      }
+    });
+    expect(editor.querySelector('[data-inline-token-type="mcp-ref"]')).toBeNull();
+    expect(onChange).toHaveBeenLastCalledWith('before', emptyContexts);
   });
 
   it('can replace an active inline trigger with a skill token', async () => {

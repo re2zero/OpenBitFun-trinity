@@ -1,6 +1,5 @@
 import React, { useRef, useEffect } from 'react';
-import { createPortal } from 'react-dom';
-import { Menu, MenuItem } from '@openbitfun/ui';
+import { subscribeOverlayInteraction, createOverlayPortal, Menu, MenuItem } from '@openbitfun/ui';
 import { Timer, Infinity as InfinityIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { getAppearanceOverlayHost } from '@/infrastructure/appearance/runtime/AppearanceOverlayHost';
@@ -111,8 +110,8 @@ export const ToolTimeoutIndicator: React.FC<ToolTimeoutIndicatorProps> = ({
         closePopover();
       }
     };
-    document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
+    const removeOverlayMousedown0 = subscribeOverlayInteraction(popoverRef, 'mousedown', handleClick);
+    return () => removeOverlayMousedown0?.();
   }, [isPopoverOpen, closePopover]);
 
   // Close popover on Escape.
@@ -121,8 +120,8 @@ export const ToolTimeoutIndicator: React.FC<ToolTimeoutIndicatorProps> = ({
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') closePopover();
     };
-    document.addEventListener('keydown', handleKey);
-    return () => document.removeEventListener('keydown', handleKey);
+    const removeOverlayKeydown1 = subscribeOverlayInteraction(popoverRef, 'keydown', handleKey);
+    return () => removeOverlayKeydown1?.();
   }, [isPopoverOpen, closePopover]);
 
   // Completed state: show precise duration when the card is expanded.
@@ -226,7 +225,7 @@ export const ToolTimeoutIndicator: React.FC<ToolTimeoutIndicatorProps> = ({
             </span>
           </button>
 
-          {isPopoverOpen && createPortal(
+          {isPopoverOpen && createOverlayPortal(
             <Menu
               ref={popoverRef}
               data-openbitfun-component="tool-timeout-indicator"

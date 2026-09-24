@@ -369,6 +369,10 @@ export interface AIConfig {
   stream_idle_timeout_secs?: number | null;
   stream_ttft_timeout_secs?: number | null;
   tool_execution_timeout_secs?: number | null;
+  /** Seconds until first interaction; null or zero disables timeout. Default: 180. */
+  user_question_timeout_secs?: number | null;
+  /** Opt-in evaluation edit constraint guard; defaults to false. */
+  enable_edit_constraint_guard?: boolean;
   allow_tool_json_repair?: boolean;
   subagent_batch_execution_policy?: 'safe_only' | 'force_parallel' | 'serial';
   computer_use_enabled?: boolean;
@@ -400,6 +404,11 @@ export type ParentSubagentOverrideConfig = Record<string, AgentSubagentOverrideS
 export type SkillLevel = 'user' | 'project';
 
 export interface SkillInfo {
+  /** The external origin of an explicitly installed native copy. */
+  importOrigin?: {
+    schemaVersion: number; importId: string; sourceKey: string; sourcePath: string;
+    sourceId: string; sourceLabel: string; sourceSlot: string; fingerprint: string;
+  } | null;
   key: string;
   name: string;
   description: string;
@@ -451,6 +460,8 @@ export interface ModeSkillInfo extends SkillInfo {
 
 export interface GlobalSkillSettings {
   globallyDisabledUserSkillKeys: string[];
+  globallyDisabledProjectSkillKeys?: string[];
+  directSkillManagementVersion?: number;
 }
 
 export interface SkillScanDiagnostic {
@@ -460,13 +471,34 @@ export interface SkillScanDiagnostic {
 }
 
 export interface SkillScanReport<T = SkillInfo> {
+  /** Negotiated host support for durable external copies and identity-checked undo. */
+  importOperationsVersion?: number;
   skills: T[];
   diagnostics: SkillScanDiagnostic[];
   /** False when an older host returns the legacy array instead of diagnostics. */
   diagnosticsAvailable: boolean;
 }
 
+export interface SkillMarketSource {
+  id: string;
+  name: string;
+  provider: string;
+  url: string;
+  enabled: boolean;
+  api_token: string;
+}
+
+export interface SkillMarketConfig {
+  sources: SkillMarketSource[];
+}
+
+export interface SkillMarketResults {
+  skills: SkillMarketItem[];
+  sourceErrors: string[];
+}
+
 export interface SkillMarketItem {
+  marketName?: string;
   id: string;
   name: string;
   description: string;
@@ -483,7 +515,15 @@ export interface SkillMarketDownloadResult {
   output: string;
 }
 
+export interface SkillImportPreview {
+  fingerprint: string;
+  fileCount: number;
+  name: string;
+  description: string;
+}
+
 export interface SkillValidationResult {
+  importPreview?: SkillImportPreview;
   valid: boolean;
   name?: string;
   description?: string;

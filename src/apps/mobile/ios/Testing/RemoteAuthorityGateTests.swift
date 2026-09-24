@@ -583,16 +583,101 @@ struct RemoteAuthorityGateTests {
             message: "terminal authority loss clears the complete target projection before dropping model authority"
         )
 
+        for (target, storeDevice) in [("account:device-a", "device-a" as String?), ("pairing:session-a", nil)] {
+            expect(RemoteAuthorityGate.filePreviewCallbackMatchesAuthority(
+                requestTargetKey: target, requestEpoch: 7,
+                adapterTargetKey: target, adapterEpoch: 7,
+                expectedStoreDeviceKey: storeDevice, callbackDeviceKey: storeDevice
+            ), "preview accepts store identity independently of the adapter namespace")
+            expect(!RemoteAuthorityGate.filePreviewCallbackMatchesAuthority(
+                requestTargetKey: target, requestEpoch: 7,
+                adapterTargetKey: target, adapterEpoch: 8,
+                expectedStoreDeviceKey: storeDevice, callbackDeviceKey: storeDevice
+            ), "rebound stores cannot update an old preview")
+            expect(!RemoteAuthorityGate.filePreviewCallbackMatchesAuthority(
+                requestTargetKey: target, requestEpoch: 7,
+                adapterTargetKey: target, adapterEpoch: 7,
+                expectedStoreDeviceKey: storeDevice, callbackDeviceKey: "different-device"
+            ), "another device's preview is rejected")
+        }
+
+        expect(ComposerSendSettlementPolicy.shouldRestore(
+            sentSession: "a", currentSession: "a", acknowledged: false,
+            draftIsEmpty: true, attachmentsAreEmpty: true, draftUnchanged: true
+        ), "failed send restores the cleared composer")
+        for (session, ack, emptyDraft, emptyImages) in [
+            ("a", true, true, true), ("b", false, true, true),
+            ("a", false, false, true), ("a", false, true, false)
+        ] {
+            expect(!ComposerSendSettlementPolicy.shouldRestore(
+                sentSession: "a", currentSession: session, acknowledged: ack,
+                draftIsEmpty: emptyDraft, attachmentsAreEmpty: emptyImages, draftUnchanged: true
+            ), "send settlement preserves newer typing, attachments and another session")
+        }
+        expect(!ComposerSendSettlementPolicy.shouldRestore(
+            sentSession: "a", currentSession: "a", acknowledged: false,
+            draftIsEmpty: true, attachmentsAreEmpty: true, draftUnchanged: false
+        ), "edits later erased, removed attachments and session round trips invalidate restoration")
+        for reason in ["NETWORK", "TIMEOUT", "TRANSPORT"] {
+            expect(RemoteSessionFailureProjectionPolicy.keepsVisibleConversation(reasonName: reason),
+                   "a retryable transport failure keeps the rendered conversation")
+        }
+        // The store maps exactly these reasons to `ConnectionPhase.RECONNECTING`;
+        // everything else is a deterministic end the projection must follow.
+        for reason in [
+            "SESSION_NOT_FOUND", "PROTOCOL_MISMATCH", "NO_WORKSPACE", "REMOTE_REJECTED",
+            "RATE_LIMITED", "WORKSPACE_ID_UNSUPPORTED", "WORKSPACE_ID_UNKNOWN",
+            "HOST_STREAM_UNSUPPORTED",
+        ] {
+            expect(!RemoteSessionFailureProjectionPolicy.keepsVisibleConversation(reasonName: reason),
+                   "a deterministic \(reason) failure ends the projection")
+        }
+        expectCallBeforeMutation(
+            in: remoteSessionSource,
+            function: "func apply(remoteState state: RemoteSessionUiState",
+            call: "RemoteSessionFailureProjectionPolicy.keepsVisibleConversation(",
+            mutation: "timelineRows = []",
+            message: "a retryable remote failure is classified before any projection is cleared"
+        )
+        expectCallBeforeMutation(
+            in: remoteSessionSource,
+            function: "func sendRemote()",
+            call: "draft = \"\"",
+            mutation: "coreAdapter.sendRemote(",
+            message: "accepted send clears the composer before dispatching network work"
+        )
+
+        let selectionAdapterSource = readSource(
+            iosDirectory.appendingPathComponent("OpenBitFun/Infrastructure/MobileCoreAdapter.swift")
+        )
+        expectCallBeforeMutation(
+            in: selectionAdapterSource,
+            function: "func selectAccountDevice(id: String)",
+            call: "onAccountState?(ready, accountGeneration)",
+            mutation: "startAccountRemoteSessionIfNeeded(",
+            message: "reselecting a persisted device acknowledges account readiness without waiting for a changed StateFlow"
+        )
+
         let filePreviewSource = readSource(
             iosDirectory.appendingPathComponent("OpenBitFun/Infrastructure/MobileAppModel+FilePreview.swift")
         )
-        let guardedEntryCount = filePreviewSource.components(
-            separatedBy: "guard surface == .remote, remoteSessionSelected"
-        ).count - 1
-        expect(
-            guardedEntryCount >= 2,
-            "preview and download production entries remain closed after token expiry clears remote selection"
+        expectCallBeforeMutation(
+            in: filePreviewSource, function: "func openRemoteFile(",
+            call: "guard surface == .remote, remoteSessionSelected",
+            mutation: "adapter.openRemoteFile(",
+            message: "chat file preview remains closed after remote selection expires"
         )
+        expectCallBeforeMutation(
+            in: filePreviewSource, function: "func downloadRemoteFile(",
+            call: "guard remoteSessionSelected", mutation: "beginRemoteDownload(",
+            message: "chat download requires a selected session"
+        )
+        expectCallBeforeMutation(
+            in: filePreviewSource, function: "private func beginRemoteDownload(",
+            call: "guard surface == .remote, remoteConnected", mutation: "coreAdapter?.downloadRemoteFile(",
+            message: "both device-tool and chat downloads require a connected remote authority"
+        )
+
     }
 
     private static func readSource(_ url: URL) -> String {

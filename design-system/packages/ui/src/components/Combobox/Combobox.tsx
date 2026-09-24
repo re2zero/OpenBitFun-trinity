@@ -511,6 +511,7 @@ const CollectionPicker = forwardRef<HTMLDivElement, PickerProps>(function Collec
       className={styles.popover}
       data-openbitfun-component={multiple ? "multi-select-popup" : "combobox-popup"}
       data-openbitfun-part="popover"
+      data-openbitfun-native-webview-occlusion
       data-keyboard-open={keyboardOpen ? "true" : "false"}
       data-invalid={invalid ? "true" : "false"}
       data-placement={layout?.placement ?? placement}
@@ -705,7 +706,7 @@ const CollectionPicker = forwardRef<HTMLDivElement, PickerProps>(function Collec
             ) : (
               <span className={styles.singleValue}>
                 {singleOption?.leading && (
-                  <span aria-hidden="true" className={styles.valueLeading}>{singleOption.leading}</span>
+                  <span aria-hidden="true" className={styles.valueLeading} data-openbitfun-icon-slot="true">{singleOption.leading}</span>
                 )}
                 <OverflowText className={styles.valueLabel}>{singleOption?.label}</OverflowText>
               </span>
@@ -727,7 +728,7 @@ const CollectionPicker = forwardRef<HTMLDivElement, PickerProps>(function Collec
             variant="quiet"
           />
         )}
-        <span aria-hidden="true" className={styles.indicator} data-openbitfun-part="indicator">
+        <span aria-hidden="true" className={styles.indicator} data-openbitfun-icon-slot="true" data-openbitfun-part="indicator">
           <Icon name="chevron-down" />
         </span>
       </div>
@@ -737,7 +738,7 @@ const CollectionPicker = forwardRef<HTMLDivElement, PickerProps>(function Collec
         </span>
       ) : null}
       {popover && (
-        <Portal ownerDocument={triggerRef.current?.ownerDocument}>
+        <Portal ownerDocument={triggerRef.current?.ownerDocument} ownerRef={triggerRef} open={resolvedOpen}>
           {popover}
         </Portal>
       )}

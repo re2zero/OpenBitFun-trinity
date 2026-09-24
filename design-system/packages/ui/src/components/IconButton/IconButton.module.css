@@ -4,10 +4,13 @@
     --_icon-button-background-hover: var(--openbitfun-color-action-neutral-surface-hover);
     --_icon-button-background-active: var(--openbitfun-color-action-neutral-surface-hover);
     --_icon-button-content: var(--openbitfun-color-content-primary);
-    --_icon-button-icon-size: 14px;
+    --_icon-button-icon-size: var(--openbitfun-control-icon-size-sm);
     --_icon-button-size: var(--openbitfun-control-height-sm);
 
     position: relative;
+    /* Match Button: the pseudo-element owns hover feedback, not the native control. */
+    -webkit-appearance: none;
+    appearance: none;
     box-sizing: border-box;
     display: inline-flex;
     flex: 0 0 auto;
@@ -123,12 +126,12 @@
   }
 
   .button[data-size="md"] {
-    --_icon-button-icon-size: 16px;
+    --_icon-button-icon-size: var(--openbitfun-control-icon-size-md);
     --_icon-button-size: var(--openbitfun-control-height-md);
   }
 
   .button[data-size="lg"] {
-    --_icon-button-icon-size: 20px;
+    --_icon-button-icon-size: var(--openbitfun-control-icon-size-lg);
     --_icon-button-size: var(--openbitfun-control-height-lg);
   }
 
@@ -175,6 +178,7 @@
 
   @media (prefers-reduced-motion: reduce) {
     .button,
+    .button::before,
     .progress {
       transition: none;
     }

@@ -1,4 +1,4 @@
-//! Full-viewport GitHub account panel (Login / Account status).
+//! Full-viewport OpenBitFun account panel (Login / Account status).
 //!
 //! Opened by `/login`. When already logged in, shows account info and connected devices instead of the credential form.
 
@@ -20,7 +20,7 @@ pub(crate) enum LoginFormAction {
     None,
     /// Close the panel (Esc on most views).
     Cancel,
-    /// Start GitHub sign-in or check an existing transaction.
+    /// Start account sign-in or check an existing transaction.
     Submit(Option<String>),
     /// User requested logout from the account page.
     Logout,
@@ -108,7 +108,7 @@ impl LoginFormState {
 
     pub(crate) fn set_authorization(&mut self, authorization: GitHubAuthStart) {
         self.authorization = Some(authorization);
-        self.set_status("Complete GitHub authorization, then press Enter.");
+        self.set_status("Complete OpenBitFun authorization, then press Enter.");
     }
 
     pub(crate) fn insert_paste(&mut self, _text: &str) {}
@@ -188,7 +188,7 @@ impl LoginFormState {
         let outer = Block::default()
             .borders(Borders::ALL)
             .border_style(theme.style(StyleKind::Primary))
-            .title(" OpenBitFun · GitHub Sign-in ")
+            .title(" OpenBitFun · Account Sign-in ")
             .title_alignment(Alignment::Center);
         let inner = outer.inner(area);
         frame.render_widget(outer, area);
@@ -202,7 +202,7 @@ impl LoginFormState {
             ])
             .split(inner);
         frame.render_widget(
-            Paragraph::new("Use the same GitHub account as the OpenBitFun marketplaces.")
+            Paragraph::new("Use the same OpenBitFun account as the OpenBitFun marketplaces.")
                 .style(theme.style(StyleKind::Muted))
                 .wrap(Wrap { trim: false }),
             rows[0],
@@ -211,7 +211,7 @@ impl LoginFormState {
             .authorization
             .as_ref()
             .map(|a| format!("Open this link in your browser:\n\n{}", a.authorization_url))
-            .unwrap_or_else(|| "Press Enter to sign in with GitHub.".to_string());
+            .unwrap_or_else(|| "Press Enter to sign in with email or GitHub.".to_string());
         frame.render_widget(
             Paragraph::new(text)
                 .style(theme.style(StyleKind::Primary))
@@ -231,7 +231,7 @@ impl LoginFormState {
         let outer = Block::default()
             .borders(Borders::ALL)
             .border_style(theme.style(StyleKind::Primary))
-            .title(" GitHub Account ")
+            .title(" OpenBitFun Account ")
             .title_alignment(Alignment::Center);
         let inner = outer.inner(area);
         frame.render_widget(outer, area);
@@ -297,13 +297,29 @@ impl LoginFormState {
                 let is_local = local_id == Some(d.device_id.as_str());
                 let status = if d.online { "online" } else { "offline" };
                 let badge = if is_local { " [this device]" } else { "" };
+                // A missing flag (older Relay) is unknown and shows nothing.
+                let compat = if d.is_compatible() {
+                    ""
+                } else {
+                    "  · incompatible"
+                };
                 device_lines.push(Line::from(Span::styled(
                     format!(
-                        "  {}{}  {}  · {}",
-                        d.device_name,
+                        "  {}{}  {}  · {}{}  {}",
+                        d.display_name(),
                         badge,
                         truncate_id(&d.device_id),
-                        status
+                        status,
+                        compat,
+                        [
+                            d.device_model.as_deref(),
+                            d.device_os.as_deref(),
+                            d.device_os_version.as_deref()
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .collect::<Vec<_>>()
+                        .join(" ")
                     ),
                     if d.online {
                         Style::default().fg(Color::White)
@@ -364,25 +380,19 @@ impl LoginFormState {
     }
 
     fn render_message(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        if let Some(ref err) = self.error {
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    err.as_str(),
-                    theme.style(StyleKind::Error),
-                )))
-                .alignment(Alignment::Center),
-                area,
-            );
+        // The error may carry a second guidance line; keep it on its own row.
+        let (message, style) = if let Some(ref err) = self.error {
+            (err.as_str(), theme.style(StyleKind::Error))
         } else if let Some(ref status) = self.status {
-            frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    status.as_str(),
-                    theme.style(StyleKind::Info),
-                )))
-                .alignment(Alignment::Center),
-                area,
-            );
-        }
+            (status.as_str(), theme.style(StyleKind::Info))
+        } else {
+            return;
+        };
+        let lines: Vec<Line> = message
+            .lines()
+            .map(|line| Line::from(Span::styled(line.to_string(), style)))
+            .collect();
+        frame.render_widget(Paragraph::new(lines).alignment(Alignment::Center), area);
     }
 
     fn render_hints(&self, frame: &mut Frame, area: Rect, hints: &str, theme: &Theme) {

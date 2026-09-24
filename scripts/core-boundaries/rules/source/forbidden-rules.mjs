@@ -8,6 +8,20 @@ const agentRuntimeRootUnexpectedLine = new RegExp(
 );
 
 export const forbiddenContentRules = [
+  {
+    path: 'src/apps/desktop/src/api/path_target.rs',
+    patterns: [{
+      regex: /\b(?:lookup_remote_entry_for_path|lookup_remote_connection(?:_scoped|_with_hint)?|should_force_local_assistant_path)\b/,
+      message: 'desktop file routing must resolve workspace IDs; legacy path interpretation belongs only to the upgrade adapter',
+    }],
+  },
+  {
+    path: 'src/crates/assembly/core/src/service/filesystem/service.rs',
+    patterns: [{
+      regex: /\blookup_remote_connection(?:_scoped|_with_hint)?\b/,
+      message: 'filesystem IO must use an explicit provider scope, never infer a workspace from a path',
+    }],
+  },
   ...[
     'file_read_tool', 'file_write_tool', 'file_edit_tool', 'delete_file_tool', 'ls_tool',
   ].map((tool) => ({
@@ -82,7 +96,7 @@ export const forbiddenContentRules = [
     reason: 'agent-runtime-ipc operation scope is frozen to the reviewed Shared TUI slice',
     patterns: [
       {
-        regex: /^\s+(?!(?:Health|ListAgentModes|ListSessions|CreateSession|RestoreSession|DeleteSession|ForkSession|RenameSession|UpdateSessionMode|UpdateSessionModel|ReloadSessionContext|CompactSession|UndoSession|RedoSession|SessionUsage|WaitForSettlement|RecordLocalCommandTurn|SearchWorkspaceReferences|WorkspaceReferencesForMessage|GetSessionLineage|InspectLineageSession|CancelLineageSession|WorkspaceDiff|SubmitTurn|SteerTurn|RunUserShellCommand|CancelTurn|PendingPermissions|RespondPermission|SubmitUserAnswers|Unit|AgentModes|Sessions|SessionCreated|SessionRestored|SessionForked|SessionReverted|SessionLineage|LineageSessionInspection|WorkspaceReferenceSearch|WorkspaceReferences|TurnAccepted|TurnSteered|TurnCancelled|LocalCommandTurnRecorded|Idle|Processing|Error|Starting|Compacting|Thinking|Streaming|ToolCalling|ToolConfirming|None|CurrentController|AttachExisting|UncontrolledTarget|Self|RuntimeIpcSessionRequirement|RuntimeIpcOperationRules|RuntimeSessionForkRequest|RuntimeSessionState|RuntimeSessionProcessingPhase|AgentContextReloadRequest|AgentDialogSteerRequest|AgentDialogTurnRequest|AgentLocalCommandTurnRecordRequest|AgentLocalCommandTurnRecordResult|AgentMessageWorkspaceReferencesRequest|AgentSessionCompactionRequest|AgentSessionCreateRequest|AgentSessionCreateResult|AgentSessionLineageCancellationRequest|AgentSessionLineageInspection|AgentSessionLineageRequest|AgentSessionLineageSnapshot|AgentSessionLineageTranscriptRequest|AgentSessionListRequest|AgentSessionModeUpdateRequest|AgentSessionModelUpdateRequest|AgentSessionRevertRequest|AgentSessionRevertResult|AgentSessionSummary|AgentSessionUsageRequest|AgentTurnCancellationRequest|AgentTurnCancellationResult|AgentTurnSettlementRequest|AgentUserShellCommandRequest|AgentWorkspaceReference|AgentWorkspaceReferenceSearchRequest|AgentWorkspaceReferenceSearchResult|SessionTranscript|SessionUsageReport|WorkspaceDiffSnapshot)\b)[A-Z][A-Za-z0-9_]*\b/,
+        regex: /^\s+(?!(?:Health|ListAgentModes|ListSessions|CreateSession|RestoreSession|DeleteSession|ForkSession|RenameSession|UpdateSessionMode|UpdateSessionModel|ReloadSessionContext|CompactSession|UndoSession|RedoSession|SessionUsage|WaitForSettlement|RecordLocalCommandTurn|SearchWorkspaceReferences|WorkspaceReferencesForMessage|GetSessionLineage|InspectLineageSession|CancelLineageSession|WorkspaceDiff|SubmitTurn|SteerTurn|RunUserShellCommand|CancelTurn|PendingPermissions|RespondPermission|StartQuestionInteraction|CancelUserQuestion|SubmitUserAnswers|Unit|AgentModes|Sessions|SessionCreated|SessionRestored|SessionForked|SessionReverted|SessionLineage|LineageSessionInspection|WorkspaceReferenceSearch|WorkspaceReferences|TurnAccepted|TurnSteered|TurnCancelled|LocalCommandTurnRecorded|Idle|Processing|Error|Starting|Compacting|Thinking|Streaming|ToolCalling|ToolConfirming|None|CurrentController|AttachExisting|UncontrolledTarget|Self|RuntimeIpcSessionRequirement|RuntimeIpcOperationRules|RuntimeSessionForkRequest|RuntimeSessionState|RuntimeSessionProcessingPhase|AgentContextReloadRequest|AgentDialogSteerRequest|AgentDialogTurnRequest|AgentLocalCommandTurnRecordRequest|AgentLocalCommandTurnRecordResult|AgentMessageWorkspaceReferencesRequest|AgentSessionCompactionRequest|AgentSessionCreateRequest|AgentSessionCreateResult|AgentSessionLineageCancellationRequest|AgentSessionLineageInspection|AgentSessionLineageRequest|AgentSessionLineageSnapshot|AgentSessionLineageTranscriptRequest|AgentSessionListRequest|AgentSessionModeUpdateRequest|AgentSessionModelUpdateRequest|AgentSessionRevertRequest|AgentSessionRevertResult|AgentSessionSummary|AgentSessionUsageRequest|AgentTurnCancellationRequest|AgentTurnCancellationResult|AgentTurnSettlementRequest|AgentUserShellCommandRequest|AgentWorkspaceReference|AgentWorkspaceReferenceSearchRequest|AgentWorkspaceReferenceSearchResult|SessionTranscript|SessionUsageReport|WorkspaceDiffSnapshot)\b)[A-Z][A-Za-z0-9_]*\b/,
         message:
           'agent-runtime-ipc may not add archive, replay, observer, general controller-transfer, or other operations beyond the reviewed Shared TUI slice',
       },
@@ -1464,6 +1478,10 @@ export const forbiddenContentRules = [
   {
     path: 'src/crates/assembly/core/src/service/search/remote.rs',
     patterns: [
+      {
+        regex: /\blookup_remote_connection(?:_scoped|_with_hint)?\b/,
+        message: 'remote search must use the ID-bound workspace object, never reselect a workspace by a path',
+      },
       {
         regex: /\bconst\s+REMOTE_FLASHGREP_INSTALL_DIR\b/,
         message:
@@ -4230,7 +4248,9 @@ export const forbiddenContentUnderRules = [
       allowPaths: [
         'src/crates/adapters/static-hook-support/tests/parser.rs',
         'src/crates/adapters/dsh-adapter/src/hook_source.rs',
+        'src/crates/adapters/dsh-adapter/src/mcp_source.rs',
         'src/crates/adapters/pi-adapter/src/hook_source.rs',
+        'src/crates/adapters/pi-adapter/src/skill_source.rs',
         'src/crates/adapters/opencode-adapter/src/hook_source.rs',
         'src/crates/adapters/opencode-adapter/src/command_source.rs',
         'src/crates/adapters/opencode-adapter/src/agent_source.rs',

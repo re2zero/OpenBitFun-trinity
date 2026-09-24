@@ -77,8 +77,8 @@
     --openbitfun-control-flow-chat-card-radius: var(--openbitfun-radius-base);
     --openbitfun-control-flow-chat-code-block-padding-block: 0.55rem;
     --openbitfun-control-flow-chat-code-block-padding-inline: 0.75rem;
-    --openbitfun-control-flow-chat-content-padding-inline: 3rem;
-    --openbitfun-control-flow-chat-content-padding-inline-mobile: 1.5rem;
+    --openbitfun-control-flow-chat-content-padding-inline: 0.75rem;
+    --openbitfun-control-flow-chat-content-padding-inline-mobile: var(--openbitfun-control-flow-chat-content-padding-inline);
     --openbitfun-control-flow-chat-control-gap: var(--openbitfun-space-2);
     --openbitfun-control-flow-chat-control-padding-block: var(--openbitfun-space-1);
     --openbitfun-control-flow-chat-control-padding-inline: 0.75rem;
@@ -96,6 +96,8 @@
     --openbitfun-control-icon-size-md: 16px;
     --openbitfun-control-icon-size-sm: 14px;
     --openbitfun-control-icon-size-xs: 12px;
+    --openbitfun-control-icon-stroke-width: 1.6;
+    --openbitfun-control-icon-stroke-width-strong: 2;
     --openbitfun-control-icon-button-standard-icon-size: 16px;
     --openbitfun-control-icon-button-standard-size: 30px;
     --openbitfun-control-icon-button-xs-icon-size: 14px;
@@ -106,6 +108,9 @@
     --openbitfun-control-launcher-button-min-inline-size: 72px;
     --openbitfun-control-launcher-button-padding-inline: 10px;
     --openbitfun-control-launcher-button-radius: var(--openbitfun-radius-lg);
+    --openbitfun-control-search-field-height-lg: var(--openbitfun-control-height-lg);
+    --openbitfun-control-search-field-height-md: var(--openbitfun-control-height-md);
+    --openbitfun-control-search-field-height-sm: var(--openbitfun-control-height-sm);
     --openbitfun-control-segmented-control-gap: var(--openbitfun-space-1);
     --openbitfun-control-segmented-control-icon-size: 12px;
     --openbitfun-control-segmented-control-icon-size-md: 14px;
@@ -138,7 +143,7 @@
     --openbitfun-control-switch-track-height: 16px;
     --openbitfun-control-switch-track-width: 28px;
     --openbitfun-control-tab-group-gap: var(--openbitfun-space-2);
-    --openbitfun-control-tab-group-item-action-inset: var(--openbitfun-space-2);
+    --openbitfun-control-tab-group-item-action-inset: var(--openbitfun-space-1);
     --openbitfun-control-tab-group-item-action-size: var(--openbitfun-space-5);
     --openbitfun-control-tab-group-item-gap: 6px;
     --openbitfun-control-tab-group-item-gap-sm: var(--openbitfun-space-1);
@@ -158,7 +163,7 @@
     --openbitfun-focus-offset: 2px;
     --openbitfun-focus-width: 2px;
     --openbitfun-font-family-control: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI Variable Text', 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;
-    --openbitfun-font-family-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Monaco, 'Cascadia Mono', 'Cascadia Code', Consolas, 'Liberation Mono', 'Courier New', monospace;
+    --openbitfun-font-family-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Monaco, 'Cascadia Mono', 'Cascadia Code', Consolas, 'Liberation Mono', 'Courier New', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei UI', 'Microsoft YaHei', monospace;
     --openbitfun-font-family-sans: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei UI', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial, sans-serif;
     --openbitfun-font-size-2xl: 18px;
     --openbitfun-font-size-2xl-plus: 20px;
@@ -230,6 +235,15 @@
     --openbitfun-layout-disclosure-trigger-padding-block: var(--openbitfun-space-1);
     --openbitfun-layout-disclosure-trigger-padding-inline: var(--openbitfun-space-2);
     --openbitfun-layout-disclosure-trigger-radius: var(--openbitfun-radius-base);
+    --openbitfun-layout-empty-gap: 10px;
+    --openbitfun-layout-empty-icon-size-lg: var(--openbitfun-control-height-md);
+    --openbitfun-layout-empty-icon-size-md: var(--openbitfun-control-height-sm);
+    --openbitfun-layout-empty-icon-size-sm: var(--openbitfun-control-icon-size-lg);
+    --openbitfun-layout-empty-media-size-lg: var(--openbitfun-control-height-md);
+    --openbitfun-layout-empty-media-size-md: var(--openbitfun-control-height-sm);
+    --openbitfun-layout-empty-media-size-sm: var(--openbitfun-control-icon-size-lg);
+    --openbitfun-layout-empty-padding-block: var(--openbitfun-space-8);
+    --openbitfun-layout-empty-padding-inline: var(--openbitfun-space-4);
     --openbitfun-layout-field-content-gap: var(--openbitfun-space-1);
     --openbitfun-layout-field-control-gap: var(--openbitfun-space-2);
     --openbitfun-layout-field-horizontal-gap: var(--openbitfun-space-5);
@@ -346,7 +360,7 @@
     --openbitfun-overlay-dialog-footer-fade-extent: var(--openbitfun-space-6);
     --openbitfun-overlay-dialog-footer-gap: var(--openbitfun-space-2);
     --openbitfun-overlay-dialog-footer-height: 68px;
-    --openbitfun-overlay-dialog-footer-padding-block-end: var(--openbitfun-space-5);
+    --openbitfun-overlay-dialog-footer-padding-block-end: var(--openbitfun-space-6);
     --openbitfun-overlay-dialog-footer-padding-block-start: var(--openbitfun-space-2);
     --openbitfun-overlay-dialog-footer-padding-inline: var(--openbitfun-space-6);
     --openbitfun-overlay-dialog-header-actions-gap: var(--openbitfun-space-2);
@@ -374,6 +388,8 @@
     --openbitfun-overlay-menu-item-padding-inline: var(--openbitfun-space-2);
     --openbitfun-overlay-menu-item-radius: var(--openbitfun-radius-base);
     --openbitfun-overlay-menu-max-block-size: 480px;
+    --openbitfun-overlay-menu-min-inline-size: 160px;
+    --openbitfun-overlay-menu-row-gap: 2px;
     --openbitfun-overlay-menu-scrollbar-gap: 2px;
     --openbitfun-overlay-menu-section-gap: var(--openbitfun-space-2);
     --openbitfun-overlay-menu-surface-padding: var(--openbitfun-space-2);
@@ -615,6 +631,7 @@
     --openbitfun-type-micro-line-height: var(--openbitfun-line-height-compact);
     --openbitfun-type-modifier-leading-balanced-line-height: var(--openbitfun-line-height-balanced);
     --openbitfun-type-modifier-leading-dense-line-height: var(--openbitfun-line-height-dense);
+    --openbitfun-type-modifier-leading-intrinsic-line-height: normal;
     --openbitfun-type-modifier-leading-loose-line-height: var(--openbitfun-line-height-loose);
     --openbitfun-type-modifier-leading-none-line-height: var(--openbitfun-line-height-none);
     --openbitfun-type-modifier-leading-snug-line-height: var(--openbitfun-line-height-snug);
@@ -665,7 +682,14 @@
     --openbitfun-control-height-sm: 28px;
     --openbitfun-control-hit-target: 36px;
     --openbitfun-control-launcher-button-block-size: var(--openbitfun-control-height-md);
+    --openbitfun-control-search-field-height-lg: var(--openbitfun-control-height-lg);
+    --openbitfun-control-search-field-height-md: var(--openbitfun-control-height-md);
+    --openbitfun-control-search-field-height-sm: 30px;
     --openbitfun-control-tab-group-item-height: var(--openbitfun-control-height-md);
+    --openbitfun-layout-empty-icon-size-lg: var(--openbitfun-control-height-md);
+    --openbitfun-layout-empty-icon-size-md: var(--openbitfun-control-height-sm);
+    --openbitfun-layout-empty-media-size-lg: var(--openbitfun-control-height-md);
+    --openbitfun-layout-empty-media-size-md: var(--openbitfun-control-height-sm);
     --openbitfun-space-component-block: 6px;
     --openbitfun-space-component-inline: 10px;
   }
@@ -678,7 +702,14 @@
     --openbitfun-control-height-sm: 40px;
     --openbitfun-control-hit-target: 48px;
     --openbitfun-control-launcher-button-block-size: var(--openbitfun-control-height-md);
+    --openbitfun-control-search-field-height-lg: var(--openbitfun-control-height-lg);
+    --openbitfun-control-search-field-height-md: var(--openbitfun-control-height-md);
+    --openbitfun-control-search-field-height-sm: var(--openbitfun-control-height-sm);
     --openbitfun-control-tab-group-item-height: var(--openbitfun-control-height-md);
+    --openbitfun-layout-empty-icon-size-lg: var(--openbitfun-control-height-md);
+    --openbitfun-layout-empty-icon-size-md: var(--openbitfun-control-height-sm);
+    --openbitfun-layout-empty-media-size-lg: var(--openbitfun-control-height-md);
+    --openbitfun-layout-empty-media-size-md: var(--openbitfun-control-height-sm);
     --openbitfun-space-component-block: 12px;
     --openbitfun-space-component-inline: 16px;
   }
@@ -793,8 +824,8 @@
     --openbitfun-color-link-hover: #005fcc;
     --openbitfun-color-number-badge-background: rgba(0, 0, 0, 0.08);
     --openbitfun-color-overlay-scrim: rgba(16, 26, 39, 0.20);
-    --openbitfun-color-scrollbar-thumb: rgba(0, 0, 0, 0.10);
-    --openbitfun-color-scrollbar-thumb-hover: rgba(0, 0, 0, 0.10);
+    --openbitfun-color-scrollbar-thumb: rgba(0, 0, 0, 0.20);
+    --openbitfun-color-scrollbar-thumb-hover: rgba(0, 0, 0, 0.30);
     --openbitfun-color-selection-surface: rgba(0, 0, 0, 0.08);
     --openbitfun-color-status-danger-border: rgba(236, 34, 31, 0.3);
     --openbitfun-color-status-danger-content: #bd1b19;
@@ -825,7 +856,7 @@
     --openbitfun-component-button-fill-background-hover: rgba(0, 0, 0, 0.08);
     --openbitfun-component-button-fill-background-pressed: rgba(0, 0, 0, 0.08);
     --openbitfun-component-button-outline-border: rgba(0, 0, 0, 0.08);
-    --openbitfun-component-button-outline-border-interactive: transparent;
+    --openbitfun-component-button-outline-border-interactive: rgba(0, 0, 0, 0.08);
     --openbitfun-component-button-primary-background: rgba(0, 0, 0, 0.80);
     --openbitfun-component-button-primary-background-hover: rgba(0, 0, 0, 0.60);
     --openbitfun-component-button-primary-background-pressed: rgba(0, 0, 0, 0.90);
@@ -833,6 +864,7 @@
     --openbitfun-component-button-text-content: #059cb0;
     --openbitfun-component-button-text-content-disabled: rgba(5, 156, 176, 0.30);
     --openbitfun-component-button-text-content-hover: #059cb0;
+    --openbitfun-component-empty-media: color-mix(in srgb, #6a6a6a 35%, #f7f7f7);
     --openbitfun-effect-blur-base: blur(8px) saturate(1.05);
     --openbitfun-effect-blur-medium: blur(12px) saturate(1.2);
     --openbitfun-effect-blur-subtle: blur(4px) saturate(1.02);
@@ -947,8 +979,8 @@
     --openbitfun-color-link-hover: #93c5fd;
     --openbitfun-color-number-badge-background: rgba(255, 255, 255, 0.1);
     --openbitfun-color-overlay-scrim: rgba(0, 0, 0, 0.56);
-    --openbitfun-color-scrollbar-thumb: rgba(255, 255, 255, 0.12);
-    --openbitfun-color-scrollbar-thumb-hover: rgba(255, 255, 255, 0.15);
+    --openbitfun-color-scrollbar-thumb: rgba(255, 255, 255, 0.20);
+    --openbitfun-color-scrollbar-thumb-hover: rgba(255, 255, 255, 0.30);
     --openbitfun-color-selection-surface: rgba(255, 255, 255, 0.12);
     --openbitfun-color-status-danger-border: rgba(236, 34, 31, 0.3);
     --openbitfun-color-status-danger-content: #f47f7d;
@@ -987,6 +1019,7 @@
     --openbitfun-component-button-text-content: #60a5fa;
     --openbitfun-component-button-text-content-disabled: rgba(96, 165, 250, 0.30);
     --openbitfun-component-button-text-content-hover: #3b82f6;
+    --openbitfun-component-empty-media: color-mix(in srgb, #858585 35%, #0e0e10);
     --openbitfun-effect-blur-base: blur(8px) saturate(1.1);
     --openbitfun-effect-blur-medium: blur(12px) saturate(1.2);
     --openbitfun-effect-blur-subtle: blur(4px) saturate(1.05);
@@ -1055,8 +1088,6 @@
     --openbitfun-color-key-hint-background: #cccccc;
     --openbitfun-color-key-hint-content: #343434;
     --openbitfun-color-number-badge-background: #e6e6e6;
-    --openbitfun-color-scrollbar-thumb: #b3b3b3;
-    --openbitfun-color-scrollbar-thumb-hover: #b3b3b3;
     --openbitfun-color-selection-surface: #cccccc;
     --openbitfun-color-status-danger-content: #8e1413;
     --openbitfun-color-status-info-content: #1c4c99;
@@ -1074,6 +1105,7 @@
     --openbitfun-component-button-primary-background-hover: #262626;
     --openbitfun-component-button-primary-background-pressed: #000000;
     --openbitfun-component-button-primary-content-disabled: #343434;
+    --openbitfun-component-empty-media: color-mix(in srgb, #343434 35%, #f7f7f7);
   }
 }
 
@@ -1122,8 +1154,6 @@
     --openbitfun-color-key-hint-background: #343434;
     --openbitfun-color-key-hint-content: #d0d0d0;
     --openbitfun-color-number-badge-background: #343434;
-    --openbitfun-color-scrollbar-thumb: #505050;
-    --openbitfun-color-scrollbar-thumb-hover: #6b6b6b;
     --openbitfun-color-selection-surface: #505050;
     --openbitfun-color-status-danger-content: #f7a7a5;
     --openbitfun-color-status-info-content: #abcbff;
@@ -1146,5 +1176,6 @@
     --openbitfun-component-button-primary-background-hover: #e6e6e6;
     --openbitfun-component-button-primary-background-pressed: #ffffff;
     --openbitfun-component-button-primary-content-disabled: #d0d0d0;
+    --openbitfun-component-empty-media: color-mix(in srgb, #d0d0d0 35%, #000000);
   }
 }

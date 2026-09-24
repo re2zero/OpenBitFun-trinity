@@ -3,6 +3,7 @@
 //! Processes AI streaming responses, supports tool pre-detection and parameter streaming
 
 mod hidden_text;
+pub mod retry;
 pub mod tool_call_accumulator;
 mod unified;
 
@@ -706,6 +707,7 @@ impl StreamProcessor {
             } else {
                 ToolEventData::Failed {
                     identity,
+                    error_detail: None,
                     error: reason.clone(),
                     duration_ms: None,
                     queue_wait_ms: None,

@@ -10,6 +10,7 @@ export const publicApiContractSlices = [
   'external-source-tool-contract',
   'external-source-subagent-contract',
   'external-source-mcp-contract',
+  'external-source-pet-contract',
   'external-source-hook-contract',
   'external-source-reference-contract',
   'user-instruction-source-boundary',
@@ -19,6 +20,7 @@ export const publicApiContractSlices = [
 export const agentRuntimeRootPublicModules = [
   'agents',
   'checkpoint',
+  'compression_prefetch',
   'context_profile',
   'custom_agent',
   'custom_subagent',
@@ -67,6 +69,7 @@ const contractSlices = {
   externalSourceToolContract: 'external-source-tool-contract',
   externalSourceSubagentContract: 'external-source-subagent-contract',
   externalSourceMcpContract: 'external-source-mcp-contract',
+  externalSourcePetContract: 'external-source-pet-contract',
   externalSourceHookContract: 'external-source-hook-contract',
   externalSourceReferenceContract: 'external-source-reference-contract',
   userInstructionSourceBoundary: 'user-instruction-source-boundary',
@@ -311,6 +314,20 @@ export const opencodeAdapterPublicApiEntries = [
     'OpenCodeConfiguredSkillRoot',
     'openbitfun-core external source composition root and OpenCode configured Skill fixtures',
   ),
+  ...['OpenCodeSkillRootDiagnostic', 'OpenCodeSkillRootReport'].map((symbol) => ({
+    symbol,
+    owner: 'opencode-adapter configured Skill root source owner',
+    consumer: 'openbitfun-core external_sources::opencode_configured_skill_roots_with_provider',
+    verification:
+      'opencode_static_source_contracts::opencode_skill_roots diagnostics fixtures and core-boundary public API checks',
+    p0: 'runtime-free configured local Skill root discovery with bounded diagnostics',
+    contractSlice: contractSlices.opencodeAdapterBoundary,
+    wireImpact: false,
+    rationale:
+      'Product Assembly projects valid roots and redacted discovery failures into its neutral Skill scan report without exposing OpenCode configuration syntax',
+    exit:
+      'remove only with the configured Skill root provider or an equivalent reviewed diagnostic projection',
+  })),
   opencodeAdapterEntry(
     'OpenCodeSkillRootProvider',
     'openbitfun-core external source composition root and OpenCode configured Skill fixtures',
@@ -525,7 +542,17 @@ export const codexAdapterPublicApiEntries = [
 ))).concat([
   'load_codex_user_instructions',
   'CodexInstructionSourceOptions',
-].map((symbol) => userInstructionSourceAdapterEntry(symbol, 'Codex')));
+].map((symbol) => userInstructionSourceAdapterEntry(symbol, 'Codex'))).concat(['pet_source_root', 'builtin_pet_sources', 'BuiltinPetCatalog', 'BuiltinPetSource'].map((symbol) => ({
+  symbol,
+  owner: 'Codex adapter static pet source owner',
+  consumer: 'openbitfun-core external source composition facade',
+  verification: 'Codex pet source fixtures, installed bundle smoke test, and services-core pet package tests',
+  p0: 'local custom and bundled pet source discovery without execution or installation',
+  contractSlice: contractSlices.externalSourcePetContract,
+  wireImpact: false,
+  rationale: 'the adapter translates Codex package metadata; portable services own bounded resource IO and native copying',
+  exit: 'remove only when an equivalent typed pet source provider owns this root',
+})));
 
 export const staticHookSupportPublicApiEntries = [
   // Shared by DSH/PI only for validated, redacted source/event construction.
@@ -730,7 +757,26 @@ export const externalIntegrationPolicyPublicApiEntries = [
   'evaluate_external_integration_policy',
   'external_integration_policy_snapshot',
   'incompatible_external_integration_policy_snapshot',
-].map((symbol) => externalIntegrationPolicyEntry(symbol));
+].map((symbol) => externalIntegrationPolicyEntry(symbol)).concat({
+  ...externalIntegrationPolicyEntry(
+    'automatic_discovery_enabled',
+    'product-domains external integration policy contract owner',
+    'openbitfun-core discovery catalog preference evaluation',
+    false,
+  ),
+  verification: 'external_source_contracts legacy discovery preference, scope precedence, and old-reader round-trip tests',
+  rationale: 'resolve the independently persisted discovery preference with legacy fallback without changing runtime authorization',
+});
+
+function externalDiscoveryEntry(symbol, owner, consumer) {
+  return {
+    ...externalSourceControlEntry(symbol, owner, consumer),
+    verification: 'external_source_contracts policy compatibility tests, core automatic_discovery tests, and ExternalSourcesAPI version negotiation tests',
+    p0: 'independent automatic discovery and retained read-only ecosystem catalog',
+    rationale: 'Desktop and CLI peer host adapters need a negotiated discovery view without changing the existing runtime snapshot or execution policy',
+    exit: 'remove only through a compatible discovery-view migration that preserves old-host fallback and runtime-policy isolation',
+  };
+}
 
 function externalToolEntry(symbol, owner, consumer, wireImpact = false) {
   return {
@@ -873,6 +919,11 @@ export const externalSourceContractPublicApiEntries = [
     true,
   ),
 ).concat(
+  externalDiscoveryEntry(
+    'ExternalSourceDiscoverySnapshotV1',
+    'product-domains external source discovery contract owner',
+    'openbitfun-core discovery catalog and Desktop and CLI peer host discovery responses',
+  ),
   [
     'SourceQualifiedToolTargetId',
     'SourceQualifiedToolId',
@@ -1095,6 +1146,14 @@ export const externalSourceCoordinatorPublicApiEntries = [
 
 export const externalSourceCorePublicApiEntries = [
   ...[
+    'ExternalSourceDiscoverySnapshotV1',
+    'external_source_discovery_snapshot',
+  ].map((symbol) => externalDiscoveryEntry(
+    symbol,
+    'openbitfun-core read-only discovery catalog composition facade',
+    'Desktop and CLI peer host get_external_source_discovery_snapshot adapters',
+  )),
+  ...[
     'ExternalCapabilityKindV1',
     'ExternalSourceControlActionV1',
     'ExternalSourceControlRequestV1',
@@ -1164,6 +1223,11 @@ export const externalSourceCorePublicApiEntries = [
     'NativePromptCommandReconfirmationProjection',
     'NativePromptCommandConflictSnapshot',
     'native_prompt_command_conflicts',
+    'instruction_source_catalog',
+    'external_pet_source_root',
+    'external_builtin_pet_sources',
+    'ExternalBuiltinPetCatalog',
+    'InstructionSourceCatalog',
     'set_native_prompt_command_conflict_choice',
     'external_source_conflict_choices',
     'set_external_prompt_command_conflict_choice',
@@ -1195,6 +1259,19 @@ export const externalSourceCorePublicApiEntries = [
     'Desktop external-source configuration host adapter',
     true,
   ),
+  {
+    symbol: 'ecosystem_for_imported_mcp_candidate',
+    owner: 'openbitfun-core external MCP provider registration composition',
+    consumer: 'Desktop MCP list projection for legacy native import receipts',
+    verification: 'core imported_mcp_legacy_receipt_keeps_registered_origin_without_discovery test',
+    p0: 'preserve source identity for existing native MCP imports',
+    contractSlice: contractSlices.externalSourceMcpContract,
+    wireImpact: false,
+    rationale:
+      'resolve an optional ecosystem id from registered provider identity without discovery, runtime activation, or adapter types in the host API',
+    exit:
+      'remove when legacy import receipts no longer need source identity resolution or an owner replacement preserves offline provenance',
+  },
   ...[
     'unacknowledged_external_ecosystems',
     'acknowledge_external_ecosystems',

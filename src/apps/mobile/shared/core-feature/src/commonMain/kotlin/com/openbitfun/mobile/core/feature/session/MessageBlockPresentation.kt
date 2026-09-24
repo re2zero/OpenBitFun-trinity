@@ -3,7 +3,6 @@ package com.openbitfun.mobile.core.feature.session
 import com.openbitfun.mobile.core.domain.ChatMessage
 import com.openbitfun.mobile.core.domain.ToolInputPolicy
 import com.openbitfun.mobile.core.domain.ToolNamePolicy
-import com.openbitfun.mobile.core.domain.ToolStatusPolicy
 import com.openbitfun.mobile.core.protocol.ChatMessageItemResponse
 import com.openbitfun.mobile.core.protocol.RemoteToolStatusResponse
 
@@ -53,7 +52,13 @@ public sealed interface MessageBlock {
         public val running: Boolean,
         public val text: String,
         public val children: List<MessageBlock>,
-    ) : MessageBlock
+        /** Preserve host status; running alone loses failure and queued states. */
+        public val status: String,
+    ) : MessageBlock {
+        // Keep source compatibility without default arguments on the exported feature API.
+        public constructor(id: String, title: String, running: Boolean, text: String, children: List<MessageBlock>) :
+            this(id, title, running, text, children, if (running) "running" else "completed")
+    }
 }
 
 /**
@@ -64,7 +69,7 @@ public sealed interface MessageBlock {
  * That is the same fork `shouldRenderStructuredItems` makes.
  */
 internal fun messageBlocks(message: ChatMessage, streaming: Boolean): List<MessageBlock> {
-    val items = message.items.orEmpty()
+    val items = scopeSubagentItems(message.items.orEmpty())
     if (items.none(::isRenderable)) return emptyList()
 
     val blocks = walk(items, message.id, streaming)
@@ -74,7 +79,7 @@ internal fun messageBlocks(message: ChatMessage, streaming: Boolean): List<Messa
     } else {
         blocks + MessageBlock.Tools("${message.id}-tail-tools", uncovered.map(::toolCard))
     }
-    return pinLiveThinking(withTail, message, streaming)
+    return withTail
 }
 
 /**
@@ -91,15 +96,79 @@ internal fun isTyping(message: ChatMessage, streaming: Boolean): Boolean {
     return message.items.orEmpty().none(::isRenderable)
 }
 
+/** Reconstruct Task ownership before rendering flat remote snapshots (Harmony parity). */
+private fun scopeSubagentItems(items: List<ChatMessageItemResponse>): List<ChatMessageItemResponse> {
+    val result = mutableListOf<ChatMessageItemResponse>()
+    val marked = items.any { it.isSubagent == true }
+    var taskIndex: Int? = null
+    // A Task's children can arrive nested in its own items and again flat behind
+    // it, so folding the restatement would draw every child twice. A counted
+    // restatement is skipped, and a child that legitimately repeats survives.
+    var carried = mutableListOf<Int>()
+    for (entry in items) {
+        if (entry.isSubagent != true && entry.tool?.let(ToolNamePolicy::isTask) == true) {
+            result += entry
+            taskIndex = result.lastIndex
+            carried = result.last().subItems.orEmpty().indices.toMutableList()
+            continue
+        }
+        val owner = taskIndex?.let(result::get)
+        val legacyChild = !marked && owner?.tool?.status.orEmpty().lowercase() in SUBAGENT_RUNNING &&
+            (isThinking(entry) || isText(entry) || entry.tool != null)
+        if (owner != null && (entry.isSubagent == true || legacyChild)) {
+            // The marker identifies ownership, not a nested Task card. Keep the
+            // original kind/tool so child reasoning and tools render as such.
+            val child = entry.copy(isSubagent = false)
+            val children = owner.subItems.orEmpty()
+            val match = carried.indexOfFirst { sameChildIdentity(children[it], child) }
+            if (match >= 0) {
+                // A flat tool record can be the newer restatement of the nested
+                // copy. Keep its result/status while consuming only this one
+                // nested occurrence; a second identical flat child remains real.
+                val index = carried.removeAt(match)
+                val incomingTool = child.tool
+                if (incomingTool != null) {
+                    val updated = children.toMutableList()
+                    updated[index] = child.copy(
+                        content = child.content ?: children[index].content,
+                        subItems = child.subItems ?: children[index].subItems,
+                        tool = mergeChildTool(children[index].tool, incomingTool),
+                    )
+                    result[taskIndex] = owner.copy(subItems = updated)
+                }
+            } else {
+                result[taskIndex] = owner.copy(subItems = owner.subItems.orEmpty() + child)
+            }
+        } else {
+            // A partial snapshot may omit the owning Task. Retain a collapsed
+            // branch with its content instead of exposing it as parent output.
+            result += if (entry.isSubagent == true && entry.type.orEmpty().lowercase() !in SUBAGENT_TYPES &&
+                entry.tool?.let(ToolNamePolicy::isTask) != true && entry.subItems.isNullOrEmpty()) {
+                entry.copy(subItems = listOf(entry.copy(isSubagent = false)))
+            } else entry
+        }
+    }
+    return result
+}
+
 private fun walk(items: List<ChatMessageItemResponse>, path: String, streaming: Boolean): List<MessageBlock> {
     val blocks = mutableListOf<MessageBlock>()
     val toolRun = mutableListOf<RemoteToolStatusResponse>()
-    var toolStart = 0
     val lastIndex = items.indexOfLast(::isRenderable)
+
+    // An id is view identity: changing it discards the drawn block together with
+    // its expansion and scroll state. Counting each kind separately keeps an id
+    // while siblings of other kinds arrive, so a turn cannot renumber itself.
+    val ordinals = mutableMapOf<String, Int>()
+    fun nextId(kind: String): String {
+        val ordinal = ordinals[kind] ?: 0
+        ordinals[kind] = ordinal + 1
+        return "$path-$kind-$ordinal"
+    }
 
     fun flushTools() {
         if (toolRun.isEmpty()) return
-        blocks += MessageBlock.Tools("$path-tools-$toolStart", toolRun.map(::toolCard))
+        blocks += MessageBlock.Tools(nextId("tools"), toolRun.map(::toolCard))
         toolRun.clear()
     }
 
@@ -109,61 +178,45 @@ private fun walk(items: List<ChatMessageItemResponse>, path: String, streaming: 
         // and is the subagent, rather than something the subagent did.
         if (isSubagent(entry)) {
             flushTools()
+            val status = entry.tool?.status?.takeIf(String::isNotBlank)?.lowercase()
+                ?: if (live && !entry.subItems.isNullOrEmpty()) "running" else "completed"
+            val running = status in SUBAGENT_RUNNING
+            val id = nextId("subagent")
             blocks += MessageBlock.Subagent(
-                id = "$path-$index-subagent",
+                id = id,
                 title = subagentTitle(entry),
-                running = entry.tool?.let(ToolStatusPolicy::isRunning) == true,
-                text = entry.content.orEmpty().trim(),
-                children = walk(entry.subItems.orEmpty(), "$path-$index", streaming && live),
+                running = running,
+                text = subagentBody(entry),
+                children = walk(entry.subItems.orEmpty().map { it.copy(isSubagent = false) }, id, running),
+                status = status,
             )
             return@forEachIndexed
         }
         val tool = entry.tool
         if (tool != null) {
-            if (toolRun.isEmpty()) toolStart = index
             toolRun += tool
             return@forEachIndexed
         }
         flushTools()
         when {
             isThinking(entry) -> blocks += MessageBlock.Thinking(
-                id = "$path-$index-thinking",
+                id = nextId("thinking"),
                 text = entry.content.orEmpty().trim(),
                 streaming = live,
             )
 
             isText(entry) -> blocks += MessageBlock.Text(
-                id = "$path-$index-text",
+                id = nextId("text"),
                 text = entry.content.orEmpty().trim(),
                 streaming = live,
             )
         }
         entry.subItems?.takeIf(List<ChatMessageItemResponse>::isNotEmpty)?.let { children ->
-            blocks += walk(children, "$path-$index", streaming && live)
+            blocks += walk(children, nextId("nested"), streaming && live)
         }
     }
     flushTools()
     return blocks
-}
-
-/**
- * While the turn is live, the newest reasoning goes last and the older rounds
- * of it go away.
- *
- * Reasoning that is still being written is the only part of a live turn worth
- * following, and leaving it where it was produced pushes it off screen behind
- * the output it came before.
- */
-private fun pinLiveThinking(
-    blocks: List<MessageBlock>,
-    message: ChatMessage,
-    streaming: Boolean,
-): List<MessageBlock> {
-    if (!streaming) return blocks
-    val live = blocks.filterIsInstance<MessageBlock.Thinking>().lastOrNull()
-        ?: return blocks
-    val rest = blocks.filter { it !is MessageBlock.Thinking }
-    return rest + live.copy(id = "${message.id}-live-thinking", streaming = true)
 }
 
 /**
@@ -200,6 +253,23 @@ private fun fingerprint(tool: RemoteToolStatusResponse): String {
     ).joinToString("|")
 }
 
+/**
+ * What makes two subagent children the same piece of work.
+ *
+ * Children arrive without an id, so the kind, its content, and the tool it names
+ * are all there is to tell one from the other.
+ */
+private fun childFingerprint(entry: ChatMessageItemResponse): String = listOf(
+    entry.type.orEmpty().lowercase(),
+    entry.content.orEmpty(),
+    entry.tool?.let(::fingerprint).orEmpty(),
+).joinToString("\u0000")
+
+private fun sameChildIdentity(a: ChatMessageItemResponse, b: ChatMessageItemResponse): Boolean =
+    if (a.tool?.id.orEmpty().isNotEmpty() || b.tool?.id.orEmpty().isNotEmpty()) {
+        a.tool?.id.orEmpty() == b.tool?.id.orEmpty() && a.tool?.id.orEmpty().isNotEmpty()
+    } else childFingerprint(a) == childFingerprint(b)
+
 private fun isRenderable(entry: ChatMessageItemResponse): Boolean =
     isThinking(entry) || isText(entry) || isSubagent(entry) || entry.tool != null ||
         entry.subItems.orEmpty().any(::isRenderable)
@@ -220,18 +290,59 @@ private fun isSubagent(entry: ChatMessageItemResponse): Boolean {
 }
 
 /**
- * What to call the subagent: what it said, if that is short enough to be a
- * heading rather than a paragraph, else the task it was handed.
+ * Task descriptions take priority over result content. Legacy branches without
+ * a Task use a short plain label, matching Harmony's subagent title policy.
  */
 private fun subagentTitle(entry: ChatMessageItemResponse): String {
-    val content = entry.content.orEmpty().trim()
+    val tool = entry.tool
+    val task = tool?.let(ToolNamePolicy::isTask) == true
+    if (task) {
+        plainSubagentLabel(ToolInputPolicy.taskTitle(tool)).takeIf(String::isNotEmpty)?.let { return it }
+    }
+    val content = plainSubagentLabel(entry.content.orEmpty())
     if (content.isNotEmpty() && content.length <= TITLE_LIMIT) return content
-    val tool = entry.tool ?: return ""
-    // `summary` on a `Task` reads its `description`, which is the subagent's
-    // brief — the closest thing to a name it was given.
-    return ToolInputPolicy.summary(tool).ifEmpty { tool.name.orEmpty() }
+    return if (tool != null && !task) plainSubagentLabel(tool.name.orEmpty()) else ""
 }
+
+private fun subagentBody(entry: ChatMessageItemResponse): String {
+    if (entry.tool?.let(ToolNamePolicy::isTask) == true) return ""
+    val content = plainSubagentLabel(entry.content.orEmpty())
+    return content.takeUnless { it == subagentTitle(entry) }.orEmpty()
+}
+
+private fun plainSubagentLabel(raw: String): String {
+    var text = raw.trim()
+    for (wrapper in listOf("**", "__", "`", "*", "_")) {
+        if (text.length > wrapper.length * 2 && text.startsWith(wrapper) && text.endsWith(wrapper)) {
+            text = text.substring(wrapper.length, text.length - wrapper.length).trim()
+            break
+        }
+    }
+    while (text.startsWith("#")) text = text.drop(1).trim()
+    return text
+}
+
+private val SUBAGENT_RUNNING = setOf("running", "active", "preparing", "pending", "queued")
 
 private const val TITLE_LIMIT = 80
 private val TEXT_TYPES = setOf("text", "message", "")
 private val SUBAGENT_TYPES = setOf("subagent", "agent")
+
+/** Legacy completion records can omit the invocation fields already in the nested copy. */
+private fun mergeChildTool(previous: RemoteToolStatusResponse?, incoming: RemoteToolStatusResponse): RemoteToolStatusResponse =
+    incoming.copy(
+        id = incoming.id ?: previous?.id,
+        name = incoming.name ?: previous?.name,
+        status = incoming.status ?: previous?.status,
+        durationMs = incoming.durationMs ?: previous?.durationMs,
+        startMs = incoming.startMs ?: previous?.startMs,
+        inputPreview = incoming.inputPreview ?: previous?.inputPreview,
+        toolInput = incoming.toolInput ?: previous?.toolInput,
+        stdout = incoming.stdout ?: previous?.stdout,
+        stderr = incoming.stderr ?: previous?.stderr,
+        toolOutput = incoming.toolOutput ?: previous?.toolOutput,
+        resultPreview = incoming.resultPreview ?: previous?.resultPreview,
+        errorPreview = incoming.errorPreview ?: previous?.errorPreview,
+        exitCode = incoming.exitCode ?: previous?.exitCode,
+        plan = incoming.plan ?: previous?.plan,
+    )

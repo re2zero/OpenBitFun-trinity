@@ -4,20 +4,26 @@
  */
 @use '../../flat-markdown-surfaces' as flatMarkdownSurfaces;
 @use '../../markdown-typography' as markdownTypography;
+@use '../../transcript-layout' as transcriptLayout;
 
 .virtual-item-wrapper {
   @include flatMarkdownSurfaces.apply;
   @include markdownTypography.apply;
+  @include transcriptLayout.reading-column;
 
-  width: 100%;
+  // Keep descendant margins inside the border box measured by the virtualizer.
+  // Escaped margins otherwise disappear when a row is replaced by virtual padding.
+  // Unlike overflow: hidden, this preserves outlying decorations and controls.
+  display: flow-root;
+
   /*
    * Single reading column shared by every item type (model rounds, explore
    * groups, user messages, notices). Matches ChatInput's 900px so headers,
-   * `>` collapse rows, and bubbles all sit on the same leading edge.
+   * `>` collapse rows, and message text all sit on the same leading edge.
+   * transcript-layout owns the shared content inset; user-bubble decoration
+   * extends into that gutter without shifting the reading column.
    */
-  max-width: 900px;
-  margin: 0 auto;
-  box-sizing: border-box;
+  margin-block: 0;
   min-height: 1px;
   padding: 0;
   position: relative;
@@ -84,10 +90,6 @@
     margin-bottom: 0;
   }
 
-  @media (max-width: 768px) {
-    max-width: 100%;
-  }
-
   /*
    * No mount animation survives inside a virtualized row.
    *
@@ -124,12 +126,12 @@
   }
 }
 
-::highlight(openbitfun-flowchat-search-current) {
+[data-flowchat-highlight-search-current]::highlight(openbitfun-flowchat-search-current) {
   color: inherit;
   background: var(--openbitfun-color-accent-border-subtle);
 }
 
-::highlight(openbitfun-flowchat-search-match) {
+[data-flowchat-highlight-search-match]::highlight(openbitfun-flowchat-search-match) {
   color: inherit;
   background: var(--openbitfun-color-selection-surface);
 }
@@ -143,12 +145,12 @@
     }
   }
 
-  ::highlight(openbitfun-flowchat-search-current) {
+  [data-flowchat-highlight-search-current]::highlight(openbitfun-flowchat-search-current) {
     color: HighlightText;
     background: Highlight;
   }
 
-  ::highlight(openbitfun-flowchat-search-match) {
+  [data-flowchat-highlight-search-match]::highlight(openbitfun-flowchat-search-match) {
     color: MarkText;
     background: Mark;
   }

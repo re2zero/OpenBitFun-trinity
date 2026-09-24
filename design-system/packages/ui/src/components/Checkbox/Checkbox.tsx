@@ -1,3 +1,4 @@
+import { Check as LucideCheck, Minus as LucideMinus } from 'lucide-react';
 import {
   forwardRef,
   useEffect,
@@ -13,6 +14,8 @@ export type CheckboxSize = "sm" | "md" | "lg";
 
 export interface CheckboxProps
   extends Omit<InputHTMLAttributes<HTMLInputElement>, "children" | "size" | "type"> {
+  /** Native presentation keeps the browser-drawn control and focus behavior. */
+  appearance?: "custom" | "native";
   children?: ReactNode;
   description?: ReactNode;
   indeterminate?: boolean;
@@ -23,6 +26,7 @@ export interface CheckboxProps
 }
 
 export const Checkbox = forwardRef<HTMLInputElement, CheckboxProps>(function Checkbox({
+  appearance = "custom",
   checked,
   children,
   className,
@@ -50,6 +54,7 @@ export const Checkbox = forwardRef<HTMLInputElement, CheckboxProps>(function Che
     <label
       className={classNames(styles.root, className)}
       data-openbitfun-component="checkbox"
+      data-appearance={appearance}
       data-disabled={disabled ? "true" : "false"}
       data-indeterminate={indeterminate ? "true" : "false"}
       data-invalid={invalid ? "true" : "false"}
@@ -62,6 +67,7 @@ export const Checkbox = forwardRef<HTMLInputElement, CheckboxProps>(function Che
           checked={checked}
           className={styles.input}
           defaultChecked={defaultChecked}
+          data-openbitfun-part="input"
           disabled={disabled}
           onChange={(event) => {
             onChange?.(event);
@@ -70,13 +76,9 @@ export const Checkbox = forwardRef<HTMLInputElement, CheckboxProps>(function Che
           ref={inputRef}
           type="checkbox"
         />
-        <span aria-hidden="true" className={styles.box} data-openbitfun-part="box">
-          <svg className={styles.icon} viewBox="0 0 16 16">
-            {indeterminate
-              ? <path d="M4 8h8" />
-              : <path d="m3.5 8 3 3 6-6" />}
-          </svg>
-        </span>
+        {appearance === "custom" && <span aria-hidden="true" className={styles.box} data-openbitfun-part="box">
+          <>{indeterminate ? <LucideMinus className={styles.icon} aria-hidden="true" /> : <LucideCheck className={styles.icon} aria-hidden="true" />}</>
+        </span>}
       </span>
       {hasContent && (
         <span className={styles.content} data-openbitfun-part="content">

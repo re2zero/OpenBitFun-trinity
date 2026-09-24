@@ -10,6 +10,10 @@
 //! - FIFO ordering within the same priority level
 //! - Queue cleared on unrecoverable failure
 
+#[path = "host_message_queue.rs"]
+mod host_message_queue;
+use host_message_queue::HostQueueState;
+
 use super::coordinator::{
     session_storage_workspace_locator, ConversationCoordinator, DialogTriggerSource,
     DialogTurnStopDisposition, HiddenSubagentExecutionRequest, SubagentResult,
@@ -71,6 +75,15 @@ pub use openbitfun_runtime_ports::{
     DialogSubmitOutcome,
 };
 
+/// Rejection prefix for a submission that reuses a dialog turn ID the session
+/// already owns.
+///
+/// The scheduled-job service classifies enqueue failures from the port message
+/// text, so producers and classifiers share this constant instead of repeating
+/// the wording.
+pub(crate) const DIALOG_TURN_ID_ALREADY_SETTLED_MESSAGE: &str =
+    "Dialog turn ID is already active or completed";
+
 /// A message waiting to be dispatched to the coordinator
 #[derive(Debug, Clone)]
 pub struct QueuedTurn {
@@ -79,7 +92,10 @@ pub struct QueuedTurn {
     pub prepended_messages: Vec<Message>,
     pub turn_id: Option<String>,
     pub agent_type: String,
+    /// Execution root projection; storage selection prefers `workspace_id`.
     pub workspace_path: Option<String>,
+    /// Owning workspace ID supplied by ID-aware callers to locate an unloaded session.
+    pub workspace_id: Option<String>,
     pub remote_connection_id: Option<String>,
     pub remote_ssh_host: Option<String>,
     pub policy: DialogSubmissionPolicy,
@@ -93,6 +109,13 @@ pub struct QueuedTurn {
 }
 
 impl QueuedTurn {
+    fn is_user_submission(&self) -> bool {
+        !matches!(
+            self.policy.trigger_source,
+            DialogTriggerSource::AgentSession | DialogTriggerSource::ScheduledJob
+        )
+    }
+
     fn accept_settlement(&self) {
         if let Some(registration) = self._settlement_registration.as_ref() {
             registration.accept();
@@ -279,6 +302,7 @@ struct BackgroundResultDelivery {
 }
 
 struct SchedulerRoundInjectionSource {
+    host_queue: Arc<std::sync::Mutex<HostQueueState>>,
     buffer: Arc<SessionRoundInjectionBuffer>,
 }
 
@@ -302,11 +326,15 @@ impl DialogRoundInjectionSource for SchedulerRoundInjectionSource {
 
     fn acknowledge_consumed(
         &self,
-        _session_id: &str,
-        _turn_id: &str,
-        _injection_id: &str,
+        session_id: &str,
+        turn_id: &str,
+        injection_id: &str,
         _kind: RoundInjectionKind,
     ) {
+        self.host_queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .consumed(session_id, turn_id, injection_id);
     }
 }
 
@@ -316,6 +344,9 @@ impl DialogRoundInjectionSource for SchedulerRoundInjectionSource {
 /// should submit messages through this scheduler instead of calling
 /// ConversationCoordinator directly.
 pub struct DialogScheduler {
+    self_ref: std::sync::Weak<DialogScheduler>,
+    host_queue: Arc<std::sync::Mutex<HostQueueState>>,
+    host_queue_locks: KeyedAsyncLock,
     coordinator: Arc<ConversationCoordinator>,
     session_manager: Arc<SessionManager>,
     /// Per-session priority message queues.
@@ -436,11 +467,16 @@ impl DialogScheduler {
         // retirement of the active-turn owner depends on their delivery.
         let (outcome_tx, outcome_rx) = mpsc::unbounded_channel();
         let round_injection_buffer = Arc::new(SessionRoundInjectionBuffer::default());
+        let host_queue = Arc::new(std::sync::Mutex::new(HostQueueState::default()));
         let round_injection_source = Arc::new(SchedulerRoundInjectionSource {
             buffer: round_injection_buffer.clone(),
+            host_queue: host_queue.clone(),
         });
 
-        let scheduler = Arc::new(Self {
+        let scheduler = Arc::new_cyclic(|weak| Self {
+            self_ref: weak.clone(),
+            host_queue,
+            host_queue_locks: KeyedAsyncLock::default(),
             coordinator,
             session_manager,
             queues: Arc::new(DialogTurnQueue::default()),
@@ -559,7 +595,12 @@ impl DialogScheduler {
                 );
                 Err(error)
             }
-            DialogSteeringAction::Buffer { injection, outcome } => {
+            DialogSteeringAction::Buffer {
+                mut injection,
+                outcome,
+            } => {
+                self.prepare_goal_steering(&session_id, &turn_id, &mut injection)
+                    .await?;
                 self.round_injection_buffer.push(&session_id, injection);
                 let DialogSteerOutcome::Buffered { steering_id, .. } = &outcome;
                 info!(
@@ -573,6 +614,30 @@ impl DialogScheduler {
                 Ok(outcome)
             }
         }
+    }
+
+    async fn prepare_goal_steering(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        injection: &mut RoundInjection,
+    ) -> Result<(), String> {
+        if let Some(goal) = self
+            .coordinator
+            .prepare_prompt_thread_goal(session_id, &injection.display_content)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            self.coordinator
+                .thread_goal_runtime(session_id)
+                .mark_turn_started(turn_id, Some(&goal));
+            injection.content = format!(
+                "{}\n\n{}",
+                injection.content,
+                crate::agentic::goal_mode::objective_updated_prompt(&goal)
+            );
+        }
+        Ok(())
     }
 
     /// Resume auto-continuation toward an active thread goal (after pause / blocked / usage limit).
@@ -814,6 +879,7 @@ impl DialogScheduler {
             turn_id: Some(resolved_turn_id.clone()),
             agent_type: delivery.agent_type,
             workspace_path: delivery.workspace_path,
+            workspace_id: None,
             remote_connection_id: delivery.remote_connection_id,
             remote_ssh_host: delivery.remote_ssh_host,
             policy: DialogSubmissionPolicy::new(DialogTriggerSource::AgentSession, queue_priority),
@@ -956,6 +1022,7 @@ impl DialogScheduler {
             turn_id: Some(resolved_turn_id.clone()),
             agent_type,
             workspace_path,
+            workspace_id: None,
             remote_connection_id,
             remote_ssh_host,
             policy,
@@ -1004,6 +1071,7 @@ impl DialogScheduler {
             turn_id: Some(resolved_turn_id.clone()),
             agent_type,
             workspace_path: session.config.workspace_path.clone(),
+            workspace_id: None,
             remote_connection_id: session.config.remote_connection_id.clone(),
             remote_ssh_host: session.config.remote_ssh_host.clone(),
             policy: DialogSubmissionPolicy::for_source(DialogTriggerSource::AgentSession),
@@ -1167,6 +1235,16 @@ impl DialogScheduler {
         mut queued_turn: QueuedTurn,
         reject_if_busy: bool,
     ) -> Result<DialogSubmitOutcome, SchedulerSubmitError> {
+        if !self
+            .host_queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .admission_valid(&session_id, &resolved_turn_id)
+        {
+            return Err(SchedulerSubmitError::Message(
+                "queue_scope_expired: session maintenance retired this submission".into(),
+            ));
+        }
         if let Some(session) = self.session_manager.get_session(&session_id) {
             queued_turn.workspace_path = session_storage_workspace_locator(
                 queued_turn.workspace_path.as_deref(),
@@ -1174,13 +1252,53 @@ impl DialogScheduler {
                 session.config.project_workspace_path.as_deref(),
             );
         }
-        if let Some(workspace_path) = queued_turn.workspace_path.as_deref() {
-            let requested_storage_path = Self::resolve_session_restore_path(
-                workspace_path,
-                queued_turn.remote_connection_id.as_deref(),
-                queued_turn.remote_ssh_host.as_deref(),
+        let requested_workspace_id = queued_turn
+            .workspace_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(ToOwned::to_owned);
+        let host_owned = self
+            .host_queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&session_id, &resolved_turn_id);
+        let requested_storage_path = if host_owned {
+            // Queue commands carry no controller filesystem locator. Preserve
+            // the loaded session's authoritative local/remote storage binding.
+            Some(
+                self.session_manager
+                    .effective_session_storage_path(&session_id)
+                    .await
+                    .ok_or_else(|| {
+                        SchedulerSubmitError::Message(
+                            "Host session storage binding unavailable".into(),
+                        )
+                    })?,
             )
-            .await?;
+        } else if let Some(workspace_id) = requested_workspace_id.as_deref() {
+            // ID-aware callers locate the session by its owning workspace; the
+            // path on the request is only an execution-root projection.
+            Some(
+                CoreSessionStorePort::default()
+                    .resolve_workspace_storage(workspace_id)
+                    .await
+                    .map(|resolution| resolution.effective_storage_path)
+                    .map_err(SchedulerSubmitError::Port)?,
+            )
+        } else if let Some(workspace_path) = queued_turn.workspace_path.as_deref() {
+            Some(
+                Self::resolve_session_restore_path(
+                    workspace_path,
+                    queued_turn.remote_connection_id.as_deref(),
+                    queued_turn.remote_ssh_host.as_deref(),
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        if let Some(requested_storage_path) = requested_storage_path {
             if let Some(restored_session) = self
                 .restore_missing_session_before_admission(&session_id, &requested_storage_path)
                 .await?
@@ -1194,22 +1312,47 @@ impl DialogScheduler {
             self.session_manager
                 .validate_session_storage_path_binding(&session_id, &requested_storage_path)
                 .map_err(SchedulerSubmitError::Core)?;
+            if host_owned || requested_workspace_id.is_some() {
+                // The session is loaded and bound by ID; an omitted locator makes
+                // the coordinator reuse that binding instead of re-resolving a path.
+                queued_turn.workspace_path = None;
+            }
         }
         let state = self
             .session_manager
             .get_session(&session_id)
             .map(|s| s.state.clone());
+        if queued_turn.is_user_submission()
+            && matches!(state, Some(SessionState::Idle | SessionState::Error { .. }))
+        {
+            if let Some(previous) = self
+                .session_manager
+                .get_session(&session_id)
+                .and_then(|s| s.dialog_turn_ids.last().cloned())
+                .filter(|id| self.active_turns.matches_turn(&session_id, id))
+            {
+                self.host_queue
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .mark_after_terminal_turn(&session_id, &resolved_turn_id, previous);
+            }
+        }
         let mut interrupted_hold = matches!(state, Some(SessionState::Idle))
             && self
                 .session_manager
                 .latest_dialog_turn_holds_dispatch(&session_id)
                 .await
                 .map_err(SchedulerSubmitError::Core)?;
-        let interrupted_turn_to_abandon = if interrupted_hold
-            && !matches!(
-                queued_turn.policy.trigger_source,
-                DialogTriggerSource::AgentSession | DialogTriggerSource::ScheduledJob
-            ) {
+        // A newly submitted user prompt supersedes recoverable interruption even
+        // when it arrives through the host queue. Existing queued work still
+        // stays parked in try_start_next_queued_locked until that user decision.
+        let interrupted_turn_to_abandon = if interrupted_hold && queued_turn.is_user_submission() {
+            // Park work accepted before this explicit user decision while the
+            // same session lock still excludes the retiring outcome handler.
+            self.hold_managed_queue(
+                &session_id,
+                "Turn interrupted; retry this message explicitly",
+            );
             interrupted_hold = false;
             self.session_manager
                 .get_session(&session_id)
@@ -1217,7 +1360,16 @@ impl DialogScheduler {
         } else {
             None
         };
-        let state_fact = if self.active_turns.contains(&session_id) || interrupted_hold {
+        let held_user_messages = self
+            .host_queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pending_held(&session_id)
+            > 0;
+        let state_fact = if self.active_turns.contains(&session_id)
+            || interrupted_hold
+            || (held_user_messages && !queued_turn.is_user_submission())
+        {
             DialogSessionStateFact::Processing
         } else {
             Self::session_state_fact(state.as_ref())
@@ -1407,6 +1559,11 @@ impl DialogScheduler {
     /// Number of messages currently queued for a session.
     pub fn queue_depth(&self, session_id: &str) -> usize {
         self.queues.depth(session_id)
+            + self
+                .host_queue
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .pending_held(session_id)
     }
 
     /// Whether a session has a running or queued turn. This is intentionally a
@@ -1414,7 +1571,7 @@ impl DialogScheduler {
     /// depending on scheduler internals.
     pub fn is_session_busy_or_queued(&self, session_id: &str) -> bool {
         self.active_turns.contains(session_id)
-            || self.queues.has_items(session_id)
+            || self.queue_depth(session_id) > 0
             || self
                 .session_manager
                 .get_session_state(session_id)
@@ -1422,6 +1579,12 @@ impl DialogScheduler {
     }
 
     async fn finish_removed_queued_turn(&self, session_id: &str, removed_turn: QueuedTurn) {
+        if let Some(id) = removed_turn.turn_id.as_deref() {
+            self.host_queue
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .cancelled(session_id, id);
+        }
         match removed_turn.execution {
             QueuedTurnExecution::Standard | QueuedTurnExecution::FreshExternalSubagent(_) => {
                 if let Some(turn_id) = removed_turn.turn_id {
@@ -1680,16 +1843,50 @@ impl DialogScheduler {
         requested_storage_path: &std::path::Path,
         wait_timeout: Duration,
     ) -> OpenBitFunResult<SessionMaintenancePermit> {
+        self.begin_session_maintenance_with_policy(
+            session_id,
+            requested_storage_path,
+            wait_timeout,
+            false,
+        )
+        .await
+    }
+
+    pub(crate) async fn begin_session_maintenance_with_policy(
+        &self,
+        session_id: &str,
+        requested_storage_path: &std::path::Path,
+        wait_timeout: Duration,
+        require_idle: bool,
+    ) -> OpenBitFunResult<SessionMaintenancePermit> {
         openbitfun_core_types::validate_session_id(session_id)
             .map_err(OpenBitFunError::Validation)?;
+        let _queue_admission_guard = self.host_queue_locks.lock(session_id).await;
         let operation_guard = self.lock_session_operation(session_id).await;
         self.session_manager
             .validate_session_storage_path_binding(session_id, requested_storage_path)?;
-        let mut retired_turn_ids = if self.queue_depth(session_id) > 0 {
-            self.clear_queue(session_id).await
-        } else {
-            Vec::new()
-        };
+        // Check only after admission is locked, before cancelling or retiring anything.
+        // A controller's stream can lag another controller's accepted submission.
+        if require_idle
+            && (self.is_session_busy_or_queued(session_id)
+                || self.queue_depth(session_id) > 0
+                || self.round_injection_buffer.pending_count(session_id) > 0)
+        {
+            return Err(OpenBitFunError::Validation(
+                "Session rollback requires an idle session with an empty queue".to_string(),
+            ));
+        }
+        let held_turns = self
+            .host_queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retire(session_id);
+        let mut retired_turn_ids = Vec::new();
+        for turn in held_turns {
+            retired_turn_ids.extend(turn.turn_id.iter().cloned());
+            self.finish_removed_queued_turn(session_id, turn).await;
+        }
+        retired_turn_ids.extend(self.clear_queue_with_policy(session_id, false).await);
         abort_thread_goal_continuation_for_session(session_id);
         let deadline = Instant::now() + wait_timeout;
         let cancelled_before_parent = self
@@ -1783,6 +1980,11 @@ impl DialogScheduler {
     // ── Private helpers ──────────────────────────────────────────────────────
 
     fn enqueue(&self, session_id: &str, queued_turn: QueuedTurn) -> Result<(), String> {
+        // Called under the session operation lock: held user messages consume
+        // the same capacity as physical queue entries, including for old producers.
+        if self.queue_depth(session_id) >= self.queues.max_depth() {
+            return Err("Message queue is full".into());
+        }
         let priority = queued_turn.policy.queue_priority;
         let new_len = match self.queues.enqueue(session_id, queued_turn, priority) {
             Ok(new_len) => new_len,
@@ -1804,10 +2006,31 @@ impl DialogScheduler {
     }
 
     async fn clear_queue(&self, session_id: &str) -> Vec<String> {
+        self.clear_queue_with_policy(session_id, true).await
+    }
+
+    async fn clear_queue_with_policy(
+        &self,
+        session_id: &str,
+        preserve_user_messages: bool,
+    ) -> Vec<String> {
         let cleared_turns = self.queues.clear(session_id);
         let count = cleared_turns.len();
         let mut retired_turn_ids = Vec::new();
         for queued_turn in cleared_turns {
+            if preserve_user_messages
+                && self
+                    .host_queue
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .hold(
+                        session_id,
+                        &queued_turn,
+                        "Previous turn failed; retry or cancel this message",
+                    )
+            {
+                continue;
+            }
             match queued_turn.execution {
                 QueuedTurnExecution::Standard | QueuedTurnExecution::FreshExternalSubagent(_) => {
                     if let Some(turn_id) = queued_turn.turn_id {
@@ -1874,7 +2097,9 @@ impl DialogScheduler {
             .session_manager
             .get_session(session_id)
             .map(|s| s.state.clone());
-        if matches!(state, Some(SessionState::Processing { .. })) {
+        if self.active_turns.contains(session_id)
+            || matches!(state, Some(SessionState::Processing { .. }))
+        {
             return Ok(None);
         }
         if self
@@ -1885,8 +2110,56 @@ impl DialogScheduler {
             return Ok(None);
         }
 
-        let Some(next_turn) = self.dequeue_next(session_id) else {
-            return Ok(None);
+        let held_user_messages = self
+            .host_queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pending_held(session_id)
+            > 0;
+        // Held messages do not deadlock new user work. Background work still
+        // waits, and obsolete goal continuations are discarded before start.
+        let next_turn = loop {
+            let next = if held_user_messages {
+                self.queues
+                    .remove_first_matching(session_id, QueuedTurn::is_user_submission)
+            } else {
+                self.dequeue_next(session_id)
+            };
+            let Some(next_turn) = next else {
+                return Ok(None);
+            };
+            if let Some(metadata) = next_turn.user_message_metadata.as_ref().filter(|metadata| {
+                metadata
+                    .get("threadGoalContinuation")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+            }) {
+                match self
+                    .coordinator
+                    .thread_goal_continuation_is_current(session_id, metadata)
+                    .await
+                {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        // Obsolete internal work must not become a held message
+                        // that prevents newer user work from being dispatched.
+                        if let Some(turn_id) = next_turn.turn_id.as_ref() {
+                            self.coordinator
+                                .emit_event(AgenticEvent::DialogTurnCancelled {
+                                    session_id: session_id.to_string(),
+                                    turn_id: turn_id.clone(),
+                                })
+                                .await;
+                        }
+                        continue;
+                    }
+                    Err(error) => {
+                        self.requeue_front(session_id, next_turn);
+                        return Err(SchedulerSubmitError::Core(error));
+                    }
+                }
+            }
+            break next_turn;
         };
 
         let remaining = self.queues.depth(session_id);
@@ -1898,13 +2171,35 @@ impl DialogScheduler {
         match self.start_turn(session_id, &next_turn).await {
             Ok(tid) => Ok(Some(tid)),
             Err(err) => {
-                self.requeue_front(session_id, next_turn);
+                if !self
+                    .host_queue
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .hold(session_id, &next_turn, &err.to_string())
+                {
+                    self.requeue_front(session_id, next_turn);
+                }
                 Err(err)
             }
         }
     }
 
     async fn start_turn(
+        &self,
+        session_id: &str,
+        queued_turn: &QueuedTurn,
+    ) -> Result<String, SchedulerSubmitError> {
+        let result = self.start_turn_inner(session_id, queued_turn).await;
+        if let Ok(id) = &result {
+            self.host_queue
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .started(session_id, id);
+        }
+        result
+    }
+
+    async fn start_turn_inner(
         &self,
         session_id: &str,
         queued_turn: &QueuedTurn,
@@ -2257,9 +2552,122 @@ impl DialogScheduler {
         Ok(())
     }
 
+    async fn submit_goal_continuation(
+        self: Arc<Self>,
+        session_id: String,
+        active_turn: ActiveDialogTurn,
+        plan: openbitfun_runtime_ports::ThreadGoalContinuationPlan,
+    ) {
+        let prepended: Vec<Message> = plan
+            .prepended_reminders
+            .into_iter()
+            .map(|text| Message::internal_reminder(InternalReminderKind::GoalContinuation, text))
+            .collect();
+        let mut last_error = None;
+        for attempt in 1..=MAX_THREAD_GOAL_AUTO_CONTINUATIONS {
+            match self
+                .coordinator
+                .thread_goal_continuation_is_current(&session_id, &plan.user_message_metadata)
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(error) => {
+                    warn!(
+                        "Cannot verify goal continuation: session_id={}, error={}",
+                        session_id, error
+                    );
+                    self.coordinator
+                        .emit_event(AgenticEvent::SystemError {
+                            session_id: Some(session_id.clone()),
+                            error: format!("Cannot verify goal continuation: {error}"),
+                            recoverable: true,
+                        })
+                        .await;
+                    break;
+                }
+            }
+            if self.goal_continuation_abort.contains(&session_id) {
+                debug!(
+    "Aborting goal continuation submit retries after user cancellation: session_id={}",
+    session_id
+);
+                break;
+            }
+            match self
+                .submit_with_prepended_messages(
+                    session_id.clone(),
+                    "Continue working toward the active thread goal.".to_string(),
+                    Some(plan.display_message.clone()),
+                    None,
+                    active_turn.agent_type_owned(),
+                    active_turn.workspace_path_owned(),
+                    active_turn.remote_connection_id_owned(),
+                    active_turn.remote_ssh_host_owned(),
+                    DialogSubmissionPolicy::for_source(DialogTriggerSource::AgentSession),
+                    None,
+                    Some(plan.user_message_metadata.clone()),
+                    prepended.clone(),
+                    None,
+                )
+                .await
+            {
+                Ok(_) => {
+                    last_error = None;
+                    break;
+                }
+                Err(error) => {
+                    last_error = Some(error);
+                    if self.goal_continuation_abort.contains(&session_id) {
+                        debug!(
+            "Aborting goal continuation submit retries after user cancellation: session_id={}",
+            session_id
+        );
+                        break;
+                    }
+                    if attempt < MAX_THREAD_GOAL_AUTO_CONTINUATIONS {
+                        let delay_ms = goal_continuation_submit_retry_delay_ms(attempt);
+                        warn!(
+            "Goal continuation submit failed; retrying: session_id={}, attempt={}/{}, delay_ms={}, error={}",
+            session_id,
+            attempt,
+            MAX_THREAD_GOAL_AUTO_CONTINUATIONS,
+            delay_ms,
+            last_error.as_ref().unwrap()
+        );
+                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                    }
+                }
+            }
+        }
+        if let Some(error) = last_error {
+            if !self.goal_continuation_abort.contains(&session_id) {
+                if let Err(block_error) = self
+                    .coordinator
+                    .block_failed_goal_continuation(&session_id, &plan.user_message_metadata)
+                    .await
+                {
+                    warn!(
+                        "Failed to persist stopped goal continuation: session_id={}, error={}",
+                        session_id, block_error
+                    );
+                    self.coordinator.emit_event(AgenticEvent::SystemError {
+                    session_id: Some(session_id.clone()),
+                    error: format!("Goal continuation stopped but its status could not be saved: {block_error}"),
+                    recoverable: true,
+                }).await;
+                }
+                warn!(
+    "Failed to submit goal continuation turn after retries: session_id={}, error={}",
+    session_id, error
+);
+            }
+        }
+    }
+
     /// Background loop that receives turn outcome notifications from the coordinator.
     async fn run_outcome_handler(
-        &self,
+        self: &Arc<Self>,
         mut outcome_rx: mpsc::UnboundedReceiver<(String, TurnOutcome)>,
     ) {
         while let Some((session_id, outcome)) = outcome_rx.recv().await {
@@ -2306,12 +2714,46 @@ impl DialogScheduler {
                 });
                 let lifecycle_plan =
                     resolve_turn_outcome_lifecycle_plan(&outcome, active_turn.is_some());
+                let retired_injections = self
+                    .host_queue
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .outcome(&session_id, outcome.turn_id(), lifecycle_plan.status);
+                for injection_id in retired_injections {
+                    self.round_injection_buffer
+                        .remove_by_id(&session_id, &injection_id);
+                }
+                if lifecycle_plan.status == TurnOutcomeStatus::Interrupted {
+                    self.hold_managed_queue_for_outcome(
+                        &session_id,
+                        "Turn interrupted; recover it before retrying queued messages",
+                        Some(outcome.turn_id()),
+                    );
+                }
                 if lifecycle_plan.queue_action == TurnOutcomeQueueAction::ClearQueue {
                     debug!(
                         "Turn {}, clearing queue: session_id={}",
                         lifecycle_plan.status, session_id
                     );
+                    // Snapshot receipt IDs before taking the physical queue
+                    // lock; admission takes these locks in the opposite order.
+                    let newer_ids = self
+                        .host_queue
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .admitted_after(&session_id, outcome.turn_id());
+                    let mut newer_user_work = Vec::new();
+                    while let Some(turn) = self.queues.remove_first_matching(&session_id, |turn| {
+                        turn.turn_id
+                            .as_ref()
+                            .is_some_and(|id| newer_ids.contains(id))
+                    }) {
+                        newer_user_work.push(turn);
+                    }
                     let _ = self.clear_queue(&session_id).await;
+                    for turn in newer_user_work.into_iter().rev() {
+                        self.requeue_front(&session_id, turn);
+                    }
                 }
                 (active_turn, active_internal_turn, lifecycle_plan)
             };
@@ -2390,91 +2832,16 @@ impl DialogScheduler {
                                 .await
                             {
                                 Ok(Some(plan)) => {
-                                    let prepended: Vec<Message> = plan
-                                        .prepended_reminders
-                                        .into_iter()
-                                        .map(|text| {
-                                            Message::internal_reminder(
-                                                InternalReminderKind::GoalContinuation,
-                                                text,
-                                            )
-                                        })
-                                        .collect();
-                                    let mut last_error = None;
-                                    for attempt in 1..=MAX_THREAD_GOAL_AUTO_CONTINUATIONS {
-                                        if self.goal_continuation_abort.contains(&session_id) {
-                                            debug!(
-                                        "Aborting goal continuation submit retries after user cancellation: session_id={}",
-                                        session_id
-                                    );
-                                            break;
-                                        }
-                                        match self
-                                            .submit_with_prepended_messages(
-                                                session_id.clone(),
-                                                "Continue working toward the active thread goal."
-                                                    .to_string(),
-                                                Some(plan.display_message.clone()),
-                                                None,
-                                                active_turn.agent_type_owned(),
-                                                active_turn.workspace_path_owned(),
-                                                active_turn.remote_connection_id_owned(),
-                                                active_turn.remote_ssh_host_owned(),
-                                                DialogSubmissionPolicy::for_source(
-                                                    DialogTriggerSource::AgentSession,
-                                                ),
-                                                None,
-                                                Some(plan.user_message_metadata.clone()),
-                                                prepended.clone(),
-                                                None,
-                                            )
-                                            .await
-                                        {
-                                            Ok(_) => {
-                                                last_error = None;
-                                                break;
-                                            }
-                                            Err(error) => {
-                                                last_error = Some(error);
-                                                if self
-                                                    .goal_continuation_abort
-                                                    .contains(&session_id)
-                                                {
-                                                    debug!(
-                                                "Aborting goal continuation submit retries after user cancellation: session_id={}",
-                                                session_id
-                                            );
-                                                    break;
-                                                }
-                                                if attempt < MAX_THREAD_GOAL_AUTO_CONTINUATIONS {
-                                                    let delay_ms =
-                                                        goal_continuation_submit_retry_delay_ms(
-                                                            attempt,
-                                                        );
-                                                    warn!(
-                                                "Goal continuation submit failed; retrying: session_id={}, attempt={}/{}, delay_ms={}, error={}",
-                                                session_id,
-                                                attempt,
-                                                MAX_THREAD_GOAL_AUTO_CONTINUATIONS,
-                                                delay_ms,
-                                                last_error.as_ref().unwrap()
-                                            );
-                                                    tokio::time::sleep(
-                                                        std::time::Duration::from_millis(delay_ms),
-                                                    )
-                                                    .await;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    if let Some(error) = last_error {
-                                        if !self.goal_continuation_abort.contains(&session_id) {
-                                            warn!(
-                                        "Failed to submit goal continuation turn after retries: session_id={}, error={}",
-                                        session_id, error
-                                    );
-                                        }
-                                    }
+                                    // A transport/model failure in one goal must not block
+                                    // outcome processing for every other session.
+                                    let scheduler = Arc::clone(self);
+                                    let session_id = session_id.clone();
+                                    let active_turn = active_turn.clone();
+                                    tokio::spawn(scheduler.submit_goal_continuation(
+                                        session_id,
+                                        active_turn,
+                                        plan,
+                                    ));
                                 }
                                 Ok(None) => {}
                                 Err(error) => {
@@ -2482,6 +2849,15 @@ impl DialogScheduler {
                                 "Goal verification failed after turn stopped: session_id={}, status={}, error={}",
                                 session_id, status, error
                             );
+                                    self.coordinator
+                                        .emit_event(AgenticEvent::SystemError {
+                                            session_id: Some(session_id.clone()),
+                                            error: format!(
+                                                "Goal continuation could not be prepared: {error}"
+                                            ),
+                                            recoverable: true,
+                                        })
+                                        .await;
                                 }
                             }
                         }
@@ -2532,7 +2908,13 @@ impl DialogScheduler {
                         ),
                     }
                 }
-                TurnOutcomeQueueAction::ClearQueue => {}
+                TurnOutcomeQueueAction::ClearQueue => {
+                    // Only user work admitted after the failed turn settled was
+                    // retained above. Previously queued work remains blocked.
+                    if let Err(error) = self.dispatch_next_if_idle(&session_id).await {
+                        warn!("Failed to dispatch newly admitted work after failed turn cleanup: session_id={}, error={}", session_id, error);
+                    }
+                }
             }
         }
     }
@@ -2705,7 +3087,12 @@ impl DialogScheduler {
                         "External subagent delegation does not accept attachments or prepended reminders",
                     ));
                 }
-                if request.remote_connection_id.is_some() || request.remote_ssh_host.is_some() {
+                if self
+                    .coordinator
+                    .get_session_manager()
+                    .get_session(&request.session_id)
+                    .is_some_and(|session| session.config.is_remote_workspace())
+                {
                     return Err(PortError::new(
                         PortErrorKind::NotAvailable,
                         "External subagent delegation is unavailable for remote workspaces",
@@ -2737,7 +3124,7 @@ impl DialogScheduler {
                 PortError::new(
                     PortErrorKind::InvalidRequest,
                     format!(
-                        "Dialog turn ID is already active or completed: session_id={}, turn_id={resolved_turn_id}",
+                        "{DIALOG_TURN_ID_ALREADY_SETTLED_MESSAGE}: session_id={}, turn_id={resolved_turn_id}",
                         request.session_id
                     ),
                 )
@@ -2749,6 +3136,7 @@ impl DialogScheduler {
             turn_id: Some(resolved_turn_id.clone()),
             agent_type: request.agent_type,
             workspace_path: request.workspace_path,
+            workspace_id: request.workspace_id,
             remote_connection_id: request.remote_connection_id,
             remote_ssh_host: request.remote_ssh_host,
             policy: request.policy,
@@ -2773,6 +3161,13 @@ impl DialogScheduler {
 
 #[async_trait::async_trait]
 impl AgentDialogTurnPort for DialogScheduler {
+    async fn manage_dialog_queue(
+        &self,
+        request: openbitfun_runtime_ports::DialogQueueRequest,
+    ) -> PortResult<openbitfun_runtime_ports::DialogQueueSnapshot> {
+        self.manage_host_queue(request).await
+    }
+
     async fn submit_dialog_turn(
         &self,
         request: AgentDialogTurnRequest,
@@ -3144,6 +3539,7 @@ pub fn clear_thread_goal_continuation_abort(session_id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    include!("host_message_queue_tests.rs");
     use crate::agentic::core::{ProcessingPhase, SessionConfig};
     use crate::agentic::events::{EventQueue, EventQueueConfig, EventRouter};
     use crate::agentic::execution::{
@@ -3151,7 +3547,7 @@ mod tests {
     };
     use crate::agentic::persistence::PersistenceManager;
     use crate::agentic::session::{
-        compression::{CompressionConfig, ContextCompressor},
+        compression::ContextCompressor,
         revert::{SessionRevertPhase, SessionRevertState, SESSION_REVERT_SCHEMA_VERSION},
         PromptCachePolicy, SessionContextStore, SessionManagerConfig,
         TEST_MODEL_RESOLUTION_AI_CONFIG,
@@ -3214,6 +3610,15 @@ mod tests {
         assert_eq!(error.kind, PortErrorKind::InvalidRequest);
     }
 
+    /// Creates a fixture workspace directory and registers it as a local
+    /// workspace record. Sessions only exist inside registered workspaces, so
+    /// path-only session configs naming it resolve like a host-opened folder.
+    fn fixture_workspace_dir(path: PathBuf) -> PathBuf {
+        std::fs::create_dir_all(&path).expect("workspace");
+        crate::service::workspace::legacy_compat::register_local_fixture_blocking(&path);
+        path
+    }
+
     fn test_scheduler() -> (
         Arc<DialogScheduler>,
         Arc<SessionManager>,
@@ -3262,7 +3667,7 @@ mod tests {
             )),
             event_queue.clone(),
             session_manager.clone(),
-            Arc::new(ContextCompressor::new(CompressionConfig::default())),
+            Arc::new(ContextCompressor::new()),
             ExecutionEngineConfig::default(),
         ));
         let coordinator = Arc::new(ConversationCoordinator::new(
@@ -3302,8 +3707,7 @@ mod tests {
     async fn submission_preflight_commits_a_persisted_revert_marker() {
         let (scheduler, session_manager, _, root) = test_scheduler();
         let session_id = "reverted-session";
-        let workspace = root.path().join("workspace");
-        std::fs::create_dir_all(&workspace).expect("workspace");
+        let workspace = fixture_workspace_dir(root.path().join("workspace"));
         session_manager
             .create_session_with_id(
                 Some(session_id.to_string()),
@@ -3364,8 +3768,7 @@ mod tests {
         let (scheduler, session_manager, _, root) = test_scheduler();
         let session_id = "parent-session";
         let turn_id = "parent-turn";
-        let workspace = root.path().join("workspace");
-        std::fs::create_dir_all(&workspace).expect("workspace");
+        let workspace = fixture_workspace_dir(root.path().join("workspace"));
         session_manager
             .create_session_with_id(
                 Some(session_id.to_string()),
@@ -3424,8 +3827,7 @@ mod tests {
     async fn idle_background_result_uses_the_session_logical_agent_route() {
         let (scheduler, session_manager, _, root) = test_scheduler();
         let session_id = "external-parent-session";
-        let workspace = root.path().join("workspace");
-        std::fs::create_dir_all(&workspace).expect("workspace");
+        let workspace = fixture_workspace_dir(root.path().join("workspace"));
         session_manager
             .create_session_with_id(
                 Some(session_id.to_string()),
@@ -3472,7 +3874,7 @@ mod tests {
         let (scheduler, session_manager, _, root) = test_scheduler_with_persistence(true);
         let session_id = "evicted-interrupted-session";
         let turn_id = "interrupted-turn";
-        let workspace = root.path().join("workspace");
+        let workspace = fixture_workspace_dir(root.path().join("workspace"));
         let model_binding_fingerprint = model_runtime_binding_fingerprint(&AIModelConfig {
             id: "model-original".to_string(),
             name: "model-original".to_string(),
@@ -3556,8 +3958,7 @@ mod tests {
         let (scheduler, session_manager, _, root) = test_scheduler();
         let session_id = "goal-parent-session";
         let turn_id = "goal-parent-turn";
-        let workspace = root.path().join("workspace");
-        std::fs::create_dir_all(&workspace).expect("workspace");
+        let workspace = fixture_workspace_dir(root.path().join("workspace"));
         session_manager
             .create_session_with_id(
                 Some(session_id.to_string()),
@@ -3622,6 +4023,7 @@ mod tests {
             turn_id: Some(turn_id.to_string()),
             agent_type: "Standard".to_string(),
             workspace_path: Some("/workspace".to_string()),
+            workspace_id: None,
             remote_connection_id: None,
             remote_ssh_host: None,
             policy: DialogSubmissionPolicy::for_source(DialogTriggerSource::DesktopUi),
@@ -3687,8 +4089,7 @@ mod tests {
         let (scheduler, session_manager, _, root) = test_scheduler_with_persistence(true);
         let session_id = "interrupted-queue-hold";
         let turn_id = "turn-interrupted";
-        let workspace = root.path().join("workspace-interrupted-hold");
-        std::fs::create_dir_all(&workspace).expect("workspace");
+        let workspace = fixture_workspace_dir(root.path().join("workspace-interrupted-hold"));
         session_manager
             .create_session_with_id(
                 Some(session_id.to_string()),
@@ -3743,8 +4144,7 @@ mod tests {
         let (scheduler, session_manager, _, root) = test_scheduler();
         let parent_session_id = "parent-session";
         let child_session_id = "background-child-session";
-        let workspace = root.path().join("workspace");
-        std::fs::create_dir_all(&workspace).expect("workspace");
+        let workspace = fixture_workspace_dir(root.path().join("workspace"));
         session_manager
             .create_session_with_id(
                 Some(parent_session_id.to_string()),
@@ -3816,8 +4216,7 @@ mod tests {
     #[tokio::test]
     async fn dialog_port_preserves_not_found_for_a_missing_session() {
         let (scheduler, _, _, root) = test_scheduler();
-        let workspace = root.path().join("workspace");
-        std::fs::create_dir_all(&workspace).expect("workspace");
+        let workspace = fixture_workspace_dir(root.path().join("workspace"));
 
         let error = scheduler
             .submit_dialog_turn(AgentDialogTurnRequest {
@@ -3829,6 +4228,7 @@ mod tests {
                 execution: Default::default(),
                 agent_type: "Standard".to_string(),
                 workspace_path: Some(workspace.to_string_lossy().to_string()),
+                workspace_id: None,
                 remote_connection_id: None,
                 remote_ssh_host: None,
                 policy: DialogSubmissionPolicy::for_source(DialogTriggerSource::Cli),
@@ -3860,8 +4260,7 @@ mod tests {
         let (scheduler, session_manager, _, root) = test_scheduler();
         let session_id = "queued-session";
         let turn_id = "queued-turn";
-        let workspace = root.path().join("workspace");
-        std::fs::create_dir_all(&workspace).expect("workspace");
+        let workspace = fixture_workspace_dir(root.path().join("workspace"));
         session_manager
             .create_session_with_id(
                 Some(session_id.to_string()),
@@ -3895,6 +4294,7 @@ mod tests {
                 execution: Default::default(),
                 agent_type: "Standard".to_string(),
                 workspace_path: None,
+                workspace_id: None,
                 remote_connection_id: None,
                 remote_ssh_host: None,
                 policy: DialogSubmissionPolicy::for_source(DialogTriggerSource::Cli),
@@ -3936,8 +4336,7 @@ mod tests {
     async fn delegated_dialog_turn_rejects_instead_of_queueing_behind_an_active_turn() {
         let (scheduler, session_manager, _, root) = test_scheduler();
         let session_id = "delegated-busy-session";
-        let workspace = root.path().join("workspace");
-        std::fs::create_dir_all(&workspace).expect("workspace");
+        let workspace = fixture_workspace_dir(root.path().join("workspace"));
         session_manager
             .create_session_with_id(
                 Some(session_id.to_string()),
@@ -3975,6 +4374,7 @@ mod tests {
                     },
                 agent_type: "Standard".to_string(),
                 workspace_path: None,
+                workspace_id: None,
                 remote_connection_id: None,
                 remote_ssh_host: None,
                 policy: DialogSubmissionPolicy::for_source(DialogTriggerSource::Cli),
@@ -3995,8 +4395,7 @@ mod tests {
     async fn delegated_dialog_turn_does_not_clear_a_queue_from_an_error_session() {
         let (scheduler, session_manager, _, root) = test_scheduler();
         let session_id = "delegated-error-session";
-        let workspace = root.path().join("workspace");
-        std::fs::create_dir_all(&workspace).expect("workspace");
+        let workspace = fixture_workspace_dir(root.path().join("workspace"));
         session_manager
             .create_session_with_id(
                 Some(session_id.to_string()),
@@ -4030,6 +4429,7 @@ mod tests {
                 execution: Default::default(),
                 agent_type: "Standard".to_string(),
                 workspace_path: None,
+                workspace_id: None,
                 remote_connection_id: None,
                 remote_ssh_host: None,
                 policy: DialogSubmissionPolicy::for_source(DialogTriggerSource::Cli),
@@ -4065,6 +4465,7 @@ mod tests {
                     },
                 agent_type: "Standard".to_string(),
                 workspace_path: None,
+                workspace_id: None,
                 remote_connection_id: None,
                 remote_ssh_host: None,
                 policy: DialogSubmissionPolicy::for_source(DialogTriggerSource::Cli),
@@ -4089,8 +4490,7 @@ mod tests {
     async fn reject_busy_dialog_port_does_not_enqueue_or_replace_the_active_turn() {
         let (scheduler, session_manager, _, root) = test_scheduler();
         let session_id = "acp-session";
-        let workspace = root.path().join("workspace");
-        std::fs::create_dir_all(&workspace).expect("workspace");
+        let workspace = fixture_workspace_dir(root.path().join("workspace"));
         session_manager
             .create_session_with_id(
                 Some(session_id.to_string()),
@@ -4124,6 +4524,7 @@ mod tests {
                 execution: Default::default(),
                 agent_type: "Standard".to_string(),
                 workspace_path: None,
+                workspace_id: None,
                 remote_connection_id: None,
                 remote_ssh_host: None,
                 policy: DialogSubmissionPolicy::for_source(DialogTriggerSource::Cli),
@@ -4159,8 +4560,7 @@ mod tests {
         let (scheduler, session_manager, _, root) = test_scheduler();
         let session_id = "duplicate-active-session";
         let turn_id = "duplicate-turn";
-        let workspace = root.path().join("workspace");
-        std::fs::create_dir_all(&workspace).expect("workspace");
+        let workspace = fixture_workspace_dir(root.path().join("workspace"));
         session_manager
             .create_session_with_id(
                 Some(session_id.to_string()),
@@ -4197,6 +4597,7 @@ mod tests {
                 execution: Default::default(),
                 agent_type: "Standard".to_string(),
                 workspace_path: None,
+                workspace_id: None,
                 remote_connection_id: None,
                 remote_ssh_host: None,
                 policy: DialogSubmissionPolicy::for_source(DialogTriggerSource::Cli),
@@ -4216,10 +4617,8 @@ mod tests {
         let (scheduler, session_manager, _, root) = test_scheduler();
         let session_id = "workspace-bound-session";
         let turn_id = "wrong-workspace-turn";
-        let workspace_a = root.path().join("workspace-a");
-        let workspace_b = root.path().join("workspace-b");
-        std::fs::create_dir_all(&workspace_a).expect("workspace a");
-        std::fs::create_dir_all(&workspace_b).expect("workspace b");
+        let workspace_a = fixture_workspace_dir(root.path().join("workspace-a"));
+        let workspace_b = fixture_workspace_dir(root.path().join("workspace-b"));
         session_manager
             .create_session_with_id(
                 Some(session_id.to_string()),
@@ -4242,6 +4641,7 @@ mod tests {
                 execution: Default::default(),
                 agent_type: "Standard".to_string(),
                 workspace_path: Some(workspace_b.to_string_lossy().to_string()),
+                workspace_id: None,
                 remote_connection_id: None,
                 remote_ssh_host: None,
                 policy: DialogSubmissionPolicy::for_source(DialogTriggerSource::Cli),
@@ -4268,8 +4668,7 @@ mod tests {
         let (scheduler, session_manager, _, root) = test_scheduler();
         let session_id = "invalid-agent-session";
         let turn_id = "invalid-agent-turn";
-        let workspace = root.path().join("workspace");
-        std::fs::create_dir_all(&workspace).expect("workspace");
+        let workspace = fixture_workspace_dir(root.path().join("workspace"));
         session_manager
             .create_session_with_id(
                 Some(session_id.to_string()),
@@ -4293,6 +4692,7 @@ mod tests {
                 execution: Default::default(),
                 agent_type: "agent-that-does-not-exist".to_string(),
                 workspace_path: None,
+                workspace_id: None,
                 remote_connection_id: None,
                 remote_ssh_host: None,
                 policy: DialogSubmissionPolicy::for_source(DialogTriggerSource::Cli),
@@ -4312,8 +4712,7 @@ mod tests {
         let (scheduler, session_manager, _, root) = test_scheduler();
         let session_id = "known-turn-session";
         let turn_id = "known-turn";
-        let workspace = root.path().join("workspace");
-        std::fs::create_dir_all(&workspace).expect("workspace");
+        let workspace = fixture_workspace_dir(root.path().join("workspace"));
         session_manager
             .create_session_with_id(
                 Some(session_id.to_string()),
@@ -4378,8 +4777,7 @@ mod tests {
         session_id: &str,
         turn_id: &str,
     ) {
-        let workspace = root.path().join(format!("workspace-{session_id}"));
-        std::fs::create_dir_all(&workspace).expect("workspace");
+        let workspace = fixture_workspace_dir(root.path().join(format!("workspace-{session_id}")));
         session_manager
             .create_session_with_id(
                 Some(session_id.to_string()),
@@ -4452,6 +4850,309 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn thread_goal_submit_retry_does_not_block_another_sessions_outcome() {
+        let (scheduler, sessions, _, root) = test_scheduler_with_persistence(true);
+        for (session, turn) in [
+            ("goal-retry-busy", "first-turn"),
+            ("unrelated-goal-session", "second-turn"),
+        ] {
+            mark_session_processing(&sessions, &root, session, turn).await;
+            sessions
+                .update_session_state(session, SessionState::Idle)
+                .await
+                .unwrap();
+            scheduler.active_turns.insert(
+                session,
+                ActiveDialogTurn::new(
+                    turn.into(),
+                    Some(root.path().to_string_lossy().into_owned()),
+                    None,
+                    None,
+                    "goal-test-missing-agent".into(),
+                    "work".into(),
+                    None,
+                    DialogSubmissionPolicy::for_source(DialogTriggerSource::Cli),
+                    None,
+                ),
+            );
+        }
+        scheduler
+            .coordinator
+            .prepare_prompt_thread_goal("goal-retry-busy", "/goal finish work")
+            .await
+            .unwrap();
+        for (session, turn) in [
+            ("goal-retry-busy", "first-turn"),
+            ("unrelated-goal-session", "second-turn"),
+        ] {
+            scheduler
+                .outcome_sender()
+                .send((
+                    session.into(),
+                    TurnOutcome::Completed {
+                        turn_id: turn.into(),
+                        final_response: "checkpoint".into(),
+                    },
+                ))
+                .unwrap();
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while scheduler.active_turns.contains("unrelated-goal-session") {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("one session's retry backoff must not block other outcomes");
+        scheduler.goal_continuation_abort.mark("goal-retry-busy");
+    }
+
+    #[tokio::test]
+    async fn thread_goal_obsolete_queued_continuations_are_retired_instead_of_held() {
+        let (scheduler, sessions, _, root) = test_scheduler_with_persistence(true);
+        let session = "goal-obsolete-queue";
+        mark_session_processing(&sessions, &root, session, "initial").await;
+        let goal = scheduler
+            .coordinator
+            .prepare_prompt_thread_goal(session, "/goal first objective")
+            .await
+            .unwrap()
+            .unwrap();
+        let metadata = crate::agentic::goal_mode::build_thread_goal_continuation_plan(&goal)
+            .user_message_metadata;
+        scheduler
+            .coordinator
+            .block_failed_goal_continuation(session, &metadata)
+            .await
+            .unwrap();
+        sessions
+            .update_session_state(session, SessionState::Idle)
+            .await
+            .unwrap();
+        for id in ["old-continuation-1", "old-continuation-2"] {
+            let mut turn = standard_queued_turn(id);
+            turn.policy = DialogSubmissionPolicy::for_source(DialogTriggerSource::AgentSession);
+            turn.user_message_metadata = Some(metadata.clone());
+            scheduler.enqueue(session, turn).unwrap();
+        }
+        assert!(scheduler
+            .try_start_next_queued(session)
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(scheduler.queue_depth(session), 0);
+    }
+
+    #[tokio::test]
+    async fn thread_goal_stale_retry_cannot_block_a_replacement_goal() {
+        let (scheduler, sessions, _, root) = test_scheduler_with_persistence(true);
+        mark_session_processing(&sessions, &root, "goal-retry", "turn-retry").await;
+        let storage = sessions
+            .effective_session_storage_path("goal-retry")
+            .await
+            .unwrap();
+        let first = scheduler
+            .coordinator
+            .prepare_prompt_thread_goal("goal-retry", "/goal first objective")
+            .await
+            .unwrap()
+            .unwrap();
+        let metadata = crate::agentic::goal_mode::build_thread_goal_continuation_plan(&first)
+            .user_message_metadata;
+        assert!(scheduler
+            .coordinator
+            .thread_goal_continuation_is_current("goal-retry", &metadata)
+            .await
+            .unwrap());
+        let replacement = scheduler
+            .coordinator
+            .prepare_prompt_thread_goal("goal-retry", "/goal replacement objective")
+            .await
+            .unwrap()
+            .unwrap();
+        scheduler
+            .coordinator
+            .block_failed_goal_continuation("goal-retry", &metadata)
+            .await
+            .unwrap();
+        let current = scheduler
+            .coordinator
+            .get_thread_goal("goal-retry", &storage)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.goal_id, replacement.goal_id);
+        assert_eq!(current.status, ThreadGoalStatus::Active);
+        let metadata = crate::agentic::goal_mode::build_thread_goal_continuation_plan(&current)
+            .user_message_metadata;
+        scheduler
+            .coordinator
+            .block_failed_goal_continuation("goal-retry", &metadata)
+            .await
+            .unwrap();
+        assert_eq!(
+            scheduler
+                .coordinator
+                .get_thread_goal("goal-retry", &storage)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ThreadGoalStatus::Blocked
+        );
+    }
+
+    #[tokio::test]
+    async fn thread_goal_sessions_keep_independent_usage_and_terminal_counts() {
+        let (scheduler, sessions, _, root) = test_scheduler_with_persistence(true);
+        for (session, turn) in [("goal-a", "turn-a"), ("goal-b", "turn-b")] {
+            mark_session_processing(&sessions, &root, session, turn).await;
+            let storage = sessions
+                .effective_session_storage_path(session)
+                .await
+                .unwrap();
+            scheduler
+                .coordinator
+                .create_thread_goal(session, &storage, "finish work".into(), Some(1000))
+                .await
+                .unwrap();
+            scheduler
+                .coordinator
+                .thread_goal_runtime(session)
+                .record_round_billable_tokens(turn, 25);
+        }
+        let storage_a = sessions
+            .effective_session_storage_path("goal-a")
+            .await
+            .unwrap();
+        assert!(scheduler
+            .coordinator
+            .update_thread_goal_status(
+                "goal-a",
+                &storage_a,
+                ThreadGoalStatus::Complete,
+                Some("stale-turn"),
+            )
+            .await
+            .is_err());
+        let done = scheduler
+            .coordinator
+            .update_thread_goal_status(
+                "goal-a",
+                &storage_a,
+                ThreadGoalStatus::Complete,
+                Some("turn-a"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(done.tokens_used, 25);
+        assert_eq!(done.status, ThreadGoalStatus::Complete);
+        scheduler
+            .coordinator
+            .thread_goal_runtime("goal-b")
+            .record_round_billable_tokens("turn-b", 12);
+        let storage_b = sessions
+            .effective_session_storage_path("goal-b")
+            .await
+            .unwrap();
+        let (read_one, read_two) = tokio::join!(
+            scheduler.coordinator.get_thread_goal("goal-b", &storage_b),
+            scheduler.coordinator.get_thread_goal("goal-b", &storage_b),
+        );
+        let other = read_one.unwrap().unwrap();
+        assert_eq!(read_two.unwrap().unwrap().tokens_used, 37);
+        assert_eq!(other.tokens_used, 37);
+        assert_eq!(other.status, ThreadGoalStatus::Active);
+        let repeated = scheduler
+            .coordinator
+            .get_thread_goal("goal-b", &storage_b)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            repeated.tokens_used, 37,
+            "repeated reads must not charge twice"
+        );
+        let paused = scheduler
+            .coordinator
+            .set_thread_goal_status("goal-b", &storage_b, ThreadGoalStatus::Paused)
+            .await
+            .unwrap();
+        assert_eq!(paused.tokens_used, 37);
+        assert_eq!(paused.status, ThreadGoalStatus::Paused);
+    }
+
+    #[tokio::test]
+    async fn thread_goal_plain_prompt_steering_activates_without_an_extra_turn() {
+        let (scheduler, session_manager, _, root) = test_scheduler_with_persistence(true);
+        let session_id = "goal-steering-session";
+        let turn_id = "active-goal-turn";
+        mark_session_processing(&session_manager, &root, session_id, turn_id).await;
+        scheduler
+            .active_turns
+            .insert(session_id, desktop_active_turn(turn_id));
+        scheduler
+            .buffer_steering(
+                session_id.into(),
+                "stale-turn".into(),
+                "/goal stale objective".into(),
+                None,
+                Vec::new(),
+                serde_json::Map::new(),
+            )
+            .await
+            .expect_err("stale steering must not activate a goal");
+        let storage = session_manager
+            .effective_session_storage_path(session_id)
+            .await
+            .unwrap();
+        assert!(scheduler
+            .coordinator
+            .get_thread_goal(session_id, &storage)
+            .await
+            .unwrap()
+            .is_none());
+        scheduler
+            .buffer_steering(
+                session_id.into(),
+                turn_id.into(),
+                "/goal finish tests".into(),
+                None,
+                Vec::new(),
+                serde_json::Map::new(),
+            )
+            .await
+            .expect("goal steering");
+        let goal = scheduler
+            .coordinator
+            .get_thread_goal(session_id, &storage)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(goal.is_active());
+        assert_eq!(goal.objective, "finish tests");
+        let pending = scheduler
+            .round_injection_monitor()
+            .take_pending(session_id, turn_id);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].display_content, "/goal finish tests");
+        assert!(pending[0]
+            .content
+            .contains("<untrusted_objective>\nfinish tests"));
+        assert!(!scheduler.queues.has_items(session_id));
+        scheduler
+            .coordinator
+            .thread_goal_runtime(session_id)
+            .record_round_billable_tokens(turn_id, 12);
+        assert_eq!(
+            scheduler
+                .coordinator
+                .thread_goal_runtime(session_id)
+                .turn_cumulative_billable_tokens(turn_id),
+            12
+        );
+    }
+
+    #[tokio::test]
     async fn steering_serializes_with_other_operations_for_the_same_session() {
         let (scheduler, session_manager, _, root) = test_scheduler();
         let session_id = "locked-steering-session";
@@ -4504,6 +5205,68 @@ mod tests {
         assert!(scheduler
             .active_turns
             .matches_turn("session-a", "shared-turn"));
+    }
+
+    #[tokio::test]
+    async fn idle_only_maintenance_preserves_work_accepted_before_lock_acquisition() {
+        let (scheduler, session_manager, _, root) = test_scheduler();
+        let session_id = "remote-rollback-busy";
+        let storage = root.path().join("sessions");
+        session_manager
+            .ensure_session_storage_path(session_id, &storage)
+            .unwrap();
+        // The phone may have observed idle before another controller was admitted.
+        let guard = scheduler.lock_session_operation(session_id).await;
+        let request = scheduler.begin_session_maintenance_with_policy(
+            session_id,
+            &storage,
+            Duration::ZERO,
+            true,
+        );
+        tokio::pin!(request);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut request)
+                .await
+                .is_err()
+        );
+        scheduler
+            .queues
+            .enqueue(
+                session_id,
+                standard_queued_turn("queued"),
+                DialogQueuePriority::Normal,
+            )
+            .unwrap();
+        scheduler
+            .active_turns
+            .insert(session_id, desktop_active_turn("active"));
+        drop(guard);
+        assert!(request
+            .await
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("idle session"));
+        assert!(scheduler.active_turns.matches_turn(session_id, "active"));
+        assert_eq!(scheduler.queue_depth(session_id), 1);
+
+        scheduler.active_turns.remove(session_id);
+        assert!(
+            scheduler
+                .begin_session_maintenance_with_policy(session_id, &storage, Duration::ZERO, true)
+                .await
+                .is_err(),
+            "idle but queued must also be rejected"
+        );
+        assert_eq!(scheduler.queue_depth(session_id), 1);
+        scheduler.clear_queue(session_id).await;
+        assert!(
+            scheduler
+                .begin_session_maintenance_with_policy(session_id, &storage, Duration::ZERO, true)
+                .await
+                .is_ok(),
+            "empty idle session can be maintained"
+        );
     }
 
     #[tokio::test]
@@ -4582,8 +5345,7 @@ mod tests {
         let (scheduler, session_manager, _, root) = test_scheduler();
         let session_id = "session-maintenance-retire";
         let turn_id = "turn-active";
-        let workspace = root.path().join("workspace-maintenance-retire");
-        std::fs::create_dir_all(&workspace).expect("workspace");
+        let workspace = fixture_workspace_dir(root.path().join("workspace-maintenance-retire"));
         session_manager
             .create_session_with_id(
                 Some(session_id.to_string()),

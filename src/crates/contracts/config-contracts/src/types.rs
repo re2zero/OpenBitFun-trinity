@@ -186,6 +186,9 @@ pub struct AppConfig {
     /// Global, user-defined groups used to organize Skill pickers.
     #[serde(default, skip_serializing_if = "UserSkillGroupsConfig::is_empty")]
     pub user_skill_groups: UserSkillGroupsConfig,
+    /// Marketplace used by the serving host for Skill discovery and installation.
+    #[serde(default)]
+    pub skill_market: SkillMarketConfig,
     /// What happens when the window close button is clicked on Windows / Linux.
     /// Allowed values: "quit" | "minimize_to_tray" | "ask".
     #[serde(default = "default_close_button_behavior")]
@@ -196,6 +199,88 @@ pub struct AppConfig {
     /// Defaults for opt-in managed Git worktrees.
     #[serde(default)]
     pub worktrees: WorktreeSettings,
+}
+
+/// An explicit empty source list stays empty; defaults apply only to absent settings.
+#[derive(Debug, Clone, Serialize)]
+pub struct SkillMarketConfig {
+    pub sources: Vec<SkillMarketSource>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SkillMarketSource {
+    pub id: String,
+    pub name: String,
+    pub provider: String,
+    pub url: String,
+    pub enabled: bool,
+    pub api_token: String,
+}
+
+impl Default for SkillMarketSource {
+    fn default() -> Self {
+        Self {
+            id: "skills-sh".into(),
+            name: "skills.sh".into(),
+            provider: "skills-sh".into(),
+            url: "https://skills.sh".into(),
+            enabled: true,
+            api_token: String::new(),
+        }
+    }
+}
+
+impl Default for SkillMarketConfig {
+    fn default() -> Self {
+        Self {
+            sources: vec![SkillMarketSource::default()],
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for SkillMarketConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize, Default)]
+        #[serde(default)]
+        struct Wire {
+            sources: Option<Vec<SkillMarketSource>>,
+            provider: Option<String>,
+            skillhub_url: String,
+            api_token: String,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        if let Some(sources) = wire.sources {
+            return Ok(Self { sources });
+        }
+        // Read the earlier single-market shape without discarding its credentials.
+        match wire.provider.as_deref() {
+            None | Some("skills-sh") => Ok(Self::default()),
+            Some(provider) => Ok(Self {
+                sources: vec![SkillMarketSource {
+                    id: "legacy-market".into(),
+                    name: provider.into(),
+                    provider: provider.into(),
+                    url: wire.skillhub_url,
+                    api_token: wire.api_token,
+                    enabled: true,
+                }],
+            }),
+        }
+    }
+}
+
+impl std::fmt::Debug for SkillMarketSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SkillMarketSource")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("provider", &self.provider)
+            .field("url", &self.url)
+            .field("enabled", &self.enabled)
+            .field("api_token", &"[redacted]")
+            .finish()
+    }
 }
 
 /// Enablement gates for native agent hooks.
@@ -550,19 +635,22 @@ pub struct AgentCompanionPetSelection {
     pub package_path: String,
     pub spritesheet_path: String,
     pub spritesheet_mime_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sprite_version_number: Option<u32>,
 }
 
 fn default_agent_companion_pet() -> Option<AgentCompanionPetSelection> {
     Some(AgentCompanionPetSelection {
-        id: "blue-golden".to_string(),
-        display_name: "困困".to_string(),
+        id: "bitblob".to_string(),
+        display_name: "BitBlob".to_string(),
         description: Some(
-            "A sweet, round-faced blue-golden shaded cat with wide bright eyes and soft silver-blue fur warmed by creamy-gold highlights.".to_string(),
+            "Rounded lavender companion with a soft antenna and curious eyes.".to_string(),
         ),
         source: "preset".to_string(),
-        package_path: "/agent-companion-pets/blue-golden".to_string(),
-        spritesheet_path: "/agent-companion-pets/blue-golden/spritesheet.png".to_string(),
-        spritesheet_mime_type: "image/png".to_string(),
+        package_path: "/agent-companion-pets/bitblob".to_string(),
+        spritesheet_path: "/agent-companion-pets/bitblob/spritesheet.webp".to_string(),
+        spritesheet_mime_type: "image/webp".to_string(),
+        sprite_version_number: Some(2),
     })
 }
 
@@ -656,7 +744,8 @@ pub struct MinimapConfig {
 pub struct TerminalConfig {
     /// Empty string means "auto-detect".
     pub default_shell: String,
-    /// Terminal panel placement in the session layout: "right" or "bottom".
+    /// Persisted for compatibility; the current terminal routing no longer honors this
+    /// setting after the workbench UI restructuring. Values remain "right" or "bottom".
     pub terminal_panel_position: String,
     pub font_size: u32,
     pub font_family: String,
@@ -1028,9 +1117,21 @@ pub struct AIConfig {
     #[serde(default = "default_tool_execution_timeout")]
     pub tool_execution_timeout_secs: Option<u64>,
 
+    /// Unattended question timeout; null or zero waits indefinitely.
+    #[serde(default = "default_user_question_timeout")]
+    pub user_question_timeout_secs: Option<u32>,
+
     /// Whether tools with deferred exposure load their schemas on demand.
     #[serde(default = "default_enable_deferred_tool_loading")]
     pub enable_deferred_tool_loading: bool,
+
+    /// Speculatively summarize context before automatic compression is required.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub enable_context_compression_prefetch: bool,
+
+    /// Enable the evaluation-oriented edit constraint guard.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub enable_edit_constraint_guard: bool,
 
     /// Allows broad JSON repair for non-Write tool arguments only after a
     /// provider confirms a normal tool-use completion.
@@ -1359,13 +1460,17 @@ pub struct AgentProfileConfig {
     pub extensions: serde_json::Map<String, serde_json::Value>,
 }
 
-/// User-level Skill configuration shared by every agent profile.
+/// Skill availability configuration shared by every agent profile.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct SkillSettingsConfig {
     /// User-level Skill keys disabled for every agent profile.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub globally_disabled_user_skills: Vec<String>,
+    /// Project-level Skill keys, scoped to canonical local workspace roots.
+    /// Remote workspace policy must be owned by its serving filesystem, not this local map.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub globally_disabled_project_skills: HashMap<String, Vec<String>>,
 }
 
 /// API view of a mode configuration.
@@ -1386,6 +1491,14 @@ fn default_true() -> bool {
     true
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
 /// Default streaming idle timeout between chunks.
 fn default_stream_idle_timeout() -> Option<u64> {
     Some(600)
@@ -1397,6 +1510,10 @@ fn default_stream_ttft_timeout() -> Option<u64> {
 }
 
 /// Default is no timeout (wait forever).
+fn default_user_question_timeout() -> Option<u32> {
+    Some(180)
+}
+
 fn default_tool_execution_timeout() -> Option<u64> {
     None
 }
@@ -1778,6 +1895,7 @@ impl Default for AppConfig {
             keybindings: None,
             user_tool_groups: UserToolGroupsConfig::default(),
             user_skill_groups: UserSkillGroupsConfig::default(),
+            skill_market: SkillMarketConfig::default(),
             close_button_behavior: default_close_button_behavior(),
             hooks: AgentHooksConfig::default(),
             worktrees: WorktreeSettings::default(),
@@ -1911,7 +2029,10 @@ impl Default for AIConfig {
             stream_idle_timeout_secs: default_stream_idle_timeout(),
             stream_ttft_timeout_secs: default_stream_ttft_timeout(),
             tool_execution_timeout_secs: default_tool_execution_timeout(),
+            user_question_timeout_secs: default_user_question_timeout(),
             enable_deferred_tool_loading: default_enable_deferred_tool_loading(),
+            enable_context_compression_prefetch: true,
+            enable_edit_constraint_guard: false,
             allow_tool_json_repair: true,
             computer_use_enabled: false,
             browser_control_preferred_browser: String::new(),
@@ -2094,6 +2215,56 @@ impl AIModelConfig {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn global_skill_settings_keep_legacy_values_and_project_scope_on_round_trip() {
+        let legacy = r#"{"globally_disabled_user_skills":["user::home.agents::review"]}"#;
+        let mut settings: super::SkillSettingsConfig = serde_json::from_str(legacy).unwrap();
+        assert!(settings.globally_disabled_project_skills.is_empty());
+        assert_eq!(
+            serde_json::to_value(&settings).unwrap(),
+            serde_json::from_str::<serde_json::Value>(legacy).unwrap()
+        );
+        settings.globally_disabled_project_skills.insert(
+            "/workspace/a".into(),
+            vec!["project::agents::review".into()],
+        );
+        let restored: super::SkillSettingsConfig =
+            serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert_eq!(
+            restored.globally_disabled_user_skills,
+            ["user::home.agents::review"]
+        );
+        assert_eq!(
+            restored.globally_disabled_project_skills["/workspace/a"],
+            ["project::agents::review"]
+        );
+        assert!(!restored
+            .globally_disabled_project_skills
+            .contains_key("/workspace/b"));
+    }
+
+    #[test]
+    fn companion_pet_legacy_selection_round_trip_preserves_missing_version() {
+        let legacy = serde_json::json!({
+            "id": "sample", "displayName": "Sample", "source": "user",
+            "packagePath": "/pets/sample", "spritesheetPath": "/pets/sample/spritesheet.webp",
+            "spritesheetMimeType": "image/webp"
+        });
+        let selection: super::AgentCompanionPetSelection =
+            serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(selection.sprite_version_number, None);
+        assert_eq!(serde_json::to_value(&selection).unwrap(), legacy);
+        for version in [1, 2, 3] {
+            let mut payload = legacy.clone();
+            payload["spriteVersionNumber"] = serde_json::json!(version);
+            let selection: super::AgentCompanionPetSelection =
+                serde_json::from_value(payload.clone()).unwrap();
+            assert_eq!(selection.sprite_version_number, Some(version));
+            // Unknown future versions remain on disk; the renderer decides support.
+            assert_eq!(serde_json::to_value(selection).unwrap(), payload);
+        }
+    }
+
     use super::{
         AIConfig, AIExperienceConfig, AIModelConfig, AgentModelDefaultsConfig, AgentProfileConfig,
         AgentProfileView, AppConfig, AppLoggingConfig, AuthConfig, ChatInputDefaultModeStrategy,
@@ -2405,6 +2576,51 @@ mod tests {
     }
 
     #[test]
+    fn skill_market_defaults_for_legacy_configs_and_round_trips() {
+        let mut value = serde_json::to_value(GlobalConfig::default()).unwrap();
+        value["app"].as_object_mut().unwrap().remove("skill_market");
+        let mut config: GlobalConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(config.app.skill_market.sources.len(), 1);
+        assert_eq!(config.app.skill_market.sources[0].url, "https://skills.sh");
+        assert!(config.app.skill_market.sources[0].enabled);
+        config.app.skill_market = serde_json::from_value(serde_json::json!({
+            "provider": "skillhub", "skillhub_url": "https://skills.example/hub", "api_token": "test-token"
+        })).unwrap();
+        let serialized = serde_json::to_value(&config).unwrap();
+        let restored: GlobalConfig = serde_json::from_value(serialized.clone()).unwrap();
+        assert_eq!(
+            restored.app.skill_market.sources[0].url,
+            "https://skills.example/hub"
+        );
+        assert_eq!(restored.app.skill_market.sources[0].api_token, "test-token");
+        assert!(!format!("{:?}", restored.app.skill_market).contains("test-token"));
+        let empty: super::SkillMarketConfig =
+            serde_json::from_value(serde_json::json!({ "sources": [] })).unwrap();
+        assert!(empty.sources.is_empty());
+        let round_trip: super::SkillMarketConfig =
+            serde_json::from_value(serde_json::to_value(empty).unwrap()).unwrap();
+        assert!(round_trip.sources.is_empty());
+        let disabled: super::SkillMarketConfig = serde_json::from_value(serde_json::json!({ "sources": [
+            { "enabled": false }, { "id": "private", "provider": "skillhub", "url": "http://internal" }
+        ] })).unwrap();
+        assert!(!disabled.sources[0].enabled);
+        assert!(disabled.sources[1].enabled);
+        // An older reader can ignore the additive field and retain its existing preferences.
+        #[derive(serde::Deserialize, serde::Serialize)]
+        struct LegacyApp {
+            language: String,
+            telemetry: bool,
+        }
+        let legacy: LegacyApp = serde_json::from_value(serialized["app"].clone()).unwrap();
+        let old_payload = serde_json::json!({ "app": serde_json::to_value(legacy).unwrap() });
+        let upgraded: super::AppConfig =
+            serde_json::from_value(old_payload["app"].clone()).unwrap();
+        assert_eq!(upgraded.language, config.app.language);
+        assert_eq!(upgraded.telemetry, config.app.telemetry);
+        assert_eq!(upgraded.skill_market.sources[0].provider, "skills-sh");
+    }
+
+    #[test]
     fn user_skill_groups_default_to_version_one_without_persisted_groups() {
         let mut value = current_global_config_with(serde_json::json!({}));
         value["app"]
@@ -2519,7 +2735,7 @@ mod tests {
     }
 
     #[test]
-    fn defaults_agent_companion_pet_to_blue_golden() {
+    fn defaults_agent_companion_pet_to_bitblob() {
         let config: AIExperienceConfig =
             serde_json::from_value(serde_json::json!({})).expect("empty config should default");
 
@@ -2527,14 +2743,15 @@ mod tests {
             .agent_companion_pet
             .as_ref()
             .expect("default companion pet should be present");
-        assert_eq!(pet.id, "blue-golden");
-        assert_eq!(pet.display_name, "困困");
-        assert_eq!(pet.package_path, "/agent-companion-pets/blue-golden");
+        assert_eq!(pet.id, "bitblob");
+        assert_eq!(pet.display_name, "BitBlob");
+        assert_eq!(pet.package_path, "/agent-companion-pets/bitblob");
         assert_eq!(
             pet.spritesheet_path,
-            "/agent-companion-pets/blue-golden/spritesheet.png"
+            "/agent-companion-pets/bitblob/spritesheet.webp"
         );
-        assert_eq!(pet.spritesheet_mime_type, "image/png");
+        assert_eq!(pet.spritesheet_mime_type, "image/webp");
+        assert_eq!(pet.sprite_version_number, Some(2));
     }
 
     #[test]
@@ -2835,6 +3052,7 @@ mod tests {
         assert_eq!(config.stream_idle_timeout_secs, Some(600));
         assert_eq!(config.stream_ttft_timeout_secs, Some(600));
         assert!(config.enable_deferred_tool_loading);
+        assert!(config.enable_context_compression_prefetch);
         assert!(config.allow_tool_json_repair);
         assert_eq!(config.subagent_max_concurrency, 5);
         assert_eq!(config.swarm_max_concurrency, 16);
@@ -2877,6 +3095,58 @@ mod tests {
             config.agent_model_defaults.subagents.fork,
             SubagentModelSelection::Inherit
         );
+    }
+
+    #[test]
+    fn edit_constraint_guard_defaults_off_and_round_trips_explicit_opt_in() {
+        assert!(!AIConfig::default().enable_edit_constraint_guard);
+        let legacy: AIConfig =
+            serde_json::from_value(serde_json::json!({"max_rounds": 42})).unwrap();
+        assert!(!legacy.enable_edit_constraint_guard);
+        let payload = serde_json::to_value(&legacy).unwrap();
+        assert!(payload.get("enable_edit_constraint_guard").is_none());
+        let reloaded: AIConfig = serde_json::from_value(payload).unwrap();
+        assert!(!reloaded.enable_edit_constraint_guard);
+        assert_eq!(reloaded.max_rounds, 42);
+        for enabled in [false, true] {
+            let config: AIConfig = serde_json::from_value(serde_json::json!({
+                "enable_edit_constraint_guard": enabled
+            }))
+            .unwrap();
+            let payload = serde_json::to_value(config).unwrap();
+            if enabled {
+                assert_eq!(payload["enable_edit_constraint_guard"], true);
+            }
+            let reloaded: AIConfig = serde_json::from_value(payload).unwrap();
+            assert_eq!(reloaded.enable_edit_constraint_guard, enabled);
+        }
+    }
+
+    #[test]
+    fn compression_prefetch_defaults_on_omits_default_and_preserves_opt_out() {
+        let old: AIConfig = serde_json::from_value(serde_json::json!({"max_rounds": 42})).unwrap();
+        assert!(old.enable_context_compression_prefetch);
+        let mut payload = serde_json::to_value(&old).unwrap();
+        assert!(payload.get("enable_context_compression_prefetch").is_none());
+        payload["enable_context_compression_prefetch"] = serde_json::json!(true);
+        let enabled: AIConfig = serde_json::from_value(payload).unwrap();
+        assert!(enabled.enable_context_compression_prefetch);
+        assert!(serde_json::to_value(&enabled)
+            .unwrap()
+            .get("enable_context_compression_prefetch")
+            .is_none());
+        let reloaded: AIConfig =
+            serde_json::from_value(serde_json::to_value(enabled).unwrap()).unwrap();
+        assert!(reloaded.enable_context_compression_prefetch);
+        assert_eq!(reloaded.max_rounds, 42);
+        let disabled: AIConfig = serde_json::from_value(serde_json::json!({
+            "enable_context_compression_prefetch": false
+        }))
+        .unwrap();
+        let payload = serde_json::to_value(disabled).unwrap();
+        assert_eq!(payload["enable_context_compression_prefetch"], false);
+        let reloaded: AIConfig = serde_json::from_value(payload).unwrap();
+        assert!(!reloaded.enable_context_compression_prefetch);
     }
 
     #[test]
@@ -3633,4 +3903,35 @@ fn reject_retired_config_fields(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod user_question_timeout_tests {
+    use super::AIConfig;
+    #[test]
+    fn legacy_defaults_and_unlimited_round_trip() {
+        let mut legacy = serde_json::to_value(AIConfig::default()).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("user_question_timeout_secs");
+        let config: AIConfig = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(config.user_question_timeout_secs, Some(180));
+        assert_eq!(
+            serde_json::to_value(&config).unwrap()["user_question_timeout_secs"],
+            180
+        );
+        for value in [
+            serde_json::Value::Null,
+            serde_json::json!(0),
+            serde_json::json!(60),
+        ] {
+            legacy["user_question_timeout_secs"] = value.clone();
+            let config: AIConfig = serde_json::from_value(legacy.clone()).unwrap();
+            assert_eq!(
+                serde_json::to_value(config).unwrap()["user_question_timeout_secs"],
+                value
+            );
+        }
+    }
 }

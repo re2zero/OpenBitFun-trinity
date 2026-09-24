@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   cancelSessionTask,
   drainPendingQueue,
+  installPendingQueueDrainListener,
   sendMessage,
   syncSessionModelSelection,
 } from './MessageModule';
@@ -15,11 +16,15 @@ import {
   useSessionMutationStore,
 } from '../../store/sessionMutationStore';
 import { interruptedTurnRecoveryGate } from '../interruptedTurnRecoveryGate';
+import { consumeSubmittedMessageArrival } from '../submittedMessagePresentation';
 import {
   LOCAL_SURFACE_ID,
   activateSurface,
 } from '@/infrastructure/peer-device/deviceSurface';
 
+import { beginRuntimeSessionAttachment } from '@/infrastructure/peer-device/runtimeSessionEventGate';
+
+const mockSubscribeGlobal = vi.fn();
 const mockTransition = vi.fn();
 const mockGetCurrentState = vi.fn(() => 'processing');
 const mockGetStateMachine = vi.fn(() => null);
@@ -52,6 +57,7 @@ vi.mock('../../state-machine', () => ({
     FINISHING: 'finishing',
   },
   stateMachineManager: {
+    subscribeGlobal: (...args: unknown[]) => mockSubscribeGlobal(...args),
     getCurrentState: (...args: unknown[]) => mockGetCurrentState(...args),
     get: (...args: unknown[]) => mockGetStateMachine(...args),
     transition: (...args: any[]) => mockTransition(...args),
@@ -558,6 +564,58 @@ describe('MessageModule cancellation', () => {
     expect(mockStartDialogTurn).not.toHaveBeenCalled();
   });
 
+  it('sends a queued message once when snapshot replay became idle behind the attachment fence', async () => {
+    mockGetCurrentState.mockReturnValue('idle');
+    mockEnsureBackendSession.mockResolvedValue(undefined);
+    mockStartDialogTurn.mockResolvedValue({ sessionId: 'resume-session', turnId: 'next-turn', status: 'started' });
+    const session: any = { sessionId: 'resume-session', sessionKind: 'normal', mode: 'Standard',
+      titleStatus: 'generated', dialogTurns: [], config: { modelName: 'primary' }, maxContextTokens: 32000 };
+    const pending = { id: 'queued', sessionId: session.sessionId, content: 'next', status: 'queued', retryCount: 0 };
+    mockPendingList.mockReturnValue([pending]);
+    mockPendingSetStatus.mockImplementation((_session, _id, status) => { pending.status = status; });
+    const context: any = {
+      flowChatStore: {
+        getSurfaceGeneration: () => 0,
+        getState: () => ({ sessions: new Map([[session.sessionId, session]]) }),
+        addDialogTurn: vi.fn((_sessionId: string, turn: any) => session.dialogTurns.push(turn)),
+        deleteDialogTurn: vi.fn((_sessionId: string, turnId: string) => {
+          session.dialogTurns = session.dialogTurns.filter((turn: any) => turn.id !== turnId);
+        }),
+        updateSessionLastSubmittedMode: vi.fn(),
+        updateSessionMode: vi.fn(),
+        updateSessionModelName: vi.fn(),
+        updateSessionMaxContextTokens: vi.fn(),
+      },
+      processingManager: {
+        registerStatus: vi.fn(),
+        clearSessionStatus: vi.fn(),
+      },
+      userCancelledSessionIds: new Set<string>(),
+      pendingHistoryLoads: new Map(),
+      contentBuffers: new Map(),
+      activeTextItems: new Map(),
+    };
+    installPendingQueueDrainListener(context);
+    const onIdle = mockSubscribeGlobal.mock.calls.at(-1)![0];
+    const attachment = beginRuntimeSessionAttachment(LOCAL_SURFACE_ID, session.sessionId);
+    onIdle(session.sessionId, { currentState: 'idle' });
+    await Promise.resolve();
+    expect(mockStartDialogTurn).not.toHaveBeenCalled();
+    attachment.finish({ streamId: 'host', cursor: 5 });
+    // A held terminal delivery may report IDLE as well; coalesce the wakeups.
+    onIdle(session.sessionId, { currentState: 'idle' });
+    await vi.waitFor(() => expect(mockStartDialogTurn).toHaveBeenCalledTimes(1));
+    expect(mockPendingRemove).toHaveBeenCalledWith(session.sessionId, pending.id);
+
+    pending.status = 'queued';
+    const nextAttachment = beginRuntimeSessionAttachment(LOCAL_SURFACE_ID, session.sessionId);
+    nextAttachment.finish({ streamId: 'host', cursor: 6 });
+    activateSurface('peer-other');
+    await Promise.resolve();
+    expect(mockStartDialogTurn).toHaveBeenCalledTimes(1);
+    activateSurface(LOCAL_SURFACE_ID);
+  });
+
   it('holds pending input while an interrupt outcome is still in flight', async () => {
     mockGetCurrentState.mockReturnValue('idle');
     mockPendingList.mockReturnValue([{
@@ -814,6 +872,9 @@ describe('MessageModule detached dispatch', () => {
     );
 
     expect(session.dialogTurns).toHaveLength(1);
+    expect(consumeSubmittedMessageArrival(
+      session.sessionId, session.dialogTurns[0].id, session.dialogTurns[0].userMessage.id,
+    )).toBeDefined();
     expect(session.dialogTurns[0]).toMatchObject({
       id: 'dispatch_pending_job-1',
       sessionId: 'dispatch-session',
@@ -923,6 +984,29 @@ describe('MessageModule detached dispatch', () => {
 });
 
 describe('MessageModule model synchronization', () => {
+  function modelSyncContext(modelName: string) {
+    const session = {
+      sessionId: 'same-name-session',
+      config: { modelName, workspacePath: '/remote/repo' },
+      remoteConnectionId: 'ssh-1', remoteSshHost: 'example.test',
+      maxContextTokens: 32000,
+    };
+    const context: any = {
+      flowChatStore: {
+        getSurfaceGeneration: () => 0,
+        getState: () => ({ sessions: new Map([[session.sessionId, session]]) }),
+        updateSessionModelName: vi.fn(),
+        updateSessionMaxContextTokens: vi.fn(),
+      },
+    };
+    return { context, session };
+  }
+
+  const sameNameModels = [
+    { id: 'model-first', name: 'MOCK-8000', model_name: 'asdf', enabled: true, context_window: 32000 },
+    { id: 'asdf', name: 'MOCK-8000-2', model_name: 'asdf', enabled: true, context_window: 64000 },
+  ];
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetConfigs.mockResolvedValue({
@@ -934,6 +1018,31 @@ describe('MessageModule model synchronization', () => {
       'ai.default_models': { primary: 'primary-model' },
     });
     mockUpdateSessionModel.mockResolvedValue(undefined);
+  });
+
+  it('sends the exact selected account ID with the original remote routing', async () => {
+    mockGetConfigs.mockResolvedValue({
+      'ai.models': sameNameModels, 'ai.default_models': { primary: 'model-first' },
+    });
+    const { context, session } = modelSyncContext('asdf');
+    await syncSessionModelSelection(context, session.sessionId, 'Standard');
+    expect(context.flowChatStore.updateSessionModelName).not.toHaveBeenCalled();
+    expect(context.flowChatStore.updateSessionMaxContextTokens).toHaveBeenCalledWith(session.sessionId, 64000);
+    expect(mockUpdateSessionModel).toHaveBeenCalledWith(expect.objectContaining({
+      modelName: 'asdf', remoteConnectionId: 'ssh-1', remoteSshHost: 'example.test',
+      workspacePath: '/remote/repo',
+    }));
+  });
+
+  it.each(['MOCK-8000', 'asdf', 'removed-model'])('does not replace unavailable ID %s with a name match or Primary', async modelName => {
+    mockGetConfigs.mockResolvedValue({
+      'ai.models': [sameNameModels[0]], 'ai.default_models': { primary: 'model-first' },
+    });
+    const { context, session } = modelSyncContext(modelName);
+    await expect(syncSessionModelSelection(context, session.sessionId, 'Standard'))
+      .rejects.toThrow('model configuration ID');
+    expect(context.flowChatStore.updateSessionModelName).not.toHaveBeenCalled();
+    expect(mockUpdateSessionModel).not.toHaveBeenCalled();
   });
 
   it('keeps an explicit primary selector when synchronizing before send', async () => {

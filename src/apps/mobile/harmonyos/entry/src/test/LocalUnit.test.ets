@@ -1,3 +1,4 @@
+import miniAppUnitTest from './MiniAppUnit.test';
 import transportAndGeneralChatUnitTest from './TransportAndGeneralChatUnit.test';
 import conversationStateUnitTest from './ConversationStateUnit.test';
 import conversationPresentationUnitTest from './ConversationPresentationUnit.test';
@@ -9,10 +10,13 @@ import deviceDirectoryUnitTest from './DeviceDirectoryUnit.test';
 import architectureUnitTest from './ArchitectureUnit.test';
 import i18nUnitTest from './I18nUnit.test';
 import watchProvisionUnitTest from './WatchProvisionUnit.test';
+import textScaleUnitTest from './TextScaleUnit.test';
 
 export default function localUnitTest() {
+  miniAppUnitTest();
   i18nUnitTest();
   watchProvisionUnitTest();
+  textScaleUnitTest();
   architectureUnitTest();
   transportAndGeneralChatUnitTest();
   conversationStateUnitTest();

@@ -1,7 +1,6 @@
 import React, { lazy, Suspense, useState, useCallback, useEffect, useRef } from 'react';
-import { createPortal } from 'react-dom';
 
-import {
+import { createOverlayPortal,
   Icon,
   IconButton,
   Menu,
@@ -9,7 +8,6 @@ import {
   MenuSeparator,
   Tooltip,
   Dialog,
-  DialogBody,
   DialogClose,
   DialogHeader,
   DialogHeading,
@@ -17,12 +15,11 @@ import {
 } from '@openbitfun/ui';
 import { RetainedMountBoundary } from '@/shared/presence';
 import { useI18n } from '@/infrastructure/i18n/hooks/useI18n';
-import { useSceneStore } from '../../../stores/sceneStore';
 import { activateProductAction } from '@/app/global-search/productActionActivator';
 import { useToolbarModeContext } from '@/flow_chat/components/toolbar-mode/ToolbarModeContext';
 import { remoteConnectAPI } from '@/infrastructure/api/service-api/RemoteConnectAPI';
 import NotificationButton from '../../TitleBar/NotificationButton';
-import { RemoteConnectDisclaimerContent } from '../../RemoteConnectDialog/RemoteConnectDisclaimer';
+import { RemoteConnectDisclaimer } from '../../RemoteConnectDialog/RemoteConnectDisclaimer';
 import {
   getRemoteConnectDisclaimerAgreed,
   setRemoteConnectDisclaimerAgreed,
@@ -30,19 +27,21 @@ import {
 import { getAppearanceOverlayHost } from '@/infrastructure/appearance/runtime/AppearanceOverlayHost';
 import { useAnchoredPopoverPosition } from '@/shared/utils/useAnchoredPopoverPosition';
 import { useSettingsStore } from '@/app/scenes/settings/settingsStore';
+import { PeerConnectionStatus } from '@/infrastructure/peer-device/PeerConnectionStatus';
 import DeviceStatusControl from './DeviceStatusControl';
 import TrinityStatusControl from './TrinityStatusControl';
 import TrinityStatusPanel from './TrinityStatusPanel';
 import AppearanceQuickSwitchMenuItem from './AppearanceQuickSwitchMenuItem';
+import { UpdateIndicator } from '@/infrastructure/update/UpdateIndicator';
+import { useHasAppUpdate } from '@/infrastructure/update/useHasAppUpdate';
+import { UpdateDownloadIndicator } from '@/infrastructure/update/UpdateDownloadIndicator';
+import { UpdateMenuItems } from '@/infrastructure/update/UpdateMenuItems';
+import { useUpdateInstallStore } from '@/infrastructure/update/updateInstallStore';
 
 const RemoteConnectDialog = lazy(() => import('../../RemoteConnectDialog'));
-const AboutDialog = lazy(() =>
-  import('../../AboutDialog').then(module => ({ default: module.AboutDialog }))
-);
 
 const PersistentFooterActions: React.FC = () => {
   const { t } = useI18n('common');
-  const activeTabId = useSceneStore((s) => s.activeTabId);
   const { enableToolbarMode } = useToolbarModeContext();
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuClosing, setMenuClosing] = useState(false);
@@ -59,7 +58,8 @@ const PersistentFooterActions: React.FC = () => {
     alignment: 'end',
     gap: 6,
   });
-  const [showAbout, setShowAbout] = useState(false);
+  const hasAppUpdate = useHasAppUpdate();
+  const updateVersion = useUpdateInstallStore(state => state.downloadVersion ?? state.availableUpdate?.latestVersion);
   const [showRemoteConnect, setShowRemoteConnect] = useState(false);
   const [remoteInitialGroup, setRemoteInitialGroup] = useState<'network' | 'bot' | 'account' | undefined>(undefined);
   const [showRemoteDisclaimer, setShowRemoteDisclaimer] = useState(false);
@@ -128,7 +128,7 @@ const PersistentFooterActions: React.FC = () => {
 
   const handleShowAbout = () => {
     closeMenu();
-    setShowAbout(true);
+    window.dispatchEvent(new Event('nav:show-about'));
   };
 
   const handleFloatingMode = () => {
@@ -170,8 +170,6 @@ const PersistentFooterActions: React.FC = () => {
     setShowRemoteConnect(true);
   }, []);
 
-  const isSettingsActive = activeTabId === 'settings';
-
   return (
     <>
       {/* Inline cognitive-state expansion anchored above the footer. */}
@@ -179,6 +177,7 @@ const PersistentFooterActions: React.FC = () => {
         open={trinityStatusOpen}
         onOpenChange={setTrinityStatusOpen}
       />
+      <PeerConnectionStatus />
       <div className="openbitfun-nav-panel__footer" data-openbitfun-component="nav-panel" data-openbitfun-part="footer">
         <div className="openbitfun-nav-panel__footer-left">
           <DeviceStatusControl
@@ -193,32 +192,32 @@ const PersistentFooterActions: React.FC = () => {
         </div>
 
         <div className="openbitfun-nav-panel__footer-right">
+          <UpdateDownloadIndicator />
           <div className="openbitfun-nav-panel__footer-menu-wrap">
             <Tooltip
-              content={t('shared:features.settings')}
+              content={hasAppUpdate ? t('update.availableVersion', { version: updateVersion }) : t('actions.more')}
               placement="right"
               followCursor
               disabled={menuOpen}
             >
               <IconButton
                 ref={menuTriggerRef}
-                className={`openbitfun-nav-panel__footer-btn openbitfun-nav-panel__footer-btn--icon${menuOpen || isSettingsActive ? ' is-active' : ''}`}
-                aria-label={t('shared:features.settings')}
+                className={`openbitfun-nav-panel__footer-btn openbitfun-nav-panel__footer-btn--icon${menuOpen ? ' is-active' : ''}`}
+                aria-label={hasAppUpdate ? t('update.moreAttention') : t('actions.more')}
                 aria-expanded={menuOpen}
                 aria-haspopup="menu"
-                aria-pressed={isSettingsActive}
                 onClick={toggleMenu}
                 data-testid="nav-footer-settings-item"
                 data-openbitfun-component="nav-panel"
                 data-openbitfun-part="settingsEntry"
-                data-openbitfun-state={menuOpen ? 'open' : isSettingsActive ? 'active' : undefined}
-                icon={<Icon name="gear" size="sm" aria-hidden="true" />}
+                data-openbitfun-state={menuOpen ? 'open' : undefined}
+                icon={<span className="openbitfun-update-indicator-anchor"><Icon name="gear" size="sm" aria-hidden="true" /><UpdateIndicator /></span>}
                 size="sm"
                 variant="quiet"
               />
             </Tooltip>
 
-            {menuOpen && createPortal(
+            {menuOpen && createOverlayPortal(
               <>
                 <div
                   className="openbitfun-nav-panel__footer-backdrop"
@@ -227,7 +226,8 @@ const PersistentFooterActions: React.FC = () => {
                 <Menu
                   ref={menuPopoverRef}
                   className={`openbitfun-nav-panel__footer-menu${menuClosing ? ' is-closing' : ''}`}
-                  aria-label={t('shared:features.settings')}
+                  inlineSize="content"
+                  aria-label={t('actions.more')}
                   data-testid="nav-settings-menu"
                   onKeyDown={(event) => {
                     if (event.key !== 'Escape') return;
@@ -267,6 +267,7 @@ const PersistentFooterActions: React.FC = () => {
                   >
                     {t('nav.settingsMenu.openSettings')}
                   </MenuItem>
+                  <UpdateMenuItems onCloseMenu={closeMenu} />
                   <MenuItem
                     leading={<Icon name="info" size="sm" aria-hidden="true" />}
                     onClick={handleShowAbout}
@@ -277,15 +278,12 @@ const PersistentFooterActions: React.FC = () => {
                 </Menu>
               </>,
               getAppearanceOverlayHost(),
+              null,
+              { open: !menuClosing, ownerRef: menuTriggerRef, surfaceRef: menuPopoverRef, onDismiss: closeMenu },
             )}
           </div>
         </div>
       </div>
-      <RetainedMountBoundary present={showAbout}>
-        <Suspense fallback={null}>
-          <AboutDialog isOpen={showAbout} onClose={() => setShowAbout(false)} />
-        </Suspense>
-      </RetainedMountBoundary>
       <RetainedMountBoundary present={showRemoteConnect}>
         <Suspense fallback={null}>
           <RemoteConnectDialog
@@ -306,13 +304,11 @@ const PersistentFooterActions: React.FC = () => {
           </DialogHeading>
           <DialogClose />
         </DialogHeader>
-        <DialogBody>
-        <RemoteConnectDisclaimerContent
+        <RemoteConnectDisclaimer
           agreed={hasAgreedRemoteDisclaimer}
           onClose={() => setShowRemoteDisclaimer(false)}
           onAgree={handleAgreeDisclaimer}
         />
-              </DialogBody>
       </Dialog>
     </>
   );

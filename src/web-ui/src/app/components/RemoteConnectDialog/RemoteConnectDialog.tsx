@@ -1,3 +1,4 @@
+import { useAccountIdentity } from '@/infrastructure/account-identity';
 /**
  * Device & Connections center.
  *
@@ -47,9 +48,7 @@ import {
   type RemoteConnectStatus,
   type LanNetworkInterface,
 } from '@/infrastructure/api/service-api/RemoteConnectAPI';
-import {
-  RemoteConnectDisclaimerContent,
-} from './RemoteConnectDisclaimer';
+import { RemoteConnectDisclaimer } from './RemoteConnectDisclaimer';
 import {
   getRemoteConnectDisclaimerAgreed,
   setRemoteConnectDisclaimerAgreed,
@@ -145,8 +144,8 @@ export const RemoteConnectDialog: React.FC<RemoteConnectDialogProps> = ({
   const { error: notifyError } = useNotification();
   const {
     loggedIn: accountLoggedIn,
-    deviceName: accountDeviceName,
   } = useAccountLoginState();
+  const accountIdentity = useAccountIdentity();
 
   const [activeView, setActiveView] = useState<ActiveView>(initialGroup ?? 'overview');
   const [networkTab, setNetworkTab] = useState<NetworkTab>(NETWORK_TABS[0].id);
@@ -1340,7 +1339,7 @@ export const RemoteConnectDialog: React.FC<RemoteConnectDialogProps> = ({
             statusLabel: accountLoggedIn
               ? t('remoteConnect.accountSignedIn')
               : t('remoteConnect.accountSignedOut'),
-            statusDetail: accountLoggedIn ? accountDeviceName : null,
+            statusDetail: accountLoggedIn ? accountIdentity.me?.email ?? accountIdentity.me?.user.login ?? null : null,
             statusPositive: accountLoggedIn,
             state: accountLoggedIn ? 'authenticated' : undefined,
           })}
@@ -1683,13 +1682,11 @@ export const RemoteConnectDialog: React.FC<RemoteConnectDialogProps> = ({
           </DialogHeading>
           <DialogClose />
         </DialogHeader>
-        <DialogBody>
-        <RemoteConnectDisclaimerContent
+        <RemoteConnectDisclaimer
           agreed={hasAgreedDisclaimer}
           onClose={handleDisclaimerClose}
           onAgree={hasAgreedDisclaimer ? undefined : handleAgreeDisclaimer}
         />
-              </DialogBody>
       </Dialog>
 
 

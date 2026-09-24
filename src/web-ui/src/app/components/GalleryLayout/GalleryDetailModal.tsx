@@ -3,6 +3,7 @@ import {
   Dialog,
   DialogBody,
   DialogClose,
+  DialogFooter,
   DialogHeader,
   DialogHeading,
   DialogTitle,
@@ -100,14 +101,14 @@ const GalleryDetailModal: React.FC<GalleryDetailModalProps> = ({
       ].filter(Boolean).join(' ') || undefined}
       data-testid={testId}
     >
-      <DialogHeader className={usesHeroTitle ? 'gallery-detail-modal__dialog-header--hero-title' : undefined}>
-        {!usesHeroTitle ? (
+      {!usesHeroTitle ? (
+        <DialogHeader>
           <DialogHeading>
             <DialogTitle data-testid={titleTestId}>{title}</DialogTitle>
           </DialogHeading>
-        ) : null}
-        <DialogClose data-testid={closeButtonTestId} />
-      </DialogHeader>
+          <DialogClose data-testid={closeButtonTestId} />
+        </DialogHeader>
+      ) : null}
       <DialogBody
         className={stableHeight ? 'gallery-detail-modal__dialog-body--stable-height' : undefined}
       >
@@ -126,47 +127,49 @@ const GalleryDetailModal: React.FC<GalleryDetailModalProps> = ({
           data-openbitfun-component="gallery-detail-modal"
           data-openbitfun-part="hero"
         >
-          {icon ? (
+          <div className="gallery-detail-modal__hero-heading">
+            {icon ? (
+              <div
+                className="gallery-detail-modal__icon"
+                data-openbitfun-component="gallery-detail-modal"
+                data-openbitfun-part="icon"
+                style={iconGradient ? ({ '--gallery-detail-gradient': iconGradient } as React.CSSProperties) : undefined}
+              >
+                {icon}
+              </div>
+            ) : null}
             <div
-              className="gallery-detail-modal__icon"
+              className="gallery-detail-modal__summary"
               data-openbitfun-component="gallery-detail-modal"
-              data-openbitfun-part="icon"
-              style={iconGradient ? ({ '--gallery-detail-gradient': iconGradient } as React.CSSProperties) : undefined}
+              data-openbitfun-part="summary"
             >
-              {icon}
+              {usesHeroTitle ? (
+                <>
+                  <h2
+                    id={heroTitleId}
+                    className="gallery-detail-modal__title"
+                    data-openbitfun-component="gallery-detail-modal"
+                    data-openbitfun-part="title"
+                    data-testid={titleTestId}
+                  >
+                    {title}
+                  </h2>
+                  {descriptionContent}
+                  {badgesContent || metaContent ? (
+                    <div className="gallery-detail-modal__details">
+                      {badgesContent}
+                      {metaContent}
+                    </div>
+                  ) : null}
+                </>
+              ) : (
+                <>
+                  {badgesContent}
+                  {descriptionContent}
+                  {metaContent}
+                </>
+              )}
             </div>
-          ) : null}
-          <div
-            className="gallery-detail-modal__summary"
-            data-openbitfun-component="gallery-detail-modal"
-            data-openbitfun-part="summary"
-          >
-            {usesHeroTitle ? (
-              <>
-                <h2
-                  id={heroTitleId}
-                  className="gallery-detail-modal__title"
-                  data-openbitfun-component="gallery-detail-modal"
-                  data-openbitfun-part="title"
-                  data-testid={titleTestId}
-                >
-                  {title}
-                </h2>
-                {descriptionContent}
-                {badgesContent || metaContent ? (
-                  <div className="gallery-detail-modal__details">
-                    {badgesContent}
-                    {metaContent}
-                  </div>
-                ) : null}
-              </>
-            ) : (
-              <>
-                {badgesContent}
-                {descriptionContent}
-                {metaContent}
-              </>
-            )}
           </div>
           {heroActions ? (
             <div
@@ -176,6 +179,9 @@ const GalleryDetailModal: React.FC<GalleryDetailModalProps> = ({
             >
               {heroActions}
             </div>
+          ) : null}
+          {usesHeroTitle ? (
+            <DialogClose className="gallery-detail-modal__close" data-testid={closeButtonTestId} />
           ) : null}
         </div>
 
@@ -189,17 +195,18 @@ const GalleryDetailModal: React.FC<GalleryDetailModalProps> = ({
           </div>
         ) : null}
 
-        {actions ? (
-          <div
-            className="gallery-detail-modal__actions"
-            data-openbitfun-component="gallery-detail-modal"
-            data-openbitfun-part="actions"
-          >
-            {actions}
-          </div>
-        ) : null}
       </div>
       </DialogBody>
+      {actions ? (
+        <DialogFooter
+          separator
+          className="gallery-detail-modal__actions"
+          data-openbitfun-component="gallery-detail-modal"
+          data-openbitfun-part="actions"
+        >
+          {actions}
+        </DialogFooter>
+      ) : null}
     </Dialog>
   );
 };

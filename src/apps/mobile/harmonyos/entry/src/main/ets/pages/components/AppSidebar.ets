@@ -1,7 +1,21 @@
-import { HarnessProfileMenu } from './HarnessProfileMenu';
+import { SidebarToolsFooter } from './SidebarToolsFooter';
+import { SavedRuntimeConnection } from '../../model/RemoteModels';
+import { WorkspaceToolsIntent } from '../state/WorkspaceToolsState';
 import { MobileDesignGeometry, MobileDesignTypography } from '../../generated/MobileDesignTokens';
 import { RemoteI18n } from '../../i18n/RemoteI18n';
-import { CARD, INK, LINE, PAGE_BG, PAGE_BG_FADE, SHADOW_FAINT, SHADOW_SUBTLE, SOFT, SUBTLE, TRANSPARENT } from './Theme';
+import {
+  CARD,
+  INK,
+  SHADOW_FAINT,
+  SIDEBAR_BG,
+  SIDEBAR_BG_FADE,
+  SIDEBAR_HOVER,
+  SIDEBAR_INK,
+  SIDEBAR_LINE,
+  SIDEBAR_RAISED,
+  SIDEBAR_SUBTLE,
+  TRANSPARENT,
+} from './Theme';
 import { SidebarToggleButton } from './SidebarToggleButton';
 import { SidebarGlyph } from './SidebarGlyphs';
 import { SidebarConnectionActionPolicy } from '../policy/SidebarConnectionActionPolicy';
@@ -15,13 +29,15 @@ export struct AppSidebar {
   @Param workspacePath: string = '';
   @Param controlTargetDeviceId: string = '';
   @Param supportsHarnessProfiles: boolean = false;
-  @Local showCreateMenu: boolean = false;
+  @Param toolLocations: SavedRuntimeConnection[] = [];
+  @Event onWorkspaceTools: (intent: WorkspaceToolsIntent) => void = (_intent: WorkspaceToolsIntent) => {};
   @Param accountUserId: string = '';
   @Param controlTargetType: string = 'none';
   @Param showCollapseButton: boolean = false;
   @Param showViewSettingsButton: boolean = false;
   @Param showWorkspaceSection: boolean = false;
   @Event onClose: () => void = () => {};
+  @Event onOpenMiniApps: () => void = () => {};
   @Event onNewChat: (agentType: string) => void = (_agentType: string) => {};
   @Event onEnterCode: () => void = () => {};
   @Event onScanDesktop: () => void = () => {};
@@ -57,6 +73,23 @@ export struct AppSidebar {
         // Device sections own their remote workspace and session rows.
         Scroll() {
           Column() {
+            Button({ type: ButtonType.Normal }) {
+              Row({ space: 14 }) {
+                Stack({ alignContent: Alignment.Center }) {
+                  SidebarGlyph({ kind: 'apps' })
+                }.width(24).height(24)
+                Text(RemoteI18n.t('miniapp.title'))
+                  .fontSize(MobileDesignTypography.bodyLarge.size)
+                  .fontWeight(FontWeight.Medium)
+                  .fontColor(SIDEBAR_INK)
+                Blank()
+              }.width('100%').alignItems(VerticalAlign.Center)
+            }
+            .width('100%').height(48).padding({ left: 4, right: 8 })
+            .backgroundColor(TRANSPARENT).borderRadius(12)
+            .margin({ top: 4, bottom: 8 }).stateEffect(true)
+            .accessibilityText(RemoteI18n.t('miniapp.title'))
+            .onClick(() => this.onOpenMiniApps())
             if (this.showWorkspaceSection) {
               this.contentSlot()
             }
@@ -81,7 +114,7 @@ export struct AppSidebar {
             .hitTestBehavior(HitTestMode.None)
             .linearGradient({
               angle: 180,
-              colors: [[PAGE_BG_FADE, 0.0], [PAGE_BG, 0.62]]
+              colors: [[SIDEBAR_BG_FADE, 0.0], [SIDEBAR_BG, 0.62]]
             })
         }
 
@@ -96,8 +129,8 @@ export struct AppSidebar {
     }
     .width('100%')
     .height('100%')
-    .padding({ left: 20, right: 20, top: 4, bottom: 16 })
-    .backgroundColor(PAGE_BG)
+    .padding({ left: 20, right: 20, top: 0, bottom: 16 })
+    .backgroundColor(SIDEBAR_BG)
   }
 
   @Builder
@@ -110,7 +143,7 @@ export struct AppSidebar {
       Text('OpenBitFun')
         .fontSize(MobileDesignTypography.headlineMedium.size)
         .fontWeight(FontWeight.Medium)
-        .fontColor(INK)
+        .fontColor(SIDEBAR_INK)
       Blank()
       // Right-aligned so the search and collapse controls keep the same
       // position whether or not the source-specific view-settings entry shows.
@@ -137,8 +170,8 @@ export struct AppSidebar {
         .width(44)
         .height(44)
         .padding(0)
-        .backgroundColor(CARD)
-        .border({ width: 0.5, color: LINE })
+        .backgroundColor(SIDEBAR_RAISED)
+        .border({ width: 0.5, color: SIDEBAR_LINE })
         .borderRadius(22)
         .shadow({ radius: 18, color: SHADOW_FAINT, offsetY: 5 })
         .stateEffect(true)
@@ -159,7 +192,7 @@ export struct AppSidebar {
       }
     }
     .width('100%')
-    .height(50)
+    .height(MobileDesignGeometry.conversationHeaderHeight)
     .alignItems(VerticalAlign.Center)
 
     if (this.showSearch) {
@@ -167,10 +200,10 @@ export struct AppSidebar {
         .width('100%')
         .height(42)
         .fontSize(MobileDesignTypography.bodyMedium.size)
-        .fontColor(INK)
-        .placeholderColor(SUBTLE)
+        .fontColor(SIDEBAR_INK)
+        .placeholderColor(SIDEBAR_SUBTLE)
         .padding(0)
-        .backgroundColor(SOFT)
+        .backgroundColor(SIDEBAR_HOVER)
         .borderRadius(8)
         .margin({ top: 12 })
         .onChange((value: string) => {
@@ -190,13 +223,13 @@ export struct AppSidebar {
       Row({ space: 14 }) {
         SymbolGlyph($r('sys.symbol.desktop'))
           .fontSize(23)
-          .fontColor([INK])
+          .fontColor([SIDEBAR_INK])
           .width(24)
           .height(24)
         Text(RemoteI18n.t('sidebar.devices'))
           .fontSize(MobileDesignTypography.bodyLarge.size)
           .fontWeight(FontWeight.Medium)
-          .fontColor(INK)
+          .fontColor(SIDEBAR_INK)
       }
       .layoutWeight(1)
       .height(50)
@@ -219,62 +252,11 @@ export struct AppSidebar {
 
   @Builder
   private PrimaryNavigationFooter() {
-    Row() {
-      Button() {
-        Row({ space: 8 }) {
-          SidebarGlyph({ kind: 'edit' })
-          Text(RemoteI18n.t('sidebar.newChat'))
-            .fontSize(MobileDesignTypography.titleMedium.size)
-            .fontWeight(FontWeight.Medium)
-            .fontColor(INK)
-        }
-      }
-      .width(98)
-      .height(44)
-      .padding(0)
-      .backgroundColor(CARD)
-      .border({ width: 0.5, color: LINE })
-      .borderRadius(22)
-      .shadow({ radius: 24, color: SHADOW_SUBTLE, offsetY: 7 })
-      .enabled(SidebarConnectionActionPolicy.canCreateSession(this.connectionState, this.isBusy))
-      .opacity(SidebarConnectionActionPolicy.canCreateSession(this.connectionState, this.isBusy) ? 1 : 0.45)
-      .accessibilityText(RemoteI18n.t('sidebar.newChat'))
-      .stateEffect(true)
-      .bindPopup(this.showCreateMenu, {
-        builder: () => { this.CreateModeMenu() },
-        placement: Placement.Top,
-        popupColor: TRANSPARENT,
-        enableArrow: false,
-        autoCancel: true,
-        mask: false,
-        targetSpace: 6,
-        onStateChange: (event) => {
-          if (!event.isVisible) this.showCreateMenu = false;
-        }
-      })
-      .onClick(() => { this.requestChat(); })
-
-      Blank()
-
-      Button() {
-        SidebarGlyph({ kind: 'settings' })
-      }
-        .width(44)
-        .height(44)
-        .padding(0)
-        .backgroundColor(CARD)
-        .borderRadius(22)
-        .shadow({ radius: 24, color: SHADOW_SUBTLE, offsetY: 7 })
-        .stateEffect(true)
-        .onClick(() => {
-          this.onOpenSettings();
-        })
-    }
-    .width('100%')
-    .height(56)
-    .padding({ left: 12 })
-    .alignItems(VerticalAlign.Center)
-    .zIndex(2)
+    SidebarToolsFooter({
+      toolsEnabled: this.connectionState === 'connected',
+      onOpenTools: () => this.requestDeviceTools(),
+      onOpenSettings: () => this.onOpenSettings()
+    })
   }
 
   @Builder
@@ -285,15 +267,15 @@ export struct AppSidebar {
           Text(RemoteI18n.t('sidebar.scanToConnect'))
             .fontSize(MobileDesignTypography.bodyMedium.size)
             .fontWeight(FontWeight.Medium)
-            .fontColor(INK)
+            .fontColor(SIDEBAR_INK)
             .maxLines(1)
             .textOverflow({ overflow: TextOverflow.Clip })
         }
           .width('100%')
           .height(48)
           .padding(0)
-          .backgroundColor(CARD)
-          .border({ width: 1, color: LINE })
+          .backgroundColor(SIDEBAR_RAISED)
+          .border({ width: 1, color: SIDEBAR_LINE })
           .borderRadius(16)
           .onClick(() => {
             this.onScanDesktop();
@@ -321,31 +303,9 @@ export struct AppSidebar {
       .zIndex(2)
   }
 
-  @Monitor('controlTargetDeviceId', 'workspacePath', 'workspaceKind', 'connectionState', 'isBusy', 'supportsHarnessProfiles')
-  private closeStaleCreateMenu(): void {
-    this.showCreateMenu = false;
-  }
-
-  private requestChat(): void {
-    if (!SidebarConnectionActionPolicy.canCreateSession(this.connectionState, this.isBusy)) return;
-    const action = SidebarConnectionActionPolicy.chatAction(this.workspaceKind, this.supportsHarnessProfiles);
-    if (action === 'choose-harness') {
-      this.showCreateMenu = !this.showCreateMenu;
-      return;
-    }
-    this.onNewChat(action === 'assistant' ? 'claw' : 'code');
-  }
-
-  @Builder
-  private CreateModeMenu() {
-    HarnessProfileMenu({
-      onSelect: (agentType: string) => {
-        this.showCreateMenu = false;
-        if (SidebarConnectionActionPolicy.canCreateSession(this.connectionState, this.isBusy)) {
-          this.onNewChat(agentType);
-        }
-      }
-    })
+  private requestDeviceTools(): void {
+    if (this.connectionState !== 'connected') return;
+    this.onWorkspaceTools({ type: 'open-device', deviceId: this.controlTargetDeviceId, connectionId: '', tab: 0 });
   }
 
   private shouldShowPrimaryNavigation(): boolean {

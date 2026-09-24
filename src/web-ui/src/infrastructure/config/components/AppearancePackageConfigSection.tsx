@@ -1,3 +1,4 @@
+import { ActionCard } from '@openbitfun/ui';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -14,6 +15,10 @@ import {
 } from '@/infrastructure/appearance';
 import { notificationService } from '@/shared/notification-system';
 import { AppearanceMarketDialog } from './AppearanceMarketDialog';
+import {
+  APPEARANCE_MARKET_ENTRY_VISIBLE,
+  APPEARANCE_PACKAGE_IMPORT_VISIBLE,
+} from './appearancePackageEntryVisibility';
 import { ConfigPageSection, formatStandaloneUiText } from './common';
 
 const DEFAULT_APPEARANCE_PREVIEW_SRC = '/assets/appearance/openbitfun-default-preview@4x.png';
@@ -252,16 +257,16 @@ function AppearancePackagePreview({
       data-openbitfun-state={state || undefined}
     >
       {onSelect ? (
-        <button
-          type="button"
-          className="appearance-package-config__card-select"
+        <ActionCard
+          className="appearance-package-config__card-action"
+          triggerClassName="appearance-package-config__card-select"
+          selected={selected}
           aria-label={appearanceName}
           aria-pressed={selected}
           disabled={disabled}
           onClick={onSelect}
-        >
-          {cardContent}
-        </button>
+          body={cardContent}
+        />
       ) : cardContent}
     </article>
   );
@@ -317,6 +322,9 @@ export function AppearancePackageConfigSection() {
   ], [builtinAppearances, t, tApplication]);
   const selectedBuiltinThemeId = defaultPackageSelected ? selectedAppearanceId : '';
   const busy = loading || !initialized || status === 'applying';
+  const hasPackageActions = APPEARANCE_MARKET_ENTRY_VISIBLE
+    || APPEARANCE_PACKAGE_IMPORT_VISIBLE
+    || Boolean(selectedAppearance);
 
   const handleAppearanceSelection = async (id: string) => {
     if (busy || id === selectedAppearanceId) return;
@@ -404,28 +412,32 @@ export function AppearancePackageConfigSection() {
       description={t('package.description')}
       bodySurface={false}
       fieldSurface="ambient"
-      extra={(
+      extra={hasPackageActions ? (
         <div
           className="appearance-package-config__actions"
           data-openbitfun-component="appearance-settings"
           data-openbitfun-part="packageActions"
         >
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={busy}
-            onClick={() => setMarketOpen(true)}
-          >
-            {t('package.market.open')}
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={busy}
-            onClick={() => inputRef.current?.click()}
-          >
-            {t('package.import')}
-          </Button>
+          {APPEARANCE_MARKET_ENTRY_VISIBLE && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={busy}
+              onClick={() => setMarketOpen(true)}
+            >
+              {t('package.market.open')}
+            </Button>
+          )}
+          {APPEARANCE_PACKAGE_IMPORT_VISIBLE && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={busy}
+              onClick={() => inputRef.current?.click()}
+            >
+              {t('package.import')}
+            </Button>
+          )}
           {selectedAppearance && (
             <>
               <IconButton
@@ -447,19 +459,21 @@ export function AppearancePackageConfigSection() {
             </>
           )}
         </div>
-      )}
+      ) : undefined}
       data-openbitfun-component="appearance-settings"
       data-openbitfun-part="packageSection"
       data-openbitfun-package-type={selectedAppearance ? 'imported' : 'native'}
       data-openbitfun-state={busy ? 'disabled' : undefined}
     >
-      <input
-        ref={inputRef}
-        className="appearance-package-config__file-input"
-        type="file"
-        accept=".openbitfun-appearance,.zip,application/zip"
-        onChange={handleImport}
-      />
+      {APPEARANCE_PACKAGE_IMPORT_VISIBLE && (
+        <input
+          ref={inputRef}
+          className="appearance-package-config__file-input"
+          type="file"
+          accept=".openbitfun-appearance,.zip,application/zip"
+          onChange={handleImport}
+        />
+      )}
       <div className="appearance-package-config__gallery">
         <AppearancePackagePreview
           appearanceId={SYSTEM_APPEARANCE_ID}
@@ -503,7 +517,9 @@ export function AppearancePackageConfigSection() {
           />
         ))}
       </div>
-      <AppearanceMarketDialog isOpen={marketOpen} onClose={() => setMarketOpen(false)} />
+      {APPEARANCE_MARKET_ENTRY_VISIBLE && (
+        <AppearanceMarketDialog isOpen={marketOpen} onClose={() => setMarketOpen(false)} />
+      )}
       {failure && (
         <AppearancePackageFailurePanel failure={failure} onDismiss={() => setFailure(null)} />
       )}
@@ -515,9 +531,11 @@ export function AppearancePackageConfigSection() {
         >
           <AlertTriangle size={16} aria-hidden="true" />
           <span>{t('package.missingSelection', { id: unavailableSelectionId })}</span>
-          <Button variant="primary" size="md" onClick={() => setMarketOpen(true)}>
-            {t('package.market.open')}
-          </Button>
+          {APPEARANCE_MARKET_ENTRY_VISIBLE && (
+            <Button variant="primary" size="md" onClick={() => setMarketOpen(true)}>
+              {t('package.market.open')}
+            </Button>
+          )}
         </div>
       )}
     </ConfigPageSection>

@@ -25,6 +25,7 @@ fn builtin_skill(dir_name: &str) -> SkillInfo {
         source_id: "openbitfun".to_string(),
         source_label: "OpenBitFun".to_string(),
         installation_source: None,
+        import_origin: None,
         entry_file: None,
         dir_name: dir_name.to_string(),
         is_builtin: true,
@@ -48,6 +49,7 @@ fn custom_user_skill(dir_name: &str) -> SkillInfo {
         source_id: "openbitfun".to_string(),
         source_label: "OpenBitFun".to_string(),
         installation_source: None,
+        import_origin: None,
         entry_file: None,
         dir_name: dir_name.to_string(),
         is_builtin: false,
@@ -72,6 +74,62 @@ fn skill_installation_source_is_optional_for_legacy_payloads_and_round_trips() {
     let current: SkillInfo =
         serde_json::from_value(serde_json::to_value(decoded).unwrap()).unwrap();
     assert_eq!(current.installation_source.as_deref(), Some("first/skills"));
+}
+
+#[test]
+fn import_origin_round_trips_without_changing_native_ownership_or_legacy_payloads() {
+    let legacy = serde_json::to_value(custom_user_skill("demo")).unwrap();
+    assert!(legacy.get("importOrigin").is_none());
+    let mut skill: SkillInfo = serde_json::from_value(legacy.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&skill).unwrap(), legacy);
+    skill.import_origin = Some(openbitfun_agent_runtime::skills::SkillImportOrigin {
+        schema_version: 1,
+        import_id: "import-1".into(),
+        source_key: "user::home.claude::demo".into(),
+        source_path: "/external/demo".into(),
+        source_id: "claude-code".into(),
+        source_label: "Claude Code".into(),
+        source_slot: "home.claude".into(),
+        fingerprint: "fixture-hash".into(),
+    });
+    let decoded: SkillInfo = serde_json::from_value(serde_json::to_value(&skill).unwrap()).unwrap();
+    assert_eq!(decoded.import_origin, skill.import_origin);
+    assert_eq!(decoded.source_id, "openbitfun");
+    assert_eq!(decoded.parser_source_slot(), "home.claude");
+    assert!(decoded.is_native());
+}
+
+#[test]
+fn native_ownership_rejects_discovery_sources_and_honors_legacy_slots() {
+    for source in [
+        "claude-code",
+        "codex",
+        "cursor",
+        "opencode",
+        "agent-skills",
+        "deepseek-harness",
+        "pi",
+    ] {
+        let mut skill = custom_user_skill("external");
+        skill.source_id = source.into();
+        assert!(!skill.is_native(), "{source}");
+    }
+    for (slot, expected) in [
+        ("openbitfun", true),
+        ("openbitfun-system", true),
+        ("home.claude", false),
+        ("codex", false),
+    ] {
+        let mut legacy = serde_json::to_value(custom_user_skill("legacy")).unwrap();
+        legacy.as_object_mut().unwrap().remove("sourceId");
+        legacy.as_object_mut().unwrap().remove("sourceLabel");
+        legacy["sourceSlot"] = slot.into();
+        let decoded: SkillInfo = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.is_native(), expected, "{slot}");
+        let round_trip: SkillInfo =
+            serde_json::from_value(serde_json::to_value(decoded).unwrap()).unwrap();
+        assert_eq!(round_trip.is_native(), expected);
+    }
 }
 
 #[test]
@@ -364,6 +422,7 @@ fn project_skill(dir_name: &str) -> SkillInfo {
         source_id: "openbitfun".to_string(),
         source_label: "OpenBitFun".to_string(),
         installation_source: None,
+        import_origin: None,
         entry_file: None,
         dir_name: dir_name.to_string(),
         is_builtin: false,
@@ -378,6 +437,19 @@ fn project_skill(dir_name: &str) -> SkillInfo {
 
 #[test]
 fn builtin_skill_catalog_and_mode_policy_are_runtime_owned() {
+    assert_eq!(builtin_skill_group_key("create-agent"), Some("meta"));
+    for mode in ["Standard", "Creative", "Cowork", "DeepResearch"] {
+        assert_eq!(
+            resolve_builtin_default_enabled("create-agent", mode),
+            Some(true)
+        );
+    }
+    for mode in ["Ultimate", "SwarmWorker"] {
+        assert_eq!(
+            resolve_builtin_default_enabled("create-agent", mode),
+            Some(false)
+        );
+    }
     assert_eq!(builtin_skill_group_key("ppt-design"), Some("office"));
     for removed in ["docx", "pdf", "pptx", "xlsx"] {
         assert_eq!(builtin_skill_group_key(removed), None);
@@ -386,6 +458,7 @@ fn builtin_skill_catalog_and_mode_policy_are_runtime_owned() {
         builtin_skill_group_key("create-openbitfun-skin"),
         Some("meta")
     );
+    assert_eq!(builtin_skill_group_key("commit-push-pr"), Some("meta"));
     assert_eq!(builtin_skill_group_key("find-skills"), Some("meta"));
     assert_eq!(builtin_skill_group_key("miniapp-dev"), Some("miniapp"));
     assert_eq!(
@@ -417,6 +490,18 @@ fn builtin_skill_catalog_and_mode_policy_are_runtime_owned() {
         resolve_builtin_default_enabled("create-openbitfun-skin", "DeepResearch"),
         Some(true)
     );
+    for mode in ["Standard", "Claw", "Creative", "Cowork", "DeepResearch"] {
+        assert_eq!(
+            resolve_builtin_default_enabled("commit-push-pr", mode),
+            Some(true)
+        );
+    }
+    for mode in ["Ultimate", "SwarmWorker"] {
+        assert_eq!(
+            resolve_builtin_default_enabled("commit-push-pr", mode),
+            Some(false)
+        );
+    }
     assert_eq!(
         resolve_builtin_default_enabled("find-skills", "DeepResearch"),
         Some(true)
@@ -1298,4 +1383,30 @@ fn skill_scan_reports_tolerate_older_shapes_and_escape_diagnostics() {
     };
     assert!(diagnostic.to_xml().contains("&lt;path&gt;"));
     assert!(diagnostic.to_xml().contains("read &amp; parse failed"));
+}
+
+#[test]
+fn workspace_skill_disable_blocks_all_modes_without_reclassifying_the_source() {
+    let mut skill = custom_user_skill("shared-review");
+    skill.level = SkillLocation::Project;
+    skill.key = "project::agents::shared-review".into();
+    skill.source_id = "agent-skills".into();
+    let disabled = HashSet::from([skill.key.clone()]);
+    for mode in ["Standard", "Cowork", "Ultimate"] {
+        assert!(!is_skill_globally_enabled(&skill, &disabled));
+        let info = build_mode_skill_infos(
+            vec![skill.clone()],
+            Vec::new(),
+            mode,
+            &UserModeSkillOverrides::default(),
+            &HashSet::new(),
+            &disabled,
+        )
+        .remove(0);
+        assert!(info.default_enabled);
+        assert!(!info.globally_enabled);
+        assert!(!info.selected_for_runtime);
+        assert_eq!(info.skill.source_id, "agent-skills");
+    }
+    assert!(is_skill_globally_enabled(&skill, &HashSet::new()));
 }

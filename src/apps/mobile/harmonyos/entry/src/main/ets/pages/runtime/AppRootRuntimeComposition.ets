@@ -1,3 +1,9 @@
+import { InteractionMailboxAction, InteractionMailboxState } from '../../model/InteractionMailbox';
+import { HostCatalogChange, HostCatalogObserver } from '../../services/HostCatalogObserver';
+import { WorkspaceToolsViewModel } from '../viewmodel/WorkspaceToolsViewModel';
+import { WorkspaceToolsIntent } from '../state/WorkspaceToolsState';
+import { BuiltinMiniAppHost } from '../../services/BuiltinMiniAppHost';
+import { MiniAppViewModel } from '../viewmodel/MiniAppViewModel';
 import { SidebarConnectionActionPolicy } from '../policy/SidebarConnectionActionPolicy';
 import { accountDeviceLink } from '../../services/AccountDeviceLink';
 import {
@@ -9,6 +15,7 @@ import {
   RecentWorkspaceEntry,
   SelectedImageAttachment,
   SessionSummary,
+  SessionListResult,
   WorkspaceInfo
 } from '../../model/RemoteModels';
 import { RemoteI18n } from '../../i18n/RemoteI18n';
@@ -118,26 +125,28 @@ export abstract class AppRootRuntimeComposition {
   abstract hasRemoteBindingForResume(): boolean;
   abstract isRemoteConversationContext(sessionId: string): boolean;
   abstract mergeSessions(primary: RemoteSession[], extras: RemoteSession[]): RemoteSession[];
-  abstract loadWorkspaceSessionsOnDevice(deviceId: string, path: string): Promise<void>;
+  abstract loadWorkspaceSessionsOnDevice(deviceId: string, path: string, remoteConnectionId?: string, remoteSshHost?: string, workspaceId?: string): Promise<void>;
   abstract openAddConnectionFromSettings(): void;
   abstract openAppSidebar(): void;
   abstract openRemoteControlSettings(): void;
   abstract openWorkspacePickerOnDevice(deviceId: string): Promise<void>;
   abstract pickImages(): Promise<void>;
   abstract publishRemoteSessions(sessions: RemoteSession[], hasMore: boolean): void;
+  abstract publishWorkspaceSessionPage(path: string, result: SessionListResult, remoteConnectionId?: string, remoteSshHost?: string, workspaceId?: string): void;
   abstract reconcileCreatedRemoteSession(session: SessionSummary): Promise<void>;
   abstract reconnect(): Promise<void>;
   abstract reconnectActiveRemote(): Promise<void>;
   abstract retryDirectoryDevice(deviceId: string): Promise<void>;
   abstract selectDirectoryDevice(deviceId: string): Promise<void>;
-  abstract selectAssistant(path: string): Promise<void>;
-  abstract selectWorkspace(path: string): Promise<void>;
-  abstract selectWorkspaceOnDevice(path: string, deviceId?: string): Promise<void>;
+  abstract selectAssistant(path: string, workspaceId?: string): Promise<void>;
+  abstract selectWorkspace(path: string, connectionId?: string, sshHost?: string, workspaceId?: string): Promise<void>;
+  abstract selectWorkspaceOnDevice(path: string, deviceId?: string, connectionId?: string, sshHost?: string, workspaceId?: string): Promise<void>;
   abstract showVoiceInputError(message: string): void;
   abstract stopVoiceInput(showStatus: boolean): Promise<void>;
   abstract toggleVoiceInput(): Promise<void>;
 
   readonly sessionManager: RemoteSessionManager = new RemoteSessionManager();
+  readonly miniAppViewModel: MiniAppViewModel = new MiniAppViewModel(new BuiltinMiniAppHost((): Context => this.host.context()));
   readonly taskCompletionNotificationPort: HarmonyTaskCompletionNotificationPort =
     new HarmonyTaskCompletionNotificationPort((): Context => this.host.context());
   readonly taskCompletionNotificationController: TaskCompletionNotificationController =
@@ -223,6 +232,23 @@ export abstract class AppRootRuntimeComposition {
       // something to wait on.
       return this.remoteActivityViewModel.checkConnectionHealth();
     });
+  private readonly hostCatalogObserver: HostCatalogObserver = new HostCatalogObserver(
+    this.sessionManager,
+    async (change: HostCatalogChange): Promise<void> => {
+      const initial = change.initial === true ||
+        (change.sessionsRevision === undefined && change.workspacesRevision === undefined);
+      const refreshSessions = initial || change.sessionsRevision !== undefined;
+      const refreshWorkspaces = initial || change.workspacesRevision !== undefined;
+      const jobs: Promise<void>[] = [];
+      if (refreshSessions) {
+        jobs.push(this.remoteSessionViewModel.refreshSessions(true));
+        jobs.push(this.remoteChatPollingLifecycleController.refreshModelCatalog());
+      }
+      if (refreshWorkspaces) jobs.push(this.remoteWorkspaceViewModel.loadRecentWorkspacesInBackground(true));
+      await Promise.all(jobs);
+    },
+    (error: Error): void => { this.remotePageState.setError(ConnectionErrorPolicy.errorText(error)); }
+  );
   readonly remoteActivityViewModel: RemoteActivityViewModel =
     new RemoteActivityViewModel(
       this.remoteActivityLifecycleController,
@@ -238,6 +264,8 @@ export abstract class AppRootRuntimeComposition {
         onConnectionState: (state: string): void => this.remotePageState.setConnectionState(state as ConnectionState),
         onStatus: (status: string): void => this.remotePageState.setStatusText(status),
         onConnectionError: async (err: Object): Promise<boolean> => this.settingsController.handleRemoteConnectionError(err),
+        onObserveCatalog: (): void => this.hostCatalogObserver.start(this.remotePageState.controlTargetDeviceId),
+        onStopCatalog: (): void => this.hostCatalogObserver.stop(),
         onStartPolling: (): void => this.conversationController.startRemotePolling(),
         onStopPolling: (): void => this.remoteChatPollingLifecycleController.stop(),
         onPoll: async (): Promise<void> => {
@@ -273,8 +301,8 @@ export abstract class AppRootRuntimeComposition {
         onCatalogLoading: (targetId: string): void => {
           this.deviceDirectoryViewModel.beginLiveCatalog(targetId);
         },
-        onCatalogLoaded: (targetId: string, workspaces: RecentWorkspaceEntry[]): void => {
-          this.deviceDirectoryViewModel.completeLiveCatalog(targetId, workspaces);
+        onCatalogLoaded: (targetId: string, workspaces: RecentWorkspaceEntry[], source?: string, recentWorkspaces?: RecentWorkspaceEntry[]): void => {
+          this.deviceDirectoryViewModel.completeLiveCatalog(targetId, workspaces, source, recentWorkspaces);
         },
         onCatalogFailed: (targetId: string): void => {
           this.deviceDirectoryViewModel.failLiveCatalog(targetId);
@@ -366,6 +394,11 @@ export abstract class AppRootRuntimeComposition {
     new RemoteChatCommandController(
       this.sessionManager,
       {
+        onHistoryRequested: (sessionId: string, older: boolean): void => {
+          if (this.remotePageState.activeSession.sessionId !== sessionId) return;
+          if (older) this.remoteChatPollingLifecycleController.loadOlder();
+          else this.conversationController.startRemotePolling();
+        },
         onMessagesLoaded: (messages: ChatMessage[], hasMoreMessages: boolean) => {
           this.chatTimelineStore.setPersistedMessages(messages);
           this.remotePageState.setHasMoreMessages(hasMoreMessages);
@@ -375,18 +408,10 @@ export abstract class AppRootRuntimeComposition {
           this.conversationController.updateKnownMessageCount(pollVersion, knownMessageCount);
         },
         onTimelineReady: () => {
-          this.remotePageState.setConversationLoading(false);
+          this.remoteSessionViewModel.settleTranscriptLoading();
         },
-        onComposerSubmitted: (sessionId: string, text: string, images: SelectedImageAttachment[]) => {
-          if (this.remotePageState.activeSession.sessionId !== sessionId) {
-            return;
-          }
-          if (this.remotePageState.chatInput.trim() === text.trim()) {
-            this.remotePageState.setChatInput('');
-          }
-          this.remotePageState.setSelectedImages(this.remotePageState.selectedImages.filter(
-            (image: SelectedImageAttachment) => !images.some((sent: SelectedImageAttachment) => sent.id === image.id)
-          ));
+        onComposerPrepared: (sessionId: string, text: string, images: SelectedImageAttachment[]) => {
+          return this.remotePageState.conversation.prepareComposerSubmission(sessionId, text, images);
         },
         onSendSucceeded: (turnId: string, pendingActiveId: string, localMessageId: string) => {
           this.chatTimelineStore.acknowledgeOptimisticTurn(localMessageId, turnId);
@@ -499,30 +524,47 @@ export abstract class AppRootRuntimeComposition {
             this.isRemoteConversationContext(sessionId) &&
             this.remoteConnectionController.ensureAvailable();
         },
+        onMailbox: (state: InteractionMailboxState): void => {
+          if (!state.sessionId || this.remotePageState.activeSession.sessionId === state.sessionId) {
+            this.remotePageState.interactionMailbox = state;
+          }
+        },
         onSnapshot: (snapshot: RemoteChatPollingSnapshot) => {
+          // A snapshot is the transcript on screen, which is what an open was
+          // waiting for. Snapshots are already fenced to the active session by
+          // the poller's canPoll guard, so this cannot end another tap's wait.
+          this.remoteSessionViewModel.settleTranscriptLoading();
+          this.remotePageState.setConversationLoading(false);
+          if (snapshot.hasMoreMessages !== undefined) this.remotePageState.setHasMoreMessages(snapshot.hasMoreMessages);
+          this.remotePageState.setHistoryLoadState(snapshot.historyLoading === true, snapshot.historyFailed === true);
           this.conversationController.applyRemoteSnapshot(snapshot);
           if (snapshot.activeTurn && snapshot.activeTurn.id.length > 0) {
             const status = (snapshot.activeTurn.status || '').toLowerCase();
             if (status === 'failed' || status === 'error' || status === 'cancelled' || status === 'canceled') {
               if (this.taskCompletionNotificationController.cancel('remote', snapshot.sessionId)) {
-                this.remoteChatPollingLifecycleController.stop();
+                // Keep observing the session after one turn settles.
               }
             } else {
               this.trackRemoteTaskCompletion(snapshot.sessionId, snapshot.activeTurn);
             }
           } else if (snapshot.sessionState.toLowerCase() === 'idle' && snapshot.completedTurnId.length === 0 &&
             this.taskCompletionNotificationController.cancel('remote', snapshot.sessionId)) {
-            this.remoteChatPollingLifecycleController.stop();
+            // Keep observing the session after one turn settles.
           }
           if (snapshot.completedTurnId.length > 0 &&
             this.taskCompletionNotificationController.complete(
               'remote', snapshot.sessionId, snapshot.completedTurnId
             )) {
-            this.remoteChatPollingLifecycleController.stop();
+            // Keep observing the session after one turn settles.
           }
         },
         onError: (error: Object) => {
+          this.remoteSessionViewModel.settleTranscriptLoading();
+          this.remotePageState.setConversationLoading(false);
           this.remotePageState.setStatusText(ConnectionErrorPolicy.errorText(error));
+          // Confirm host reachability immediately; transcript errors alone do
+          // not prove disconnection, and the probe is generation-fenced.
+          void this.remoteActivityViewModel.checkConnectionHealth();
         }
       }
     );
@@ -580,8 +622,8 @@ export abstract class AppRootRuntimeComposition {
             (this.remotePageState.connectionState as ConnectionState) === ConnectionState.Connected
           );
         },
-        onSelectWorkspace: async (path: string): Promise<void> => {
-          await this.selectWorkspace(path);
+        onSelectWorkspace: async (path: string, workspaceId?: string): Promise<void> => {
+          await this.selectWorkspace(path, undefined, undefined, workspaceId);
         }
       }
     );
@@ -628,7 +670,12 @@ export abstract class AppRootRuntimeComposition {
         remoteState: this.remotePageState,
         hooks: {
           deviceId: (): string => this.remoteConnectionController.getDeviceId(),
-          openAuthorization: async (url: string): Promise<boolean> => this.host.openExternalLink ? await this.host.openExternalLink(url) : false,
+          openAuthorization: async (url: string): Promise<boolean> => {
+            const localizedUrl = url.startsWith('https://auth.openbitfun.com/sign-in#')
+              ? url.replace('/sign-in#', `/sign-in?locale=${encodeURIComponent(RemoteI18n.language())}#`)
+              : url;
+            return this.host.openExternalLink ? await this.host.openExternalLink(localizedUrl) : false;
+          },
           remoteAvailable: (): boolean => this.remoteConnectionController.ensureAvailable(),
           invalidatePreview: (): void => this.filePreviewController.invalidate(),
           invalidateRemoteActivity: (): void => this.remoteActivityViewModel.invalidate(),
@@ -672,7 +719,16 @@ export abstract class AppRootRuntimeComposition {
           return this.remotePageState.controlTargetDeviceId || this.remotePageState.desktopId;
         },
         activeDeviceConnected: (): boolean =>
-          (this.remotePageState.connectionState as ConnectionState) === ConnectionState.Connected
+          (this.remotePageState.connectionState as ConnectionState) === ConnectionState.Connected,
+        loadActiveWorkspaceSessions: (path: string, remoteConnectionId?: string, remoteSshHost?: string, workspaceId?: string): Promise<SessionListResult> =>
+          this.sessionManager.listSessionPageForWorkspace({
+            workspaceId: workspaceId || undefined,
+            path,
+            remoteConnectionId,
+            remoteSshHost
+          }, 50),
+        onActiveWorkspaceSessions: (path: string, result: SessionListResult, remoteConnectionId?: string, remoteSshHost?: string, workspaceId?: string): void =>
+          this.publishWorkspaceSessionPage(path, result, remoteConnectionId, remoteSshHost, workspaceId)
       },
       this.remoteSessionListStore
     );
@@ -703,20 +759,21 @@ export abstract class AppRootRuntimeComposition {
           isFilePreviewVisible: (): boolean => this.filePreviewState.visible,
           stopVoiceInput: async (): Promise<void> => this.stopVoiceInput(false),
           showToast: (message: string): boolean => this.host.showToast(message, 2600),
-          selectAssistantWorkspace: async (path: string): Promise<void> => {
-            await this.selectAssistant(path);
+          selectAssistantWorkspace: async (path: string, workspaceId?: string): Promise<void> => {
+            await this.selectAssistant(path, workspaceId);
           }
         }
       }
     );
   readonly conversationIntentDispatcher: ConversationIntentDispatcher =
     new ConversationIntentDispatcher({
+      mailbox: async (action: InteractionMailboxAction): Promise<void> => { await this.remoteChatPollingLifecycleController.dispatchMailbox(action); },
       openSidebar: (): void => this.openAppSidebar(),
       back: (): void => this.exitActiveChat(),
       newRemoteSession: (): void => { this.conversationController.createRemoteSession('code'); },
       unsupported: (): void => this.conversationController.showHomeToast(RemoteI18n.t('remote.actionUnsupported')),
       stop: async (): Promise<void> => { await this.conversationController.stopVisibleTask(); },
-      loadOlder: async (): Promise<void> => { await this.conversationController.loadOlderRemoteMessages(); },
+      loadOlder: async (): Promise<void> => { this.remoteChatPollingLifecycleController.loadOlder(); },
       approve: async (id: string, input?: Object): Promise<void> => {
         await this.conversationController.approveRemoteTool(id, input);
       },
@@ -744,7 +801,10 @@ export abstract class AppRootRuntimeComposition {
       inputChanged: (route: AppRoute, value: string): void =>
         this.conversationController.onVisibleChatInputChange(route, value)
     });
+  readonly workspaceToolsViewModel: WorkspaceToolsViewModel = new WorkspaceToolsViewModel(
+    this.remotePageState.workspaceTools, this.sessionManager, () => this.remotePageState.controlTargetDeviceId);
   readonly presentationActions: AppRootPresentationActions = {
+    onWorkspaceTools: (intent: WorkspaceToolsIntent): void => this.workspaceToolsViewModel.dispatch(intent),
     onNavigationBack: (route: AppRoute): boolean => this.handleNavigationBack(route),
     onConversationIntent: (route: AppRoute, intent: ConversationIntent): void =>
       this.conversationIntentDispatcher.dispatch(route, intent),
@@ -752,6 +812,7 @@ export abstract class AppRootRuntimeComposition {
     onCompactLayoutEntered: (): void => this.enterCompactLayout(),
     onLayoutModeChanged: (wideLayout: boolean): void => this.appShellState.setWideLayout(wideLayout),
     onRemoteHome: {
+      openMiniApps: (): void => { this.closeAppSidebar(); this.miniAppViewModel.actions.open(); },
       openSidebar: (): void => this.openAppSidebar(),
       connectWorkspace: (): void => this.openConnectSheet(),
       addConnection: (): void => this.openConnectSheet(),
@@ -759,10 +820,10 @@ export abstract class AppRootRuntimeComposition {
       refresh: (): void => { this.remoteSessionViewModel.refreshSessions(); },
       showWorkspaces: (): void => { this.remoteWorkspaceViewModel.toggleRecentWorkspaces(); },
       showAssistants: (): void => { this.remoteWorkspaceViewModel.toggleAssistants(); },
-      selectWorkspace: (path: string, deviceId?: string): void => {
-        void this.selectWorkspaceOnDevice(path, deviceId);
+      selectWorkspace: (path: string, deviceId?: string, connectionId?: string, sshHost?: string, workspaceId?: string): void => {
+        void this.selectWorkspaceOnDevice(path, deviceId, connectionId, sshHost, workspaceId);
       },
-      selectAssistant: (path: string): void => { this.selectAssistant(path); },
+      selectAssistant: (path: string, workspaceId?: string): void => { this.selectAssistant(path, workspaceId); },
       cancelWorkspace: (): void => this.remotePageState.setWorkspacePickerVisible(false),
       cancelAssistant: (): void => this.remotePageState.setAssistantPickerVisible(false),
       queryChanged: (query: string): void => this.remotePageState.setQuery(query),
@@ -775,11 +836,11 @@ export abstract class AppRootRuntimeComposition {
       createInPlace: (agentType: string): void => {
         this.conversationController.createRemoteSession(agentType, true);
       },
-      createInWorkspace: (path: string, agentType: string, deviceId?: string): void => {
-        this.conversationController.createRemoteSessionInWorkspace(path, agentType, false, deviceId);
+      createInWorkspace: (path: string, agentType: string, deviceId?: string, connectionId?: string, sshHost?: string, workspaceId?: string): void => {
+        this.conversationController.createRemoteSessionInWorkspace(path, agentType, false, deviceId, connectionId, sshHost, workspaceId);
       },
-      createInWorkspaceInPlace: (path: string, agentType: string, deviceId?: string): void => {
-        this.conversationController.createRemoteSessionInWorkspace(path, agentType, true, deviceId);
+      createInWorkspaceInPlace: (path: string, agentType: string, deviceId?: string, connectionId?: string, sshHost?: string, workspaceId?: string): void => {
+        this.conversationController.createRemoteSessionInWorkspace(path, agentType, true, deviceId, connectionId, sshHost, workspaceId);
       },
       selectDirectoryDevice: (deviceId: string): void => {
         void this.selectDirectoryDevice(deviceId);
@@ -790,8 +851,8 @@ export abstract class AppRootRuntimeComposition {
       retryDirectoryDevice: (deviceId: string): void => {
         void this.retryDirectoryDevice(deviceId);
       },
-      loadWorkspaceSessions: async (deviceId: string, path: string): Promise<void> => {
-        await this.loadWorkspaceSessionsOnDevice(deviceId, path);
+      loadWorkspaceSessions: async (deviceId: string, path: string, remoteConnectionId?: string, remoteSshHost?: string, workspaceId?: string): Promise<void> => {
+        await this.loadWorkspaceSessionsOnDevice(deviceId, path, remoteConnectionId, remoteSshHost, workspaceId);
       },
       openSession: (session: RemoteSession): void => this.conversationController.openHomeSession(session),
       openSessionInPlace: (session: RemoteSession): void => this.conversationController.openHomeSession(session, true),
@@ -811,16 +872,21 @@ export abstract class AppRootRuntimeComposition {
         this.openConnectSheet(CONNECT_INTENT_SCAN);
       },
       refreshDevices: async (): Promise<void> => {
-        await this.settingsController.refreshAccountDevicesIfStale(0);
+        await this.deviceDirectoryViewModel.refreshDevices(async (): Promise<void> => {
+          await this.settingsController.listCloudAccountDevices();
+        });
       },
+      refreshSessions: (): Promise<void> => this.deviceDirectoryViewModel.refreshExpandedWorkspaceSessions(),
       settings: (): void => { this.closeAppSidebar(); this.appShellState.openSettings('general'); },
       openAccount: (): void => {
         this.closeAppSidebar();
         setTimeout(() => this.appShellState.openSettings('account'), 180);
       },
       openSession: (session: RemoteSession): void => {
+        // The shell supplies the horizontal motion; do not stack a second
+        // NavDestination push animation on top of the closing drawer.
         this.closeAppSidebar();
-        this.conversationController.openHomeSession(session);
+        this.conversationController.openHomeSession(session, true);
       },
       deleteSession: (session: RemoteSession): void => { this.conversationController.deleteHomeSession(session); }
     },
@@ -955,7 +1021,10 @@ export abstract class AppRootRuntimeComposition {
       this.remotePageState.workspacePath,
       this.remotePageState.assistantId,
       this.remotePageState.workspaceBranch,
-      this.remotePageState.workspaceKind
+      this.remotePageState.workspaceKind,
+      this.remotePageState.workspaceConnectionId,
+      this.remotePageState.workspaceSshHost,
+      this.remotePageState.workspaceId
     );
     this.remotePageState.setDownloadStatus(
       this.remotePageState.downloadingFilePath,

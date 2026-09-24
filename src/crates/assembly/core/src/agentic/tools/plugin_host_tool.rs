@@ -123,9 +123,7 @@ impl PluginHostToolMux {
             return None;
         }
         let runtime_agent_key = context.agent_type.as_deref()?;
-        let scope = context
-            .workspace_root()
-            .and_then(crate::plugin_host::canonical_plugin_workspace_scope)?;
+        let scope = context.workspace_id()?;
         self.routes_for_scope(&scope).into_iter().find(|route| {
             route.allowed_runtime_agent_keys.is_empty()
                 || route.allowed_runtime_agent_keys.contains(runtime_agent_key)
@@ -444,7 +442,7 @@ async fn handle_tool_ask(params: HookFunctionReverseAsk) -> PortResult<HookFunct
         &params.permission
     };
     let policy = crate::agentic::agents::get_agent_registry()
-        .get_agent_tool_policy(&route.agent, Some(&instance.directory))
+        .get_agent_tool_policy(&route.agent, Some(&instance.workspace_id))
         .await;
     let evaluator = openbitfun_runtime_ports::PermissionEvaluator::case_sensitive();
     if patterns.iter().any(|resource| {
@@ -518,6 +516,12 @@ async fn handle_tool_ask(params: HookFunctionReverseAsk) -> PortResult<HookFunct
     };
     match outcome {
         openbitfun_agent_runtime::permission::PermissionWaitOutcome::Replied(
+            openbitfun_runtime_ports::PermissionReply::OnceWithInput { .. },
+        ) => Err(PortError::new(
+            PortErrorKind::Backend,
+            "Plugin-owned permission requests do not support edited input",
+        )),
+        openbitfun_agent_runtime::permission::PermissionWaitOutcome::Replied(
             openbitfun_runtime_ports::PermissionReply::Once,
         ) => Ok(HookFunctionReverseReply::Once),
         openbitfun_agent_runtime::permission::PermissionWaitOutcome::Replied(
@@ -555,7 +559,7 @@ fn muxes() -> &'static RwLock<BTreeMap<String, Arc<PluginHostToolMux>>> {
 
 pub(crate) async fn register_workspace_tool(
     workspace_scope: &str,
-    workspace_root: &std::path::Path,
+    workspace_id: &str,
     runtime: Arc<dyn HookFunctionRuntime>,
     host_generation: u64,
     instance_id: &str,
@@ -606,7 +610,7 @@ pub(crate) async fn register_workspace_tool(
         },
     );
     crate::external_tools::register_live_external_tool_candidate(
-        workspace_root,
+        workspace_id,
         mux,
         "opencode-plugin",
         content_version,
@@ -617,7 +621,7 @@ pub(crate) async fn register_workspace_tool(
 
 pub(crate) async fn unregister_workspace_tools(
     workspace_scope: &str,
-    workspace_root: &std::path::Path,
+    workspace_id: &str,
     names: &[String],
     generation_key: &str,
 ) {
@@ -638,7 +642,7 @@ pub(crate) async fn unregister_workspace_tools(
         }
         if mux.routes_for_scope(workspace_scope).is_empty() {
             crate::external_tools::unregister_live_external_tool_candidate(
-                workspace_root,
+                workspace_id,
                 name,
                 "opencode-plugin",
             )
@@ -702,7 +706,7 @@ mod tests {
         crate::agentic::tools::tool_context_runtime::build_tool_description_context(
             runtime_agent_key,
             Some(&crate::agentic::WorkspaceBinding::new(
-                None,
+                Some("plugin-tool-workspace".into()),
                 PathBuf::from(workspace_root),
             )),
             None,
@@ -864,8 +868,7 @@ mod tests {
         use openbitfun_agent_runtime::native_hooks::{RuntimeHookActivation, RuntimeHookSource};
 
         let workspace = std::env::current_dir().expect("absolute workspace");
-        let scope = crate::plugin_host::canonical_plugin_workspace_scope(&workspace)
-            .expect("canonical workspace scope");
+        let scope = "plugin-tool-workspace".to_string();
         let generation_a_agent = "external_subagent_runtime:opencode-plugin:generation-a-agent";
         let generation_b_agent = "external_subagent_runtime:opencode-plugin:generation-b-agent";
         let registry = openbitfun_agent_runtime::native_hooks::RuntimeHookRegistry::default();
@@ -916,8 +919,7 @@ mod tests {
         use openbitfun_agent_runtime::native_hooks::{RuntimeHookActivation, RuntimeHookSource};
 
         let workspace = std::env::current_dir().expect("absolute workspace");
-        let scope = crate::plugin_host::canonical_plugin_workspace_scope(&workspace)
-            .expect("canonical workspace scope");
+        let scope = "plugin-tool-workspace".to_string();
         let registry = openbitfun_agent_runtime::native_hooks::RuntimeHookRegistry::default();
         registry.set_source_activation_for_workspace(
             RuntimeHookSource::Plugin,
@@ -941,8 +943,7 @@ mod tests {
         use openbitfun_agent_runtime::native_hooks::{RuntimeHookActivation, RuntimeHookSource};
 
         let workspace = std::env::current_dir().expect("absolute workspace");
-        let scope = crate::plugin_host::canonical_plugin_workspace_scope(&workspace)
-            .expect("canonical workspace scope");
+        let scope = "plugin-tool-workspace".to_string();
         let registry = openbitfun_agent_runtime::native_hooks::RuntimeHookRegistry::default();
         registry.set_source_activation_for_workspace(
             RuntimeHookSource::Plugin,

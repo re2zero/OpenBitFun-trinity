@@ -6,7 +6,6 @@ import type {
 } from "react";
 import {
   ArrowUpRight,
-  Bot,
   FileText,
   GitBranch,
   GitCompare,
@@ -16,6 +15,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { IconButton } from "../../components/IconButton/IconButton";
+import { Icon } from "../../components/Icon/Icon";
 import {
   ProminentToolCard,
   ProminentToolCardSummary,
@@ -414,6 +414,9 @@ export function AgentControlToolCard({
   const hasActions = Boolean(interruptAction);
   const hasTrailingActions = Boolean(onOpenAgent && openAgentLabel);
   const hasExtra = Boolean(statusMeta || statusLabel);
+  const showStatusGlyph = status !== "completed"
+    && status !== "confirmed"
+    && hasVisibleToolCardStatusGlyph(status);
 
   const identity = (
     <span className={styles.agentIdentity} data-openbitfun-part="agentIdentity">
@@ -469,10 +472,10 @@ export function AgentControlToolCard({
           ) : undefined}
           icon={(
             <span className={styles.agentAvatar} data-openbitfun-part="avatar">
-              {avatar ?? <Bot aria-hidden="true" />}
+              {avatar ?? <Icon name="user" aria-hidden="true" />}
             </span>
           )}
-          statusIcon={hasVisibleToolCardStatusGlyph(status)
+          statusIcon={showStatusGlyph
             ? <ToolCardStatusSlot size={16} status={status} />
             : undefined}
           trailingActions={hasTrailingActions ? (

@@ -4,8 +4,10 @@ import {
   Input,
   Textarea,
   Dialog,
+  Disclosure,
   DialogBody,
   DialogClose,
+  DialogFooter,
   DialogHeader,
   DialogHeading,
   DialogTitle,
@@ -111,7 +113,7 @@ export const WorkspaceRelatedPathsDialog: React.FC<WorkspaceRelatedPathsDialogPr
     setExternalReferencesLoading(true);
     setExternalReferencesFailed(false);
     void externalSourcesAPI
-      .getWorkspaceReferences(workspace.rootPath, workspace.id)
+      .getWorkspaceReferences(workspace.id)
       .then(snapshot => {
         if (!cancelled) {
           setExternalReferences(snapshot.references);
@@ -317,7 +319,7 @@ export const WorkspaceRelatedPathsDialog: React.FC<WorkspaceRelatedPathsDialogPr
                       className="workspace-related-paths-dialog__select"
                       variant="outline"
                       size="sm"
-                      leadingIcon={<Icon glyph={FolderOpen} />}
+                      leadingIcon={<Icon glyph={FolderOpen} size="sm" />}
                       onClick={() =>
                         remoteWorkspace
                           ? setBrowsingIndex(index)
@@ -362,12 +364,13 @@ export const WorkspaceRelatedPathsDialog: React.FC<WorkspaceRelatedPathsDialogPr
                 {t('nav.workspaces.relatedPaths.dialog.externalDescription')}
               </div>
               {externalReferenceDiagnostics.length > 0 ? (
-                <details className="workspace-related-paths-dialog__diagnostics">
-                  <summary>
-                    {t('nav.workspaces.relatedPaths.dialog.externalDiagnostics', {
-                      count: externalReferenceDiagnostics.length,
-                    })}
-                  </summary>
+                <Disclosure
+                  presentation="native"
+                  className="workspace-related-paths-dialog__diagnostics"
+                  summary={t('nav.workspaces.relatedPaths.dialog.externalDiagnostics', {
+                    count: externalReferenceDiagnostics.length,
+                  })}
+                >
                   <ul>
                     {externalReferenceDiagnostics.map((diagnostic, index) => (
                       <li key={`${diagnostic.code}-${index}`}>
@@ -375,7 +378,7 @@ export const WorkspaceRelatedPathsDialog: React.FC<WorkspaceRelatedPathsDialogPr
                       </li>
                     ))}
                   </ul>
-                </details>
+                </Disclosure>
               ) : null}
               {externalReferencesLoading ? (
                 <div className="workspace-related-paths-dialog__empty">
@@ -425,7 +428,15 @@ export const WorkspaceRelatedPathsDialog: React.FC<WorkspaceRelatedPathsDialogPr
             </div>
           ) : null}
 
-          <div data-openbitfun-component="workspace-related-paths-dialog" data-openbitfun-part="footer" className="workspace-related-paths-dialog__footer">
+        </div>
+                </div>
+                </DialogBody>
+          <DialogFooter
+            separator
+            data-openbitfun-component="workspace-related-paths-dialog"
+            data-openbitfun-part="footer"
+            className="workspace-related-paths-dialog__footer"
+          >
             <Button
               type="button"
               variant="outline"
@@ -457,10 +468,7 @@ export const WorkspaceRelatedPathsDialog: React.FC<WorkspaceRelatedPathsDialogPr
                 {saving ? t('status.saving') : t('actions.save')}
               </Button>
             </div>
-          </div>
-        </div>
-                </div>
-                </DialogBody>
+          </DialogFooter>
       </Dialog>
 
       {remoteWorkspace && connectionId && browsingIndex !== null ? (

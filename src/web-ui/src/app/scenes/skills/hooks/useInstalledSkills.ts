@@ -2,9 +2,10 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, use
 import { open } from '@tauri-apps/plugin-dialog';
 import { useTranslation } from 'react-i18next';
 import { configAPI } from '@/infrastructure/api';
+import { globalEventBus } from '@/infrastructure/event-bus';
 import { getActiveSurfaceScope, onSurfaceActivated } from '@/infrastructure/peer-device/deviceSurface';
 import type { SkillInfo, SkillLevel, SkillValidationResult, SkillScanDiagnostic } from '@/infrastructure/config/types';
-import { canDeleteSkill, getSkillSourceId, getSkillSourceLabel } from '@/infrastructure/config/skillSourcePresentation';
+import { canDeleteSkill, isOpenBitFunManagedSkill, getSkillOriginSourceId, getSkillSourceLabel } from '@/infrastructure/config/skillSourcePresentation';
 import { useWorkspaceManagerSync } from '@/infrastructure/hooks/useWorkspaceManagerSync';
 import { useNotification } from '@/shared/notification-system';
 import { createLogger } from '@/shared/utils/logger';
@@ -14,7 +15,7 @@ const log = createLogger('SkillsScene:useInstalledSkills');
 
 function installedSkillGroup(skill: SkillInfo): InstalledFilter {
   if (skill.isBuiltin) return 'builtin';
-  const sourceId = getSkillSourceId(skill);
+  const sourceId = getSkillOriginSourceId(skill);
   return sourceId === 'openbitfun' ? skill.level : `source:${sourceId}`;
 }
 
@@ -40,6 +41,7 @@ export function useInstalledSkills({
   const [diagnostics, setDiagnostics] = useState<SkillScanDiagnostic[]>([]);
   const [diagnosticsAvailable, setDiagnosticsAvailable] = useState(true);
   const [globallyDisabledSkillKeys, setGloballyDisabledSkillKeys] = useState<Set<string>>(new Set());
+  const [directManagementSupported, setDirectManagementSupported] = useState(false);
   const [savingGlobalSkillKey, setSavingGlobalSkillKey] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -52,7 +54,7 @@ export function useInstalledSkills({
   const loadRequestIdRef = useRef(0);
   const lastScanFeedbackKeyRef = useRef<string | null>(null);
   const validationRequestIdRef = useRef(0);
-  const capabilityKey = scope.key(scope.epoch, String(enabled), workspace?.id, workspacePath, workspace?.connectionId, String(isRemoteWorkspace));
+  const capabilityKey = scope.key(scope.epoch, String(enabled), workspace?.id, String(isRemoteWorkspace));
   const capabilityRef = useRef({ key: capabilityKey, epoch: 0, enabled });
   useLayoutEffect(() => {
     if (capabilityRef.current.key !== capabilityKey) {
@@ -86,9 +88,9 @@ export function useInstalledSkills({
       const [list, globalSettings] = await Promise.all([
         configAPI.getSkillScanReport({
           forceRefresh,
-          workspacePath: workspacePath || undefined,
+          workspaceId: workspace?.id,
         }),
-        configAPI.getGlobalSkillSettings(),
+        configAPI.getGlobalSkillSettings(isRemoteWorkspace ? undefined : workspace?.id),
       ]);
       if (requestId !== loadRequestIdRef.current || !capabilityIsCurrent(capabilityEpoch)) {
         return;
@@ -97,7 +99,11 @@ export function useInstalledSkills({
       setSkills(list.skills);
       setDiagnostics(list.diagnostics);
       setDiagnosticsAvailable(list.diagnosticsAvailable);
-      setGloballyDisabledSkillKeys(new Set(globalSettings.globallyDisabledUserSkillKeys));
+      setDirectManagementSupported(!isRemoteWorkspace && globalSettings.directSkillManagementVersion === 1);
+      setGloballyDisabledSkillKeys(new Set([
+        ...globalSettings.globallyDisabledUserSkillKeys,
+        ...(!isRemoteWorkspace ? globalSettings.globallyDisabledProjectSkillKeys ?? [] : []),
+      ]));
 
       const diagnosticKeys = list.diagnostics
         .map(({ sourceId, path, message }) => JSON.stringify([sourceId, path, message]))
@@ -133,7 +139,21 @@ export function useInstalledSkills({
         setLoading(false);
       }
     }
-  }, [capabilityIsCurrent, currentCapabilityEpoch, notifyScanInfo, notifyScanWarning, t, workspacePath]);
+  }, [
+    capabilityIsCurrent,
+    currentCapabilityEpoch,
+    isRemoteWorkspace,
+    notifyScanInfo,
+    notifyScanWarning,
+    t,
+    workspace?.id,
+  ]);
+
+  useEffect(() => {
+    const refresh = () => { void loadSkills(); };
+    globalEventBus.on('mode:config:updated', refresh);
+    return () => { globalEventBus.off('mode:config:updated', refresh); };
+  }, [loadSkills]);
 
   useEffect(() => {
     loadRequestIdRef.current += 1;
@@ -146,6 +166,7 @@ export function useInstalledSkills({
       setDiagnostics([]);
       setDiagnosticsAvailable(true);
       setGloballyDisabledSkillKeys(new Set());
+      setDirectManagementSupported(false);
       setSavingGlobalSkillKey(null);
       setError(null);
       setLoading(false);
@@ -249,7 +270,7 @@ export function useInstalledSkills({
       await configAPI.addSkill({
         sourcePath: formPath,
         level: formLevel,
-        workspacePath: workspacePath || undefined,
+        workspaceId: workspace?.id,
       });
       if (!capabilityIsCurrent(capabilityEpoch)) {
         return false;
@@ -273,7 +294,20 @@ export function useInstalledSkills({
         setIsAdding(false);
       }
     }
-  }, [capabilityIsCurrent, currentCapabilityEpoch, formLevel, formPath, hasWorkspace, isRemoteWorkspace, loadSkills, notification, resetForm, t, validationResult, workspacePath]);
+  }, [
+    capabilityIsCurrent,
+    currentCapabilityEpoch,
+    formLevel,
+    formPath,
+    hasWorkspace,
+    isRemoteWorkspace,
+    loadSkills,
+    notification,
+    resetForm,
+    t,
+    validationResult,
+    workspace?.id,
+  ]);
 
   const handleDelete = useCallback(async (skill: SkillInfo) => {
     const capabilityEpoch = currentCapabilityEpoch();
@@ -286,7 +320,7 @@ export function useInstalledSkills({
     try {
       await configAPI.deleteSkill({
         skillKey: skill.key,
-        workspacePath: workspacePath || undefined,
+        workspaceId: workspace?.id,
       });
       if (!capabilityIsCurrent(capabilityEpoch)) {
         return false;
@@ -305,11 +339,15 @@ export function useInstalledSkills({
       );
       return false;
     }
-  }, [capabilityIsCurrent, currentCapabilityEpoch, loadSkills, notification, t, workspacePath]);
+  }, [capabilityIsCurrent, currentCapabilityEpoch, loadSkills, notification, t, workspace?.id]);
+
+  const canToggleSkill = useCallback((skill: SkillInfo) => (
+    directManagementSupported || (skill.level === 'user' && isOpenBitFunManagedSkill(skill))
+  ), [directManagementSupported]);
 
   const handleGlobalSkillToggle = useCallback(async (skill: SkillInfo, enabled: boolean) => {
     const capabilityEpoch = currentCapabilityEpoch();
-    if (capabilityEpoch === null || skill.level !== 'user') {
+    if (capabilityEpoch === null || !canToggleSkill(skill)) {
       return false;
     }
 
@@ -318,13 +356,16 @@ export function useInstalledSkills({
       const settings = await configAPI.setGlobalSkillDisabled({
         skillKey: skill.key,
         disabled: !enabled,
+        ...(directManagementSupported ? { workspaceId: workspace?.id } : {}),
       });
       if (!capabilityIsCurrent(capabilityEpoch)) {
         return false;
       }
 
-      setGloballyDisabledSkillKeys(new Set(settings.globallyDisabledUserSkillKeys));
-      const { globalEventBus } = await import('@/infrastructure/event-bus');
+      setGloballyDisabledSkillKeys(new Set([
+        ...settings.globallyDisabledUserSkillKeys,
+        ...(directManagementSupported ? settings.globallyDisabledProjectSkillKeys ?? [] : []),
+      ]));
       globalEventBus.emit('mode:config:updated');
       notification.success(t('messages.toggleSuccess', {
         name: skill.name,
@@ -349,14 +390,24 @@ export function useInstalledSkills({
         setSavingGlobalSkillKey(null);
       }
     }
-  }, [capabilityIsCurrent, currentCapabilityEpoch, notification, t]);
+  }, [
+    canToggleSkill,
+    capabilityIsCurrent,
+    currentCapabilityEpoch,
+    directManagementSupported,
+    notification,
+    t,
+    workspace?.id,
+  ]);
 
   const normalizedQuery = searchQuery.trim().toLowerCase();
 
   const filteredSkills = useMemo(() => {
     return skills.filter((skill) => {
       let matchesFilter = true;
-      if (activeFilter !== 'all') {
+      if (activeFilter === 'user' || activeFilter === 'project') {
+        matchesFilter = !skill.isBuiltin && skill.level === activeFilter;
+      } else if (activeFilter !== 'all') {
         matchesFilter = installedSkillGroup(skill) === activeFilter;
       }
 
@@ -378,6 +429,7 @@ export function useInstalledSkills({
       const group = installedSkillGroup(skill);
       counts[group] = (counts[group] ?? 0) + 1;
       if (group.startsWith('source:')) {
+        counts[skill.level] += 1;
         sources.set(group as `source:${string}`, getSkillSourceLabel(skill, t('list.item.unknownSource')));
       }
     }
@@ -404,6 +456,7 @@ export function useInstalledSkills({
     loadSkills,
     handleDelete,
     handleGlobalSkillToggle,
+    canToggleSkill,
     formLevel,
     setFormLevel,
     formPath,

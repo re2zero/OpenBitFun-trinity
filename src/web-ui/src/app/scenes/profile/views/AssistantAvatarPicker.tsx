@@ -1,7 +1,5 @@
-import { Button, Icon, IconButton, Input, ScrollArea } from '@openbitfun/ui';
+import { subscribeOverlayInteraction, createOverlayPortal, Button, Icon, IconButton, Input, ScrollArea } from '@openbitfun/ui';
 import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
-;
 import { useTranslation } from 'react-i18next';
 
 import {
@@ -73,11 +71,11 @@ const AssistantAvatarPicker: React.FC<AssistantAvatarPickerProps> = ({
       triggerRef.current?.focus();
     };
 
-    document.addEventListener('pointerdown', handlePointerDown);
-    window.addEventListener('keydown', handleKeyDown);
+    const removeOverlayPointerdown0 = subscribeOverlayInteraction(popoverRef, 'pointerdown', handlePointerDown);
+    const removeOverlayKeydown1 = subscribeOverlayInteraction(popoverRef, 'keydown', handleKeyDown);
     return () => {
-      document.removeEventListener('pointerdown', handlePointerDown);
-      window.removeEventListener('keydown', handleKeyDown);
+      removeOverlayPointerdown0?.();
+      removeOverlayKeydown1?.();
     };
   }, [isOpen]);
 
@@ -130,7 +128,7 @@ const AssistantAvatarPicker: React.FC<AssistantAvatarPickerProps> = ({
         </span>
       </button>
 
-      {isOpen ? createPortal(
+      {isOpen ? createOverlayPortal(
         <ScrollArea
           ref={popoverRef}
           id={pickerId}

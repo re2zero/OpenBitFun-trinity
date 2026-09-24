@@ -60,13 +60,14 @@ exclude = [
     # it must be excluded or cargo refuses to resolve it from inside the
     # workspace tree.
     "vendor/leptonica-sys",
+    "third_party/eioc",
 ]
 
 resolver = "2"
 
 # Shared package metadata — single source of truth for version
 [workspace.package]
-version = "1.0.0-beta" # x-release-please-version
+version = "1.0.1" # x-release-please-version
 authors = ["OpenBitFun Team"]
 edition = "2021"
 
@@ -139,6 +140,7 @@ indexmap = "2"
 include_dir = "0.7"
 aes = "0.8"
 hmac = "0.12"
+lettre = { version = "0.11.23", default-features = false }
 hex = "0.4"
 chardetng = "0.1.17"
 encoding_rs = "0.8.35"
@@ -219,7 +221,6 @@ tauri-plugin-autostart = "2.5"
 tauri-plugin-notification = "2.3"
 tauri-plugin-updater = "2.10"
 tauri-plugin-single-instance = "2.4"
-tauri-plugin-window-state = "2.4"
 notify-rust = { version = "4.18", default-features = false }
 tauri-build = { version = "2.6", features = [] }
 keepawake = "0.6.0"
@@ -229,6 +230,9 @@ screenshots = "0.8"
 enigo = "0.2"
 resvg = { version = "0.47", default-features = false }
 atspi = "0.29"
+gstreamer = { version = "0.24", default-features = false }
+gstreamer-app = { version = "0.24", default-features = false }
+cc = { version = "1", default-features = false }
 leptess = "0.14"
 core-foundation = "0.9"
 core-graphics = { version = "0.23", features = ["elcapitan", "highsierra"] }
@@ -275,6 +279,7 @@ qrcode = { version = "0.14", default-features = false }
 
 # WebSocket client
 tokio-tungstenite = "0.29"
+sioc = { version = "0.5.0", default-features = false }
 
 # Local speech recognition
 sherpa-onnx = "1.13.4"
@@ -300,6 +305,8 @@ ssh_config = "0.1"
 rustls = { version = "0.23", default-features = false }
 
 [patch.crates-io]
+# Keep Socket.IO on the product-owned ring provider; see the patch note.
+eioc = { path = "third_party/eioc" }
 # Tauri 2.11 loses keyboard focus for child webviews after Windows reactivates
 # an `unstable` multi-webview window. Use the upstream fix until released;
 # this revision also adopts tao 0.36, which includes the Windows input deadlock fix.

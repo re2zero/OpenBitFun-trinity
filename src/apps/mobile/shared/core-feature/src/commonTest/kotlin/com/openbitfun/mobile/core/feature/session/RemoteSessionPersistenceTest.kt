@@ -1,5 +1,6 @@
 package com.openbitfun.mobile.core.feature.session
 
+import com.openbitfun.mobile.core.domain.ChatTranscriptOrigin
 import com.openbitfun.mobile.core.domain.RemoteSession
 import com.openbitfun.mobile.core.feature.connection.ConnectionPhase
 import com.openbitfun.mobile.core.persistence.ChatLocalStore
@@ -24,6 +25,9 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.*
+import kotlinx.coroutines.flow.*
+import com.openbitfun.mobile.core.transport.RemoteSessionStreamTransport
 import kotlinx.serialization.DeserializationStrategy
 import kotlin.coroutines.Continuation
 import kotlin.coroutines.resume
@@ -145,62 +149,133 @@ class RemoteSessionPersistenceTest {
         val second = RemoteSessionStore.create(this, transport, "device-a", stores.stores)
         second.dispatch(RemoteSessionIntent.Open("server")); runCurrent()
         assertEquals("keep me", assertIs<RemoteSessionUiState.Ready>(second.state.value).draft)
-        second.dispatch(RemoteSessionIntent.SendMessage("server", "hello")); runCurrent()
+        second.dispatch(RemoteSessionIntent.SendMessage("server", "keep me")); runCurrent()
         assertEquals(null, stores.drafts.values["remote-composer:device-a:server"])
         first.dispatch(RemoteSessionIntent.Stop)
         second.dispatch(RemoteSessionIntent.Stop)
     }
 
     @Test
-    fun activeTurnIsPersistedOnEndAndRestoredOnReopen() = runTest {
+    fun completedRecordIsPersistedAndRestoredBeforeReconnect() = runTest {
         val stores = MemoryPersistence()
-        val transport = PersistenceTransport()
-        transport.messagesJson = """[{"id":"m-1","role":"assistant","content":"All done","status":"failed","error":"Desktop failed"}]"""
-        transport.polls = listOf(
-            """{"resp":"ok","version":1,"changed":true,"session_state":"running","active_turn":{"turn_id":"t-1","status":"active","text":"All "}}""",
-            """{"resp":"ok","version":2,"changed":true,"session_state":"idle","active_turn":{"turn_id":"t-1","status":"completed","text":"All done"}}""",
-            """{"resp":"ok","version":2,"changed":false,"session_state":"idle"}""",
-        )
+        val transport = PersistenceTransport().apply {
+            initialRecords = listOf(richRecord("server", "t-1", 0, 1, "inprogress", "All "))
+        }
         val store = RemoteSessionStore.create(this, transport, "device-a", stores.stores)
         store.dispatch(RemoteSessionIntent.Open("server")); runCurrent()
-        advanceTimeBy(350); runCurrent()
-        assertEquals("m-1", stores.transcripts.rows["device-a::server"]!!.single().messageId)
-        assertEquals("0", stores.transcripts.cursors["device-a::server"]!!.pollVersion)
-        store.dispatch(RemoteSessionIntent.Stop)
-
-        val transport2 = PersistenceTransport()
-        transport2.messagesJson = transport.messagesJson
-        val store2 = RemoteSessionStore.create(this, transport2, "device-a", stores.stores)
-        store2.dispatch(RemoteSessionIntent.Open("server"))
-        val restored = assertIs<RemoteSessionUiState.Ready>(store2.state.value)
-            .timeline?.persistedMessages?.single()
-        assertEquals("m-1", restored?.id)
-        assertEquals("failed", restored?.status)
-        assertEquals("Desktop failed", restored?.error)
-        runCurrent(); store2.dispatch(RemoteSessionIntent.Stop)
+        transport.records.emit(richRecord("server", "t-1", 0, 2, "completed", "All done")); runCurrent()
+        assertEquals("All done", stores.transcripts.rows.getValue("device-a::server").last().text)
+        store.stop()
+        val reopened = RemoteSessionStore.create(this, PersistenceTransport(), "device-a", stores.stores)
+        reopened.dispatch(RemoteSessionIntent.Open("server"))
+        assertEquals("All done", assertIs<RemoteSessionUiState.Ready>(reopened.state.value).timeline?.persistedMessages?.last()?.text)
+        runCurrent(); reopened.stop()
     }
 
     @Test
-    fun disconnectDuringPollRetainsPersistedTranscriptAndRecovers() = runTest {
+    fun replayRebuildsTheTranscriptOnceInsteadOfPerRecord() = runTest {
+        // A long session replays record by record, and rebuilding the whole
+        // transcript on each of them is what made the first seconds after an
+        // open impossible to scroll. Nothing can read the result before
+        // catch-up, so one rebuild and one write is the whole job.
         val stores = MemoryPersistence()
-        stores.transcripts.rows["device-a::server"] = listOf(
-            PersistedRemoteMessage(
-                messageId = "m-1", sessionId = "server", role = "assistant", text = "cached",
-                payloadJson = """{"render_version":null}""",
-            ),
-        )
-        val transport = PersistenceTransport()
-        transport.messagesJson = """[{"id":"m-1","role":"assistant","content":"cached"}]"""
-        transport.pollFailure = RelayFailure.NetworkUnreachable
+        val transport = PersistenceTransport().apply {
+            initialRecords = (0 until 8).map { richRecord("server", "t-$it", it, 1, "completed", "msg $it") }
+        }
         val store = RemoteSessionStore.create(this, transport, "device-a", stores.stores)
         store.dispatch(RemoteSessionIntent.Open("server")); runCurrent()
-        assertEquals(ConnectionPhase.RECONNECTING, store.connectionPhase.value)
-        assertEquals(1, stores.transcripts.rows["device-a::server"]?.size)
-        transport.pollFailure = null
-        advanceTimeBy(10_000); runCurrent()
-        assertEquals(ConnectionPhase.CONNECTED, store.connectionPhase.value)
-        assertEquals("m-1", assertIs<RemoteSessionUiState.Ready>(store.state.value).timeline?.persistedMessages?.single()?.id)
+        assertEquals(1, stores.transcripts.writes)
+        val timeline = assertIs<RemoteSessionUiState.Ready>(store.state.value).timeline
+        assertEquals("msg 7", timeline?.persistedMessages?.last()?.text)
+        store.stop()
+    }
+
+    @Test
+    fun aHistoryPageWritesTheTranscriptOnceWhenItSettles() = runTest {
+        // A page prepends to the transcript window, so no already written row can be
+        // reused and every record of the burst would rewrite all of it — on the
+        // thread that draws the screen. The page lands once, when its read settles.
+        val stores = MemoryPersistence()
+        val transport = PersistenceTransport().apply {
+            initialRecords = listOf(
+                richRecord("server", "t-new", 1, 1, "completed", "newest"),
+                buildJsonObject {
+                    put("session_id", "server"); put("event", "relay://session-ready")
+                    put("payload", buildJsonObject { put("hasMore", true) })
+                },
+            )
+        }
+        val store = RemoteSessionStore.create(this, transport, "device-a", stores.stores)
+        store.dispatch(RemoteSessionIntent.Open("server")); runCurrent()
+        val afterOpen = stores.transcripts.writes
+        val beforePage = assertIs<RemoteSessionUiState.Ready>(store.state.value).timeline
+        val page = CompletableDeferred<Unit>()
+        transport.loadOlderGate = page
+        store.dispatch(RemoteSessionIntent.LoadOlderMessages); runCurrent()
+        transport.records.emit(buildJsonObject {
+            put("session_id", "server"); put("event", "relay://session-history-started")
+            put("payload", buildJsonObject {})
+        })
+        val complete = richRecord("server", "t-old-0", 0, 1, "completed", "older 0")
+        val header = JsonObject(complete + ("payload" to JsonObject(complete.getValue("payload").jsonObject
+            .filterKeys { it != "round" && it != "item" } + ("id" to JsonPrimitive("turn/t-old-0")))))
+        transport.records.emit(header); runCurrent()
+        assertEquals(beforePage, assertIs<RemoteSessionUiState.Ready>(store.state.value).timeline,
+            "A turn header must not expose the user bubble before the reply in the same page")
+        (0 until 6).forEach { index ->
+            transport.records.emit(richRecord("server", "t-old-$index", 0, 1, "completed", "older $index"))
+            runCurrent()
+            assertEquals(beforePage, assertIs<RemoteSessionUiState.Ready>(store.state.value).timeline,
+                "History records must be reduced without publishing intermediate user/assistant rows")
+        }
+        transport.records.emit(buildJsonObject {
+            put("session_id", "server"); put("event", "relay://session-ready")
+            put("payload", buildJsonObject { put("hasMore", false) })
+        })
+        runCurrent()
+        assertEquals(afterOpen, stores.transcripts.writes, "A page in flight must not rewrite the transcript per record")
+        page.complete(Unit); runCurrent()
+        assertEquals(afterOpen + 1, stores.transcripts.writes)
+        assertTrue(stores.transcripts.rows.getValue("device-a::server").any { it.text == "older 5" })
         store.dispatch(RemoteSessionIntent.Stop)
+    }
+
+    @Test
+    fun streamingChunksShareOneTranscriptWriteAndSettleImmediately() = runTest {
+        val stores = MemoryPersistence()
+        val transport = PersistenceTransport().apply {
+            initialRecords = listOf(richRecord("server", "t-1", 0, 1, "completed", "done"))
+        }
+        val store = RemoteSessionStore.create(this, transport, "device-a", stores.stores)
+        store.dispatch(RemoteSessionIntent.Open("server")); runCurrent()
+        val afterOpen = stores.transcripts.writes
+        (2..6).forEach { revision ->
+            transport.records.emit(richRecord("server", "t-2", 1, revision.toLong(), "inprogress", "chunk $revision"))
+            runCurrent()
+        }
+        assertEquals(afterOpen, stores.transcripts.writes)
+        advanceTimeBy(600); runCurrent()
+        assertEquals(afterOpen + 1, stores.transcripts.writes)
+        transport.records.emit(richRecord("server", "t-2", 1, 7, "completed", "chunk done")); runCurrent()
+        assertEquals(afterOpen + 2, stores.transcripts.writes)
+        assertEquals("chunk done", stores.transcripts.rows.getValue("device-a::server").last().text)
+        store.stop()
+    }
+
+    @Test
+    fun streamDisconnectRetainsPersistedTranscriptAndRecovers() = runTest {
+        val stores = MemoryPersistence()
+        val transport = PersistenceTransport().apply {
+            initialRecords = listOf(richRecord("server", "t-1", 0, 1, "completed", "cached"))
+        }
+        val store = RemoteSessionStore.create(this, transport, "device-a", stores.stores)
+        store.dispatch(RemoteSessionIntent.Open("server")); runCurrent()
+        transport.streamFailure?.invoke(RelayTransportException(RelayFailure.NetworkUnreachable))
+        assertEquals(ConnectionPhase.RECONNECTING, store.connectionPhase.value)
+        assertEquals("cached", stores.transcripts.rows.getValue("device-a::server").last().text)
+        transport.caughtUp?.invoke()
+        assertEquals(ConnectionPhase.CONNECTED, store.connectionPhase.value)
+        store.stop()
     }
 
     @Test
@@ -224,7 +299,7 @@ class RemoteSessionPersistenceTest {
     }
 
     @Test
-    fun completeCachedTranscriptResumesFromCountWithoutFullFetch() = runTest {
+    fun completeCachedTranscriptAttachesStreamWithoutFullFetch() = runTest {
         val stores = MemoryPersistence()
         stores.transcripts.rows["device-a::server"] = listOf(
             PersistedRemoteMessage(
@@ -243,90 +318,53 @@ class RemoteSessionPersistenceTest {
         assertEquals("cached", ready.timeline?.persistedMessages?.single()?.text)
         assertFalse(ready.busy)
         assertTrue(transport.commands.none { it.cmd == "get_session_messages" })
-        assertEquals(listOf(0), transport.sinceVersions)
-        assertEquals(listOf(1), transport.knownMessageCounts)
+        assertEquals(1, transport.subscriptions)
+        assertTrue(transport.commands.none { it.cmd == "poll_session" })
         store.stop()
     }
 
     @Test
-    fun hollowCachedAssistantFallsBackToAuthoritativeFetch() = runTest {
+    fun authoritativeRecordRepairsHollowCachedAssistant() = runTest {
         val stores = MemoryPersistence()
-        stores.transcripts.rows["device-a::server"] = listOf(
-            PersistedRemoteMessage(
-                messageId = "m-1", sessionId = "server", role = "assistant", text = "",
-                payloadJson = "{}",
-            ),
-        )
-        stores.transcripts.cursors["device-a::server"] = PersistedRemoteCursor("9", 1, "3")
+        stores.transcripts.rows["device-a::server"] = listOf(PersistedRemoteMessage(
+            messageId = "t-1_assistant", sessionId = "server", role = "assistant", text = "", payloadJson = "{}"))
         val transport = PersistenceTransport().apply {
-            messagesJson = """[{"id":"m-1","role":"assistant","content":"restored body"}]"""
+            initialRecords = listOf(richRecord("server", "t-1", 0, 1, "completed", "restored body"))
         }
         val store = RemoteSessionStore.create(this, transport, "device-a", stores.stores)
-
-        store.dispatch(RemoteSessionIntent.Open("server"))
-        runCurrent()
-
-        assertTrue(transport.commands.any { it.cmd == "get_session_messages" })
-        assertEquals(
-            "restored body",
-            assertIs<RemoteSessionUiState.Ready>(store.state.value).timeline
-                ?.persistedMessages?.single()?.text,
-        )
+        store.dispatch(RemoteSessionIntent.Open("server")); runCurrent()
+        assertEquals("restored body", assertIs<RemoteSessionUiState.Ready>(store.state.value).timeline?.persistedMessages?.last()?.text)
+        assertTrue(transport.commands.none { it.cmd in listOf("get_session_messages", "poll_session") })
         store.stop()
     }
 
     @Test
-    fun pollSnapshotReplacesRewrittenCachedHistory() = runTest {
+    fun canonicalHistoryReplacesLegacyCachedRows() = runTest {
         val stores = MemoryPersistence()
-        stores.transcripts.rows["device-a::server"] = listOf(
-            PersistedRemoteMessage("old-1", "server", "user", "old one", payloadJson = "{}"),
-            PersistedRemoteMessage("old-2", "server", "assistant", "old two", payloadJson = "{}"),
-        )
-        stores.transcripts.cursors["device-a::server"] = PersistedRemoteCursor("7", 2, "0")
+        stores.transcripts.rows["device-a::server"] = listOf(PersistedRemoteMessage(
+            messageId = "obsolete", sessionId = "server", role = "assistant", text = "old", payloadJson = "{}"))
         val transport = PersistenceTransport().apply {
-            polls = listOf(
-                """{"resp":"ok","version":8,"changed":true,"session_state":"idle","total_msg_count":1,"message_snapshot":[{"id":"new-1","role":"assistant","content":"replacement"}]}""",
-            )
+            initialRecords = listOf(richRecord("server", "new", 0, 1, "completed", "replacement"))
         }
         val store = RemoteSessionStore.create(this, transport, "device-a", stores.stores)
-
-        store.dispatch(RemoteSessionIntent.Open("server"))
-        runCurrent()
-
-        val rows = assertIs<RemoteSessionUiState.Ready>(store.state.value)
-            .timeline?.persistedMessages.orEmpty()
-        assertEquals(listOf("new-1"), rows.map { it.id })
-        assertEquals(listOf("new-1"), stores.transcripts.rows.getValue("device-a::server").map { it.messageId })
-        assertTrue(transport.commands.none { it.cmd == "get_session_messages" })
+        store.dispatch(RemoteSessionIntent.Open("server")); runCurrent()
+        assertEquals(listOf("new_user", "new_assistant"), stores.transcripts.rows.getValue("device-a::server").map { it.messageId })
         store.stop()
     }
 
     @Test
-    fun shorterLegacyPollWithoutSnapshotFallsBackToFullReplacement() = runTest {
+    fun deletedTurnCannotReappearFromTranscriptCache() = runTest {
         val stores = MemoryPersistence()
-        stores.transcripts.rows["device-a::server"] = listOf(
-            PersistedRemoteMessage("old-1", "server", "user", "old one", payloadJson = "{}"),
-            PersistedRemoteMessage("old-2", "server", "assistant", "old two", payloadJson = "{}"),
-        )
-        stores.transcripts.cursors["device-a::server"] = PersistedRemoteCursor("7", 2, "0")
         val transport = PersistenceTransport().apply {
-            messagesJson = """[{"id":"new-1","role":"assistant","content":"replacement"}]"""
-            polls = listOf(
-                """{"resp":"ok","version":8,"changed":true,"session_state":"idle","total_msg_count":1}""",
-            )
+            initialRecords = listOf(richRecord("server", "old", 0, 1, "completed", "removed"), richRecord("server", "keep", 1, 1, "completed", "retained"))
         }
         val store = RemoteSessionStore.create(this, transport, "device-a", stores.stores)
-
-        store.dispatch(RemoteSessionIntent.Open("server"))
-        runCurrent()
-
-        assertEquals(
-            listOf("new-1"),
-            assertIs<RemoteSessionUiState.Ready>(store.state.value)
-                .timeline?.persistedMessages.orEmpty().map { it.id },
-        )
-        assertEquals(1, transport.commands.count { it.cmd == "get_session_messages" })
-        assertEquals(listOf("new-1"), stores.transcripts.rows.getValue("device-a::server").map { it.messageId })
+        store.dispatch(RemoteSessionIntent.Open("server")); runCurrent()
+        transport.records.emit(buildJsonObject {
+            put("session_id", "server"); put("event", "session-record")
+            put("payload", buildJsonObject { put("sessionId", "server"); put("id", "turn/old"); put("revision", 2); put("deleted", true) })
+        }); runCurrent()
+        assertEquals(listOf("keep_user", "keep_assistant"), stores.transcripts.rows.getValue("device-a::server").map { it.messageId })
         store.stop()
     }
 
@@ -422,6 +460,55 @@ class RemoteSessionPersistenceTest {
         store.stop()
     }
 
+    /**
+     * A reopened session immediately shows this device's stored copy, but that
+     * copy is not the host's transcript: it stops wherever its last write
+     * stopped, which is inside the turn that was running when the app went away.
+     * Presenting it as the session is what made a reopen show a lone user
+     * message as the whole conversation, so the state has to say where the rows
+     * came from and only stop saying "waiting" once the host has answered.
+     */
+    @Test
+    fun aRestoredTranscriptIsThisDevicesCopyUntilTheHostAnswers() = runTest {
+        val stores = MemoryPersistence()
+        stores.transcripts.rows["device-a::server"] = listOf(
+            PersistedRemoteMessage(messageId = "m-user", sessionId = "server", role = "user", text = "do the thing"),
+        )
+        val transport = PersistenceTransport().apply {
+            subscribeGate = CompletableDeferred()
+            initialRecords = listOf(richRecord("server", "t-1", 0, 1, "completed", "done"))
+        }
+        val store = RemoteSessionStore.create(this, transport, "device-a", stores.stores)
+
+        store.dispatch(RemoteSessionIntent.Open("server")); runCurrent()
+        val restored = assertIs<RemoteSessionUiState.Ready>(store.state.value)
+        assertEquals(listOf("do the thing"), restored.timeline?.persistedMessages?.map { it.text })
+        assertEquals(ChatTranscriptOrigin.CACHE, restored.timeline?.origin)
+
+        transport.subscribeGate!!.complete(Unit); runCurrent()
+        val fromHost = assertIs<RemoteSessionUiState.Ready>(store.state.value)
+        assertEquals(ChatTranscriptOrigin.HOST, fromHost.timeline?.origin)
+        assertEquals("done", fromHost.timeline?.persistedMessages?.last()?.text)
+        store.stop()
+    }
+
+    @Test
+    fun aRestoredTranscriptIsNotWrittenBackBeforeTheHostAnswers() = runTest {
+        val stores = MemoryPersistence()
+        val stored = listOf(
+            PersistedRemoteMessage(messageId = "m-user", sessionId = "server", role = "user", text = "do the thing"),
+        )
+        stores.transcripts.rows["device-a::server"] = stored
+        val transport = PersistenceTransport().apply { subscribeGate = CompletableDeferred() }
+        val store = RemoteSessionStore.create(this, transport, "device-a", stores.stores)
+
+        store.dispatch(RemoteSessionIntent.Open("server")); runCurrent()
+
+        assertEquals(0, stores.transcripts.writes)
+        assertEquals(stored, stores.transcripts.rows["device-a::server"])
+        store.stop()
+    }
+
     @Test
     fun corruptedPayloadIsRetainedAsDegradedMessage() = runTest {
         val stores = MemoryPersistence()
@@ -485,9 +572,14 @@ private class MemorySessions : RemoteSessionListStore {
 private class MemoryTranscripts : RemoteTranscriptStore {
     val rows = mutableMapOf<String, List<PersistedRemoteMessage>>()
     val cursors = mutableMapOf<String, PersistedRemoteCursor>()
+    var writes = 0
     override fun load(deviceKey: String, sessionId: String) = rows["$deviceKey::$sessionId"].orEmpty()
-    override fun append(deviceKey: String, sessionId: String, startSeq: Int, messages: List<PersistedRemoteMessage>) = Unit
-    override fun replace(deviceKey: String, sessionId: String, messages: List<PersistedRemoteMessage>) { rows["$deviceKey::$sessionId"] = messages }
+    override fun append(deviceKey: String, sessionId: String, startSeq: Int, messages: List<PersistedRemoteMessage>) {
+        if (messages.isEmpty()) return
+        writes++
+        rows["$deviceKey::$sessionId"] = rows["$deviceKey::$sessionId"].orEmpty().take(startSeq) + messages
+    }
+    override fun replace(deviceKey: String, sessionId: String, messages: List<PersistedRemoteMessage>) { writes++; rows["$deviceKey::$sessionId"] = messages }
     override fun loadCursor(deviceKey: String, sessionId: String) = cursors["$deviceKey::$sessionId"]
     override fun saveCursor(deviceKey: String, sessionId: String, cursor: PersistedRemoteCursor) { cursors["$deviceKey::$sessionId"] = cursor }
     override fun delete(deviceKey: String, sessionId: String) {
@@ -496,7 +588,25 @@ private class MemoryTranscripts : RemoteTranscriptStore {
     }
 }
 
-private class PersistenceTransport : RemoteCommandTransport {
+private class PersistenceTransport : RemoteCommandTransport, RemoteSessionStreamTransport {
+    var initialRecords = emptyList<JsonObject>()
+    val records = MutableSharedFlow<JsonObject>(extraBufferCapacity = 10)
+    var streamFailure: ((Throwable) -> Unit)? = null
+    var caughtUp: (() -> Unit)? = null
+    var subscriptions = 0
+    /** Holds the host's stream open without answering, for the pre-answer window. */
+    var subscribeGate: CompletableDeferred<Unit>? = null
+    var loadOlderGate: CompletableDeferred<Unit>? = null
+    override suspend fun loadOlder(sessionId: String) { loadOlderGate?.await() }
+    override suspend fun subscribe(sessionId: String, onError: (Throwable) -> Unit, onCaughtUp: () -> Unit): Flow<JsonObject> = flow {
+        subscriptions++
+        streamFailure = onError; caughtUp = onCaughtUp
+        subscribeGate?.await()
+        initialRecords.forEach { emit(it) }
+        onCaughtUp()
+        records.collect { emit(it) }
+    }
+
     val commandGates = mutableMapOf<String, CompletableDeferred<Unit>>()
     val nonCancellableCommands = mutableSetOf<String>()
     val lateCommandContinuations = mutableMapOf<String, Continuation<Unit>>()
@@ -521,7 +631,7 @@ private class PersistenceTransport : RemoteCommandTransport {
             pollFailure?.let { throw RelayTransportException(it) }
         }
         val json = when (command.cmd) {
-            "get_workspace_info" -> "{\"resp\":\"ok\",\"path\":\"/repo\"}"
+            "get_workspace_info" -> "{\"resp\":\"ok\",\"path\":\"/repo\",\"capabilities\":[\"host_stream_v1\"]}"
             "create_session" -> "{\"resp\":\"ok\",\"session_id\":\"created\",\"title\":\"Created\"}"
             "set_session_model" -> "{\"resp\":\"ok\",\"model_id\":\"model-primary\"}"
             "list_sessions" -> "{\"resp\":\"ok\",\"sessions\":$sessionsJson,\"has_more\":$hasMore}"

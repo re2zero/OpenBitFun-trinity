@@ -1,85 +1,82 @@
 import type { Session } from '../types/flow-chat';
 import type { SessionMetadata } from '@/shared/types/session-history';
-import { isSamePath, normalizeRemoteWorkspacePath } from '@/shared/utils/pathUtils';
+/**
+ * Session facts that decide which navigation group owns a session. `config` is
+ * optional so metadata-only and legacy call sites keep working.
+ */
+type SessionNavigationOwner = Pick<Session, 'workspaceId' | 'projectWorkspaceId'> & {
+  config?: Pick<Session['config'], 'executionTarget' | 'workspaceId' | 'projectWorkspaceId'>;
+};
 
-/** Extract `host` from SSH connection IDs, with or without the legacy port suffix. */
-function hostFromSshConnectionId(connectionId: string): string | null {
-  const t = connectionId.trim();
-  const m = t.match(/^ssh-[^@]+@(.+?)(?::\d+)?$/);
-  return m ? m[1].trim().toLowerCase() : null;
-}
-
-/** Row-level SSH host: prefer workspace metadata, else parse from `connectionId` (sidebar may lack `sshHost`). */
-function effectiveWorkspaceSshHost(
-  remoteSshHost?: string | null,
-  remoteConnectionId?: string | null
-): string {
-  const h = remoteSshHost?.trim().toLowerCase() ?? '';
-  if (h) return h;
-  return hostFromSshConnectionId(remoteConnectionId?.trim() ?? '') ?? '';
+/**
+ * The session executes in a managed worktree of its owning project.
+ *
+ * A worktree is an execution directory, not a project of its own, so this fact
+ * is what keeps such a session in its project's navigation group.
+ */
+export function isWorktreeIsolatedSession(session: SessionNavigationOwner): boolean {
+  const target = session.config?.executionTarget;
+  return !!target && target.kind !== 'local';
 }
 
 /**
- * Whether a persisted session belongs to a nav row for this workspace.
- * Remote workspaces are scoped by **SSH host + normalized remote root** (and connection id when present).
- * We must never treat "same host" as sufficient: two tabs to the same server at `/a` vs `/b` are distinct.
+ * Workspace ID of the navigation row that owns the session.
+ *
+ * This is the one session-to-workspace identity the whole shell shares: the left
+ * navigation list, the workspace bootstrap that selects a session, the scene tab
+ * key, and session activation. They must never disagree, or a session is listed
+ * under one workspace while activation moves the surface to another.
+ *
+ * A worktree-isolated session is stamped with the worktree's own workspace record
+ * but is owned by the project it was started from, so the project ID wins. Every
+ * other session is owned by the workspace it was created in — including one
+ * created while browsing a linked worktree as its own workspace, which stays in
+ * that worktree row even though the worktree's `project_workspace_id` points at
+ * the main checkout.
+ *
+ * Top-level IDs are authoritative; `config` copies serve legacy records that were
+ * persisted without them.
+ */
+export function sessionOwningWorkspaceId(session: SessionNavigationOwner): string | undefined {
+  const projectId = session.projectWorkspaceId ?? session.config?.projectWorkspaceId;
+  const executionId = session.workspaceId ?? session.config?.workspaceId;
+  return isWorktreeIsolatedSession(session) ? projectId ?? executionId : executionId ?? projectId;
+}
+
+/**
+ * Session list membership is the owning project workspace ID, never a path.
+ *
+ * The backend stamps a worktree-isolated session with the worktree's own
+ * workspace record, but that record is created on demand and is normally not an
+ * open workspace. Following it would drop the session out of every navigation
+ * group the user can see, so an isolated session stays under the project that
+ * owns it — the project identity is the one the worktree cannot outlive.
+ *
+ * Legacy records without any workspace identity stay unresolved instead of being
+ * grouped by a guessed folder.
  */
 export function sessionBelongsToWorkspaceNavRow(
-  session: Pick<
-    Session,
-    'workspacePath' | 'projectWorkspacePath' | 'remoteConnectionId' | 'remoteSshHost' | 'workspaceHostname'
-  >,
-  workspacePath: string,
-  remoteConnectionId?: string | null,
-  remoteSshHost?: string | null
+  session: SessionNavigationOwner,
+  workspaceId?: string,
 ): boolean {
-  const sessionRoot = session.workspacePath?.trim();
-  const projectRoot = session.projectWorkspacePath?.trim();
-  const pathsMatch =
-    Boolean(
-      sessionRoot &&
-      (
-        isSamePath(sessionRoot, workspacePath) ||
-        normalizeRemoteWorkspacePath(sessionRoot) === normalizeRemoteWorkspacePath(workspacePath)
-      )
-    ) ||
-    Boolean(
-      projectRoot &&
-      (
-        isSamePath(projectRoot, workspacePath) ||
-        normalizeRemoteWorkspacePath(projectRoot) === normalizeRemoteWorkspacePath(workspacePath)
-      )
-    );
+  if (!workspaceId) return false;
+  return sessionOwningWorkspaceId(session) === workspaceId;
+}
 
-  const wsConn = remoteConnectionId?.trim() ?? '';
-  const sessConn = session.remoteConnectionId?.trim() ?? '';
-  const wsHostEff = effectiveWorkspaceSshHost(remoteSshHost, remoteConnectionId);
-  const sessHost =
-    session.remoteSshHost?.trim().toLowerCase() ||
-    session.workspaceHostname?.trim().toLowerCase() ||
-    '';
-  const sessConnHost = hostFromSshConnectionId(sessConn);
-  const wsConnHost = hostFromSshConnectionId(wsConn);
-
-  if (wsHostEff.length > 0) {
-    // Host match alone is insufficient (same server, different remote folders).
-    if (sessHost === wsHostEff && pathsMatch) {
-      return true;
-    }
-    if (sessConnHost === wsHostEff && pathsMatch) {
-      return true;
-    }
-    if (sessConnHost && wsConnHost && sessConnHost === wsConnHost) {
-      return pathsMatch;
-    }
-  }
-
-  if (!pathsMatch) return false;
-
-  if (wsConn.length > 0 || sessConn.length > 0) {
-    return sessConn === wsConn;
-  }
-  return true;
+/**
+ * Owning workspace ID every session-scoped host request is addressed with.
+ *
+ * Persistence, session state, and the session's own configuration catalogs all
+ * belong to the workspace that owns the session, never to its execution
+ * directory. An isolated session's worktree record is created on demand for
+ * execution and is normally not an open workspace, so a request addressed with
+ * that record is rejected outright while the same request addressed with the
+ * owning project resolves to the identical session directory.
+ */
+export function requireSessionOwningWorkspaceId(session: SessionNavigationOwner): string {
+  const workspaceId = sessionOwningWorkspaceId(session);
+  if (!workspaceId) throw new Error('Session workspace ID is unavailable');
+  return workspaceId;
 }
 
 export function getSessionSortTimestamp(session: Pick<Session, 'createdAt' | 'lastFinishedAt'>): number {

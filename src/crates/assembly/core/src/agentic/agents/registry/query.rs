@@ -1,7 +1,7 @@
 use super::availability::resolve_availability;
 use super::support::{
     get_mode_configs, get_subagent_overrides, load_project_subagent_overrides_local,
-    merge_dynamic_mcp_tools,
+    merge_dynamic_acp_tools, merge_dynamic_mcp_tools,
 };
 use super::AgentRegistry;
 use crate::agentic::agents::registry::types::{is_review_agent_entry, AgentEntry, AgentSource};
@@ -15,23 +15,22 @@ use crate::agentic::tools::get_all_registered_tool_names;
 use crate::service::config::mode_config_canonicalizer::resolve_effective_tools;
 use openbitfun_agent_runtime::agents::subagent_source_presentation_rank;
 use std::collections::HashSet;
-use std::path::Path;
 
-const DEFAULT_PRODUCT_CONTROL_TOOL: &str = "OpenBitFunControl";
-
-fn append_default_product_control_tool(
-    allowed_tools: &mut Vec<String>,
+/// Append the dynamically registered tool families a mode Agent may use.
+///
+/// MCP tools and enabled ACP subagents are both created at runtime, so neither
+/// can be listed in a static Agent manifest. The manifest allowlist decides what
+/// the model ever sees, which is why both families have to be merged in here.
+pub(super) fn merge_dynamic_mode_tools(
+    resolved_tools: Vec<String>,
     registered_tool_names: &[String],
-) {
-    if registered_tool_names
-        .iter()
-        .any(|tool| tool == DEFAULT_PRODUCT_CONTROL_TOOL)
-        && !allowed_tools
-            .iter()
-            .any(|tool| tool == DEFAULT_PRODUCT_CONTROL_TOOL)
-    {
-        allowed_tools.push(DEFAULT_PRODUCT_CONTROL_TOOL.to_string());
+    include_dynamic_tools: bool,
+) -> Vec<String> {
+    if !include_dynamic_tools {
+        return resolved_tools;
     }
+    let resolved_tools = merge_dynamic_mcp_tools(resolved_tools, registered_tool_names);
+    merge_dynamic_acp_tools(resolved_tools, registered_tool_names)
 }
 
 impl AgentRegistry {
@@ -42,18 +41,18 @@ impl AgentRegistry {
     #[cfg(feature = "external-sources")]
     pub(crate) async fn get_local_agents_for_external_resolution(
         &self,
-        workspace_root: Option<&Path>,
+        workspace_id: Option<&str>,
     ) -> Vec<AgentInfo> {
         self.ensure_user_custom_agents_loaded().await;
-        if let Some(workspace_root) = workspace_root {
-            if !self.read_project_subagents().contains_key(workspace_root) {
-                self.load_custom_agents(Some(workspace_root)).await;
+        if let Some(workspace_id) = workspace_id {
+            if !self.read_project_subagents().contains_key(workspace_id) {
+                self.load_custom_agents(Some(workspace_id)).await;
             }
         }
 
         let user_overrides = get_subagent_overrides().await;
-        let project_overrides = match workspace_root {
-            Some(workspace_root) => load_project_subagent_overrides_local(workspace_root)
+        let project_overrides = match workspace_id {
+            Some(workspace_id) => load_project_subagent_overrides_local(workspace_id)
                 .await
                 .ok(),
             None => None,
@@ -65,8 +64,8 @@ impl AgentRegistry {
                 local_conflict_info(entry, None, project_overrides.as_ref(), &user_overrides)
             }));
         }
-        if let Some(workspace_root) = workspace_root {
-            if let Some(project_entries) = self.read_project_subagents().get(workspace_root) {
+        if let Some(workspace_id) = workspace_id {
+            if let Some(project_entries) = self.read_project_subagents().get(workspace_id) {
                 result.extend(project_entries.values().filter_map(|entry| {
                     local_conflict_info(entry, None, project_overrides.as_ref(), &user_overrides)
                 }));
@@ -94,9 +93,9 @@ impl AgentRegistry {
     pub async fn get_agent_tool_policy(
         &self,
         agent_type: &str,
-        workspace_root: Option<&Path>,
+        workspace_id: Option<&str>,
     ) -> AgentToolPolicy {
-        let entry = self.find_agent_entry(agent_type, workspace_root);
+        let entry = self.find_agent_entry(agent_type, workspace_id);
         let Some(entry) = entry else {
             return AgentToolPolicy {
                 allowed_tools: Vec::new(),
@@ -105,7 +104,7 @@ impl AgentRegistry {
             };
         };
         let registered_tool_names = get_all_registered_tool_names().await;
-        let mut policy = match entry.category {
+        match entry.category {
             AgentCategory::Mode => {
                 let mode_configs = get_mode_configs().await;
                 let valid_tools: HashSet<String> = registered_tool_names.iter().cloned().collect();
@@ -113,11 +112,11 @@ impl AgentRegistry {
                 let default_tools = entry.agent.default_tools();
                 let config = mode_configs.get(profile_id.as_ref());
                 let resolved_tools = resolve_effective_tools(&default_tools, config, &valid_tools);
-                let allowed_tools = if entry.agent.include_dynamic_mcp_tools() {
-                    merge_dynamic_mcp_tools(resolved_tools, &registered_tool_names)
-                } else {
-                    resolved_tools
-                };
+                let allowed_tools = merge_dynamic_mode_tools(
+                    resolved_tools,
+                    &registered_tool_names,
+                    entry.agent.include_dynamic_mcp_tools(),
+                );
                 let allowed_tool_set: HashSet<&str> =
                     allowed_tools.iter().map(String::as_str).collect();
                 let mut exposure_overrides = entry.agent.tool_exposure_overrides().clone();
@@ -146,9 +145,7 @@ impl AgentRegistry {
                     permission_constraints: entry.agent.permission_constraints().clone(),
                 }
             }
-        };
-        append_default_product_control_tool(&mut policy.allowed_tools, &registered_tool_names);
-        policy
+        }
     }
 
     /// get agent tools from config
@@ -157,9 +154,9 @@ impl AgentRegistry {
     pub async fn get_agent_tools(
         &self,
         agent_type: &str,
-        workspace_root: Option<&Path>,
+        workspace_id: Option<&str>,
     ) -> Vec<String> {
-        self.get_agent_tool_policy(agent_type, workspace_root)
+        self.get_agent_tool_policy(agent_type, workspace_id)
             .await
             .allowed_tools
     }
@@ -174,7 +171,7 @@ impl AgentRegistry {
     /// used by Task; remote/read-only hosts must keep this disabled.
     pub async fn get_modes_info_for_workspace(
         &self,
-        workspace_root: Option<&Path>,
+        workspace_id: Option<&str>,
         external_sources_supported: bool,
     ) -> Vec<AgentInfo> {
         self.ensure_user_custom_agents_loaded().await;
@@ -186,8 +183,8 @@ impl AgentRegistry {
             .collect();
         drop(map);
         if external_sources_supported {
-            if let Some(workspace_root) = workspace_root {
-                result = self.apply_external_routes_to_modes(workspace_root, result);
+            if let Some(workspace_id) = workspace_id {
+                result = self.apply_external_routes_to_modes(workspace_id, result);
             }
         }
         result.sort_by(|a, b| {
@@ -269,18 +266,17 @@ impl AgentRegistry {
     pub async fn get_subagent_is_review_for_workspace(
         &self,
         id: &str,
-        workspace_root: Option<&Path>,
+        workspace_id: Option<&str>,
     ) -> Option<bool> {
         self.ensure_user_custom_agents_loaded().await;
-        if let Some(workspace_root) = workspace_root {
-            let is_project_cache_loaded =
-                self.read_project_subagents().contains_key(workspace_root);
+        if let Some(workspace_id) = workspace_id {
+            let is_project_cache_loaded = self.read_project_subagents().contains_key(workspace_id);
             if !is_project_cache_loaded {
-                self.load_custom_agents(Some(workspace_root)).await;
+                self.load_custom_agents(Some(workspace_id)).await;
             }
         }
 
-        self.find_agent_entry(id, workspace_root)
+        self.find_agent_entry(id, workspace_id)
             .filter(|entry| entry.category == AgentCategory::SubAgent)
             .map(|entry| is_review_agent_entry(&entry))
     }
@@ -327,10 +323,10 @@ impl AgentRegistry {
     }
 
     /// get all subagent information (including source and availability status, used for TaskTool and frontend subagent list etc.)
-    pub async fn get_subagents_info(&self, workspace_root: Option<&Path>) -> Vec<AgentInfo> {
+    pub async fn get_subagents_info(&self, workspace_id: Option<&str>) -> Vec<AgentInfo> {
         self.get_subagents_for_query(&SubagentQueryContext {
             parent_agent_type: None,
-            workspace_root,
+            workspace_id,
             list_scope: SubagentListScope::RegistryManagement,
             include_disabled: true,
             external_sources_supported: true,
@@ -343,17 +339,16 @@ impl AgentRegistry {
         query: &SubagentQueryContext<'_>,
     ) -> Vec<AgentInfo> {
         self.ensure_user_custom_agents_loaded().await;
-        if let Some(workspace_root) = query.workspace_root {
-            let is_project_cache_loaded =
-                self.read_project_subagents().contains_key(workspace_root);
+        if let Some(workspace_id) = query.workspace_id {
+            let is_project_cache_loaded = self.read_project_subagents().contains_key(workspace_id);
             if !is_project_cache_loaded {
-                self.load_custom_agents(Some(workspace_root)).await;
+                self.load_custom_agents(Some(workspace_id)).await;
             }
         }
 
         let user_overrides = get_subagent_overrides().await;
-        let project_overrides = match query.workspace_root {
-            Some(workspace_root) => load_project_subagent_overrides_local(workspace_root)
+        let project_overrides = match query.workspace_id {
+            Some(workspace_id) => load_project_subagent_overrides_local(workspace_id)
                 .await
                 .ok(),
             None => None,
@@ -386,8 +381,8 @@ impl AgentRegistry {
             })
             .collect();
         drop(map);
-        if let Some(workspace_root) = query.workspace_root {
-            if let Some(project_entries) = self.read_project_subagents().get(workspace_root) {
+        if let Some(workspace_id) = query.workspace_id {
+            if let Some(project_entries) = self.read_project_subagents().get(workspace_id) {
                 result.extend(
                     project_entries
                         .values()
@@ -417,8 +412,8 @@ impl AgentRegistry {
             }
         }
         if query.external_sources_supported {
-            if let Some(workspace_root) = query.workspace_root {
-                result = self.apply_external_routes_to_query(workspace_root, result);
+            if let Some(workspace_id) = query.workspace_id {
+                result = self.apply_external_routes_to_query(workspace_id, result);
             }
         }
         Self::sort_subagents_for_presentation(result)
@@ -427,33 +422,32 @@ impl AgentRegistry {
     pub async fn can_parent_access_subagent(
         &self,
         subagent_id: &str,
-        workspace_root: Option<&Path>,
+        workspace_id: Option<&str>,
         parent_agent_type: Option<&str>,
     ) -> bool {
         let query = SubagentQueryContext {
             parent_agent_type,
-            workspace_root,
+            workspace_id,
             list_scope: SubagentListScope::TaskVisible,
             include_disabled: false,
             external_sources_supported: false,
         };
         let user_overrides = get_subagent_overrides().await;
-        let project_overrides = match query.workspace_root {
-            Some(workspace_root) => load_project_subagent_overrides_local(workspace_root)
+        let project_overrides = match query.workspace_id {
+            Some(workspace_id) => load_project_subagent_overrides_local(workspace_id)
                 .await
                 .ok(),
             None => None,
         };
 
-        if let Some(workspace_root) = query.workspace_root {
-            let is_project_cache_loaded =
-                self.read_project_subagents().contains_key(workspace_root);
+        if let Some(workspace_id) = query.workspace_id {
+            let is_project_cache_loaded = self.read_project_subagents().contains_key(workspace_id);
             if !is_project_cache_loaded {
-                self.load_custom_agents(Some(workspace_root)).await;
+                self.load_custom_agents(Some(workspace_id)).await;
             }
         }
 
-        self.find_agent_entry(subagent_id, workspace_root)
+        self.find_agent_entry(subagent_id, workspace_id)
             .is_some_and(|entry| {
                 Self::entry_is_visible_for_query(
                     &entry,
@@ -494,32 +488,4 @@ fn local_conflict_info(
     info.override_state = availability.override_state;
     info.state_reason = availability.state_reason;
     Some(info)
-}
-
-#[cfg(test)]
-mod product_control_tool_tests {
-    use super::*;
-
-    #[test]
-    fn product_control_is_added_once_when_the_runtime_registered_it() {
-        let registered = vec!["Read".to_string(), DEFAULT_PRODUCT_CONTROL_TOOL.to_string()];
-        let mut allowed = vec!["Read".to_string()];
-
-        append_default_product_control_tool(&mut allowed, &registered);
-        append_default_product_control_tool(&mut allowed, &registered);
-
-        assert_eq!(
-            allowed,
-            vec!["Read".to_string(), DEFAULT_PRODUCT_CONTROL_TOOL.to_string()]
-        );
-    }
-
-    #[test]
-    fn product_control_is_not_advertised_when_the_runtime_omits_it() {
-        let mut allowed = vec!["Read".to_string()];
-
-        append_default_product_control_tool(&mut allowed, &["Read".to_string()]);
-
-        assert_eq!(allowed, vec!["Read".to_string()]);
-    }
 }

@@ -72,8 +72,8 @@ pub async fn review_capability_catalog(
     let mut agents = get_agent_registry()
         .get_subagents_for_query(&SubagentQueryContext {
             parent_agent_type: context.agent_type.as_deref(),
-            workspace_root: (!context.is_remote())
-                .then(|| context.workspace_root())
+            workspace_id: (!context.is_remote())
+                .then(|| context.workspace_id())
                 .flatten(),
             list_scope: SubagentListScope::TaskVisible,
             include_disabled: false,
@@ -121,7 +121,7 @@ pub async fn review_capability_catalog(
     }
 
     let workspace_root = (!context.is_remote())
-        .then(|| context.workspace_root())
+        .then(|| context.workspace_id())
         .flatten();
     for agent in agents.into_iter().take(agent_limit) {
         let Ok(detail) = get_agent_registry()
@@ -170,7 +170,7 @@ async fn implicitly_invocable_skills(context: &ToolUseContext) -> Vec<SkillInfo>
     } else {
         skill_registry
             .get_implicitly_invocable_skills_for_workspace(
-                context.workspace_root(),
+                context.workspace.as_ref(),
                 context.agent_type.as_deref(),
             )
             .await
@@ -220,8 +220,8 @@ pub async fn resolve_review_capability(
         let agent = get_agent_registry()
             .get_subagents_for_query(&SubagentQueryContext {
                 parent_agent_type: context.agent_type.as_deref(),
-                workspace_root: (!context.is_remote())
-                    .then(|| context.workspace_root())
+                workspace_id: (!context.is_remote())
+                    .then(|| context.workspace_id())
                     .flatten(),
                 list_scope: SubagentListScope::TaskVisible,
                 include_disabled: false,
@@ -234,7 +234,7 @@ pub async fn resolve_review_capability(
                 OpenBitFunError::tool("Review agent is no longer available".to_string())
             })?;
         let workspace_root = (!context.is_remote())
-            .then(|| context.workspace_root())
+            .then(|| context.workspace_id())
             .flatten();
         let detail = get_agent_registry()
             .get_custom_subagent_detail_by_key(&agent.key, workspace_root)
@@ -314,7 +314,7 @@ async fn load_review_skill(
         registry
             .find_and_load_skill_by_key_for_workspace(
                 skill_key,
-                context.workspace_root(),
+                context.workspace.as_ref(),
                 context.agent_type.as_deref(),
             )
             .await
@@ -349,7 +349,7 @@ async fn load_discovered_review_skill(
         &markdown,
         info.level,
         true,
-        &info.source_slot,
+        info.parser_source_slot(),
     )
     .map_err(|error| OpenBitFunError::tool(error.to_string()))?;
     data.key = info.key.clone();
@@ -438,6 +438,9 @@ fn xml_escape(value: &str) -> String {
 mod tests {
     use super::*;
     use crate::agentic::tools::framework::ToolUseContext;
+    use crate::agentic::tools::implementations::skills::registry::imports::{
+        import_copy_as, remove_imported_copy,
+    };
     use crate::agentic::WorkspaceBinding;
     use std::collections::HashMap;
     use std::path::PathBuf;
@@ -456,6 +459,29 @@ mod tests {
             runtime_tool_restrictions: Default::default(),
             runtime_handles: openbitfun_runtime_ports::ToolRuntimeHandles::default(),
         }
+    }
+
+    async fn import_review_skill(root: &std::path::Path, source_key: &str) -> SkillInfo {
+        let registry = get_skill_registry();
+        let source = registry
+            .find_skill_by_key_for_workspace(source_key, Some(root))
+            .await
+            .expect("discovered review skill");
+        import_copy_as(source, root.join(".openbitfun/skills"), None)
+            .await
+            .expect("imported review skill");
+        registry
+            .get_all_skills_for_workspace(Some(root))
+            .await
+            .into_iter()
+            .find(|skill| {
+                skill.is_native()
+                    && skill
+                        .import_origin
+                        .as_ref()
+                        .is_some_and(|origin| origin.source_key == source_key)
+            })
+            .expect("native review skill")
     }
 
     #[test]
@@ -531,7 +557,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn catalog_loads_claude_review_skill_with_source_semantics() {
+    async fn catalog_uses_discovered_claude_skill_and_restores_it_after_import_undo() {
         let temp = tempfile::tempdir().expect("temporary workspace");
         let skill_dir = temp
             .path()
@@ -545,17 +571,87 @@ mod tests {
         )
         .expect("skill markdown");
         let context = local_tool_context(temp.path().to_path_buf());
+        let source_key = "project::claude::code-review-claude";
+        let source_descriptor = review_capability_catalog(&context)
+            .await
+            .into_iter()
+            .find(|descriptor| descriptor.key() == format!("skill:{source_key}"))
+            .expect("discovered Claude review skill descriptor");
+        let source_guidance = resolve_review_capability(
+            &context,
+            source_descriptor.key(),
+            source_descriptor.fingerprint(),
+        )
+        .await
+        .expect("resolved discovered Claude guidance");
+        assert_eq!(
+            source_guidance.guidance,
+            "Review $target for Claude compatibility."
+        );
+        assert!(!temp.path().join(".openbitfun/skills").exists());
+        let imported = import_review_skill(temp.path(), source_key).await;
 
         let descriptor = review_capability_catalog(&context)
             .await
             .into_iter()
-            .find(|descriptor| descriptor.key().contains("code-review-claude"));
+            .find(|descriptor| descriptor.key() == format!("skill:{}", imported.key))
+            .expect("imported review skill descriptor");
 
-        assert!(descriptor.is_some());
+        let resolved =
+            resolve_review_capability(&context, descriptor.key(), descriptor.fingerprint())
+                .await
+                .expect("resolved imported Claude guidance");
+        assert_eq!(
+            resolved.guidance,
+            "Review $target for Claude compatibility."
+        );
+        assert!(load_review_skill(&context, source_key).await.is_err());
+
+        remove_imported_copy(
+            std::path::Path::new(&imported.path),
+            &imported.import_origin.as_ref().unwrap().import_id,
+        )
+        .await
+        .expect("undo imported review skill");
+        assert!(review_capability_catalog(&context)
+            .await
+            .iter()
+            .all(|candidate| candidate.key() != descriptor.key()));
+        assert!(
+            resolve_review_capability(&context, descriptor.key(), descriptor.fingerprint())
+                .await
+                .is_err()
+        );
+        let restored_descriptor = review_capability_catalog(&context)
+            .await
+            .into_iter()
+            .find(|candidate| candidate.key() == source_descriptor.key())
+            .expect("source review skill restored after undo");
+        assert_eq!(restored_descriptor, source_descriptor);
+        assert_eq!(
+            resolve_review_capability(
+                &context,
+                source_descriptor.key(),
+                source_descriptor.fingerprint(),
+            )
+            .await
+            .expect("source guidance remains available"),
+            source_guidance
+        );
+        assert!(skill_dir.join("SKILL.md").is_file());
     }
 
     #[tokio::test]
-    async fn resolve_rejects_skill_when_implicit_policy_changed_after_catalog() {
+    async fn resolve_rejects_discovered_skill_when_implicit_policy_changed_after_catalog() {
+        assert_implicit_policy_change_revokes_review_skill(false).await;
+    }
+
+    #[tokio::test]
+    async fn resolve_rejects_imported_skill_when_implicit_policy_changed_after_catalog() {
+        assert_implicit_policy_change_revokes_review_skill(true).await;
+    }
+
+    async fn assert_implicit_policy_change_revokes_review_skill(import_copy: bool) {
         let temp = tempfile::tempdir().expect("temporary workspace");
         let skill_dir = temp
             .path()
@@ -568,15 +664,32 @@ mod tests {
             "---\nname: Policy review\ndescription: Check policy changes\n---\nReview policy-sensitive behavior.\n",
         )
         .expect("skill markdown");
+        std::fs::write(
+            skill_dir.join("agents").join("openai.yaml"),
+            "policy:\n  allow_implicit_invocation: true\n",
+        )
+        .expect("initial policy");
         let context = local_tool_context(temp.path().to_path_buf());
+        let effective_skill_dir = if import_copy {
+            let imported =
+                import_review_skill(temp.path(), "project::codex::code-review-policy-change").await;
+            PathBuf::from(imported.path)
+        } else {
+            skill_dir
+        };
         let descriptor = review_capability_catalog(&context)
             .await
             .into_iter()
             .find(|descriptor| descriptor.key().contains("code-review-policy-change"))
             .expect("review skill descriptor");
+        assert!(
+            resolve_review_capability(&context, descriptor.key(), descriptor.fingerprint())
+                .await
+                .is_ok()
+        );
 
         std::fs::write(
-            skill_dir.join("agents").join("openai.yaml"),
+            effective_skill_dir.join("agents").join("openai.yaml"),
             "policy:\n  allow_implicit_invocation: false\n",
         )
         .expect("updated policy");

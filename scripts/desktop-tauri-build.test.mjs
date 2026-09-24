@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import {
   configureDesktopWebFontProfile,
+  configureWindowsSigning,
   prepareMacOSFlashgrepForSigning,
   prepareTauriConfig,
   shouldRetryMacDmgBuild,
@@ -19,6 +20,16 @@ import {
 const FAILED_BUILD = { status: 1 };
 const DMG_ARGS = ['--target', 'x86_64-apple-darwin', '--bundles', 'app,dmg'];
 const ROOT = join(import.meta.dirname, '..');
+
+test('Windows desktop manifest opts into layered child windows and preserves common controls', () => {
+  const desktop = join(ROOT, 'src', 'apps', 'desktop');
+  const manifest = readFileSync(join(desktop, 'windows-app.manifest'), 'utf8');
+  const build = readFileSync(join(desktop, 'build.rs'), 'utf8');
+  assert.match(build, /app_manifest\(include_str!\("windows-app\.manifest"\)\)/);
+  assert.match(build, /rerun-if-changed=windows-app\.manifest/);
+  assert.match(manifest, /name="Microsoft\.Windows\.Common-Controls"[\s\S]*?version="6\.0\.0\.0"/);
+  assert.match(manifest, /<compatibility xmlns="urn:schemas-microsoft-com:compatibility\.v1">[\s\S]*?<application>[\s\S]*?<supportedOS Id="\{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a\}"/);
+});
 
 test('Desktop packaging selects the Web font profile from its target triple', () => {
   const appleEnv = { [WEB_FONT_PROFILE_ENV]: HARMONY_BUNDLED_FONT_PROFILE };
@@ -514,4 +525,29 @@ test('Desktop release config bundles models.dev notices and provenance', () => {
     ],
     'third-party/models.dev/provenance.json'
   );
+});
+
+
+test('Windows cloud signing uses SHA256 and RFC3161 without changing installer settings', () => {
+  const config = { bundle: { windows: { nsis: { installMode: 'currentUser' } } } };
+  configureWindowsSigning(config, { WINDOWS_CERTIFICATE_THUMBPRINT: 'ab '.repeat(20) }, 'win32');
+  assert.deepEqual(config.bundle.windows, {
+    nsis: { installMode: 'currentUser' },
+    certificateThumbprint: 'AB'.repeat(20),
+    digestAlgorithm: 'sha256',
+    timestampUrl: 'http://time.certum.pl',
+    tsp: true,
+  });
+});
+
+test('Windows signing rejects malformed fingerprints and leaves other platforms unchanged', () => {
+  assert.throws(() => configureWindowsSigning({}, { WINDOWS_CERTIFICATE_THUMBPRINT: 'bad' }, 'win32'), /fingerprint/);
+  for (const platform of ['darwin', 'linux']) {
+    const config = { bundle: { active: true } };
+    configureWindowsSigning(config, { WINDOWS_CERTIFICATE_THUMBPRINT: 'AB'.repeat(20) }, platform);
+    assert.deepEqual(config, { bundle: { active: true } });
+  }
+  const unsigned = {};
+  configureWindowsSigning(unsigned, {}, 'win32');
+  assert.deepEqual(unsigned, {});
 });

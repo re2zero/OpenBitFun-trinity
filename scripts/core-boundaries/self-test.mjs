@@ -431,6 +431,7 @@ export function runManifestParserSelfTest({
         'dep:tokio',
         'tokio/fs',
         'tokio/rt',
+        'tokio/sync',
       ],
     ],
     [servicesCoreManifest, 'product-identity', ['dep:openbitfun-core-types']],
@@ -1638,7 +1639,7 @@ export function runManifestParserSelfTest({
   ).map((entry) => entry.symbol);
   if (
     opencodeAdapterPublicApiSymbols.join(',') !==
-    'load_opencode_package_adapter,load_opencode_config_snapshot,OpenCodeConfigSnapshot,OpenCodeConfigSnapshotError,project_plugin_config,project_plugin_tool_ref,OpenCodePluginConfigProjectionError,OpenCodeCommandProvider,OpenCodeCommandProviderOptions,OpenCodeConfiguredSkillRoot,OpenCodeSkillRootProvider,OpenCodeSkillRootProviderOptions,OpenCodeToolProvider,OpenCodeToolProviderOptions,OpenCodeSubagentProvider,OpenCodeSubagentProviderOptions,OpenCodeMcpProvider,OpenCodeMcpProviderOptions,OpenCodeHookProvider,OpenCodeHookProviderOptions,OpenCodeWorkspaceReferenceProvider,OpenCodeWorkspaceReferenceProviderOptions,load_opencode_user_instructions,OpenCodeInstructionSourceOptions'
+    'load_opencode_package_adapter,load_opencode_config_snapshot,OpenCodeConfigSnapshot,OpenCodeConfigSnapshotError,project_plugin_config,project_plugin_tool_ref,OpenCodePluginConfigProjectionError,OpenCodeCommandProvider,OpenCodeCommandProviderOptions,OpenCodeConfiguredSkillRoot,OpenCodeSkillRootDiagnostic,OpenCodeSkillRootReport,OpenCodeSkillRootProvider,OpenCodeSkillRootProviderOptions,OpenCodeToolProvider,OpenCodeToolProviderOptions,OpenCodeSubagentProvider,OpenCodeSubagentProviderOptions,OpenCodeMcpProvider,OpenCodeMcpProviderOptions,OpenCodeHookProvider,OpenCodeHookProviderOptions,OpenCodeWorkspaceReferenceProvider,OpenCodeWorkspaceReferenceProviderOptions,load_opencode_user_instructions,OpenCodeInstructionSourceOptions'
   ) {
     throw new Error(
       'OpenCode adapter public API budget must stay limited to the reviewed package factory, managed Plugin Host Config projection, and capability-specific command, configured Skill root, tool, subagent, MCP, static Hook, workspace Reference, and user Instruction providers',
@@ -3858,7 +3859,7 @@ export function runManifestParserSelfTest({
         'PairingState',
         'pub use qr_generator::QrGenerator',
         'RelayClient',
-        'RelayMessage',
+        'RelayEvent',
         'RemoteSessionStateTracker',
         'TrackerEvent',
         'RemoteSessionTrackerHost',
@@ -4447,7 +4448,7 @@ export function runManifestParserSelfTest({
     },
     {
       path: 'src/crates/assembly/core/src/service/search/remote.rs',
-      contracts: ['ServiceRemoteWorkspaceSearchService', 'impl RemoteWorkspaceSearchProvider for CoreRemoteWorkspaceSearchProvider', 'lookup_remote_connection_with_hint', 'open_workspace_stdio', 'RemoteWorkspaceSearchStdioProtocol'],
+      contracts: ['ServiceRemoteWorkspaceSearchService', 'impl RemoteWorkspaceSearchProvider for CoreRemoteWorkspaceSearchProvider', 'require_workspace(workspace_id)', 'open_workspace_stdio', 'RemoteWorkspaceSearchStdioProtocol'],
     },
     {
       path: 'src/crates/services/services-integrations/src/remote_ssh/workspace_search/mod.rs',
@@ -4474,11 +4475,11 @@ export function runManifestParserSelfTest({
     },
     {
       path: 'src/crates/assembly/core/src/service/search/remote_disabled.rs',
-      contracts: ['Remote SSH search is disabled', 'remote_workspace_search_service_for_path'],
+      contracts: ['Remote SSH search is disabled', 'remote_workspace_search_service_for_workspace'],
     },
     {
       path: 'src/crates/services/services-integrations/src/remote_ssh/workspace_search/disabled.rs',
-      contracts: ['Remote SSH search is disabled', 'RemoteWorkspaceSearchService', 'remote_workspace_search_service_for_path'],
+      contracts: ['Remote SSH search is disabled', 'RemoteWorkspaceSearchService', 'pub async fn search_content'],
     },
     {
       path: 'src/crates/assembly/core/Cargo.toml',
@@ -5701,6 +5702,8 @@ async fn release_baseline_claim(release: BaselineClaimRelease) -> Result<(), Dis
     runtimeIpcOperationPattern.test('    WorkspaceDiff {') ||
     runtimeIpcOperationPattern.test('    WorkspaceDiffSnapshot,') ||
     runtimeIpcOperationPattern.test('    SubmitTurn {') ||
+    runtimeIpcOperationPattern.test('    StartQuestionInteraction {') ||
+    runtimeIpcOperationPattern.test('    CancelUserQuestion {') ||
     runtimeIpcOperationPattern.test('    SteerTurn {') ||
     runtimeIpcOperationPattern.test('    AgentDialogSteerRequest {') ||
     runtimeIpcOperationPattern.test('    RunUserShellCommand {') ||

@@ -165,9 +165,8 @@ internal fun RemoteSessionListContent(
     var revealedSectionKeys by rememberSaveable { mutableStateOf<List<String>>(emptyList()) }
     // Not saveable, like the delete confirmation: an open menu is a finger
     // half-way through a gesture, not a place to come back to.
-    var projectCreateMenuPath by remember { mutableStateOf<String?>(null) }
-    var pendingProjectCreate by remember { mutableStateOf<Pair<String, String>?>(null) }
-    var pendingAssistantCreate by remember { mutableStateOf(false) }
+    // Keyed by the project's identity key, never its path: two open workspaces may share a root.
+    var projectCreateMenuKey by remember { mutableStateOf<String?>(null) }
     var viewSettings by rememberSaveable(stateSaver = SessionViewSettings.Saver) {
         mutableStateOf(SessionViewSettings.Default)
     }
@@ -182,40 +181,8 @@ internal fun RemoteSessionListContent(
             onIntent(RemoteSessionIntent.Search(search))
         }
     }
-    LaunchedEffect(workspaceState, pendingProjectCreate, pendingAssistantCreate) {
-        when (workspaceState) {
-            is RemoteWorkspaceUiState.Ready -> {
-                pendingProjectCreate?.let { pending ->
-                    if (workspaceState.selected?.path == pending.first) {
-                        pendingProjectCreate = null
-                        onIntent(RemoteSessionIntent.CreateSession(pending.second))
-                    }
-                }
-                if (pendingAssistantCreate && workspaceState.selected?.kind == ASSISTANT_WORKSPACE_KIND) {
-                    pendingAssistantCreate = false
-                    onIntent(RemoteSessionIntent.CreateSession("Claw"))
-                }
-            }
-            is RemoteWorkspaceUiState.Failed -> {
-                pendingProjectCreate = null
-                pendingAssistantCreate = false
-            }
-            else -> Unit
-        }
-    }
     val createAssistantSession = {
-        val workspaceReady = workspaceState as? RemoteWorkspaceUiState.Ready
-        if (workspaceReady?.selected?.kind == ASSISTANT_WORKSPACE_KIND) {
-            onIntent(RemoteSessionIntent.CreateSession("Claw"))
-        } else {
-            val assistant = workspaceReady?.assistants?.firstOrNull()
-            if (assistant == null) {
-                onCreate()
-            } else {
-                pendingAssistantCreate = true
-                onWorkspaceIntent(RemoteWorkspaceIntent.SelectAssistant(assistant.path))
-            }
-        }
+        onIntent(RemoteSessionIntent.CreateSession("Claw"))
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -284,28 +251,25 @@ internal fun RemoteSessionListContent(
                             section = section,
                             collapsed = collapsed,
                             createMenuOpen = section is SessionListSection.Project &&
-                                projectCreateMenuPath == section.path,
+                                projectCreateMenuKey == section.key,
                             onToggleCreateMenu = if (section is SessionListSection.Project) {
                                 {
-                                    projectCreateMenuPath = if (projectCreateMenuPath == section.path) {
+                                    projectCreateMenuKey = if (projectCreateMenuKey == section.key) {
                                         null
                                     } else {
-                                        section.path
+                                        section.key
                                     }
                                 }
                             } else null,
-                            onDismissCreateMenu = { projectCreateMenuPath = null },
+                            onDismissCreateMenu = { projectCreateMenuKey = null },
                             onCreateAgent = if (section is SessionListSection.Project) {
                                 { agentType ->
-                                    projectCreateMenuPath = null
-                                    val selectedPath = (workspaceState as? RemoteWorkspaceUiState.Ready)
-                                        ?.selected?.path
-                                    if (selectedPath == section.path) {
-                                        onIntent(RemoteSessionIntent.CreateSession(agentType))
-                                    } else {
-                                        pendingProjectCreate = section.path to agentType
-                                        onWorkspaceIntent(RemoteWorkspaceIntent.SelectWorkspace(section.path))
-                                    }
+                                    projectCreateMenuKey = null
+                                    // The section already carries the resolved workspace identity: with an
+                                    // ID the create is addressed by ID only; a pre-ID row sends its legacy
+                                    // triple. The shared store refuses unknown IDs instead of retrying by path.
+                                    onIntent(RemoteSessionIntent.CreateSession(agentType, "", "", null, section.path,
+                                        section.remoteConnectionId, section.remoteSshHost, section.workspaceId))
                                 }
                             } else null,
                             onCreateAssistant = if (section is SessionListSection.Chat) {
@@ -333,7 +297,10 @@ internal fun RemoteSessionListContent(
                                 settings = viewSettings,
                                 projectChild = section is SessionListSection.Project,
                                 selected = session.id == state.selectedSessionId,
-                                enabled = !state.busy,
+                                // Opening a session is cancellable/supersedable
+                                // in the store; keep rows tappable while the
+                                // previous transcript hydrates.
+                                enabled = true,
                                 onOpen = {
                                     onIntent(RemoteSessionIntent.Open(session.id))
                                     onOpen(session.id)
@@ -469,6 +436,9 @@ private fun RemoteSessionListHeader(
             diameter = 38,
             onClick = onToggleViewSettings,
             modifier = Modifier.testTag(VIEW_SETTINGS_TOGGLE_TEST_TAG),
+            background = MaterialTheme.colorScheme.surface,
+            border = MaterialTheme.colorScheme.outlineVariant,
+            tint = MaterialTheme.colorScheme.onSurface,
         )
         SidebarCircleButton(
             icon = R.drawable.ic_symbol_magnifyingglass,
@@ -476,6 +446,9 @@ private fun RemoteSessionListHeader(
             diameter = 38,
             onClick = onToggleSearch,
             modifier = Modifier.testTag(SESSION_SEARCH_TOGGLE_TEST_TAG),
+            background = MaterialTheme.colorScheme.surface,
+            border = MaterialTheme.colorScheme.outlineVariant,
+            tint = MaterialTheme.colorScheme.onSurface,
         )
     }
 }
@@ -563,6 +536,9 @@ private fun RemoteWorkspaceUiState.asSessionContext(): SessionWorkspaceContext {
             selectedName = ready?.selected?.name.orEmpty(),
             selectedKind = ready?.selected?.kind.orEmpty(),
             recent = ready?.workspaces.orEmpty(),
+            selectedWorkspaceId = ready?.selected?.workspaceId,
+            selectedRemoteConnectionId = ready?.selected?.remoteConnectionId,
+            selectedRemoteSshHost = ready?.selected?.remoteSshHost,
         )
     }
 }
@@ -696,6 +672,9 @@ internal fun ProjectCreateControl(
     onToggle: () -> Unit,
     onDismiss: () -> Unit,
     onCreateAgent: (String) -> Unit,
+    modesOnly: Boolean = false,
+    onFiles: (() -> Unit)? = null,
+    onTerminal: (() -> Unit)? = null,
 ) {
     Box {
         IconButton(
@@ -706,8 +685,8 @@ internal fun ProjectCreateControl(
                 .testTag(SESSION_PROJECT_CREATE_TEST_TAG_PREFIX + path),
         ) {
             Icon(
-                painterResource(R.drawable.ic_symbol_square_and_pencil),
-                contentDescription = stringResource(R.string.sidebar_new_chat),
+                painterResource(if (modesOnly || onFiles != null || onTerminal != null) R.drawable.ic_symbol_plus else R.drawable.ic_symbol_square_and_pencil),
+                contentDescription = stringResource(if (modesOnly || onFiles != null || onTerminal != null) R.string.workspace_actions else R.string.sidebar_new_chat),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(18.dp),
             )
@@ -721,34 +700,19 @@ internal fun ProjectCreateControl(
             tonalElevation = 0.dp,
             shadowElevation = 18.dp,
         ) {
-            if (supportsHarnessProfiles) {
-                HarnessProfile.entries.forEach { profile ->
-                    androidx.compose.material3.DropdownMenuItem(
-                        text = { HarnessProfileLabel(profile) },
-                        onClick = { onCreateAgent(profile.agentType) },
-                    )
-                }
-            } else {
-            CompactCreateMenuItem(
-                label = stringResource(R.string.sessions_filter_code),
-                enabled = true,
-                onClick = { onCreateAgent("code") },
-                modifier = Modifier,
-            )
+            HarnessProfile.entries.forEach { profile ->
+                androidx.compose.material3.DropdownMenuItem(
+                    text = { HarnessProfileLabel(profile) },
+                    onClick = { onCreateAgent(profile.agentType) },
+                )
             }
-            CompactCreateMenuItem(
-                label = stringResource(R.string.sessions_filter_cowork),
-                enabled = true,
-                onClick = { onCreateAgent("Cowork") },
-                modifier = Modifier,
-            )
         }
     }
 }
 
 private fun sectionKey(section: SessionListSection): String = when (section) {
     is SessionListSection.Chat -> "chat"
-    is SessionListSection.Project -> "project:" + section.path
+    is SessionListSection.Project -> "project:" + section.key
     is SessionListSection.Today -> "today"
     is SessionListSection.Yesterday -> "yesterday"
     is SessionListSection.Earlier -> "earlier"
@@ -887,6 +851,9 @@ private fun SessionFailure(state: RemoteSessionUiState.Failed, onRetry: () -> Un
                     RemoteSessionFailureReason.RATE_LIMITED -> R.string.sessions_failed_rate_limited
                     RemoteSessionFailureReason.PROTOCOL_MISMATCH -> R.string.sessions_failed_protocol_mismatch
                     RemoteSessionFailureReason.SESSION_NOT_FOUND -> R.string.sessions_failed_session_not_found
+                    RemoteSessionFailureReason.WORKSPACE_ID_UNSUPPORTED -> R.string.sessions_failed_workspace_id_unsupported
+                    RemoteSessionFailureReason.WORKSPACE_ID_UNKNOWN -> R.string.sessions_failed_workspace_id_unknown
+                    RemoteSessionFailureReason.HOST_STREAM_UNSUPPORTED -> R.string.sessions_failed_host_stream_unsupported
                     // Exhaustive on purpose rather than an `else`: every reason
                     // that reaches this screen was raised to say something
                     // specific, and a new one falling into the generic line is

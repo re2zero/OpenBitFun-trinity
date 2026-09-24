@@ -22,6 +22,10 @@ export const mobileTokens = {
       "light": "#00FFFFFF",
       "dark": "#00151514"
     },
+    "page_bg_overlay": {
+      "light": "#B8FFFFFF",
+      "dark": "#B8151514"
+    },
     "ink": {
       "light": "#171717",
       "dark": "#F4F3EF"
@@ -41,6 +45,10 @@ export const mobileTokens = {
     "card": {
       "light": "#FFFFFF",
       "dark": "#252522"
+    },
+    "card_overlay": {
+      "light": "#CCFFFFFF",
+      "dark": "#CC252522"
     },
     "accent": {
       "light": "#111111",
@@ -130,6 +138,42 @@ export const mobileTokens = {
       "light": "#F7F7F5",
       "dark": "#1E1E1C"
     },
+    "sidebar_bg": {
+      "light": "#F8F8F9",
+      "dark": "#0E0E10"
+    },
+    "sidebar_bg_fade": {
+      "light": "#00F8F8F9",
+      "dark": "#000E0E10"
+    },
+    "sidebar_raised": {
+      "light": "#FFFFFF",
+      "dark": "#1C1C1F"
+    },
+    "sidebar_line": {
+      "light": "#14101A27",
+      "dark": "#1FFFFFFF"
+    },
+    "sidebar_hover": {
+      "light": "#F3F3F5",
+      "dark": "#0FFFFFFF"
+    },
+    "sidebar_selection": {
+      "light": "#14000000",
+      "dark": "#1FFFFFFF"
+    },
+    "sidebar_ink": {
+      "light": "#CC000000",
+      "dark": "#E8E8E8"
+    },
+    "sidebar_muted": {
+      "light": "#99000000",
+      "dark": "#B0B0B0"
+    },
+    "sidebar_subtle": {
+      "light": "#66000000",
+      "dark": "#858585"
+    },
     "status_success": {
       "light": "#27C46A",
       "dark": "#3BD47B"
@@ -177,6 +221,30 @@ export const mobileTokens = {
     "code_target_bg": {
       "light": "#FFF1BE",
       "dark": "#5A4E24"
+    },
+    "brand_dot": {
+      "light": "#16B9CE",
+      "dark": "#16B9CE"
+    },
+    "welcome_dock": {
+      "light": "#171917",
+      "dark": "#171917"
+    },
+    "welcome_button": {
+      "light": "#FFFFFF",
+      "dark": "#FFFFFF"
+    },
+    "welcome_button_label": {
+      "light": "#171917",
+      "dark": "#171917"
+    },
+    "welcome_secondary": {
+      "light": "#B9BCB9",
+      "dark": "#B9BCB9"
+    },
+    "status_warning": {
+      "light": "#FF8C00",
+      "dark": "#FF8C00"
     }
   },
   "typography": {
@@ -259,7 +327,17 @@ export const mobileTokens = {
       "size": 12,
       "lineHeight": 16,
       "weight": 400
+    },
+    "brand_wordmark": {
+      "size": 42,
+      "lineHeight": 56,
+      "weight": 500
     }
+  },
+  "text_scale": {
+    "reference_logical_dpi": 153.3,
+    "min_factor": 0.85,
+    "max_factor": 1
   },
   "geometry": {
     "conversation_header_height": 76,
@@ -268,6 +346,8 @@ export const mobileTokens = {
     "content_gutter": 16,
     "connection_strip_height": 48,
     "timeline_top_padding": 22,
+    "conversation_overlay_side_inset": 16,
+    "conversation_edge_fade_height": 28,
     "message_spacing": 18,
     "message_bubble_max_width": 276,
     "message_bubble_horizontal_padding": 14,
@@ -320,7 +400,28 @@ export const mobileTokens = {
     "model_list_top_padding": 10,
     "model_list_bottom_padding": 16,
     "model_empty_account_height": 80,
-    "model_editor_height": 560
+    "model_editor_height": 560,
+    "welcome_max_width": 520,
+    "welcome_gutter": 25,
+    "welcome_header_height": 58,
+    "welcome_button_height": 49,
+    "welcome_button_gap": 11,
+    "welcome_dock_radius": 30,
+    "welcome_dock_bottom": 39,
+    "welcome_mark_size": 92,
+    "welcome_word_size": 34,
+    "welcome_stage_height": 220,
+    "welcome_header_word_size": 17,
+    "recent_home_gutter": 24,
+    "recent_home_mark_size": 132,
+    "recent_home_title_size": 25,
+    "recent_home_max_width": 560,
+    "recent_home_row_padding": 18,
+    "approval_card_radius": 12,
+    "approval_card_padding": 12,
+    "approval_card_gap": 8,
+    "approval_action_radius": 8,
+    "approval_action_height": 36
   },
   "breakpoints": {
     "wide": 600,
@@ -329,12 +430,100 @@ export const mobileTokens = {
   },
   "motion": {
     "quick": 180,
-    "structure": 220
+    "structure": 220,
+    "startup_brand": 6800
   }
 };
 export const mobileComponents = {
   "version": 1,
   "components": {
+    "shell_header_alignment": {
+      "purpose": "Keep sidebar search and conversation menu controls on one horizontal centerline.",
+      "anatomy": [
+        "sidebar_header",
+        "conversation_header"
+      ],
+      "states": [
+        "drawer_open",
+        "drawer_closed",
+        "wide",
+        "with_subtitle",
+        "without_subtitle"
+      ],
+      "tokens": [
+        "conversation_header_height"
+      ],
+      "platformNotes": "Both signed-in header rows use conversationHeaderHeight from the same safe-area origin, without a sidebar-only top inset. Preserve this height when a subtitle appears or disappears. Anchor drawer content scaling vertically at half the header height so reveal animation cannot shift its control centerline."
+    },
+    "sidebar_chrome": {
+      "purpose": "Give the workspace sidebar the desktop client's structural chrome instead of the conversation page surface.",
+      "anatomy": [
+        "chrome_surface",
+        "header_row",
+        "scroll_fade",
+        "raised_control",
+        "hairline"
+      ],
+      "states": [
+        "light",
+        "dark",
+        "signed_out",
+        "signed_in"
+      ],
+      "tokens": [
+        "sidebar_bg",
+        "sidebar_bg_fade",
+        "sidebar_raised",
+        "sidebar_line",
+        "sidebar_hover",
+        "sidebar_selection",
+        "sidebar_ink",
+        "sidebar_muted",
+        "sidebar_subtle"
+      ],
+      "platformNotes": "The family mirrors the desktop semantic theme one role at a time: sidebar_bg is surface.chrome, sidebar_raised is surface.raised, sidebar_line is border.subtle, sidebar_hover is action.quiet.hover, sidebar_selection is selection.surface, and sidebar_ink / sidebar_muted / sidebar_subtle are content.primary / content.secondary / content.caption. The sidebar therefore sits one step away from the conversation surface in both appearance modes, as the desktop navigation panel does beside the scene. Alpha roles composite over sidebar_bg and must not be flattened into opaque literals. Conversation, sheet and action surfaces keep the paper-and-ink page tokens; only sidebar chrome uses this family."
+    },
+    "sidebar_device_selector": {
+      "purpose": "Select one remote device and show its workspace panel below the device list, matching mobile web.",
+      "anatomy": [
+        "device_icon",
+        "device_name",
+        "connection_indicator",
+        "selected_workspace_panel"
+      ],
+      "states": [
+        "selected",
+        "online",
+        "offline",
+        "loading"
+      ],
+      "tokens": [
+        "sidebar_selection",
+        "sidebar_ink",
+        "sidebar_muted",
+        "status_success"
+      ],
+      "platformNotes": "Device rows have no disclosure chevron. Re-selecting the current device does not collapse its workspaces or restart a healthy connection. Use the sidebar selection surface and normal ink for device identity; only the separate status indicator expresses reachability. Do not add a connection status text row or recovery banner below the device. Automatic reconnect stays quiet; tapping the selected failed or disconnected device retries the connection. Workspace disclosure remains independent and survives refresh and device switching. Compact and wide layouts use the same selection semantics."
+    },
+    "sidebar_tools_footer": {
+      "purpose": "Open controlled-device tools without creating a chat; keep settings separately reachable.",
+      "anatomy": [
+        "tools_icon_and_label",
+        "flexible_gap",
+        "settings_button"
+      ],
+      "states": [
+        "enabled",
+        "disabled",
+        "pressed"
+      ],
+      "tokens": [
+        "sidebar_raised",
+        "sidebar_line",
+        "sidebar_ink"
+      ],
+      "platformNotes": "Use Tools / 工具 for both the sidebar entry and destination title. Render a native wrench-and-screwdriver symbol (or the existing platform vector) in a 24-unit slot, 8-unit label gap, 15-unit medium text, 14-unit horizontal padding and a minimum 104 by 48 pill. Keep the 48-unit settings action separate. Use a quiet surface and outline without raised shadows. Compact and wide sidebars reuse a pure footer component with state and callbacks; create-session validation must not affect tools appearance."
+    },
     "circle_control": {
       "purpose": "A compact navigation or overflow control with a full-size touch target.",
       "anatomy": [
@@ -355,6 +544,67 @@ export const mobileComponents = {
         "ink"
       ],
       "platformNotes": "Keep the glyph's optical box separate from the touch target. Header and sidebar controls stay visually transparent at rest; reserve borders and elevation for the containing surface."
+    },
+    "interaction_question": {
+      "purpose": "Answer a runtime mailbox question independently of transcript tool state.",
+      "anatomy": [
+        "question_heading",
+        "choice_or_text_input",
+        "submit_action",
+        "failure_feedback"
+      ],
+      "states": [
+        "pending",
+        "editing",
+        "submitting",
+        "failed"
+      ],
+      "tokens": [
+        "content_gutter",
+        "body_medium",
+        "body_small",
+        "ink",
+        "muted",
+        "card",
+        "primary_action",
+        "content_on_action"
+      ],
+      "platformNotes": "Render a direct question form in the scrollable mailbox. Tool execution headers, result expansion and stop actions stay in the transcript or composer. Retain draft values through submission failure and queue reordering; remove the form only when authoritative mailbox state removes it."
+    },
+    "runtime_file_browser": {
+      "purpose": "Browse and manage files on the selected controlled runtime without changing the active chat workspace.",
+      "anatomy": [
+        "runtime_location",
+        "path_caption",
+        "single_row_navigation_sort_create_toolbar",
+        "scrolling_file_rows",
+        "row_overflow",
+        "contextual_transfer_feedback",
+        "on_demand_action_sheet"
+      ],
+      "states": [
+        "loading",
+        "ready",
+        "empty",
+        "failed",
+        "action_draft",
+        "action_busy",
+        "action_failed",
+        "editor"
+      ],
+      "tokens": [
+        "control_touch_size",
+        "content_gutter",
+        "body_medium",
+        "body_small",
+        "ink",
+        "muted",
+        "line",
+        "card",
+        "primary_action",
+        "content_on_action"
+      ],
+      "platformNotes": "Parent, refresh, sort and create share one toolbar row. Rows show file or folder glyphs and an overflow menu; mutation forms are not permanently visible. Compact forms use a bottom sheet with submit and cancel reachable while the native keyboard is open. Preserve failed drafts and route every action to the captured runtime provider. Native adapters own keyboard avoidance and file pickers."
     },
     "action_button": {
       "purpose": "Expresses one primary, secondary, quiet, or destructive workflow action with consistent emphasis.",
@@ -428,6 +678,27 @@ export const mobileComponents = {
         "timeline_top_padding"
       ],
       "platformNotes": "The maximum width is the 276-unit compact HarmonyOS baseline; wide layouts may use a separate responsive policy."
+    },
+    "conversation_overlay": {
+      "purpose": "Lets the transcript own the whole pane while the header and composer stay reachable above it.",
+      "anatomy": [
+        "top_overlay",
+        "top_edge_fade",
+        "timeline",
+        "bottom_overlay_fade"
+      ],
+      "states": [
+        "at_rest",
+        "scrolled",
+        "composer_expanded",
+        "mailbox_open",
+        "keyboard_open"
+      ],
+      "tokens": [
+        "conversation_overlay_side_inset",
+        "conversation_edge_fade_height"
+      ],
+      "platformNotes": "The timeline fills the pane and scrolls beneath both overlays; its content insets are measured from the live overlay heights rather than fixed, and are applied with each platform's content-inset primitive — Compose contentPadding, SwiftUI safeAreaInset, ArkUI contentStartOffset/contentEndOffset — never with padding, which would shrink the viewport and stop the transcript at the overlay instead of letting it run underneath, because the composer grows with multiline text and attachments and the mailbox appears without warning. The top layer is an opaque band with a short fade carrying it into the transcript; the bottom layer has no strip of its own — its whole background is the fade, because the transcript runs behind the composer and a short strip would leave a line of text crisp beside the pill after it had already faded out higher up. Fades never take touches. Blur is the platform's own: iOS ultraThinMaterial, HarmonyOS backgroundBlurStyle. Compose has no first-party backdrop blur, so Android uses a high-opacity band instead and reads the same at a glance."
     },
     "composer_bar": {
       "purpose": "Collects the next instruction and exposes one unambiguous primary action.",
@@ -853,6 +1124,145 @@ export const mobileComponents = {
         "soft"
       ],
       "platformNotes": "Placement is shared policy; rendering, file export, and platform-safe dismissal remain native adapters."
+    },
+    "miniapp_navigation": {
+      "purpose": "Opens locally bundled tools from primary sidebar navigation, without requiring account or device access.",
+      "anatomy": [
+        "outlined_apps_glyph",
+        "leading_aligned_label",
+        "full_row_touch_target"
+      ],
+      "states": [
+        "idle",
+        "pressed",
+        "focused",
+        "signed_out",
+        "connected"
+      ],
+      "tokens": [
+        "ink",
+        "body_large",
+        "control_touch_size"
+      ],
+      "platformNotes": "Use a quiet 48vp icon-and-label row in compact and wide sidebars, with 16vp medium-weight navigation text, a 24vp icon slot and a 14vp gap. In the sidebar the row keeps 4vp above and 8vp below itself, and the device section header keeps 10vp above it, inside the shared 76vp header frame: the header control sits 20vp above the row and the Devices label 18vp below it. A platform whose header control is not 44vp inherits that difference instead of adding a second gap, and no column-level spacing is layered around the row. HarmonyOS uses the native outlined sys.symbol.square_grid_2x2 at 24vp, centered in its slot and tinted with the semantic ink color. Render the catalog inside the shell content pane so selecting it slides the right pane left as the drawer closes, using the existing 250ms ease-out shell motion. Sidebar session selection uses the same shell motion without a second route-push animation. Do not promote this navigation destination to a primary action on remote home."
+    },
+    "miniapp_catalog": {
+      "purpose": "Presents bundled apps with large visual previews that open each app directly.",
+      "anatomy": [
+        "back_control",
+        "centered_page_title",
+        "offline_caption",
+        "square_preview",
+        "app_title"
+      ],
+      "states": [
+        "catalog",
+        "loading",
+        "error",
+        "app_open",
+        "light",
+        "dark"
+      ],
+      "tokens": [
+        "page_bg",
+        "ink",
+        "muted",
+        "soft",
+        "body_large",
+        "title_small",
+        "body_medium",
+        "label_small"
+      ],
+      "platformNotes": "Use a two-column library of square previews on compact screens and three columns when the gallery reaches 600vp. Clip previews to 24vp corners with 14vp column and 20vp row gaps; keep app names below images. The centered gallery caps at 1000vp, while open apps use full width. Reuse established showcase assets. Resize the grid without reloading an open app."
+    },
+    "welcome_home": {
+      "purpose": "Signed-out disconnected home: fixed brand mark, looping desktop phrases, equal login and QR actions.",
+      "anatomy": [
+        "wordmark_header",
+        "fixed_brand_mark",
+        "sliding_phrase",
+        "dark_action_dock",
+        "login",
+        "scan",
+        "optional_bundled_miniapps"
+      ],
+      "states": [
+        "signed_out",
+        "reduce_motion",
+        "compact",
+        "wide"
+      ],
+      "tokens": [
+        "welcome_max_width",
+        "welcome_gutter",
+        "welcome_header_height",
+        "welcome_button_height",
+        "welcome_button_gap",
+        "welcome_dock_radius",
+        "welcome_dock_bottom",
+        "welcome_mark_size",
+        "welcome_word_size",
+        "welcome_stage_height",
+        "welcome_header_word_size",
+        "welcome_dock",
+        "welcome_button",
+        "welcome_button_label",
+        "welcome_secondary",
+        "brand_dot"
+      ],
+      "platformNotes": "A layout with C staggered slide motion. Mark never animates. Per-glyph entry: 180ms + index*55ms, 800ms cubic ease-out, 38px slide with 5px settling overshoot. Exit is 650ms, 30px left. Respect reduced motion and stop work offscreen. Retain real account/scan routing; only show MiniApps on hosts that implement them. Safe-area insets remain native."
+    },
+    "startup_brand_reveal": {
+      "purpose": "Provides a desktop-inspired identity transition on the first normal launch of an installation without waiting for network or account loading.",
+      "anatomy": [
+        "theme_background",
+        "bouncing_brand_dot",
+        "staggered_wordmark",
+        "desktop_contour_brand_mark"
+      ],
+      "states": [
+        "first_launch",
+        "already_shown",
+        "reduced_motion",
+        "backgrounded"
+      ],
+      "tokens": [
+        "page_bg",
+        "ink",
+        "brand_dot",
+        "startup_brand"
+      ],
+      "platformNotes": "Native first-launch-only overlay on HarmonyOS, Android and iOS. Claim a persisted installation-local flag before playback; account changes, process restarts and upgrades do not reset it. Design previews do not consume it. Existing installs without the flag show it once after upgrade; 6800ms timeline independent of network readiness. A cyan dot hops ahead of ten 42-unit letters with subtle letter bounce. At normalized text time 0.70–0.86 it arcs back to the dotless i, settling at 7.35 units diameter with one fading halo. Text time is min(progress / 0.65 * 0.9, 0.9). Logo expands from 0.65 to 1 with a small overshoot during progress 0.66–0.85 as the word moves down 42 units. Use a centered 280×240 stage, scaled down for narrow windows, 92-unit contour mark on Android/iOS and a 156vp mark on HarmonyOS, with platform-native soft sans typography. HarmonyOS positions the mark at (62, -34) to preserve separation from the settled wordmark. Fade the overlay over the last 3%. Reserve full glyph slots; no layout changes during reveal. Remove on completion or background and do not replay on activity recreation/foreground. Skip for reduced motion. Notification onboarding follows completion. The dedicated brand_dot token preserves identity independently of action/status colors."
+    },
+    "permission_request_panel": {
+      "purpose": "Answers an independent runtime permission request below the conversation header, outside the transcript, matching mobile-web.",
+      "anatomy": [
+        "warning_glyph_and_action",
+        "optional_source_identity",
+        "neutral_resource_preview",
+        "collapsed_input_editor",
+        "trailing_reject_and_allow_actions"
+      ],
+      "states": [
+        "pending",
+        "editing",
+        "busy",
+        "failed"
+      ],
+      "tokens": [
+        "approval_card_radius",
+        "approval_card_padding",
+        "approval_card_gap",
+        "approval_action_radius",
+        "approval_action_height",
+        "status_warning",
+        "card",
+        "soft",
+        "line",
+        "primary_action",
+        "content_on_action"
+      ],
+      "platformNotes": "Reference: desktop ChatInputApprovalBand and @openbitfun/ui raised Card, neutral resource Card, fill reject Button and primary allow Button. Preserve desktop 12-unit card radius/padding and 8-unit gaps, with 36-unit mobile actions. Resource content scrolls within the band; actions do not stretch across the card. JSON editing remains a quiet, collapsed mobile-web capability. status_warning ports desktop amber.550 for the short shield glyph: neither success/danger nor the blue file-link accent communicates pending approval."
     }
   }
 };

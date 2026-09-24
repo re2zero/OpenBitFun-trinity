@@ -76,7 +76,6 @@
     flex-direction: column;
     gap: var(--openbitfun-space-2);
     padding: var(--openbitfun-space-2);
-    border-bottom: 1px solid var(--openbitfun-color-border-default);
     flex-shrink: 0;
   }
 
@@ -204,21 +203,6 @@
     flex-shrink: 0;
   }
 
-  &__search-limit-notice {
-    padding: var(--openbitfun-space-2) var(--openbitfun-space-3);
-    border-bottom: 1px solid var(--openbitfun-color-border-default);
-    background: color-mix(in srgb, var(--openbitfun-color-surface-subtle) 72%, var(--openbitfun-color-action-secondary-background) 28%);
-    color: var(--openbitfun-color-content-secondary);
-    font-size: var(--openbitfun-type-label-sm-font-size);
-    line-height: var(--openbitfun-type-modifier-leading-ui-line-height);
-    flex-shrink: 0;
-  }
-
-  &__search-limit-notice--warning {
-    background: color-mix(in srgb, var(--openbitfun-color-surface-subtle) 64%, var(--openbitfun-color-status-warning-surface) 36%);
-    color: var(--openbitfun-color-status-warning-content);
-  }
-
   &__search-spinner {
     animation: openbitfun-files-panel-spin 0.8s linear infinite;
     flex-shrink: 0;
@@ -238,7 +222,7 @@
     min-width: 0;
   }
 
-  &__search-mode {
+  &__search-modes > [data-openbitfun-part="segment"] {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -263,7 +247,7 @@
       color: var(--openbitfun-color-content-secondary);
     }
 
-    &.active {
+    &[aria-pressed="true"] {
       background: var(--openbitfun-color-action-secondary-background);
       color: color-mix(in srgb, var(--openbitfun-color-accent-hover) 80%, transparent);
 
@@ -274,6 +258,7 @@
   }
 
   &__search-option {
+    flex-shrink: 1;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -289,6 +274,23 @@
       background-color var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard),
       border-color var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard),
       color var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard);
+
+    // Active and responsive states remain owned by this search toolbar.
+    &::before { content: none; }
+
+    > [data-openbitfun-part='icon'] {
+      display: contents;
+    }
+
+    > :where([data-openbitfun-part='icon']) > :where(svg) {
+      inline-size: 14px;
+      block-size: 14px;
+    }
+
+    &:focus-visible {
+      outline: 2px solid color-mix(in srgb, var(--openbitfun-color-accent-default) 40%, transparent);
+      outline-offset: 2px;
+    }
 
     &:hover {
       background: var(--openbitfun-color-action-quiet-hover);
@@ -331,6 +333,7 @@
   }
 
   &__main-content {
+    position: relative;
     display: flex;
     flex-direction: column;
     flex: 1;
@@ -341,6 +344,17 @@
     &--drop-target {
       box-shadow: inset 0 0 0 2px var(--openbitfun-color-accent-default);
       background: var(--openbitfun-color-surface-subtle);
+    }
+
+    &--search::before {
+      position: absolute;
+      inset-inline: var(--openbitfun-space-2);
+      top: 0;
+      z-index: var(--openbitfun-layer-decoration);
+      height: 1px;
+      background: var(--openbitfun-color-border-default);
+      content: '';
+      pointer-events: none;
     }
   }
 
@@ -640,5 +654,13 @@
   .openbitfun-files-panel__loading-spinner {
     animation: none;
     transform: none;
+  }
+}
+
+.openbitfun-files-panel__search-modes[data-openbitfun-component='segmented-control'] {
+  padding: 0;
+  background: transparent;
+  > [data-openbitfun-part='segment'] {
+    block-size: 22px;
   }
 }

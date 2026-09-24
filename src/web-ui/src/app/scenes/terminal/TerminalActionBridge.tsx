@@ -1,10 +1,11 @@
 import { useEffect, useRef, type FC } from 'react';
 import { useCurrentWorkspace } from '@/infrastructure/contexts/WorkspaceContext';
+import { activeSessionTerminalDirectory } from '@/app/hooks/useSessionTerminalDirectory';
 import { createManualTerminalSession } from '@/shared/services/createManualTerminalSession';
 import { openShellSessionTarget } from '@/shared/services/openShellSessionTarget';
 import { createLogger } from '@/shared/utils/logger';
 import { getActiveSurfaceScope } from '@/infrastructure/peer-device/deviceSurface';
-import { isTerminalPathInside, normalizeTerminalPath } from '@/tools/terminal/services/terminalWorkspaceScope';
+import { isTerminalPathInside } from '@/tools/terminal/services/terminalWorkspaceScope';
 import { notificationService } from '@/shared/notification-system';
 import { useI18n } from '@/infrastructure/i18n';
 import { workspaceManager } from '@/infrastructure/services/business/workspaceManager';
@@ -18,7 +19,9 @@ export const TerminalActionBridge: FC = () => {
   const { t } = useI18n('common');
   const { workspacePath, workspace } = useCurrentWorkspace();
   const creatingRef = useRef(false);
-  const workspaceKey = JSON.stringify([workspace?.id, workspace?.connectionId, workspace?.workspaceKind, workspacePath]);
+  // Only the workspace ID identifies the active workspace; the path is the cwd
+  // projection used below and a connection change is not a workspace change.
+  const workspaceKey = workspace?.id ?? '';
   const currentWorkspace = useRef({ workspace, workspacePath, key: workspaceKey });
   currentWorkspace.current = { workspace, workspacePath, key: workspaceKey };
 
@@ -33,31 +36,38 @@ export const TerminalActionBridge: FC = () => {
       const scope = getActiveSurfaceScope();
       if (detail?.surfaceId && detail.surfaceId !== scope.surfaceId) return;
       const origin = detail?.resourceScope;
+      // The origin scope selects the workspace by ID only; a scope without an
+      // ID cannot name a workspace and is dropped rather than matched by path.
+      if (origin && !origin.workspaceId) return;
       const target = origin
         ? workspaceManager.getState().openedWorkspaces.get(origin.workspaceId ?? '')
         : activeWorkspace;
-      if (origin && (origin.surfaceId !== scope.surfaceId || !target
-        || target.rootPath !== origin.workspacePath
-        || target.connectionId !== origin.remoteConnectionId)) return;
+      if (origin && (origin.surfaceId !== scope.surfaceId || !target)) return;
       const targetPath = target?.rootPath ?? activePath;
       const remote = target?.workspaceKind === 'remote';
-      if (detail?.workspacePath && normalizeTerminalPath(detail.workspacePath, remote) !== normalizeTerminalPath(targetPath, remote)) return;
-      if (detail?.workingDirectory && !isTerminalPathInside(detail.workingDirectory, targetPath, remote)) return;
+      const requestedDirectory = detail?.workingDirectory;
+      // The requested cwd is an IO operand and must stay inside the target root.
+      if (requestedDirectory && !isTerminalPathInside(requestedDirectory, targetPath, remote)) return;
       if (remote && !target?.connectionId) {
         notificationService.error(t('nav.resources.unavailable'));
         return;
       }
+      // An explicit directory (file explorer) wins; otherwise the terminal
+      // follows the active session, which may execute in a worktree.
+      const workingDirectory = requestedDirectory
+        ?? activeSessionTerminalDirectory(target?.id)
+        ?? targetPath;
       const browseTarget = useNavSceneStore.getState().resourceWorkspace;
       const isCurrent = () => active && scope.isCurrent() && (origin
         ? useNavSceneStore.getState().resourceWorkspace === browseTarget
           && workspaceManager.getState().openedWorkspaces.get(target!.id) === target
         : currentWorkspace.current.key === activeKey);
-      if (creatingRef.current) return;
+      if (creatingRef.current || !target) return;
       creatingRef.current = true;
 
       void createManualTerminalSession({
-        workspacePath: detail?.workingDirectory ?? targetPath,
-        connectionId: target?.connectionId,
+        workspaceId: target.id,
+        workspacePath: workingDirectory,
       })
         .then((session) => {
           if (!isCurrent()) return;

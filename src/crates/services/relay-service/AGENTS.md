@@ -17,6 +17,14 @@ and embedded hosts.
   lookup and message routing must enforce authenticated account ownership.
 - Keep admission before body buffering and preserve resource permits through
   cancellation and slow-reader failures. Test quota boundaries and isolation.
+- The relay forwards; it does not store user content. Session transcripts,
+  terminal output and catalogs are host-owned streams read on demand from the
+  online device through device RPC (`read_stream`) and encrypted device-event
+  hints. Do not reintroduce relay-side session, message or per-account sequence
+  tables. The only persisted request bodies are short-lived encrypted RPC
+  payload references. Retired history routes stay mapped to `410 Gone` with the
+  `relay_session_history_retired` reason (`realtime/retired_session_history.rs`)
+  so older clients degrade loudly rather than silently.
 
 ## Boundaries
 
@@ -33,3 +41,11 @@ and embedded hosts.
 
 Run `cargo test -p openbitfun-relay-service` and
 `node scripts/check-core-boundaries.mjs` after changes.
+
+Account identity supports independent GitHub and email-code users. Preserve legacy
+numeric GitHub Relay IDs; email `accountId` values occupy the `email-` namespace.
+Never derive identity from the caller's claimed user ID or display name. New
+clients opt into the hosted chooser with `methods=all` on the existing start route;
+legacy calls keep direct GitHub URLs. Run `cargo test -p openbitfun-relay-service
+--lib account_transport_tests::` for account isolation, device RPC and revocation
+across both identity kinds and both route layouts.

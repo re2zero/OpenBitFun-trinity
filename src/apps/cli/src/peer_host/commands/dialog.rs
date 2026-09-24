@@ -156,6 +156,11 @@ async fn submit_dialog_turn(state: &PeerHostState, args: &Value) -> Result<Value
     let user_input = get_string(request, "userInput")?;
     let original_user_input = optional_string(request, "originalUserInput");
     let agent_type = get_string(request, "agentType")?;
+    // The session's workspace ID is authoritative; the project/workspace paths
+    // are the legacy storage projection for pre-ID controllers.
+    let workspace_id = optional_string(request, "workspaceId")
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty());
     let workspace_path = optional_string(request, "projectWorkspacePath")
         .or_else(|| optional_string(request, "workspacePath"));
     let remote_connection_id = optional_string(request, "remoteConnectionId");
@@ -192,6 +197,7 @@ async fn submit_dialog_turn(state: &PeerHostState, args: &Value) -> Result<Value
             execution: Default::default(),
             agent_type,
             workspace_path,
+            workspace_id,
             remote_connection_id,
             remote_ssh_host,
             policy,
@@ -302,6 +308,20 @@ fn parse_user_answer_submission(
 /// response must terminate on the same host as the waiting Tool future; before
 /// this handler existed a CLI peer could render that snapshot but every click
 /// fell through to the unsupported-command branch.
+pub(crate) async fn start_user_question_interaction(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = args.get("request").ok_or("Missing request")?;
+    let session_id = get_string(request, "sessionId")?;
+    let tool_id = get_string(request, "toolId")?;
+    state
+        .agent_runtime
+        .start_user_question_interaction(&session_id, &tool_id)
+        .map_err(|error| error.to_string())?;
+    Ok(json!({ "success": true }))
+}
+
 pub(crate) async fn submit_user_answers(
     state: &PeerHostState,
     args: &Value,
@@ -481,4 +501,18 @@ mod image_attachment_tests {
         assert!(peer_image_attachments(&json!({"imageContexts": [{}]})).is_err());
         assert!(peer_image_attachments(&json!({"imageContexts": "bad"})).is_err());
     }
+}
+
+pub(crate) async fn manage_dialog_queue(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let request = serde_json::from_value(request_value(args).clone())
+        .map_err(|e| format!("Invalid queue request: {e}"))?;
+    let snapshot = state
+        .agent_runtime
+        .manage_dialog_queue(request)
+        .await
+        .map_err(|e| e.into_message())?;
+    serde_json::to_value(snapshot).map_err(|e| e.to_string())
 }

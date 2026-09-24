@@ -17,17 +17,17 @@ Connect the Trinity cognitive engine: awaken the core being, inspect live cognit
 
 ## 完整功能清单 / Everything included
 
-- **Agent 可定位入口，需交互完成 / Agent opens; interaction required** · 完成觉醒仪式：命名核心认知体、认主并确认人格预设
+- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 完成觉醒仪式：命名核心认知体、认主并确认人格预设
   - Complete the awaken ceremony: name the core being, bind its owner, and confirm the persona preset
-- **Agent 可定位入口，需交互完成 / Agent opens; interaction required** · 查看实时认知状态：情绪效价、需求强度、注意力焦点与置信度
+- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 查看实时认知状态：情绪效价、需求强度、注意力焦点与置信度
   - Inspect the live cognitive state: emotion valence, need strengths, attention focus, and confidence
-- **Agent 可定位入口，需交互完成 / Agent opens; interaction required** · 检索、新增、强化与遗忘长期记忆，并翻看记忆时间线
+- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 检索、新增、强化与遗忘长期记忆，并翻看记忆时间线
   - Search, add, reinforce, and forget long-term memories, and browse the memory timeline
-- **Agent 可定位入口，需交互完成 / Agent opens; interaction required** · 查看核心认知体身份（名字、认主、人格）并管理助理列表
+- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 查看核心认知体身份（名字、认主、人格）并管理助理列表
   - Inspect the core being identity (name, owner, persona) and manage the assistant list
-- **Agent 可定位入口，需交互完成 / Agent opens; interaction required** · 注册登录云端记忆，设置主密钥，并同步、备份或恢复认知体记忆
+- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 注册登录云端记忆，设置主密钥，并同步、备份或恢复认知体记忆
   - Sign up, log in, set the master key, and sync, back up, or restore cloud memory
-- **Agent 可定位入口，需交互完成 / Agent opens; interaction required** · 查看认知引擎运行状态，启用或停用认知框架工具组
+- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 查看认知引擎运行状态，启用或停用认知框架工具组
   - Inspect cognitive-engine status and enable or disable the cognitive framework tool group
 
 ## 怎么用 / How to use it
@@ -41,7 +41,7 @@ Connect the Trinity cognitive engine: awaken the core being, inspect live cognit
 
 入口 / Entry: OpenBitFun 对应场景
 
-## Agent 可替你做什么 / What an agent can do for you
+## 智能体可替你做什么 / What an agent can do for you
 
 | 操作 / Action | 中文说明 | English description |
 | --- | --- | --- |
@@ -53,7 +53,7 @@ Connect the Trinity cognitive engine: awaken the core being, inspect live cognit
 | --- | --- | --- | --- |
 | 在界面中配置 / Configure in the UI | — | 此页面的设置在对应界面中完成。 | Configure this page in its matching UI. |
 
-## 可以直接对 Agent 说 / Try saying
+## 可以直接对智能体说 / Try saying
 
 - “你现在的认知状态怎么样”
   - “What is your cognitive state right now”
@@ -62,6 +62,6 @@ Connect the Trinity cognitive engine: awaken the core being, inspect live cognit
 - “把这条经验记住”
   - “Remember this lesson”
 
-Agent 会先查找相关功能或设置，确认目标后再替你打开、执行或修改。完整能力目录不会预先塞进对话上下文。
+智能体会先查找相关功能或设置，确认目标后再替你打开、执行或修改。完整能力目录不会预先塞进对话上下文。
 
 The agent first finds the relevant feature or setting, confirms the target, and then opens, runs, or changes it for you. The full catalog is never embedded in the conversation context.

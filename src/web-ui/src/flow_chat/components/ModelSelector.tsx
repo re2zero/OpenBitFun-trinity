@@ -8,9 +8,8 @@
  * - Supports 'primary' | 'fast' | specific model IDs
  */
 
-import { Menu, MenuItem, MenuSection, MenuSeparator, OverflowText } from '@openbitfun/ui';
+import { subscribeOverlayInteraction, createOverlayPortal, Menu, MenuItem, MenuSection, MenuSeparator, OverflowText } from '@openbitfun/ui';
 import React, { useState, useEffect, useId, useRef, useCallback, useLayoutEffect, useMemo, useSyncExternalStore } from 'react';
-import { createPortal } from 'react-dom';
 import { getAppearanceOverlayHost } from '@/infrastructure/appearance/runtime/AppearanceOverlayHost';
 import { Zap } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -38,7 +37,7 @@ import {
   resolveAcpModeState,
   resolveAcpReasoningState,
 } from '../utils/acpSessionConfig';
-import { sessionProjectWorkspacePath } from '../utils/sessionWorkspace';
+import { sessionProjectWorkspacePath, sessionWorkspaceId } from '../utils/sessionWorkspace';
 import { quickActions } from '@/shared/services/ide-control';
 import {
   buildContextUsageTooltip,
@@ -128,6 +127,8 @@ interface ModelSelectorProps {
   persistSharedModeDefault?: boolean;
   /** Whether lifecycle ownership currently prevents Session setting changes. */
   disabled?: boolean;
+  /** Why the owning composer temporarily prevents setting changes. */
+  disabledReason?: string;
   /** Compact trigger treatment supplied by the owning composer. */
   reasoningTriggerPresentation?: 'meter' | 'label';
 }
@@ -331,6 +332,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
   modeDefaultModelId,
   persistSharedModeDefault = true,
   disabled = false,
+  disabledReason,
   reasoningTriggerPresentation = 'meter',
 }) => {
   const { t } = useTranslation('flow-chat');
@@ -524,6 +526,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
         ACPClientAPI.getSessionOptions({
           sessionId,
           clientId: acpClientId,
+          workspaceId: activeSession?.workspaceId || activeSession?.config.workspaceId,
           workspacePath: activeSession?.workspacePath || activeSession?.config.workspacePath,
           remoteConnectionId: activeSession?.remoteConnectionId,
           remoteSshHost: activeSession?.remoteSshHost,
@@ -558,6 +561,8 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
     acpClientId,
     isAcpSession,
     sessionId,
+    activeSession?.config.workspaceId,
+    activeSession?.workspaceId,
   ]);
 
   useEffect(() => {
@@ -585,6 +590,8 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
   }, [acpClientId, isAcpSession, loadAcpOptions, sessionId]);
   
   useEffect(() => {
+    let removeOverlayMousedown0: (() => void) | undefined;
+    let removeSubmenuMousedown: (() => void) | undefined;
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as Node;
       if (dropdownRef.current && !dropdownRef.current.contains(target)
@@ -598,11 +605,13 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
     };
 
     if (dropdownOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
+      removeOverlayMousedown0 = subscribeOverlayInteraction(portalDropdownRef, 'mousedown', handleClickOutside);
+      removeSubmenuMousedown = subscribeOverlayInteraction(nativeSubmenuRef, 'mousedown', handleClickOutside);
     }
 
     return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
+      removeOverlayMousedown0?.();
+      removeSubmenuMousedown?.();
     };
   }, [dropdownOpen]);
 
@@ -838,6 +847,8 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
       status = 'unconfigured';
     } else if (availableModels.length === 0) {
       status = 'no-enabled-chat-model';
+    } else if (!nativeModelResolution.model) {
+      status = 'target-model-unavailable';
     } else if (catalogLoadState === 'error') {
       status = 'catalog-unavailable';
     } else if (nativeModelResolution.recovered) {
@@ -848,13 +859,14 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
 
     return {
       status,
-      canSend: configLoadState === 'ready' && availableModels.length > 0,
+      canSend: configLoadState === 'ready' && nativeModelResolution.model !== null,
     };
   }, [
     allModels.length,
     availableModels.length,
     catalogLoadState,
     configLoadState,
+    nativeModelResolution.model,
     nativeModelResolution.recovered,
   ]);
 
@@ -1292,6 +1304,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
         const options = await ACPClientAPI.setSessionModel({
           sessionId,
           clientId: acpClientId,
+          workspaceId: activeSession?.workspaceId || activeSession?.config.workspaceId,
           workspacePath: activeSession?.workspacePath || activeSession?.config.workspacePath,
           remoteConnectionId: activeSession?.remoteConnectionId,
           remoteSshHost: activeSession?.remoteSshHost,
@@ -1320,6 +1333,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
             sessionId,
             modelName: modelId,
             reasoningPreset: nextReasoningPreset ?? null,
+            workspaceId: sessionWorkspaceId(session),
             workspacePath: sessionProjectWorkspacePath(session),
             remoteConnectionId: session.remoteConnectionId,
             remoteSshHost: session.remoteSshHost,
@@ -1377,6 +1391,8 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
     sessionId,
     t,
     targetIsSubagent,
+    activeSession?.config.workspaceId,
+    activeSession?.workspaceId,
   ]);
 
   const handleSelectReasoningPreset = useCallback(async (presetId: string | null) => {
@@ -1424,6 +1440,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
           sessionId,
           modelName: currentNativeModelId,
           reasoningPreset: normalizedPreset ?? null,
+          workspaceId: sessionWorkspaceId(session),
           workspacePath: sessionProjectWorkspacePath(session),
           remoteConnectionId: session.remoteConnectionId,
           remoteSshHost: session.remoteSshHost,
@@ -1471,6 +1488,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
       const options = await ACPClientAPI.setSessionConfigOption({
         sessionId,
         clientId: acpClientId,
+        workspaceId: activeSession?.workspaceId || activeSession?.config.workspaceId,
         workspacePath: activeSession?.workspacePath || activeSession?.config.workspacePath,
         remoteConnectionId: activeSession?.remoteConnectionId,
         remoteSshHost: activeSession?.remoteSshHost,
@@ -1496,6 +1514,8 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
     loading,
     reasoningLoading,
     sessionId,
+    activeSession?.config.workspaceId,
+    activeSession?.workspaceId,
   ]);
 
   const handleSelectAcpReasoning = useCallback(async (presetId: string | null) => {
@@ -1505,6 +1525,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
       const options = await ACPClientAPI.setSessionConfigOption({
         sessionId,
         clientId: acpClientId,
+        workspaceId: activeSession?.workspaceId || activeSession?.config.workspaceId,
         workspacePath: activeSession?.workspacePath || activeSession?.config.workspacePath,
         remoteConnectionId: activeSession?.remoteConnectionId,
         remoteSshHost: activeSession?.remoteSshHost,
@@ -1532,6 +1553,8 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
     reasoningLoading,
     sessionId,
     t,
+    activeSession?.config.workspaceId,
+    activeSession?.workspaceId,
   ]);
 
   const handleSelectReasoningPresetFromMenu = useCallback(async (presetId: string | null) => {
@@ -1572,6 +1595,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
       const options = await ACPClientAPI.setSessionConfigOption({
         sessionId,
         clientId: acpClientId,
+        workspaceId: activeSession?.workspaceId || activeSession?.config.workspaceId,
         workspacePath: activeSession?.workspacePath || activeSession?.config.workspacePath,
         remoteConnectionId: activeSession?.remoteConnectionId,
         remoteSshHost: activeSession?.remoteSshHost,
@@ -1597,6 +1621,8 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
     loading,
     sessionId,
     t,
+    activeSession?.config.workspaceId,
+    activeSession?.workspaceId,
   ]);
 
   const handleTriggerKeyDown = useCallback((event: React.KeyboardEvent<HTMLButtonElement>) => {
@@ -1847,7 +1873,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
       data-openbitfun-state={[displayedAvailability.status, dropdownOpen && 'open'].filter(Boolean).join(' ')}
     >
       {showModelTrigger && (
-      <Tooltip content={tooltipContent} disabled={dropdownOpen}>
+      <Tooltip content={disabledReason || tooltipContent} disabled={dropdownOpen}>
         <button data-overflow-trigger
           ref={triggerRef}
           data-testid="chat-model-selector-btn"
@@ -1925,7 +1951,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
 
       {hasReasoningSettings && (
       <RetainedMountBoundary present={dropdownOpen}>
-        {createPortal(
+        {createOverlayPortal(
           <Menu
             id={menuId}
             className="openbitfun-model-selector__dropdown"
@@ -1994,12 +2020,14 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
               {acpFastModeItem}
             </MenuSection>
           </Menu>,
-          getAppearanceOverlayHost()
+          getAppearanceOverlayHost(),
+          null,
+          { open: dropdownOpen, ownerRef: dropdownRef },
         )}
       </RetainedMountBoundary>
       )}
 
-      {dropdownOpen && nativeSubmenu && createPortal(
+      {dropdownOpen && nativeSubmenu && createOverlayPortal(
         <Menu
           id={nativeSubmenuId}
           ref={nativeSubmenuRef}
@@ -2253,7 +2281,9 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
             )}
           </ModelSelectorMenuLevel>
         </Menu>,
-        getAppearanceOverlayHost()
+        getAppearanceOverlayHost(),
+        null,
+        { ownerRef: hasReasoningSettings ? portalDropdownRef : dropdownRef },
       )}
     </div>
   );

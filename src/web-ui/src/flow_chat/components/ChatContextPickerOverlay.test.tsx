@@ -22,7 +22,7 @@ vi.mock('@/infrastructure/api', () => ({
     searchReferenceableSessions: vi.fn().mockResolvedValue([]),
   },
   workspaceAPI: {
-    getDirectoryChildren: vi.fn().mockResolvedValue([]),
+    explorerGetChildren: vi.fn().mockResolvedValue([]),
     searchFilenamesOnlyStreamDetailed: vi.fn().mockResolvedValue({
       searchId: 'search-1',
       searchKind: 'filenames',
@@ -40,6 +40,12 @@ vi.mock('@/infrastructure/api/service-api/ExternalSourcesAPI', () => ({
 }));
 
 interface HarnessProps {
+  mcpCatalog?: ChatContextPickerProps['mcpCatalog'];
+  mcpLoading?: boolean;
+  mcpLoadFailed?: boolean;
+  mcpUnavailable?: ChatContextPickerProps['mcpUnavailable'];
+  onRefreshMcp?: ChatContextPickerProps['onRefreshMcp'];
+  onSelectMcp?: ChatContextPickerProps['onSelectMcp'];
   isOpen?: boolean;
   searchQuery?: string;
   remoteConnectionId?: string;
@@ -55,6 +61,7 @@ interface HarnessProps {
 }
 
 const Harness: React.FC<HarnessProps> = ({
+  mcpCatalog, mcpLoading, mcpLoadFailed, mcpUnavailable, onRefreshMcp, onSelectMcp,
   isOpen = true,
   searchQuery = '',
   remoteConnectionId = 'remote-connection-1',
@@ -73,9 +80,16 @@ const Harness: React.FC<HarnessProps> = ({
     <div>
       <button ref={anchorRef} type="button">anchor</button>
       <ChatContextPicker
+        mcpCatalog={mcpCatalog}
+        mcpLoading={mcpLoading}
+        mcpLoadFailed={mcpLoadFailed}
+        mcpUnavailable={mcpUnavailable}
+        onRefreshMcp={onRefreshMcp}
+        onSelectMcp={onSelectMcp}
         isOpen={isOpen}
         searchQuery={searchQuery}
         workspacePath="/workspace"
+        workspaceId="workspace-id"
         remoteConnectionId={remoteConnectionId}
         anchorRef={anchorRef}
         entryView={entryView}
@@ -97,6 +111,70 @@ const option = (kind: string) => document.querySelector<HTMLElement>(
 );
 
 describe('ChatContextPicker overlay', () => {
+  const mcpCatalog = {
+    modeRestricted: false,
+    tools: [{ name: 'mcp__docs__search', serverId: 'docs', serverName: 'Docs', toolName: 'search', description: 'Find manuals' }],
+  };
+
+  it('opens MCP from sources with the keyboard and selects a server reference', async () => {
+    const onSelectMcp = vi.fn();
+    const onClose = vi.fn();
+    await act(async () => root.render(<Harness entryView="sources" mcpCatalog={mcpCatalog} onSelectMcp={onSelectMcp} onClose={onClose} />));
+    expect(option('mcp')).not.toBeNull();
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    });
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })));
+    expect(option('mcp-server')?.textContent).toContain('Docs');
+    expect(option('mcp-tool')).toBeNull();
+    await act(async () => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    expect(onSelectMcp).toHaveBeenCalledWith(expect.objectContaining({ reference: 'MCP "Docs" (server: "docs")' }));
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('searches tool descriptions and selects only their owning MCP service', async () => {
+    const onSelectMcp = vi.fn();
+    await act(async () => root.render(<Harness searchQuery="manuals" mcpCatalog={mcpCatalog} onSelectMcp={onSelectMcp} />));
+    expect(option('mcp-tool')).toBeNull();
+    await act(async () => option('mcp-server')?.click());
+    expect(onSelectMcp).toHaveBeenCalledWith(expect.objectContaining({ reference: 'MCP "Docs" (server: "docs")' }));
+  });
+
+  it('removes the MCP source and search results when switching to a mode without MCP', async () => {
+    await act(async () => root.render(<Harness entryView="sources" mcpCatalog={mcpCatalog} onSelectMcp={vi.fn()} />));
+    await act(async () => option('mcp')?.click());
+    expect(option('mcp-server')).not.toBeNull();
+    await act(async () => root.render(<Harness entryView="sources" mcpCatalog={mcpCatalog} />));
+    expect(option('files')).not.toBeNull();
+    expect(option('mcp')).toBeNull();
+    expect(option('mcp-server')).toBeNull();
+    await act(async () => root.render(<Harness searchQuery="MCP" mcpCatalog={mcpCatalog} />));
+    expect(option('mcp-server')).toBeNull();
+  });
+
+  it('distinguishes loading, failure, mode restriction, and unsupported hosts with a retry action', async () => {
+    const onRefreshMcp = vi.fn();
+    const onSelectMcp = vi.fn();
+    const render = (props: Partial<HarnessProps>) => act(async () => root.render(
+      <Harness entryView="sources" onSelectMcp={onSelectMcp} onRefreshMcp={onRefreshMcp} {...props} />,
+    ));
+    await render({ mcpLoading: true });
+    await act(async () => option('mcp')?.click());
+    expect(document.body.textContent).toContain('contextPicker.loading');
+    await render({ mcpLoadFailed: true });
+    expect(document.body.textContent).toContain('contextPicker.mcp.loadFailed');
+    await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="contextPicker.mcp.refresh"]')?.click());
+    expect(onRefreshMcp).toHaveBeenCalledOnce();
+    await render({ mcpCatalog: { tools: [], modeRestricted: true } });
+    expect(document.body.textContent).toContain('contextPicker.mcp.modeRestricted');
+    expect(option('mcp-tool')).toBeNull();
+    await render({ mcpUnavailable: 'unsupportedHost' });
+    expect(document.body.textContent).toContain('contextPicker.mcp.unsupportedHost');
+    expect(document.querySelector('[aria-label="contextPicker.mcp.refresh"]')).toBeNull();
+    await render({ mcpUnavailable: 'remoteWorkspace' });
+    expect(document.body.textContent).toContain('contextPicker.mcp.remoteWorkspace');
+  });
+
   it('shows only the runtime winner for a name without exposing its key', async () => {
     const chosen = vi.fn();
     const skills = [{ name: 'pdf', key: 'user::codex::pdf', selectedForRuntime: false }, { name: 'pdf', key: 'project::codex::pdf', selectedForRuntime: true }];
@@ -113,7 +191,7 @@ describe('ChatContextPicker overlay', () => {
 
   beforeEach(() => {
     Element.prototype.scrollIntoView = vi.fn();
-    vi.mocked(workspaceAPI.getDirectoryChildren).mockResolvedValue([]);
+    vi.mocked(workspaceAPI.explorerGetChildren).mockResolvedValue([]);
     vi.mocked(workspaceAPI.searchFilenamesOnlyStreamDetailed).mockResolvedValue({
       searchId: 'search-1',
       searchKind: 'filenames',
@@ -142,11 +220,11 @@ describe('ChatContextPicker overlay', () => {
     });
 
     const picker = document.querySelector<HTMLElement>('.chat-context-picker--overlay');
-    expect(picker?.parentElement?.getAttribute('data-openbitfun-overlay-host')).toBe('true');
+    expect(picker?.closest('[data-openbitfun-overlay-host]')?.getAttribute('data-openbitfun-overlay-host')).toBe('true');
     expect(picker?.style.visibility).toBe('visible');
-    expect(workspaceAPI.getDirectoryChildren).toHaveBeenCalledWith(
+    expect(workspaceAPI.explorerGetChildren).toHaveBeenCalledWith(
+      'workspace-id',
       '/workspace',
-      'remote-connection-1',
     );
   });
 
@@ -168,7 +246,7 @@ describe('ChatContextPicker overlay', () => {
     expect(option('files')).toBeTruthy();
     expect(option('skills')).toBeTruthy();
     expect(option('add-image')).toBeTruthy();
-    expect(workspaceAPI.getDirectoryChildren).not.toHaveBeenCalled();
+    expect(workspaceAPI.explorerGetChildren).not.toHaveBeenCalled();
     expect(document.querySelector('[data-openbitfun-part="currentViewLabel"]')?.textContent)
       .toBe('contextPicker.menuTitle');
 
@@ -177,9 +255,9 @@ describe('ChatContextPicker overlay', () => {
       await Promise.resolve();
     });
 
-    expect(workspaceAPI.getDirectoryChildren).toHaveBeenCalledWith(
+    expect(workspaceAPI.explorerGetChildren).toHaveBeenCalledWith(
+      'workspace-id',
       '/workspace',
-      'remote-connection-1',
     );
   });
 
@@ -198,24 +276,24 @@ describe('ChatContextPicker overlay', () => {
       option('files')?.click();
       await Promise.resolve();
     });
-    expect(workspaceAPI.getDirectoryChildren).toHaveBeenCalledOnce();
+    expect(workspaceAPI.explorerGetChildren).toHaveBeenCalledOnce();
 
     await act(async () => {
       root.render(<Harness {...pickerProps} isOpen={false} />);
       await Promise.resolve();
     });
-    vi.mocked(workspaceAPI.getDirectoryChildren).mockClear();
+    vi.mocked(workspaceAPI.explorerGetChildren).mockClear();
     await act(async () => {
       root.render(<Harness {...pickerProps} />);
       await Promise.resolve();
     });
 
     expect(option('files')).toBeTruthy();
-    expect(workspaceAPI.getDirectoryChildren).not.toHaveBeenCalled();
+    expect(workspaceAPI.explorerGetChildren).not.toHaveBeenCalled();
   });
 
   it('shows the current directory as one continuous workspace-relative path', async () => {
-    vi.mocked(workspaceAPI.getDirectoryChildren).mockResolvedValueOnce([
+    vi.mocked(workspaceAPI.explorerGetChildren).mockResolvedValueOnce([
       {
         path: '/workspace/src',
         name: 'src',
@@ -236,7 +314,7 @@ describe('ChatContextPicker overlay', () => {
     expect(item?.querySelector('[data-openbitfun-part="label"]')?.textContent).toBe('src');
     expect(item?.querySelector('[data-openbitfun-part="metadata"]')).toBeNull();
 
-    vi.mocked(workspaceAPI.getDirectoryChildren).mockResolvedValueOnce([
+    vi.mocked(workspaceAPI.explorerGetChildren).mockResolvedValueOnce([
       {
         path: '/workspace/src/App.tsx',
         name: 'App.tsx',
@@ -297,18 +375,20 @@ describe('ChatContextPicker overlay', () => {
       .toBe(skill.name);
     expect(skillOptions[0]?.querySelector('[data-openbitfun-part="label"]')
       ?.getAttribute('data-overflow-behavior')).toBe('fade');
-    expect(skillOptions[0]?.querySelector('[data-openbitfun-part="label"] [data-overflow-content]'))
-      .toBeNull();
+    expect(skillOptions[0]?.querySelector('[data-openbitfun-part="label"] [data-overflow-style="ellipsis"]')
+      ?.getAttribute('data-overflow-behavior')).toBe('fade');
     expect(skillOptions[0]?.querySelector('[data-openbitfun-part="metadata"]')?.textContent)
       .toBe('Work with PDFs');
     const description = skillOptions[0]?.querySelector('[data-openbitfun-part="skillDescription"]');
     expect(description?.getAttribute('data-marquee-active')).toBeNull();
+    expect(description?.getAttribute('data-marquee-trigger')).toBe('interaction');
+    expect(description?.getAttribute('data-overflow-style')).toBe('ellipsis');
     expect(description?.getAttribute('title')).toBe('');
     expect(skillOptions[0]?.getAttribute('title')).toBe('');
     expect(skillOptions[0]?.querySelector('[data-openbitfun-part="label"]')?.getAttribute('title')).toBe('');
     expect(skillOptions[1]?.querySelector('[data-openbitfun-part="metadata"]')?.textContent)
       .toBe('Build presentations');
-    expect(workspaceAPI.getDirectoryChildren).not.toHaveBeenCalled();
+    expect(workspaceAPI.explorerGetChildren).not.toHaveBeenCalled();
 
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keydown', {
@@ -328,6 +408,30 @@ describe('ChatContextPicker overlay', () => {
 
     expect(onSelectSkill).toHaveBeenCalledWith(secondSkill);
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('renders the full skill catalog beyond ten entries and can select its last skill', async () => {
+    const skills = Array.from({ length: 24 }, (_, index) => ({
+      key: `skill-${index}`,
+      name: `skill-${String(index).padStart(2, '0')}`,
+      selectedForRuntime: true,
+    }));
+    const onSelectSkill = vi.fn();
+    await act(async () => root.render(
+      <Harness entryView="sources" skills={skills} onSelectSkill={onSelectSkill} />,
+    ));
+    await act(async () => option('skills')?.click());
+
+    const options = document.querySelectorAll('[data-openbitfun-context-kind="skill"]');
+    expect(options).toHaveLength(skills.length);
+    expect(options[23].textContent).toContain('skill-23');
+    await act(async () => document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }),
+    ));
+    await act(async () => document.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+    ));
+    expect(onSelectSkill).toHaveBeenCalledWith(skills[23]);
   });
 
   it('runs the add-image action from the source level', async () => {
@@ -445,7 +549,7 @@ describe('ChatContextPicker overlay', () => {
   });
 
   it('does not present a remote browse failure as an empty directory', async () => {
-    vi.mocked(workspaceAPI.getDirectoryChildren).mockRejectedValueOnce(
+    vi.mocked(workspaceAPI.explorerGetChildren).mockRejectedValueOnce(
       new Error('remote connection unavailable'),
     );
 
@@ -513,8 +617,8 @@ describe('ChatContextPicker overlay', () => {
 
     expect(workspaceAPI.searchFilenamesOnlyStreamDetailed).toHaveBeenCalled();
     expect(
-      vi.mocked(workspaceAPI.searchFilenamesOnlyStreamDetailed).mock.calls[0]?.[10],
-    ).toBe('remote-connection-1');
+      vi.mocked(workspaceAPI.searchFilenamesOnlyStreamDetailed).mock.calls[0]?.[0],
+    ).toBe('workspace-id');
 
     await act(async () => {
       reportProgress?.({

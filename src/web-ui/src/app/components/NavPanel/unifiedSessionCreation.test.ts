@@ -7,7 +7,7 @@ function source(relativePath: string): string {
 }
 
 describe('unified project session creation', () => {
-  it('moves New Session from search to each workspace action strip and keeps Hello opening shared chat before voice', () => {
+  it('keeps New Session in workspace actions and opens the conversation dock before voice', () => {
     const mainNav = source('./MainNav.tsx');
     const workspaceBody = source('../../layout/WorkspaceBody.tsx');
     const appLayout = source('../../layout/AppLayout.tsx');
@@ -26,9 +26,9 @@ describe('unified project session creation', () => {
     const sectionsIndex = mainNav.indexOf('data-testid="nav-sections"');
     const sessionsSectionIndex = mainNav.indexOf('data-openbitfun-section="sessions"');
     const assistantActionsStart = workspaceItem.indexOf('className="openbitfun-nav-panel__assistant-item-menu"');
-    const assistantActionsEnd = workspaceItem.indexOf('{menuOpen && createPortal(', assistantActionsStart);
+    const assistantActionsEnd = workspaceItem.indexOf('{menuOpen && createOverlayPortal(', assistantActionsStart);
     const projectActionsStart = workspaceItem.indexOf('className="openbitfun-nav-panel__workspace-item-actions"');
-    const projectActionsEnd = workspaceItem.indexOf('{menuOpen && createPortal(', projectActionsStart);
+    const projectActionsEnd = workspaceItem.indexOf('{menuOpen && createOverlayPortal(', projectActionsStart);
     const actionStrips = [
       workspaceItem.slice(assistantActionsStart, assistantActionsEnd),
       workspaceItem.slice(projectActionsStart, projectActionsEnd),
@@ -52,13 +52,13 @@ describe('unified project session creation', () => {
     expect(workspaceBody).not.toContain('<RealtimeVoiceCallButton />');
     expect(appLayout).toContain('<FloatingMiniChat />');
     expect(appLayout).not.toContain('isWelcomeScene');
-    expect(helloLauncher).toContain("tVoice('voiceCall.call.launcherLabel')");
+    expect(helloLauncher).toContain("aria-label={t('dock.open')}");
     expect(helloLauncher).not.toContain('<Icon name="side-chat" size="md" />');
-    expect(helloLauncher).toContain('onClick={handleOpen}');
+    expect(helloLauncher).toContain('onClick={() => dock.setOpen(true)}');
     expect(helloLauncher).toContain('<ChatPane');
     expect(helloLauncher).toContain('switchTestId="hello-realtime-voice-mode-switch"');
     expect(helloLauncher).toContain('<ConversationModeSurface');
-    expect(helloLauncher).toContain('voiceTarget={miniAppVoiceTarget}');
+    expect(helloLauncher).toContain('voiceTarget={voiceTarget}');
     expect(communicationSurface).toContain('onClick={handleModeSwitch}');
     expect(communicationSurface).toContain('<Phone size={15} aria-hidden="true" />');
     expect(communicationSurface).toMatch(/<RealtimeVoiceCallPanel\b/);
@@ -66,8 +66,8 @@ describe('unified project session creation', () => {
     expect(toolbarMode).toContain('switchTestId="toolbar-realtime-voice-mode-switch"');
     expect(helloLauncher).toContain('<LauncherButton');
     expect(helloLauncher).not.toContain('leadingIcon=');
-    expect(helloLauncher).toContain("tVoice('voiceCall.call.launcherCompactLabel')");
-    expect(voicePanel).not.toContain('createPortal');
+    expect(helloLauncher).toContain("tv('voiceCall.call.launcherCompactLabel')");
+    expect(voicePanel).not.toContain('createOverlayPortal');
     expect(helloLauncherStyles).toContain('right: 0;');
     expect(helloLauncherStyles).toContain('bottom: 0;');
     expect(helloLauncherStyles).toContain(
@@ -124,7 +124,7 @@ describe('unified project session creation', () => {
     expect(mainNav).not.toContain("activateProductAction('settings.external-sources.open')");
   });
 
-  it('opens the footer utility list from Settings without Star, More, or Insights', () => {
+  it('keeps the settings gear and places update checks in its utility menu, independently of About', () => {
     const footerActions = source('./components/PersistentFooterActions.tsx');
     const appearanceQuickSwitch = source('./components/AppearanceQuickSwitchMenuItem.tsx');
     const floatingIndex = footerActions.indexOf('data-testid="nav-settings-floating-item"');
@@ -134,7 +134,8 @@ describe('unified project session creation', () => {
     const aboutIndex = footerActions.indexOf('data-testid="nav-settings-about-item"');
 
     expect(footerActions).toContain('data-testid="nav-footer-settings-item"');
-    expect(footerActions).toContain('icon={<Icon name="gear" size="sm" aria-hidden="true" />}');
+    expect(footerActions).toContain('icon={<span className="openbitfun-update-indicator-anchor"><Icon name="gear" size="sm" aria-hidden="true" /><UpdateIndicator /></span>}');
+    expect(footerActions).toMatch(/className="openbitfun-nav-panel__footer-right">\s*<UpdateDownloadIndicator \/>\s*<div className="openbitfun-nav-panel__footer-menu-wrap">/);
     expect(footerActions).toMatch(
       /leading=\{<Icon name="gear" size="sm" aria-hidden="true" \/>\}[\s\S]*?data-testid="nav-settings-open-item"/,
     );
@@ -144,6 +145,9 @@ describe('unified project session creation', () => {
     expect(appearanceIndex).toBeGreaterThan(notificationIndex);
     expect(openSettingsIndex).toBeGreaterThan(appearanceIndex);
     expect(aboutIndex).toBeGreaterThan(openSettingsIndex);
+    expect(footerActions.indexOf('<UpdateMenuItems')).toBeGreaterThan(openSettingsIndex);
+    expect(footerActions.indexOf('<UpdateMenuItems')).toBeLessThan(aboutIndex);
+    expect(footerActions.slice(footerActions.indexOf('onClick={handleShowAbout}'), aboutIndex)).not.toContain('UpdateIndicator');
     expect(footerActions).toContain("useSettingsStore.getState().openPage('application.appearance')");
     expect(footerActions).not.toContain('GithubStarButton');
     expect(footerActions).not.toContain('nav-footer-github-star-btn');
@@ -204,7 +208,7 @@ describe('unified project session creation', () => {
     expect(contentIndex).toBeGreaterThan(-1);
     expect(persistentFooterIndex).toBeGreaterThan(contentIndex);
     expect(mainNav).toContain('<NavigationPanelBody className="openbitfun-nav-panel__sections" ref={sectionsScrollRef}>');
-    expect(mainNav).toContain('<StickySectionHeader scrollRootRef={sectionsScrollRef}>');
+    expect(mainNav).toContain('<StickySectionHeader scrollRootRef={sectionsScrollRef} contentRef={sessionContentRef}>');
     expect(mainNav).not.toContain('expandedSections');
     expect(mainNav).not.toContain('toggleSection');
     expect(mainNav).not.toContain('openbitfun-nav-panel__collapsible');

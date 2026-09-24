@@ -1,17 +1,27 @@
 //! Clipboard File API
 
-use openbitfun_core::service::remote_ssh::workspace_state::is_remote_path;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// Returns the first path in `paths` that belongs to a registered remote workspace.
-async fn first_remote_path<'a>(paths: impl Iterator<Item = &'a str>) -> Option<String> {
+async fn first_remote_path<'a>(
+    workspace_id: Option<&str>,
+    controller_local: bool,
+    paths: impl Iterator<Item = &'a str>,
+) -> Result<Option<String>, String> {
     for path in paths {
-        if is_remote_path(path.trim()).await {
-            return Some(path.to_string());
+        if openbitfun_core::service::workspace::remote_io_for_legacy_or_id(
+            workspace_id,
+            controller_local,
+            path.trim(),
+        )
+        .await
+        .map_err(|e| e.to_string())?
+        {
+            return Ok(Some(path.to_string()));
         }
     }
-    None
+    Ok(None)
 }
 
 #[derive(Debug, Serialize)]
@@ -23,6 +33,10 @@ pub struct ClipboardFilesResponse {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PasteFilesRequest {
+    #[serde(default)]
+    pub controller_local: bool,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
     pub source_paths: Vec<String>,
     pub target_directory: String,
     pub is_cut: bool,
@@ -237,10 +251,9 @@ mod macos_clipboard {
 #[cfg(target_os = "linux")]
 mod linux_clipboard {
     use super::parse_uri_list;
-    use std::process::Command;
 
     fn read_xclip_uri_list() -> Option<String> {
-        let output = Command::new("xclip")
+        let output = openbitfun_core::util::process_manager::create_command("xclip")
             .args(["-selection", "clipboard", "-t", "text/uri-list", "-o"])
             .output()
             .ok()?;
@@ -253,7 +266,7 @@ mod linux_clipboard {
     }
 
     fn read_wl_paste_uri_list() -> Option<String> {
-        let output = Command::new("wl-paste")
+        let output = openbitfun_core::util::process_manager::create_command("wl-paste")
             .args(["-t", "text/uri-list"])
             .output()
             .ok()?;
@@ -310,6 +323,135 @@ pub async fn get_clipboard_files() -> Result<ClipboardFilesResponse, String> {
     }
 }
 
+/// Image bytes read from the system clipboard, base64-encoded for the webview.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClipboardImageResponse {
+    pub base64: Option<String>,
+    pub mime_type: Option<String>,
+}
+
+impl Default for ClipboardImageResponse {
+    fn default() -> Self {
+        Self {
+            base64: None,
+            mime_type: None,
+        }
+    }
+}
+
+/// Sniffs the image format from magic bytes so a tool that misreports success
+/// cannot inject arbitrary text as an attachment payload.
+pub(crate) fn sniff_image_mime(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) {
+        Some("image/png")
+    } else if bytes.len() >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF {
+        Some("image/jpeg")
+    } else {
+        None
+    }
+}
+
+/// Outcome of a Linux clipboard-image probe.
+enum ClipboardImageRead {
+    /// An image payload, base64-encoded with its sniffed MIME type.
+    Image(String, String),
+    /// The reader tools ran; the clipboard simply holds no image payload.
+    Empty,
+    /// Neither `wl-paste` nor `xclip` could be spawned. Surfaced to the user
+    /// instead of silently reporting "no image": a plain-text clipboard and a
+    /// machine missing the reader tools must stay distinguishable.
+    ToolsUnavailable(String),
+}
+
+/// Reads a clipboard image on Linux.
+///
+/// WebKitGTK delivers paste events with empty `DataTransfer` items, so the
+/// webview itself can never see a pasted image; reading the Wayland/X11
+/// clipboard through the same tools as `get_clipboard_files` is the only
+/// delivery path.
+#[cfg(target_os = "linux")]
+fn read_clipboard_image_internal() -> ClipboardImageRead {
+    use base64::Engine as _;
+
+    /// `Ok(None)` = the tool ran and reported no such payload;
+    /// `Err` = the tool could not be run at all.
+    let read_target = |program: &str, args: &[&str]| -> Result<Option<Vec<u8>>, String> {
+        let output = openbitfun_core::util::process_manager::create_command(program)
+            .args(args)
+            .output()
+            .map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    format!("{program} is not installed")
+                } else {
+                    format!("failed to spawn {program}: {error}")
+                }
+            })?;
+        Ok(output
+            .status
+            .success()
+            .then_some(output.stdout)
+            .filter(|stdout| !stdout.is_empty()))
+    };
+
+    let mut runnable_tools = 0usize;
+    let mut last_tool_error = String::new();
+    for mime in ["image/png", "image/jpeg"] {
+        for (program, args) in [
+            ("wl-paste", vec!["-t", mime]),
+            ("xclip", vec!["-selection", "clipboard", "-t", mime, "-o"]),
+        ] {
+            match read_target(program, &args) {
+                Ok(Some(bytes)) => {
+                    if let Some(sniffed) = sniff_image_mime(&bytes) {
+                        let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                        return ClipboardImageRead::Image(encoded, sniffed.to_string());
+                    }
+                    runnable_tools += 1;
+                }
+                Ok(None) => runnable_tools += 1,
+                Err(error) => last_tool_error = error,
+            }
+        }
+    }
+
+    if runnable_tools > 0 {
+        return ClipboardImageRead::Empty;
+    }
+    ClipboardImageRead::ToolsUnavailable(format!(
+        "clipboard_image_unsupported: reading a clipboard image needs wl-paste (Wayland) or \
+         xclip (X11), but neither is available ({last_tool_error}); install wl-clipboard or \
+         xclip and retry"
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn get_clipboard_image_internal() -> ClipboardImageRead {
+    read_clipboard_image_internal()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn get_clipboard_image_internal() -> ClipboardImageRead {
+    // Other platforms deliver clipboard images to the page directly and never
+    // need the host fallback.
+    ClipboardImageRead::Empty
+}
+
+#[tauri::command]
+pub async fn get_clipboard_image() -> Result<ClipboardImageResponse, String> {
+    match get_clipboard_image_internal() {
+        ClipboardImageRead::Image(base64, mime_type) => Ok(ClipboardImageResponse {
+            base64: Some(base64),
+            mime_type: Some(mime_type),
+        }),
+        ClipboardImageRead::Empty => Ok(ClipboardImageResponse::default()),
+        ClipboardImageRead::ToolsUnavailable(error) => {
+            log::warn!("Clipboard image read unsupported: {}", error);
+            Err(error)
+        }
+    }
+}
+
 /// Pastes clipboard files between controller-local paths.
 ///
 /// The remote file provider exposes no copy primitive, so a remote workspace path is refused here
@@ -317,10 +459,12 @@ pub async fn get_clipboard_files() -> Result<ClipboardFilesResponse, String> {
 #[tauri::command]
 pub async fn paste_files(request: PasteFilesRequest) -> Result<PasteFilesResponse, String> {
     if let Some(remote_path) = first_remote_path(
+        request.workspace_id.as_deref(),
+        request.controller_local,
         std::iter::once(request.target_directory.as_str())
             .chain(request.source_paths.iter().map(String::as_str)),
     )
-    .await
+    .await?
     {
         return Err(format!(
             "paste_files cannot copy remote workspace path '{}': the remote file provider has no copy primitive; local filesystem fallback was not attempted",
@@ -469,9 +613,31 @@ pub(crate) fn copy_directory_recursive(source: &Path, target: &Path) -> Result<(
 mod tests {
     use super::{
         copy_directory_recursive, decode_file_uri, generate_unique_path,
-        parse_clipboard_path_segments, parse_uri_list,
+        parse_clipboard_path_segments, parse_uri_list, sniff_image_mime,
     };
     use std::path::Path;
+
+    #[test]
+    fn sniff_image_mime_detects_png_header() {
+        assert_eq!(
+            sniff_image_mime(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0]),
+            Some("image/png")
+        );
+    }
+
+    #[test]
+    fn sniff_image_mime_detects_jpeg_header() {
+        assert_eq!(
+            sniff_image_mime(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 0]),
+            Some("image/jpeg")
+        );
+    }
+
+    #[test]
+    fn sniff_image_mime_rejects_non_image_payloads() {
+        assert_eq!(sniff_image_mime(b"image/png but not really"), None);
+        assert_eq!(sniff_image_mime(&[]), None);
+    }
 
     #[test]
     fn decode_unix_file_uri() {
@@ -602,6 +768,8 @@ mod remote_guard_tests {
         let _ = std::fs::remove_file(&sentinel);
 
         let error = paste_files(PasteFilesRequest {
+            controller_local: false,
+            workspace_id: None,
             source_paths: vec![source.to_string_lossy().to_string()],
             target_directory: format!("{REMOTE_ROOT}/src"),
             is_cut: true,

@@ -1,3 +1,14 @@
+import { InvalidationSync } from '../../../shared/relay-transport/InvalidationSync';
+import type { RelayFailureAction } from '../../../shared/relay-transport/RelayFailure';
+import { DeviceSystemMark } from '../components/DeviceSystemMark';
+import { deviceFailurePresentation } from '../services/deviceFailureCopy';
+import {
+  ChevronLeft as LucideChevronLeft,
+  Monitor as LucideMonitor,
+  Pencil as LucidePencil,
+  RefreshCw as LucideRefreshCw,
+  UserRoundSearch as LucideUserRoundSearch,
+} from 'lucide-react';
 /**
  * Devices Page — list same-account devices and pick the control target.
  *
@@ -17,21 +28,19 @@ import {
   MobileListRow,
   MobilePageHeader,
   MobileStatus,
+  MobileTextField,
 } from '@openbitfun/ui/mobile';
 import {
   RelayHttpClient,
+  deviceDisplayName,
   isAccountIdentityChangedError,
+  type RelayDeviceInfo,
 } from '../services/RelayHttpClient';
 import { useI18n } from '../i18n';
 import { useMobileStore } from '../services/store';
-import { selectAccountDevice } from '../services/accountDeviceSelection';
+import { selectAccountDevice, isDeviceControllable } from '../services/accountDeviceSelection';
 
-interface DeviceInfo {
-  device_id: string;
-  device_name: string;
-  online: boolean;
-  last_seen_at?: number | null;
-}
+type DeviceInfo = RelayDeviceInfo;
 
 
 interface Props {
@@ -45,35 +54,15 @@ interface Props {
 }
 
 const BackIcon = () => (
-  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="m15 18-6-6 6-6" />
-  </svg>
+  <LucideChevronLeft width="20" height="20" stroke="currentColor" aria-hidden="true" />
 );
 
 const RefreshIcon = () => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" />
-    <path d="M21 3v5h-5" />
-    <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
-    <path d="M3 21v-5h5" />
-  </svg>
-);
-
-const DeviceIcon = () => (
-  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-    <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
-    <line x1="8" y1="21" x2="16" y2="21" />
-    <line x1="12" y1="17" x2="12" y2="21" />
-  </svg>
+  <LucideRefreshCw width="16" height="16" stroke="currentColor" aria-hidden="true" />
 );
 
 const NoIdentityIcon = () => (
-  <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round">
-    <circle cx="12" cy="8" r="4" />
-    <path d="M6 21v-1a6 6 0 0 1 9-5.2" />
-    <circle cx="18" cy="18" r="4" />
-    <path d="M18 16.5v1.8l1.2 1.2" />
-  </svg>
+  <LucideUserRoundSearch width="40" height="40" stroke="currentColor" aria-hidden="true" />
 );
 
 const DevicesPage: React.FC<Props> = ({ client, onBack, onDeviceSelected = onBack, accountLanding = false, autoSelect = true, onSignOut, preferredDeviceId }) => {
@@ -83,8 +72,15 @@ const DevicesPage: React.FC<Props> = ({ client, onBack, onDeviceSelected = onBac
   const [identityReady, setIdentityReady] = useState(client.hasAccountIdentity);
   const [identityChecking, setIdentityChecking] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [directoryLoaded, setDirectoryLoaded] = useState(false);
   const [switchingId, setSwitchingId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ message: string; action: RelayFailureAction | null } | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [aliasDraft, setAliasDraft] = useState('');
+  // `unknown` means the relay has not answered yet and must never be rendered as
+  // an unsupported relay: doing so flashed the notice on every page entry.
+  const [aliasCapability, setAliasCapability] = useState<'unknown' | 'supported' | 'unsupported'>('unknown');
+  const aliasSupported = aliasCapability === 'supported';
   const mountedRef = useRef(true);
   const identityRequestRef = useRef(0);
   const devicesRequestRef = useRef(0);
@@ -98,21 +94,20 @@ const DevicesPage: React.FC<Props> = ({ client, onBack, onDeviceSelected = onBac
     const rightCurrent = right.device_id === client.targetDeviceId;
     if (leftCurrent !== rightCurrent) return leftCurrent ? -1 : 1;
     if (left.online !== right.online) return left.online ? -1 : 1;
-    return (left.device_name || left.device_id).localeCompare(right.device_name || right.device_id);
+    return deviceDisplayName(left).localeCompare(deviceDisplayName(right));
     });
     return listedDevices;
   }, [client, client.controllerDeviceId, client.targetDeviceId, connectionHealth, devices]);
 
-  const friendlyError = useCallback((value: unknown, fallbackKey: string) => {
-    const message = String((value as { message?: string })?.message || value);
-    if (message.includes('HTTP 401') || message.includes('Sign in with GitHub')) {
-      return t(accountLanding ? 'pairing.accountSessionExpired' : 'devices.authorizationExpired');
-    }
-    if (message.includes('HTTP 404')) return t('devices.deviceUnavailable');
-    if (message.includes('HTTP 503') || message.includes('HTTP 504')) {
-      return t('devices.deviceUnavailable');
-    }
-    return t(fallbackKey);
+  const describeFailure = useCallback((value: unknown, fallbackKey: string) => {
+    const { key, action } = deviceFailurePresentation(
+      value,
+      fallbackKey,
+      accountLanding ? 'pairing.accountSessionExpired' : 'devices.authorizationExpired',
+    );
+    // The raw transport detail (status, exception text) stays in the log only.
+    console.warn('[DevicesPage] device request failed', value);
+    return { message: t(key), action };
   }, [accountLanding, t]);
 
   useEffect(() => {
@@ -125,7 +120,7 @@ const DevicesPage: React.FC<Props> = ({ client, onBack, onDeviceSelected = onBac
     };
   }, []);
 
-  const refreshDevices = useCallback(async () => {
+  const readDevices = useCallback(async () => {
     if (!client.hasAccountIdentity) return;
     const requestId = ++devicesRequestRef.current;
     const isCurrent = () => (
@@ -133,9 +128,23 @@ const DevicesPage: React.FC<Props> = ({ client, onBack, onDeviceSelected = onBac
       && devicesRequestRef.current === requestId
     );
     try {
+      const epoch = client.accountEpoch;
+      void client.supportsDeviceAlias()
+        .then(supported => {
+          if (isCurrent() && client.accountEpoch === epoch) {
+            setAliasCapability(supported ? 'supported' : 'unsupported');
+          }
+        })
+        .catch(error => {
+          // A failed capability read is not evidence that the relay lacks the
+          // capability, so it keeps the previous answer. Relay reachability is
+          // reported by the directory request itself.
+          if (isCurrent()) console.warn('[DevicesPage] relay alias capability unavailable', error);
+        });
       const list = await client.listDevices();
       if (!isCurrent()) return;
       setDevices(list);
+      setDirectoryLoaded(true);
       setError(null);
       setIdentityReady(true);
     } catch (e: unknown) {
@@ -149,28 +158,30 @@ const DevicesPage: React.FC<Props> = ({ client, onBack, onDeviceSelected = onBac
         setIdentityReady(false);
         setDevices([]);
       } else {
-        setError(friendlyError(e, 'devices.loadFailed'));
+        setError(describeFailure(e, 'devices.loadFailed'));
       }
     }
-  }, [client, friendlyError]);
+  }, [client, describeFailure]);
 
+  const directorySyncRef = useRef<InvalidationSync | null>(null);
+  const refreshDevices = useCallback(() => directorySyncRef.current?.invalidate() ?? Promise.resolve(), []);
   useEffect(() => {
     let cancelled = false;
-    let timer: ReturnType<typeof setInterval> | undefined;
-    const init = async () => {
-      if (cancelled || !mountedRef.current) return;
-      setLoading(true);
-      await refreshDevices();
-      if (cancelled || !mountedRef.current) return;
-      setLoading(false);
-      timer = setInterval(refreshDevices, 30_000);
-    };
-    void init();
+    const directorySync = new InvalidationSync(readDevices);
+    directorySyncRef.current = directorySync;
+    const refresh = () => { if (document.visibilityState === 'visible') void refreshDevices(); };
+    const stopPresence = client.onDeviceDirectoryChanged(refresh);
+    document.addEventListener('visibilitychange', refresh);
+    setLoading(true);
+    void refreshDevices().finally(() => { if (!cancelled) setLoading(false); });
     return () => {
       cancelled = true;
-      if (timer) clearInterval(timer);
+      directorySync.stop();
+      if (directorySyncRef.current === directorySync) directorySyncRef.current = null;
+      stopPresence();
+      document.removeEventListener('visibilitychange', refresh);
     };
-  }, [refreshDevices]);
+  }, [client, readDevices, refreshDevices]);
 
   const handleManualRefresh = useCallback(async () => {
     if (loading || switchingId) return;
@@ -180,8 +191,23 @@ const DevicesPage: React.FC<Props> = ({ client, onBack, onDeviceSelected = onBac
     if (mountedRef.current) setLoading(false);
   }, [loading, refreshDevices, switchingId]);
 
+  const updateAlias = useCallback(async (device: DeviceInfo) => {
+    const epoch = client.accountEpoch;
+    try {
+      await client.updateDeviceAlias(device.device_id, aliasDraft.trim() || null);
+      if (!mountedRef.current || client.accountEpoch !== epoch) return;
+      setEditingId(null);
+      await refreshDevices();
+    } catch (e) {
+      if (!mountedRef.current || client.accountEpoch !== epoch || isAccountIdentityChangedError(e)) return;
+      setError(String(e).includes('unsupported')
+        ? { message: t('devices.aliasUnsupported'), action: null }
+        : describeFailure(e, 'devices.loadFailed'));
+    }
+  }, [aliasDraft, client, describeFailure, refreshDevices, t]);
   const selectDevice = useCallback(async (d: DeviceInfo, probe = true) => {
-    if (!d.online || switchingId) return;
+    // A confirmed-incompatible device is shown but never a control target.
+    if (!d.online || !isDeviceControllable(d) || switchingId) return;
     if (client.targetDeviceId === d.device_id) return;
     const requestId = ++switchRequestRef.current;
     const accountEpoch = client.accountEpoch;
@@ -214,7 +240,7 @@ const DevicesPage: React.FC<Props> = ({ client, onBack, onDeviceSelected = onBac
       resetForDeviceSwitch();
       setControlTarget({
         deviceId: d.device_id,
-        deviceName: d.device_name,
+        deviceName: client.resolveDeviceName(d.device_id, deviceDisplayName(d)),
       });
       onDeviceSelected();
     } catch (e: unknown) {
@@ -225,14 +251,14 @@ const DevicesPage: React.FC<Props> = ({ client, onBack, onDeviceSelected = onBac
         setIdentityReady(false);
         setDevices([]);
       } else {
-        setError(friendlyError(e, 'devices.switchFailed'));
+        setError(describeFailure(e, 'devices.switchFailed'));
       }
     } finally {
       if (mountedRef.current && switchRequestRef.current === requestId) {
         setSwitchingId(null);
       }
     }
-  }, [client, friendlyError, onDeviceSelected, resetForDeviceSwitch, setControlTarget, switchingId, t]);
+  }, [client, describeFailure, onDeviceSelected, resetForDeviceSwitch, setControlTarget, switchingId, t]);
 
   // Keep the online/scanned-device shortcut after account UI entry, without
   // making discovery failures undo authentication or retry in a render loop.
@@ -250,54 +276,94 @@ const DevicesPage: React.FC<Props> = ({ client, onBack, onDeviceSelected = onBac
         {sortedDevices.map((d) => {
           const isCurrent = client.targetDeviceId === d.device_id;
           const isSwitching = switchingId === d.device_id;
-          const clickable = d.online && !isCurrent && !switchingId;
+          const controllable = isDeviceControllable(d);
+          const clickable = d.online && controllable && !isCurrent && !switchingId;
           return (
-            <MobileListRow
-              key={d.device_id}
-              appearance="surface"
-              className={[
-                'devices-page__device',
-                d.online ? 'is-online' : 'is-offline',
-                isCurrent ? 'is-current' : '',
-                isSwitching ? 'is-switching' : '',
-              ].filter(Boolean).join(' ')}
-              disabled={!clickable}
-              onClick={() => clickable && selectDevice(d)}
-              leading={<span className="devices-page__device-icon"><DeviceIcon /></span>}
-              label={(
-                <span className="devices-page__device-name-row">
-                  <span className="devices-page__device-name">
-                    {d.device_name || t('devices.unknownDevice')}
+            <div key={d.device_id}>
+            {/* Renaming replaces the row in place: keeping the row and an editor
+                under it shows the same device name twice. */}
+            {editingId === d.device_id ? (
+              <div className="devices-page__alias-editor">
+                <MobileTextField
+                  autoFocus
+                  appearance="surface"
+                  value={aliasDraft}
+                  onChange={e => setAliasDraft(e.target.value)}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter') { event.preventDefault(); void updateAlias(d); }
+                    if (event.key === 'Escape') { event.preventDefault(); setEditingId(null); }
+                  }}
+                  placeholder={t('devices.aliasPlaceholder')}
+                  aria-label={t('devices.alias')}
+                />
+                <div className="devices-page__alias-actions">
+                  <MobileButton size="sm" appearance="primary" onClick={() => void updateAlias(d)}>{t('devices.saveAlias')}</MobileButton>
+                  <MobileButton size="sm" onClick={() => setEditingId(null)}>{t('common.cancel')}</MobileButton>
+                </div>
+              </div>
+            ) : (
+              <div className="devices-page__device-line">
+              <MobileListRow
+                appearance="surface"
+                className={[
+                  'devices-page__device',
+                  d.online ? 'is-online' : 'is-offline',
+                  isCurrent ? 'is-current' : '',
+                  isSwitching ? 'is-switching' : '',
+                ].filter(Boolean).join(' ')}
+                disabled={!clickable}
+                onClick={() => clickable && selectDevice(d)}
+                leading={(
+                  <span className="devices-page__device-icon">
+                    <DeviceSystemMark deviceKind={d.device_kind} os={d.device_os} size={20} />
                   </span>
-                  {isCurrent && (
-                    <MobileBadge className="devices-page__badge devices-page__badge--current" tone="success">
-                      {t('devices.current')}
-                    </MobileBadge>
-                  )}
+                )}
+                label={(
+                  <span className="devices-page__device-name-row">
+                    <span className="devices-page__device-name">
+                      {deviceDisplayName(d) || t('devices.unknownDevice')}
+                    </span>
+                    {d.device_model || d.device_os ? <small>{[d.device_model, d.device_os, d.device_os_version].filter(Boolean).join(' · ')}</small> : null}
+                    {isCurrent && (
+                      <MobileBadge className="devices-page__badge devices-page__badge--current" tone="success">
+                        {t('devices.current')}
+                      </MobileBadge>
+                    )}
+                    {!controllable && (
+                      <MobileBadge className="devices-page__badge" tone="warning">
+                        {t('devices.clientIncompatible')}
+                      </MobileBadge>
+                    )}
 
-                </span>
-              )}
-              supportingText={(
-                <span className="devices-page__device-meta">
-                  <span className={`devices-page__status-dot ${d.online ? 'is-online' : 'is-offline'}`} />
-                  {d.online
-                    ? t('devices.online')
-                    : d.last_seen_at
-                      ? t('devices.lastSeen', { time: formatRelativeTime(d.last_seen_at * 1000) })
-                      : t('devices.offline')}
-                </span>
-              )}
-              trailing={isSwitching ? (
-                <span className="devices-page__device-spinner spinner" />
-              ) : (
-                clickable && (
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="m9 18 6-6-6-6" />
-                  </svg>
-                )
-              )}
-              selected={isCurrent}
-            />
+                  </span>
+                )}
+                supportingText={(
+                  <span className="devices-page__device-meta">
+                    <span className={`devices-page__status-dot ${d.online ? 'is-online' : 'is-offline'}`} />
+                    {d.online
+                      ? t('devices.online')
+                      : d.last_seen_at
+                        ? t('devices.lastSeen', { time: formatRelativeTime(d.last_seen_at * 1000) })
+                        : t('devices.offline')}
+                  </span>
+                )}
+
+                selected={isCurrent}
+              />
+              {/* Renaming is an action on the row, so it sits on the row's own line
+                  instead of a block under it: one line per device at every width. */}
+              <MobileIconButton
+                appearance="plain"
+                className="devices-page__device-edit"
+                disabled={!aliasSupported}
+                icon={<LucidePencil width="18" height="18" stroke="currentColor" aria-hidden="true" />}
+                aria-label={t('devices.editAlias')}
+                title={t('devices.editAlias')}
+                onClick={() => { setEditingId(d.device_id); setAliasDraft(d.device_alias ?? ''); }}
+              />
+              </div>
+            )}
+            </div>
           );
         })}
       </div>
@@ -328,7 +394,7 @@ const DevicesPage: React.FC<Props> = ({ client, onBack, onDeviceSelected = onBac
       );
     }
 
-    if (loading && sortedDevices.length === 0) {
+    if (loading && !directoryLoaded && sortedDevices.length === 0) {
       return (
         <MobileStatus className="devices-page__loading" loading title={t('devices.loading')} />
       );
@@ -337,17 +403,27 @@ const DevicesPage: React.FC<Props> = ({ client, onBack, onDeviceSelected = onBac
     if (sortedDevices.length === 0) {
       // A failed directory request is not evidence that the account is empty.
       if (error) return null;
-      return <MobileStatus className="devices-page__empty" description={t('devices.noDevices')} />;
+      return <section className="devices-page__onboarding" aria-labelledby="devices-empty-title">
+        <div className="devices-page__onboarding-icon"><LucideMonitor size={28} aria-hidden="true" /></div>
+        <h2 id="devices-empty-title">{t('devices.emptyTitle')}</h2>
+        <p className="devices-page__onboarding-intro">{t('devices.emptyDescription')}</p>
+        <ol className="devices-page__steps">
+          <li><span aria-hidden="true">1</span><div><strong>{t('devices.emptyStepOne')}</strong><p>{t('devices.emptyStepOneDetail')}</p></div></li>
+          <li><span aria-hidden="true">2</span><div><strong>{t('devices.emptyStepTwo')}</strong><p>{t('devices.emptyStepTwoDetail')}</p></div></li>
+        </ol>
+        <MobileButton appearance="secondary" block leading={<RefreshIcon />} loading={loading} onClick={handleManualRefresh}>{t('devices.refresh')}</MobileButton>
+        <p className="devices-page__onboarding-note">{t('devices.emptyAutoRefresh')}</p>
+      </section>;
     }
 
     return renderDeviceList();
   };
 
   return (
-    <div className="devices-page">
+    <div className={`devices-page${identityReady && directoryLoaded && sortedDevices.length === 0 && !error ? ' devices-page--empty' : ''}`}>
       <MobilePageHeader
-        className="devices-page__header"
-        leading={accountLanding ? <MobileButton appearance="plain" size="sm" onClick={onBack}>{t('devices.signOut')}</MobileButton> : <MobileIconButton
+        className={`devices-page__header${accountLanding ? ' devices-page__header--account' : ''}`}
+        leading={accountLanding ? undefined : <MobileIconButton
           appearance="floating"
           className="devices-page__back-btn"
           icon={<BackIcon />}
@@ -356,9 +432,9 @@ const DevicesPage: React.FC<Props> = ({ client, onBack, onDeviceSelected = onBac
         />}
         title={t('devices.title')}
         actions={<>
-          {!accountLanding && onSignOut && <MobileButton appearance="plain" size="sm" onClick={onSignOut}>{t('devices.signOut')}</MobileButton>}
-          <MobileIconButton
-          appearance="floating"
+          {(accountLanding || onSignOut) && <MobileButton appearance="plain" size="sm" onClick={accountLanding ? onBack : onSignOut}>{t('devices.signOut')}</MobileButton>}
+          {(sortedDevices.length > 0 || error || !identityReady) && <MobileIconButton
+          appearance="plain"
           className="devices-page__refresh-btn"
           icon={<RefreshIcon />}
           loading={loading || identityChecking}
@@ -366,12 +442,34 @@ const DevicesPage: React.FC<Props> = ({ client, onBack, onDeviceSelected = onBac
           disabled={!!switchingId}
           aria-label={t('devices.refresh')}
           title={t('devices.refresh')}
-        /></>}
+        />}</>}
       />
 
-      {accountLanding && <p className="devices-page__description">{t('devices.accountReady')}</p>}
-      {error && <MobileBanner className="devices-page__error" tone="danger">{error}</MobileBanner>}
+      {accountLanding && sortedDevices.length > 0 && <p className="devices-page__description">{t('devices.accountReady')}</p>}
+      {error && (
+        <MobileBanner
+          className="devices-page__error"
+          tone="danger"
+          action={(error.action === 'retry' || error.action === 'check-updates') ? (
+            // Mobile web cannot self-update: for an outdated build or a retired
+            // relay the sentence carries the instruction and this re-reads the
+            // directory instead of pretending the app was updated.
+            <MobileButton
+              className="devices-page__error-action"
+              appearance="plain"
+              size="sm"
+              loading={loading || !!switchingId}
+              onClick={handleManualRefresh}
+            >
+              {t(error.action === 'check-updates' ? 'devices.refresh' : 'devices.retry')}
+            </MobileButton>
+          ) : undefined}
+        >
+          {error.message}
+        </MobileBanner>
+      )}
 
+      {aliasCapability === 'unsupported' && <MobileBanner>{t('devices.aliasUnsupported')}</MobileBanner>}
       <div className="devices-page__body">
         {renderBody()}
       </div>

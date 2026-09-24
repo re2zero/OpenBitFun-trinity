@@ -1,3 +1,4 @@
+import { useDeviceDirectory, resolveDeviceName } from './deviceDirectory';
 /** UI sign-in state follows the shared GitHub identity, independently of Relay availability. */
 import { useEffect, useState } from 'react';
 import { useAccountIdentity } from '@/infrastructure/account-identity';
@@ -10,9 +11,10 @@ export interface AccountLoginState {
 
 export function useAccountLoginState(): AccountLoginState {
   const identity = useAccountIdentity();
-  const githubId = identity.me?.user.githubId;
+  const directory = useDeviceDirectory();
+  const githubId = (identity.me?.user.accountId ?? identity.me?.user.githubId);
   const loggedIn = identity.status === 'signed-in' && githubId !== undefined;
-  const [device, setDevice] = useState<{ githubId: number; name: string | null } | null>(null);
+  const [device, setDevice] = useState<{ githubId: string | number; name: string | null } | null>(null);
   useEffect(() => {
     if (!loggedIn || githubId === undefined) return;
     let current = true;
@@ -23,5 +25,5 @@ export function useAccountLoginState(): AccountLoginState {
     });
     return () => { current = false; };
   }, [loggedIn, githubId]);
-  return { loggedIn, deviceName: loggedIn && device?.githubId === githubId ? device.name : null };
+  return { loggedIn, deviceName: loggedIn && directory.localId ? resolveDeviceName(directory.localId) : loggedIn && device?.githubId === githubId ? device.name : null };
 }

@@ -1,41 +1,15 @@
-//! Device RPC endpoints — any authenticated client can route commands to
-//! other same-account devices via HTTP (no WS needed). The relay acts as
-//! a transparent router: it validates the account token, routes the opaque
-//! encrypted payload to the target device's WS, waits for the response,
-//! and returns it over HTTP.
-//!
-//! This enables mobile-web and desktop alike to browse other devices'
-//! workspaces/sessions and dispatch tasks, without requiring a direct WS
-//! connection or proxying through another desktop.
+//! Authenticated device directory and key lookup. Bidirectional RPC uses realtime.
 
-use axum::extract::{DefaultBodyLimit, Path, State};
+use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
-use axum::routing::{delete, get, post};
+use axum::routing::{get, patch};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 
 use crate::db::AuthToken;
 use crate::routes::api::AppState;
-use crate::routes::websocket::OutboundProtocol;
-
-#[cfg(not(test))]
-const RPC_TIMEOUT: Duration = Duration::from_secs(120);
-#[cfg(test)]
-const RPC_TIMEOUT: Duration = Duration::from_millis(100);
 
 const MAX_DEVICE_ID_BYTES: usize = 128;
-const MAX_ENCRYPTED_PAYLOAD_BYTES: usize = 48 * 1024 * 1024;
-const MAX_NONCE_BYTES: usize = 256;
-
-/// Body ceiling for `/api/devices/:id/rpc`.
-///
-/// Without this the route inherits Axum's 2 MB default, which rejects the body
-/// before `is_valid_encrypted_payload` ever runs — so a mobile client sending a
-/// photo got a bare 413 while the payload validator above claimed to allow
-/// 48 MB. Derived from that constant so the two cannot drift apart again; the
-/// slack covers the JSON envelope and the base64 nonce.
-const RPC_BODY_LIMIT_BYTES: usize = MAX_ENCRYPTED_PAYLOAD_BYTES + 64 * 1024;
 
 fn is_valid_device_id(value: &str) -> bool {
     !value.is_empty()
@@ -43,17 +17,6 @@ fn is_valid_device_id(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
-}
-
-fn is_valid_encrypted_payload(encrypted_data: &str, nonce: &str) -> bool {
-    !encrypted_data.is_empty()
-        && encrypted_data.len() <= MAX_ENCRYPTED_PAYLOAD_BYTES
-        && encrypted_data.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'=' | b'-' | b'_')
-        })
-        && !nonce.is_empty()
-        && nonce.len() <= MAX_NONCE_BYTES
-        && !nonce.chars().any(char::is_control)
 }
 
 /// Validate bearer token and return its account principal and capability kind.
@@ -84,14 +47,9 @@ pub fn device_router() -> Router<AppState> {
         .route("/api/devices", get(list_devices))
         .route("/api/devices/{target_device_id}/key", get(device_key))
         .route(
-            "/api/devices/{target_device_id}/rpc",
-            post(device_rpc).layer(DefaultBodyLimit::max(RPC_BODY_LIMIT_BYTES)),
+            "/api/devices/{target_device_id}",
+            patch(patch_device).delete(delete_device),
         )
-        .route(
-            "/api/devices/{target_device_id}/messages",
-            post(device_message).layer(DefaultBodyLimit::max(RPC_BODY_LIMIT_BYTES)),
-        )
-        .route("/api/devices/{target_device_id}", delete(delete_device))
 }
 
 #[derive(Serialize)]
@@ -136,6 +94,15 @@ pub struct DeviceListEntry {
     pub device_id: String,
     pub device_name: String,
     pub device_kind: Option<String>,
+    pub device_alias: Option<String>,
+    pub device_model: Option<String>,
+    pub device_os: Option<String>,
+    pub device_os_version: Option<String>,
+    pub client_version: Option<String>,
+    pub client_protocol: Option<u32>,
+    /// Relay-computed: whether this device can be remote-controlled by the
+    /// caller, based on the two stored client protocol versions.
+    pub compatible: bool,
     pub online: bool,
     pub last_seen_at: Option<i64>,
 }
@@ -151,6 +118,20 @@ async fn list_devices(
     let auth = validate_user(&state, &headers).await?;
     let user_id = auth.user_id.clone();
 
+    // The caller's own stored build decides compatibility. For a delegated
+    // controller token this is the row of the device the token belongs to.
+    let caller_protocol = crate::db::stored_client_protocol(
+        sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT client_protocol FROM devices WHERE user_id = ? AND device_id = ?",
+        )
+        .bind(&auth.user_id)
+        .bind(&auth.device_id)
+        .fetch_optional(state.db.as_ref())
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+        .flatten(),
+    );
+
     // Get online devices from DeviceManager (in-memory)
     let online = state.device_manager.online_devices(&user_id);
     let online_ids: std::collections::HashSet<String> =
@@ -163,15 +144,26 @@ async fn list_devices(
         let db = &state.db;
         if let Ok(db_devices) = crate::db::DeviceRow::list_by_user(db, &user_id).await {
             for row in db_devices {
-                if !crate::db::device_kind_is_desktop(row.device_kind.as_deref()) {
+                if !crate::db::device_kind_is_host(row.device_kind.as_deref()) {
                     hidden_ids.insert(row.device_id);
                     continue;
                 }
                 let is_online = online_ids.contains(&row.device_id);
+                let target_protocol = row.client_protocol_u32();
                 devices.push(DeviceListEntry {
                     device_id: row.device_id,
                     device_name: row.device_name.unwrap_or_default(),
                     device_kind: row.device_kind,
+                    device_alias: row.device_alias,
+                    device_model: row.device_model,
+                    device_os: row.device_os,
+                    device_os_version: row.device_os_version,
+                    client_version: row.client_version,
+                    client_protocol: target_protocol,
+                    compatible: crate::db::client_builds_compatible(
+                        caller_protocol,
+                        target_protocol,
+                    ),
                     online: is_online,
                     last_seen_at: row.last_seen_at,
                 });
@@ -191,6 +183,13 @@ async fn list_devices(
                 device_id: id.clone(),
                 device_name: name.clone(),
                 device_kind: None,
+                device_alias: None,
+                device_model: None,
+                device_os: None,
+                device_os_version: None,
+                client_version: None,
+                client_protocol: None,
+                compatible: crate::db::client_builds_compatible(caller_protocol, None),
                 online: true,
                 last_seen_at: None,
             });
@@ -200,153 +199,97 @@ async fn list_devices(
     Ok(Json(devices))
 }
 
-// ── Device RPC ──────────────────────────────────────────────────────────
-
-#[derive(Deserialize)]
-pub struct DeviceRpcRequest {
-    /// Opaque ciphertext encrypted client-side with the device-pair key.
-    /// The relay never decrypts this — it only routes.
-    pub encrypted_data: String,
-    pub nonce: String,
+// A custom deserializer preserves explicit null rather than collapsing it into omission.
+fn present_nullable<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Option<String>>, D::Error> {
+    Option::<String>::deserialize(deserializer).map(Some)
 }
 
-#[derive(Serialize)]
-pub struct DeviceRpcResponse {
-    pub encrypted_data: String,
-    pub nonce: String,
+fn present_string<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
 }
 
 #[derive(Deserialize)]
-struct DeviceMessageRequest {
-    correlation_id: String,
-    encrypted_data: String,
-    nonce: String,
+#[serde(deny_unknown_fields)]
+struct DevicePatch {
+    #[serde(default, deserialize_with = "present_nullable")]
+    device_alias: Option<Option<String>>,
+    #[serde(default, deserialize_with = "present_string")]
+    device_model: Option<String>,
+    #[serde(default, deserialize_with = "present_string")]
+    device_os: Option<String>,
+    #[serde(default, deserialize_with = "present_string")]
+    device_os_version: Option<String>,
 }
 
-/// Device responses use the same authenticated, memory-admitted HTTP ingress
-/// as requests. WebSocket ingress is reserved for small control messages.
-async fn device_message(
+async fn patch_device(
     State(state): State<AppState>,
+    axum::Extension(io): axum::Extension<socketioxide::SocketIo>,
     headers: HeaderMap,
     Path(target_device_id): Path<String>,
-    Json(body): Json<DeviceMessageRequest>,
+    Json(body): Json<DevicePatch>,
 ) -> Result<StatusCode, StatusCode> {
     let auth = validate_user(&state, &headers).await?;
     if !auth.is_device_token() {
         return Err(StatusCode::FORBIDDEN);
     }
-    if !is_valid_device_id(&target_device_id)
-        || !is_valid_device_id(&body.correlation_id)
-        || !is_valid_encrypted_payload(&body.encrypted_data, &body.nonce)
+    if !is_valid_device_id(&target_device_id) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let metadata_present =
+        body.device_model.is_some() || body.device_os.is_some() || body.device_os_version.is_some();
+    if ![
+        body.device_alias.as_ref().and_then(|v| v.as_deref()),
+        body.device_model.as_deref(),
+        body.device_os.as_deref(),
+        body.device_os_version.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .all(crate::db::valid_device_directory_text)
     {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let response = crate::relay::device_manager::RpcResponse::try_new(
-        body.encrypted_data.clone(),
-        body.nonce.clone(),
-    )
-    .ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
-    if state.device_manager.resolve_rpc(
-        &body.correlation_id,
-        &auth.user_id,
-        &auth.device_id,
-        response,
-    ) {
-        return Ok(StatusCode::NO_CONTENT);
+    let _guard = state.device_manager.lock_presence_projection().await;
+    // BEGIN IMMEDIATE serializes authorization with external/admin revocation too.
+    let mut tx = state
+        .db
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let current = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM auth_tokens WHERE token=? AND user_id=? AND device_id=? AND token_kind='device' AND expires_at>unixepoch()")
+        .bind(&auth.token).bind(&auth.user_id).bind(&auth.device_id).fetch_one(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if current != 1 {
+        return Err(StatusCode::UNAUTHORIZED);
     }
-    let message = OutboundProtocol::IncomingDeviceMessage {
-        source_device_id: auth.device_id,
-        correlation_id: body.correlation_id,
-        encrypted_data: body.encrypted_data,
-        nonce: body.nonce,
-    };
-    let json = serde_json::to_string(&message).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-    if !state
-        .device_manager
-        .route_message(&auth.user_id, &target_device_id, &json)
-    {
+    let exists = sqlx::query_scalar::<_, i64>(
+        "SELECT count(*) FROM devices WHERE user_id=? AND device_id=?",
+    )
+    .bind(&auth.user_id)
+    .bind(&target_device_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    if exists == 0 {
         return Err(StatusCode::NOT_FOUND);
     }
+    if metadata_present && target_device_id != auth.device_id {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    sqlx::query("UPDATE devices SET device_alias=CASE WHEN ? THEN ? ELSE device_alias END, device_model=COALESCE(?,device_model), device_os=COALESCE(?,device_os), device_os_version=COALESCE(?,device_os_version) WHERE user_id=? AND device_id=?")
+        .bind(body.device_alias.is_some()).bind(body.device_alias.flatten())
+        .bind(body.device_model).bind(body.device_os).bind(body.device_os_version)
+        .bind(&auth.user_id).bind(&target_device_id).execute(&mut *tx).await.map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    tx.commit()
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    crate::realtime::presence::broadcast(&io, &state, &auth.user_id).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `POST /api/devices/:target_device_id/rpc`
-///
-/// Routes an encrypted command to the target device via WS, waits for the
-/// encrypted response, and returns it. The relay stays zero-knowledge — it
-/// only sees opaque ciphertext and routes by device_id within the account.
-async fn device_rpc(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(target_device_id): Path<String>,
-    Json(body): Json<DeviceRpcRequest>,
-) -> Result<axum::response::Response, StatusCode> {
-    let auth = validate_user(&state, &headers).await?;
-    let db = state.db.as_ref();
-    let source_device_id = auth
-        .routing_device_id(db)
-        .await
-        .map_err(|_| StatusCode::FORBIDDEN)?;
-    let user_id = auth.user_id;
-
-    if !is_valid_device_id(&target_device_id)
-        || !is_valid_encrypted_payload(&body.encrypted_data, &body.nonce)
-    {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-
-    // Check target device is online in this account
-    let online = state.device_manager.online_devices(&user_id);
-    if !online.iter().any(|(id, _)| id == &target_device_id) {
-        return Err(StatusCode::NOT_FOUND);
-    }
-
-    // Generate a correlation_id for request-response matching
-    let correlation_id = uuid::Uuid::new_v4().to_string();
-
-    // Register a pending RPC response (the WS handler will resolve it when
-    // the target device sends back a DeviceMessage with the same correlation_id)
-    let rx = state
-        .device_manager
-        .register_rpc(&correlation_id, &user_id, &target_device_id)
-        .ok_or(StatusCode::TOO_MANY_REQUESTS)?;
-
-    // Build the WS message to send to the target device.
-    // Retain the authenticated controller identity so the receiver can resolve
-    // its same-account public key. Correlation still resolves the HTTP response.
-    let out_msg = OutboundProtocol::IncomingDeviceMessage {
-        source_device_id,
-        correlation_id: correlation_id.clone(),
-        encrypted_data: body.encrypted_data,
-        nonce: body.nonce,
-    };
-    let json = serde_json::to_string(&out_msg).unwrap_or_default();
-
-    if !state
-        .device_manager
-        .route_message(&user_id, &target_device_id, &json)
-    {
-        state.device_manager.cancel_rpc(&correlation_id);
-        return Err(StatusCode::SERVICE_UNAVAILABLE);
-    }
-
-    // Wait for the response (the target device sends back a DeviceMessage
-    // via WS, which the WS handler resolves via resolve_rpc)
-    match tokio::time::timeout(RPC_TIMEOUT, rx).await {
-        Ok(Ok(resp)) => resp.into_http_response(),
-        _ => {
-            state.device_manager.cancel_rpc(&correlation_id);
-            Err(StatusCode::GATEWAY_TIMEOUT)
-        }
-    }
-}
-
-// ── Delete device ───────────────────────────────────────────────────────
-
-/// `DELETE /api/devices/:target_device_id`
-///
-/// Removes a device from the account (DB row + any active WS session).
-/// Deleting the caller's own device revokes its current token as well.
 async fn delete_device(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -399,21 +342,6 @@ async fn delete_device(
         .disconnect_device(&user_id, &target_device_id);
     drop(_presence_projection_guard);
 
-    state
-        .device_manager
-        .broadcast_current_presence(&user_id, |devices| {
-            let devices = devices
-                .iter()
-                .map(
-                    |(device_id, device_name)| crate::routes::websocket::DevicePresenceEntry {
-                        device_id: device_id.clone(),
-                        device_name: device_name.clone(),
-                    },
-                )
-                .collect();
-            serde_json::to_string(&OutboundProtocol::DevicePresence { devices }).ok()
-        });
-
     tracing::info!("Device {target_device_id} removed from account {user_id}");
     Ok(StatusCode::NO_CONTENT)
 }
@@ -435,6 +363,251 @@ mod tests {
         delegated_token: String,
         target_token: String,
         other_token: String,
+    }
+
+    async fn patch_json(
+        ctx: &TestContext,
+        token: &str,
+        id: &str,
+        body: serde_json::Value,
+    ) -> StatusCode {
+        ctx.app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/api/devices/{id}"))
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    }
+
+    #[tokio::test]
+    async fn concurrent_patch_and_revocation_never_restore_deleted_devices() {
+        for revoke_caller in [false, true] {
+            let ctx = setup_app().await;
+            let target = if revoke_caller {
+                "owner-device"
+            } else {
+                "target-device"
+            };
+            let (patched, deleted) = tokio::join!(
+                patch_json(
+                    &ctx,
+                    &ctx.owner_token,
+                    "target-device",
+                    serde_json::json!({"device_alias":"Racing"})
+                ),
+                delete(&ctx.app, &ctx.target_token, target)
+            );
+            assert_eq!(deleted, StatusCode::NO_CONTENT);
+            assert!(matches!(
+                patched,
+                StatusCode::NO_CONTENT | StatusCode::NOT_FOUND | StatusCode::UNAUTHORIZED
+            ));
+            assert!(!DeviceRow::list_by_user(&ctx.db, "owner")
+                .await
+                .unwrap()
+                .iter()
+                .any(|row| row.device_id == target));
+            assert_eq!(
+                patch_json(
+                    &ctx,
+                    &ctx.owner_token,
+                    "target-device",
+                    serde_json::json!({"device_alias":"After deletion"})
+                )
+                .await,
+                if revoke_caller {
+                    StatusCode::UNAUTHORIZED
+                } else {
+                    StatusCode::NOT_FOUND
+                }
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn directory_patch_permissions_clearing_and_omission() {
+        use serde_json::json;
+        let ctx = setup_app().await;
+        for (token, id, body, status) in [
+            (
+                &ctx.delegated_token,
+                "target-device",
+                json!({"device_alias":"Alias"}),
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                &ctx.other_token,
+                "target-device",
+                json!({"device_alias":"Alias"}),
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                &ctx.owner_token,
+                "missing",
+                json!({"device_os":"Linux"}),
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                &ctx.owner_token,
+                "target-device",
+                json!({"device_alias":"Alias","device_os":"Linux"}),
+                StatusCode::FORBIDDEN,
+            ),
+            (
+                &ctx.owner_token,
+                "target-device",
+                json!({"device_alias":"Alias"}),
+                StatusCode::NO_CONTENT,
+            ),
+            (
+                &ctx.target_token,
+                "target-device",
+                json!({"device_model":"Model","device_os":"Linux","device_os_version":"6"}),
+                StatusCode::NO_CONTENT,
+            ),
+            (
+                &ctx.owner_token,
+                "target-device",
+                json!({}),
+                StatusCode::NO_CONTENT,
+            ),
+        ] {
+            assert_eq!(patch_json(&ctx, token, id, body).await, status);
+        }
+        let row = DeviceRow::list_by_user(&ctx.db, "owner")
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.device_id == "target-device")
+            .unwrap();
+        assert_eq!(row.device_alias.as_deref(), Some("Alias"));
+        assert_eq!(row.device_name.as_deref(), Some("Target"));
+        assert_eq!(row.device_os.as_deref(), Some("Linux"));
+        DeviceRow::upsert(
+            &ctx.db,
+            "target-device",
+            "owner",
+            "New technical name",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let response = ctx
+            .app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/devices")
+                    .header(header::AUTHORIZATION, format!("Bearer {}", ctx.owner_token))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let entries: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(response.into_body(), 16384)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let row = entries
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["device_id"] == "target-device")
+            .unwrap();
+        assert_eq!(row["device_alias"], "Alias");
+        assert_eq!(row["device_name"], "New technical name");
+        assert_eq!(row["device_model"], "Model");
+        assert_eq!(row["device_os_version"], "6");
+        assert_eq!(
+            patch_json(
+                &ctx,
+                &ctx.owner_token,
+                "target-device",
+                json!({"device_alias":null})
+            )
+            .await,
+            StatusCode::NO_CONTENT
+        );
+        let row = DeviceRow::list_by_user(&ctx.db, "owner")
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|r| r.device_id == "target-device")
+            .unwrap();
+        assert!(row.device_alias.is_none());
+        assert_eq!(row.device_os.as_deref(), Some("Linux"));
+        for value in [
+            "".to_string(),
+            "  ".to_string(),
+            "bad\nname".to_string(),
+            "a".repeat(257),
+        ] {
+            assert_eq!(
+                patch_json(
+                    &ctx,
+                    &ctx.owner_token,
+                    "owner-device",
+                    json!({"device_alias":value})
+                )
+                .await,
+                StatusCode::BAD_REQUEST
+            );
+            assert_eq!(
+                patch_json(
+                    &ctx,
+                    &ctx.owner_token,
+                    "owner-device",
+                    json!({"device_model":value})
+                )
+                .await,
+                StatusCode::BAD_REQUEST
+            );
+        }
+        for body in [
+            json!({"device_os":null}),
+            json!({"metadata":{"extra":true}}),
+            json!({"device_alias":12}),
+        ] {
+            assert_eq!(
+                patch_json(&ctx, &ctx.owner_token, "owner-device", body).await,
+                StatusCode::UNPROCESSABLE_ENTITY
+            );
+        }
+        assert_eq!(
+            delete(&ctx.app, &ctx.owner_token, "target-device").await,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            patch_json(
+                &ctx,
+                &ctx.owner_token,
+                "target-device",
+                json!({"device_alias":"Gone"})
+            )
+            .await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            patch_json(
+                &ctx,
+                &ctx.target_token,
+                "owner-device",
+                json!({"device_alias":"Gone"})
+            )
+            .await,
+            StatusCode::UNAUTHORIZED
+        );
     }
 
     #[tokio::test]
@@ -478,89 +651,6 @@ mod tests {
             .unwrap();
         assert!(controller.routing_device_id(&ctx.db).await.is_err());
         assert!(second.routing_device_id(&ctx.db).await.is_err());
-    }
-
-    #[tokio::test]
-    async fn http_device_response_requires_expected_principal_and_accepts_large_payload() {
-        let ctx = setup_app().await;
-        let state = AppState {
-            start_time: std::time::Instant::now(),
-            asset_store: Arc::new(MemoryAssetStore::new()),
-            db: ctx.db.clone(),
-            page_data: None,
-            page_access_manager: Arc::new(crate::routes::pages::PageAccessManager::new()),
-            page_upload_manager: Arc::new(crate::routes::pages::PageUploadManager::new()),
-            page_execution_guard: Arc::new(crate::page_execution::PageExecutionGuard::new()),
-            login_rate_limiter: Arc::new(crate::routes::auth::LoginRateLimiter::new()),
-            device_manager: crate::relay::DeviceManager::new(),
-            cors_allow_origins: Arc::new(Vec::new()),
-            page_browser_auth: None,
-        };
-        let app = device_router()
-            .layer(axum::middleware::from_fn_with_state(
-                state.clone(),
-                crate::admission::admit,
-            ))
-            .with_state(state.clone());
-        let mut pending = state
-            .device_manager
-            .register_rpc("correlation", "owner", "target-device")
-            .unwrap();
-        let ciphertext = "a".repeat(256 * 1024);
-        let body = serde_json::json!({
-            "correlation_id": "correlation", "encrypted_data": ciphertext, "nonce": "nonce"
-        })
-        .to_string();
-        for (token, expected) in [
-            (&ctx.owner_token, StatusCode::NOT_FOUND),
-            (&ctx.other_token, StatusCode::NOT_FOUND),
-            (&ctx.delegated_token, StatusCode::FORBIDDEN),
-        ] {
-            let response = app
-                .clone()
-                .oneshot(
-                    Request::builder()
-                        .method("POST")
-                        .uri("/api/devices/owner-device/messages")
-                        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-                        .header(header::CONTENT_TYPE, "application/json")
-                        .body(Body::from(body.clone()))
-                        .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(response.status(), expected);
-            assert!(pending.try_recv().is_err());
-        }
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/devices/owner-device/messages")
-                    .header(
-                        header::AUTHORIZATION,
-                        format!("Bearer {}", ctx.target_token),
-                    )
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(body))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
-        let response = pending.await.unwrap().into_http_response().unwrap();
-        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
-            .await
-            .unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(value["encrypted_data"], ciphertext);
-        assert_eq!(value["nonce"], "nonce");
-    }
-
-    #[test]
-    fn encrypted_payload_cannot_expand_json_with_escape_characters() {
-        assert!(!is_valid_encrypted_payload("\"\\", "nonce"));
-        assert!(is_valid_encrypted_payload("ab+/=_-09", "nonce"));
     }
 
     async fn setup_app() -> TestContext {
@@ -664,30 +754,75 @@ mod tests {
             .collect()
     }
 
-    async fn rpc(
-        app: &axum::Router,
-        token: &str,
-        device_id: &str,
-        payload_bytes: usize,
-    ) -> StatusCode {
-        let body = serde_json::json!({
-            "encrypted_data": "A".repeat(payload_bytes),
-            "nonce": "AAAA",
-        })
-        .to_string();
-        app.clone()
+    async fn listed_devices(app: &axum::Router, token: &str) -> Vec<serde_json::Value> {
+        let response = app
+            .clone()
             .oneshot(
                 Request::builder()
-                    .method("POST")
-                    .uri(format!("/api/devices/{device_id}/rpc"))
+                    .method("GET")
+                    .uri("/api/devices")
                     .header(header::AUTHORIZATION, format!("Bearer {token}"))
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(body))
+                    .body(Body::empty())
                     .unwrap(),
             )
             .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    fn entry<'a>(devices: &'a [serde_json::Value], id: &str) -> &'a serde_json::Value {
+        devices
+            .iter()
+            .find(|device| device["device_id"] == id)
             .unwrap()
-            .status()
+    }
+
+    #[tokio::test]
+    async fn device_directory_reports_client_build_compatibility() {
+        let ctx = setup_app().await;
+
+        // Legacy-to-legacy: neither side reports a build, so compatibility
+        // cannot be proven and the device is reported as incompatible — but it
+        // is still listed, never hidden.
+        let devices = listed_devices(&ctx.app, &ctx.owner_token).await;
+        let target = entry(&devices, "target-device");
+        assert_eq!(target["compatible"], false);
+        assert_eq!(target["device_name"], "Target");
+        assert_eq!(target["client_version"], serde_json::Value::Null);
+        assert_eq!(target["client_protocol"], serde_json::Value::Null);
+
+        // The caller reports but the target does not: compatibility cannot be
+        // proven, so the pair is reported as incompatible.
+        DeviceRow::set_client_build(&ctx.db, "owner", "owner-device", Some("1.0.0"), Some(5))
+            .await
+            .unwrap();
+        let devices = listed_devices(&ctx.app, &ctx.owner_token).await;
+        assert_eq!(entry(&devices, "target-device")["compatible"], false);
+        assert_eq!(entry(&devices, "owner-device")["compatible"], true);
+
+        // Matching protocols are compatible and both fields are exposed.
+        DeviceRow::set_client_build(&ctx.db, "owner", "target-device", Some("1.2.0"), Some(5))
+            .await
+            .unwrap();
+        let devices = listed_devices(&ctx.app, &ctx.owner_token).await;
+        let target = entry(&devices, "target-device");
+        assert_eq!(target["compatible"], true);
+        assert_eq!(target["client_version"], "1.2.0");
+        assert_eq!(target["client_protocol"], 5);
+
+        // Differing protocols are incompatible but the device stays listed.
+        DeviceRow::set_client_build(&ctx.db, "owner", "target-device", Some("1.3.0"), Some(6))
+            .await
+            .unwrap();
+        let devices = listed_devices(&ctx.app, &ctx.owner_token).await;
+        let target = entry(&devices, "target-device");
+        assert_eq!(target["compatible"], false);
+        assert_eq!(target["device_name"], "Target");
+        assert_eq!(target["client_protocol"], 6);
     }
 
     #[tokio::test]
@@ -706,11 +841,24 @@ mod tests {
         DeviceRow::upsert(&ctx.db, "mac", "owner", "MacBook", Some("desktop"), None)
             .await
             .unwrap();
+        DeviceRow::upsert(
+            &ctx.db,
+            "headless",
+            "owner",
+            "Build host",
+            Some("cli"),
+            None,
+        )
+        .await
+        .unwrap();
 
         let ids = listed_device_ids(&ctx.app, &ctx.owner_token).await;
 
         assert!(!ids.contains(&"phone".to_string()));
         assert!(ids.contains(&"mac".to_string()));
+        // A CLI host runs the same control plane as a desktop, so it stays a
+        // control target instead of being hidden like a controller.
+        assert!(ids.contains(&"headless".to_string()));
         // owner-device and target-device were registered before the kind
         // existed; a NULL kind must still be offered as a control target.
         assert!(ids.contains(&"owner-device".to_string()));
@@ -738,33 +886,6 @@ mod tests {
 
         let ids = listed_device_ids(&ctx.app, &ctx.owner_token).await;
         assert!(!ids.contains(&"phone".to_string()));
-    }
-
-    #[tokio::test]
-    async fn device_rpc_accepts_payloads_above_the_default_body_limit() {
-        let ctx = setup_app().await;
-
-        // A phone sending a photo lands here: base64 of the image, encrypted and
-        // base64ed again, clears Axum's 2 MB default by itself. NOT_FOUND means
-        // the body was read and the offline target was the only complaint.
-        let status = rpc(&ctx.app, &ctx.owner_token, "target-device", 3 * 1024 * 1024).await;
-
-        assert_eq!(status, StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn device_rpc_still_rejects_payloads_past_the_route_limit() {
-        let ctx = setup_app().await;
-
-        let status = rpc(
-            &ctx.app,
-            &ctx.owner_token,
-            "target-device",
-            RPC_BODY_LIMIT_BYTES + 1,
-        )
-        .await;
-
-        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     #[tokio::test]

@@ -1,3 +1,4 @@
+import { useDeviceDirectory, resolveDeviceName } from '@/infrastructure/account/deviceDirectory';
 /**
  * Two fixed rails in the composer's upper context band.
  *
@@ -10,11 +11,10 @@
  * the track.
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Circle, Shield, ShieldAlert, ShieldCheck, Square, SquareCheck } from 'lucide-react';
-import { OverflowText, Menu, MenuItem, MenuSection, MenuSeparator } from '@openbitfun/ui';
+import { subscribeOverlayInteraction, createOverlayPortal, OverflowText, Menu, MenuItem, MenuSection, MenuSeparator } from '@openbitfun/ui';
 import { Tooltip, Icon } from '@openbitfun/ui';
 import { BranchQuickSwitch } from '@/tools/git/components/BranchQuickSwitch';
 import { useGitState } from '@/tools/git/hooks/useGitState';
@@ -36,6 +36,7 @@ import './ChatInputWorkspaceStrip.scss';
 export interface ChatInputWorkspaceStripProps {
   /** Repo root for git status; may come from session when global workspace is unset. */
   repositoryPath: string;
+  workspaceId: string;
   /** Resolved display name (workspace title or folder basename). */
   workspaceLabel: string;
   /** Session usage report (/usage) — context ring on the right rail. */
@@ -64,6 +65,12 @@ export interface ChatInputWorkspaceStripProps {
      * two sessions sitting on different modes is legible rather than confusing.
      */
     overridden?: boolean;
+    /**
+     * The Session's own mode could not be read, so `mode` is the user-level
+     * default rather than this Session's selection. Reported instead of passed
+     * off as that selection.
+     */
+    unread?: boolean;
     /** Clears the session's own selection and follows the default again. */
     onResetToDefault?: () => void | Promise<void>;
     /** Opens the settings page that owns the default this row follows. */
@@ -135,6 +142,7 @@ const PERMISSION_MODE_ICONS: Record<ChatInputPermissionMode, typeof Shield> = {
 
 export const ChatInputWorkspaceStrip: React.FC<ChatInputWorkspaceStripProps> = ({
   repositoryPath,
+  workspaceId,
   workspaceLabel,
   usageReport,
   permissionControl,
@@ -143,6 +151,7 @@ export const ChatInputWorkspaceStrip: React.FC<ChatInputWorkspaceStripProps> = (
   worktreeControl,
   dispatchControl,
 }) => {
+  useDeviceDirectory();
   const { t } = useTranslation('flow-chat');
   const { t: tWorktrees } = useI18n('worktrees');
   const { t: tCommon } = useI18n('common');
@@ -158,6 +167,7 @@ export const ChatInputWorkspaceStrip: React.FC<ChatInputWorkspaceStripProps> = (
   const workspaceMenuRef = useRef<HTMLDivElement>(null);
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const branchTriggerRef = useRef<HTMLButtonElement>(null);
+  const branchPickerId = useId();
   const [branchMenuOpen, setBranchMenuOpen] = useState(false);
   const permissionMenuLayout = useAnchoredPopoverPosition({
     open: permissionMenuOpen,
@@ -180,7 +190,7 @@ export const ChatInputWorkspaceStrip: React.FC<ChatInputWorkspaceStripProps> = (
   const label = workspaceLabel.trim();
 
   const { currentBranch, isRepository, repositoryTrustRequired, refreshBasic } = useGitState({
-    repositoryPath: trimmedPath,
+    repositoryPath: { workspaceId, repositoryPath: trimmedPath },
     layers: ['basic'],
     isActive: !deferPassiveGitRefresh,
     refreshOnMount: !deferPassiveGitRefresh,
@@ -307,11 +317,11 @@ export const ChatInputWorkspaceStrip: React.FC<ChatInputWorkspaceStripProps> = (
       }
     };
 
-    document.addEventListener('pointerdown', handlePointerDown);
-    document.addEventListener('keydown', handleKeyDown);
+    const removeOverlayPointerdown0 = subscribeOverlayInteraction(permissionMenuRef, 'pointerdown', handlePointerDown);
+    const removeOverlayKeydown1 = subscribeOverlayInteraction(permissionMenuRef, 'keydown', handleKeyDown);
     return () => {
-      document.removeEventListener('pointerdown', handlePointerDown);
-      document.removeEventListener('keydown', handleKeyDown);
+      removeOverlayPointerdown0?.();
+      removeOverlayKeydown1?.();
     };
   }, [
     closePermissionMenu,
@@ -338,11 +348,11 @@ export const ChatInputWorkspaceStrip: React.FC<ChatInputWorkspaceStripProps> = (
       }
     };
 
-    document.addEventListener('pointerdown', handlePointerDown);
-    document.addEventListener('keydown', handleKeyDown);
+    const removeOverlayPointerdown2 = subscribeOverlayInteraction(workspaceMenuRef, 'pointerdown', handlePointerDown);
+    const removeOverlayKeydown3 = subscribeOverlayInteraction(workspaceMenuRef, 'keydown', handleKeyDown);
     return () => {
-      document.removeEventListener('pointerdown', handlePointerDown);
-      document.removeEventListener('keydown', handleKeyDown);
+      removeOverlayPointerdown2?.();
+      removeOverlayKeydown3?.();
     };
   }, [workspaceMenuOpen]);
 
@@ -419,6 +429,9 @@ export const ChatInputWorkspaceStrip: React.FC<ChatInputWorkspaceStripProps> = (
     || permissionControl?.saving
     || permissionMode === 'acp';
   const permissionOverridden = !!permissionControl?.overridden && permissionMode !== 'acp';
+  // A Session whose own mode could not be read has no selection to mark; the
+  // default it displays is a fallback, not a choice it made.
+  const permissionUnread = !!permissionControl?.unread && permissionMode !== 'acp';
   const permissionNextTurnMode = permissionMode === 'acp'
     ? null
     : permissionControl?.nextTurnMode ?? null;
@@ -439,6 +452,8 @@ export const ChatInputWorkspaceStrip: React.FC<ChatInputWorkspaceStripProps> = (
         )
       : permissionOverridden
         ? t('chatInput.permissionMode.currentSessionOverride', { mode: permissionModeLabel })
+      : permissionUnread
+        ? t('chatInput.permissionMode.unreadTooltip', { mode: permissionModeLabel })
       : t('chatInput.permissionMode.current', { mode: permissionModeLabel });
   const PermissionIcon = PERMISSION_MODE_ICONS[permissionDisplayMode];
   const PermissionSessionIcon = PERMISSION_MODE_ICONS[permissionMode];
@@ -514,14 +529,15 @@ export const ChatInputWorkspaceStrip: React.FC<ChatInputWorkspaceStripProps> = (
 
     return (
       <>
-        <Tooltip content={branchTooltipContent} placement="top">
+        <Tooltip content={branchTooltipContent} placement="top" disabled={branchMenuOpen}>
           <button
             ref={branchTriggerRef}
             type="button"
             className="openbitfun-chat-input-workspace-strip__chip openbitfun-chat-input-workspace-strip__chip--branch openbitfun-chat-input-workspace-strip__chip--branch-switchable"
             aria-label={t('workspaceStrip.branchSwitchLabel', { branch: branchLabel })}
-            aria-haspopup="listbox"
+            aria-haspopup="dialog"
             aria-expanded={branchMenuOpen}
+            aria-controls={branchMenuOpen ? branchPickerId : undefined}
             data-testid="chat-input-branch-trigger"
             onClick={event => {
               event.stopPropagation();
@@ -532,9 +548,10 @@ export const ChatInputWorkspaceStrip: React.FC<ChatInputWorkspaceStripProps> = (
           </button>
         </Tooltip>
         <BranchQuickSwitch
+          id={branchPickerId}
           isOpen={branchMenuOpen}
           onClose={() => setBranchMenuOpen(false)}
-          repositoryPath={trimmedPath}
+          repositoryPath={{ workspaceId, repositoryPath: trimmedPath }}
           currentBranch={currentBranch.trim()}
           anchorRef={branchTriggerRef}
           onSwitchSuccess={() => {
@@ -579,7 +596,7 @@ export const ChatInputWorkspaceStrip: React.FC<ChatInputWorkspaceStripProps> = (
             <span className="openbitfun-chat-input-workspace-strip__workspace-name"><OverflowText>{label}</OverflowText></span>
           </button>
         </Tooltip>
-        {workspaceMenuOpen ? createPortal(
+        {workspaceMenuOpen ? createOverlayPortal(
           <Menu
             ref={workspaceMenuRef}
             data-openbitfun-component="chat-input-workspace-strip"
@@ -706,7 +723,7 @@ export const ChatInputWorkspaceStrip: React.FC<ChatInputWorkspaceStripProps> = (
     const oneOff = selectionScope === 'turn';
     const selected = oneOff
       ? permissionNextTurnMode === mode
-      : permissionMode === mode;
+      : permissionMode === mode && !permissionUnread;
     const copy = permissionCopy[mode];
     const OptionIcon = PERMISSION_MODE_ICONS[mode];
     const accessibleLabel = oneOff
@@ -782,7 +799,7 @@ export const ChatInputWorkspaceStrip: React.FC<ChatInputWorkspaceStripProps> = (
         {showDispatchPicker && dispatchControl ? (
           <DispatchTargetPicker
             target={dispatchControl.target}
-            sourceWorkspacePath={dispatchControl.sourceWorkspacePath}
+            sourceWorkspaceId={workspaceId} sourceWorkspacePath={dispatchControl.sourceWorkspacePath}
             locked={dispatchPickerLocked}
             localWorktreeControl={showWorktreeToggle && worktreeControl ? {
               enabled: worktreeEnabled,
@@ -826,7 +843,7 @@ export const ChatInputWorkspaceStrip: React.FC<ChatInputWorkspaceStripProps> = (
               baselineWorktreePath={dispatchControl.baselineWorktreePath}
               baselineMissing={dispatchControl.baselineMissing}
               targetLabel={dispatchControl.target.kind !== 'local'
-                ? dispatchControl.target.displayName
+                ? (dispatchControl.target.kind === 'device' ? resolveDeviceName(dispatchControl.target.deviceId, dispatchControl.target.displayName) : dispatchControl.target.displayName)
                 : undefined}
               onClose={() => setResultDialogOpen(false)}
             />
@@ -857,6 +874,7 @@ export const ChatInputWorkspaceStrip: React.FC<ChatInputWorkspaceStripProps> = (
                 data-testid="chat-input-permission-trigger"
                 data-permission-mode={permissionDisplayMode}
                 data-permission-overridden={permissionOverridden ? 'true' : undefined}
+                data-permission-unread={permissionUnread ? 'true' : undefined}
                 data-permission-next-turn={permissionNextTurnArmed ? 'true' : undefined}
                 data-permission-active-turn={permissionActiveTurn ? 'true' : undefined}
                 onClick={event => {
@@ -893,7 +911,7 @@ export const ChatInputWorkspaceStrip: React.FC<ChatInputWorkspaceStripProps> = (
               </button>
             </Tooltip>
 
-            {permissionMenuOpen && permissionMode !== 'acp' ? createPortal(
+            {permissionMenuOpen && permissionMode !== 'acp' ? createOverlayPortal(
               <Menu
                 ref={permissionMenuRef}
                 data-openbitfun-component="chat-input-workspace-strip"
@@ -927,6 +945,17 @@ export const ChatInputWorkspaceStrip: React.FC<ChatInputWorkspaceStripProps> = (
                       data-openbitfun-component="chat-input-workspace-strip"
                       data-openbitfun-part="permissionOptions"
                     >
+                      {/* With no readable Session mode there is no honest
+                          checkmark to place, so say why the list is unmarked. */}
+                      {permissionUnread ? (
+                        <MenuItem
+                          disabled
+                          leading={<Icon name="info" size="sm" aria-hidden />}
+                          data-testid="chat-input-permission-unread-notice"
+                        >
+                          {t('chatInput.permissionMode.unreadMenuNotice')}
+                        </MenuItem>
+                      ) : null}
                       {permissionModes.map(mode => renderPermissionModeOption(mode, 'session'))}
                     </MenuSection>
                     {permissionControl.onChangeForNextTurn ? (

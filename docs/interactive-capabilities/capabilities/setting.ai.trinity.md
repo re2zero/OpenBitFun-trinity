@@ -17,7 +17,7 @@ Configure the model the Trinity cognitive engine uses: API base URL, model name,
 
 ## 完整功能清单 / Everything included
 
-- **Agent 可定位入口，需交互完成 / Agent opens; interaction required** · 填写并保存认知引擎的 API 地址、模型与 API 密钥，并测试连接
+- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 填写并保存认知引擎的 API 地址、模型与 API 密钥，并测试连接
   - Fill in and save the engine API base URL, model, and API key, and test the connection
 
 ## 怎么用 / How to use it
@@ -31,7 +31,7 @@ Configure the model the Trinity cognitive engine uses: API base URL, model name,
 
 入口 / Entry: OpenBitFun 设置
 
-## Agent 可替你做什么 / What an agent can do for you
+## 智能体可替你做什么 / What an agent can do for you
 
 | 操作 / Action | 中文说明 | English description |
 | --- | --- | --- |
@@ -43,13 +43,13 @@ Configure the model the Trinity cognitive engine uses: API base URL, model name,
 | --- | --- | --- | --- |
 | 在界面中配置 / Configure in the UI | — | 此页面的设置在对应界面中完成。 | Configure this page in its matching UI. |
 
-## 可以直接对 Agent 说 / Try saying
+## 可以直接对智能体说 / Try saying
 
 - “打开认知引擎设置”
   - “Open the cognitive engine settings”
 - “配置认知引擎使用的模型”
   - “Configure the model the cognitive engine uses”
 
-Agent 会先查找相关功能或设置，确认目标后再替你打开、执行或修改。完整能力目录不会预先塞进对话上下文。
+智能体会先查找相关功能或设置，确认目标后再替你打开、执行或修改。完整能力目录不会预先塞进对话上下文。
 
 The agent first finds the relevant feature or setting, confirms the target, and then opens, runs, or changes it for you. The full catalog is never embedded in the conversation context.

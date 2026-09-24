@@ -1,12 +1,21 @@
 export const PAGE_BG: ResourceColor = $r('app.color.page_bg');
 /** PAGE_BG at zero alpha, per theme — the transparent end of a fade-out. */
 export const PAGE_BG_FADE: ResourceColor = $r('app.color.page_bg_fade');
+/**
+ * PAGE_BG at partial alpha, for a surface the transcript scrolls underneath.
+ * It is the floor under `backgroundBlurStyle`, not a replacement for it: the
+ * blur carries the effect, this keeps the text on top readable on a build or a
+ * device where the blur does not land.
+ */
+export const PAGE_BG_OVERLAY: ResourceColor = $r('app.color.page_bg_overlay');
 export const TRANSPARENT: ResourceColor = $r('app.color.transparent');
 export const INK: ResourceColor = $r('app.color.ink');
 export const MUTED: ResourceColor = $r('app.color.muted');
 export const SUBTLE: ResourceColor = $r('app.color.subtle');
 export const LINE: ResourceColor = $r('app.color.line');
 export const CARD: ResourceColor = $r('app.color.card');
+/** CARD at partial alpha, for a card that floats over scrolling content. */
+export const CARD_OVERLAY: ResourceColor = $r('app.color.card_overlay');
 export const ACCENT: ResourceColor = $r('app.color.accent');
 export const FILE_LINK: ResourceColor = $r('app.color.file_link');
 export const PRIMARY_ACTION: ResourceColor = $r('app.color.primary_action');
@@ -29,8 +38,36 @@ export const SHADOW_STRONG: ResourceColor = $r('app.color.shadow_strong');
 export const FLOATING_BORDER: ResourceColor = $r('app.color.floating_border');
 export const SOFT: ResourceColor = $r('app.color.soft');
 export const FLOATING_PANEL_BG: ResourceColor = $r('app.color.floating_panel_bg');
+/**
+ * Sidebar chrome, mirroring the desktop client's structural navigation surface.
+ *
+ * The conversation keeps the paper-and-ink page tokens; the sidebar is a
+ * different structural layer there and here, so it reads one step away from the
+ * content surface instead of sharing PAGE_BG with it. Each constant below is
+ * one desktop semantic role, and the alpha ones are meant to composite over
+ * SIDEBAR_BG rather than be flattened.
+ */
+/** Desktop `color.surface.chrome`. */
+export const SIDEBAR_BG: ResourceColor = $r('app.color.sidebar_bg');
+/** SIDEBAR_BG at zero alpha, per theme — the transparent end of a fade-out. */
+export const SIDEBAR_BG_FADE: ResourceColor = $r('app.color.sidebar_bg_fade');
+/** Desktop `color.surface.raised` — a control lifted off the chrome. */
+export const SIDEBAR_RAISED: ResourceColor = $r('app.color.sidebar_raised');
+/** Desktop `color.border.subtle`. */
+export const SIDEBAR_LINE: ResourceColor = $r('app.color.sidebar_line');
+/** Desktop `color.action.quiet.hover` — quiet fills such as the search field. */
+export const SIDEBAR_HOVER: ResourceColor = $r('app.color.sidebar_hover');
+/** Desktop `color.selection.surface` — the selected device, workspace or session. */
+export const SIDEBAR_SELECTION: ResourceColor = $r('app.color.sidebar_selection');
+/** Desktop `color.content.primary`. */
+export const SIDEBAR_INK: ResourceColor = $r('app.color.sidebar_ink');
+/** Desktop `color.content.secondary`. */
+export const SIDEBAR_MUTED: ResourceColor = $r('app.color.sidebar_muted');
+/** Desktop `color.content.caption`. */
+export const SIDEBAR_SUBTLE: ResourceColor = $r('app.color.sidebar_subtle');
 export const STATUS_SUCCESS: ResourceColor = $r('app.color.status_success');
 export const STATUS_DANGER: ResourceColor = $r('app.color.status_danger');
+export const STATUS_WARNING: ResourceColor = $r('app.color.status_warning');
 export const CODE_LINE_NUMBER: ResourceColor = $r('app.color.code_line_number');
 export const CODE_KEYWORD: ResourceColor = $r('app.color.code_keyword');
 export const CODE_STRING: ResourceColor = $r('app.color.code_string');

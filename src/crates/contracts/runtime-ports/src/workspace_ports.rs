@@ -120,6 +120,19 @@ pub struct SessionViewRestoreTiming {
 
 #[async_trait::async_trait]
 pub trait SessionStorePort: RuntimeServicePort {
+    /// Resolve storage from an owning-host workspace ID. An execution path is
+    /// never accepted as an identity or as an already-resolved storage directory.
+    async fn resolve_workspace_storage(
+        &self,
+        _workspace_id: &str,
+    ) -> PortResult<SessionStoragePathResolution> {
+        Err(PortError::new(
+            PortErrorKind::InvalidRequest,
+            "Workspace ID storage lookup is not supported",
+        ))
+    }
+
+    /// Legacy upgrade ingress. New product callers must use workspace IDs.
     async fn resolve_session_storage_path(
         &self,
         request: SessionStoragePathRequest,
@@ -164,9 +177,22 @@ impl<T> WorkspaceReadHandle for T where T: tokio::io::AsyncRead + tokio::io::Asy
 
 pub type WorkspaceReader = Box<dyn WorkspaceReadHandle>;
 
+pub trait WorkspaceWriteHandle: tokio::io::AsyncWrite + Unpin + Send {}
+impl<T> WorkspaceWriteHandle for T where T: tokio::io::AsyncWrite + Unpin + Send {}
+pub type WorkspaceWriter = Box<dyn WorkspaceWriteHandle>;
+
 /// Unified file system operations that work for both local and remote workspaces.
 #[async_trait::async_trait]
 pub trait WorkspaceFileSystem: Send + Sync {
+    /// Create a new stream exclusively. Existing paths must never be truncated.
+    async fn open_write_new(&self, _path: &str) -> anyhow::Result<WorkspaceWriter> {
+        anyhow::bail!("streaming writes are not supported by this workspace filesystem")
+    }
+    /// Atomically publish a same-directory staged file, replacing a regular target.
+    async fn atomic_replace(&self, _from: &str, _to: &str) -> anyhow::Result<()> {
+        anyhow::bail!("atomic replacement is not supported by this workspace filesystem")
+    }
+
     /// Open a stream without downloading the entire file before returning.
     async fn open_read(&self, _path: &str) -> anyhow::Result<WorkspaceReader> {
         anyhow::bail!("streaming reads are not supported by this workspace filesystem")

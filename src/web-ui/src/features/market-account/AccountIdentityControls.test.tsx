@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
     lastError: undefined,
   },
   signIn: vi.fn(),
+  reopenSignIn: vi.fn(),
   cancelSignIn: vi.fn(),
   logout: vi.fn(),
   success: vi.fn(),
@@ -31,6 +32,7 @@ vi.mock('@/infrastructure/account-identity', () => ({
   },
   accountIdentityService: {
     signIn: mocks.signIn,
+    reopenSignIn: mocks.reopenSignIn,
     cancelSignIn: mocks.cancelSignIn,
     logout: mocks.logout,
   },
@@ -45,7 +47,8 @@ vi.mock('@/shared/notification-system', () => ({
   useNotification: () => ({ success: mocks.success, error: mocks.error }),
 }));
 
-vi.mock('@openbitfun/ui', () => ({
+vi.mock('@openbitfun/ui', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@openbitfun/ui')>(),
   Avatar: ({ src, alt }: any) => <img src={src} alt={alt} />,
   Icon: ({ name, ...props }: { name: string } & React.HTMLAttributes<HTMLSpanElement>) => <span data-icon={name} {...props} />,
   OverflowText: ({ children, behavior: _behavior, marqueeActive: _marqueeActive, ...props }: any) => <span {...props}>{children}</span>,
@@ -78,6 +81,7 @@ describe('AccountIdentityControls', () => {
       isAdmin: false,
     });
     mocks.cancelSignIn.mockReset();
+    mocks.reopenSignIn.mockReset().mockResolvedValue(undefined);
     mocks.logout.mockReset().mockResolvedValue(undefined);
     mocks.success.mockReset();
     mocks.error.mockReset();
@@ -105,6 +109,19 @@ describe('AccountIdentityControls', () => {
     expect(mocks.signIn).toHaveBeenCalledOnce();
   });
 
+  it('keeps a reopen action available while an external authorization is pending', async () => {
+    mocks.account.status = 'authorizing';
+    await act(async () => root.render(<AccountIdentityControls />));
+    const trigger = [...container.querySelectorAll('button')].find(button => button.textContent?.includes('market.signIn'))!;
+    expect(trigger.disabled).toBe(false);
+    await act(async () => trigger.click());
+    const reopen = [...container.querySelectorAll('button')].find(button => button.textContent?.includes('market.account.reopen'))!;
+    expect(reopen.disabled).toBe(false);
+    await act(async () => reopen.click());
+    expect(mocks.reopenSignIn).toHaveBeenCalledOnce();
+    expect(mocks.signIn).not.toHaveBeenCalled();
+  });
+
   it('shows the shared avatar menu and logs out through the same account service', async () => {
     mocks.account.status = 'signed-in';
     mocks.account.me = {
@@ -116,7 +133,7 @@ describe('AccountIdentityControls', () => {
     const trigger = container.querySelector<HTMLButtonElement>('[aria-haspopup="menu"]');
     await act(async () => trigger?.click());
     const menu = document.querySelector<HTMLElement>('[role="menu"]');
-    expect(menu?.parentElement?.getAttribute('data-openbitfun-overlay-host')).toBe('true');
+    expect(menu?.closest('[data-openbitfun-overlay-host]')?.getAttribute('data-openbitfun-overlay-host')).toBe('true');
     const logout = menu?.querySelector<HTMLButtonElement>('[role="menuitem"]');
     expect(logout?.textContent).toContain('market.signOut');
     await act(async () => logout?.click());

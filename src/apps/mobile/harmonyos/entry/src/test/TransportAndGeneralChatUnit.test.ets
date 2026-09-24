@@ -97,7 +97,9 @@ import {
   CloudAccountDevice,
   CloudProvisionedDevice,
   CloudAccountRequestError,
-  CloudAccountSession
+  CloudAccountSession,
+  CloudAccountTransportError,
+  retryableAuthorizationPollError
 } from '../main/ets/services/CloudAccountClient';
 import {
   CloudAccountSessionStore,
@@ -343,7 +345,12 @@ class OutputFileSessionManager extends RemoteSessionManager {
   }
 }
 
-class RecordingAccountDeviceClient extends CloudAccountClient {
+class TestCloudAccountClient extends CloudAccountClient {
+  observePresence(_relay: string, _session: CloudAccountSession, _onPresence: (ids: string[]) => void,
+    _onReconnect: () => void): () => void { return () => {}; }
+}
+
+class RecordingAccountDeviceClient extends TestCloudAccountClient {
   async deviceRpc<T extends CommandStatusResponse>(
     _relayUrl: string,
     _session: CloudAccountSession,
@@ -444,7 +451,7 @@ class InMemoryCloudAccountSessionStore extends CloudAccountSessionStore {
 }
 
 /** Publishes one roster, then models the relay revoking the account token. */
-class ExpiringAccountClient extends CloudAccountClient {
+class ExpiringAccountClient extends TestCloudAccountClient {
   listCalls: number = 0;
 
   async listDevices(
@@ -460,7 +467,7 @@ class ExpiringAccountClient extends CloudAccountClient {
   }
 }
 
-class OfflineAccountClient extends CloudAccountClient {
+class OfflineAccountClient extends TestCloudAccountClient {
   async listDevices(
     _relayUrl: string,
     _session: CloudAccountSession,
@@ -470,7 +477,7 @@ class OfflineAccountClient extends CloudAccountClient {
   }
 }
 
-class ProvisioningFailureAccountClient extends CloudAccountClient {
+class ProvisioningFailureAccountClient extends TestCloudAccountClient {
   readonly statusCode: number;
 
   constructor(statusCode: number) {
@@ -518,7 +525,7 @@ class AccountDeviceSwitchHarness {
   readonly controller: SettingsController;
 
   constructor(
-    client: CloudAccountClient = new CloudAccountClient(),
+    client: CloudAccountClient = new TestCloudAccountClient(),
     sessionManager: ScriptedAccountSessionManager = new ScriptedAccountSessionManager(),
     applyExistingSession: boolean = true,
     profileLoader?: GitHubProfileLoader
@@ -582,15 +589,31 @@ class AccountDeviceSwitchHarness {
 
 export default function transportAndGeneralChatUnitTest() {
   describe('Account device links', () => {
+    /**
+     * The sign-in poll runs for the minutes the user spends in a browser and a
+     * mail app, which is where a phone most reliably drops a connection. A
+     * single failure there used to end the sign-in and send them back to the
+     * start, so a transport failure or a relay that is briefly unwilling has to
+     * cost one interval, while a refusal the relay meant still stops the loop.
+     */
+    it('keeps polling for sign-in through transport failures but not refusals', 0, () => {
+      expect(retryableAuthorizationPollError(new CloudAccountTransportError(2300007))).assertTrue();
+      expect(retryableAuthorizationPollError(new CloudAccountRequestError('too many polls', 429))).assertTrue();
+      expect(retryableAuthorizationPollError(new CloudAccountRequestError('relay down', 503))).assertTrue();
+      expect(retryableAuthorizationPollError(new CloudAccountRequestError('denied', 401))).assertFalse();
+      expect(retryableAuthorizationPollError(new CloudAccountRequestError('bad request', 400))).assertFalse();
+      expect(retryableAuthorizationPollError(new Error('unparseable relay response'))).assertFalse();
+    });
+
     it('uses the same device selector for official and LAN endpoints', 0, () => {
-      for (const endpoint of ['https://remote.openbitfun.com/v/1.0.0', 'http://192.168.1.10:9700']) {
+      for (const endpoint of ['https://remote.openbitfun.com/v/1.0.2', 'http://192.168.1.10:9700']) {
         const parsed = accountDeviceLink(`${endpoint}/#/pair?did=desktop-1`);
         expect(parsed?.deviceId).assertEqual('desktop-1');
         expect(parsed?.relayUrl).assertEqual(endpoint);
       }
     });
     it('rejects credentials, legacy rooms, duplicate targets and public lookalikes', 0, () => {
-      const prefix = 'https://remote.openbitfun.com/v/1.0.0/#/pair?';
+      const prefix = 'https://remote.openbitfun.com/v/1.0.2/#/pair?';
       for (const suffix of ['did=desktop-1&pk=untrusted', 'did=desktop-1&relay=evil',
         'did=desktop-1&did=desktop-2', 'did=%00', 'did=%ZZ', 'room=old&pk=old']) {
         expect(accountDeviceLink(prefix + suffix)).assertUndefined();
@@ -633,7 +656,7 @@ export default function transportAndGeneralChatUnitTest() {
   describe('RemoteSessionManager account connection', () => {
     it('loads account device sessions through either relay endpoint', 0, async () => {
       const manager = new RemoteSessionManager();
-      for (const endpoint of ['https://remote.openbitfun.com/v/1.0.0', 'http://192.168.1.10:9700']) {
+      for (const endpoint of ['https://remote.openbitfun.com/v/1.0.2', 'http://192.168.1.10:9700']) {
         const result = await manager.connectAccountDevice(new RecordingAccountDeviceClient(), endpoint,
           { token: 'token', userId: 'account-user', masterKey: new Uint8Array(32) }, 'desktop-device');
         expect(result.workspace.path).assertEqual('/account-workspace');
@@ -1048,7 +1071,7 @@ export default function transportAndGeneralChatUnitTest() {
     it('still gates Remote chat when the desktop connection is unavailable', 0, () => {
       expect(ChatComposerPolicy.canSend('运行任务', 0, false, true, 'failed')).assertEqual(false);
       expect(ChatComposerPolicy.canSend('运行任务', 0, false, true, 'connected')).assertEqual(true);
-      expect(ChatComposerPolicy.canSend('运行任务', 0, false, true, 'reconnecting')).assertEqual(true);
+      expect(ChatComposerPolicy.canSend('运行任务', 0, false, true, 'reconnecting')).assertEqual(false);
     });
 
     it('lets a draft outrank a running turn where the message can be handed over', 0, () => {
@@ -1175,7 +1198,7 @@ export default function transportAndGeneralChatUnitTest() {
 
     it('enriches an existing numeric account without changing its authorization or target', 0, async () => {
       const loader = new TestGitHubProfileLoader();
-      const harness = new AccountDeviceSwitchHarness(new CloudAccountClient(), new ScriptedAccountSessionManager(), false, loader);
+      const harness = new AccountDeviceSwitchHarness(new TestCloudAccountClient(), new ScriptedAccountSessionManager(), false, loader);
       harness.controller.applyCloudAccountSession({ token: 't', userId: '1', masterKey: new Uint8Array(32) }, 'https://relay.example.com', '1');
       harness.remoteState.setControlTarget('account_device', 'desk-a', 'Desktop A');
       await harness.controller.refreshCloudAccountProfile();
@@ -1191,7 +1214,7 @@ export default function transportAndGeneralChatUnitTest() {
     it('keeps cached presentation and the session when public profile refresh fails', 0, async () => {
       const loader = new TestGitHubProfileLoader();
       loader.fail = true;
-      const harness = new AccountDeviceSwitchHarness(new CloudAccountClient(), new ScriptedAccountSessionManager(), false, loader);
+      const harness = new AccountDeviceSwitchHarness(new TestCloudAccountClient(), new ScriptedAccountSessionManager(), false, loader);
       harness.controller.applyCloudAccountSession({ token: 't', userId: '1', masterKey: new Uint8Array(32) }, 'https://relay.example.com', '1');
       const cached = normalizeGitHubProfile('1', { id: 1, login: 'cached-name' });
       cached.fetchedAt = 0;
@@ -1204,7 +1227,7 @@ export default function transportAndGeneralChatUnitTest() {
 
     it('discards a profile response after logout', 0, async () => {
       const loader = new TestGitHubProfileLoader();
-      const harness = new AccountDeviceSwitchHarness(new CloudAccountClient(), new ScriptedAccountSessionManager(), false, loader);
+      const harness = new AccountDeviceSwitchHarness(new TestCloudAccountClient(), new ScriptedAccountSessionManager(), false, loader);
       harness.controller.applyCloudAccountSession({ token: 't', userId: '1', masterKey: new Uint8Array(32) }, 'https://relay.example.com', '1');
       loader.beforeResponse = async (): Promise<void> => { await harness.controller.logoutCloudAccount(); };
       await harness.controller.refreshCloudAccountProfile();
@@ -1238,7 +1261,7 @@ export default function transportAndGeneralChatUnitTest() {
     });
 
     it('does not erase the encrypted account record when restore temporarily fails', 0, async () => {
-      const harness = new AccountDeviceSwitchHarness(new CloudAccountClient(), new ScriptedAccountSessionManager(), false);
+      const harness = new AccountDeviceSwitchHarness(new TestCloudAccountClient(), new ScriptedAccountSessionManager(), false);
       harness.sessionStore.failLoads = true;
 
       await harness.controller.initializeCloudAccount({} as Context);
@@ -1447,7 +1470,7 @@ export default function transportAndGeneralChatUnitTest() {
 
     it('keeps the newest device when an older switch completes late', 0, async () => {
       const manager = new GatedAccountSessionManager();
-      const harness = new AccountDeviceSwitchHarness(new CloudAccountClient(), manager);
+      const harness = new AccountDeviceSwitchHarness(new TestCloudAccountClient(), manager);
 
       const older = harness.controller.selectCloudAccountDevice(harness.device('desk-a'), false);
       await manager.heldSwitchStarted;
@@ -1877,22 +1900,35 @@ export default function transportAndGeneralChatUnitTest() {
     it('builds workspace and assistant commands', 0, () => {
       expectCommandJson(RemoteCommandFactory.getWorkspaceInfo(), '{"cmd":"get_workspace_info"}');
       expectCommandJson(RemoteCommandFactory.listRecentWorkspaces(), '{"cmd":"list_recent_workspaces"}');
+      // Pre-ID references keep the legacy path projection.
       expectCommandJson(RemoteCommandFactory.setWorkspace('/repo'), '{"cmd":"set_workspace","path":"/repo"}');
+      expectCommandJson(
+        RemoteCommandFactory.setWorkspace('/repo', undefined, 'saved', 'host'),
+        '{"cmd":"set_workspace","path":"/repo","remote_connection_id":"saved","remote_ssh_host":"host"}'
+      );
       expectCommandJson(RemoteCommandFactory.listAssistants(), '{"cmd":"list_assistants"}');
       expectCommandJson(RemoteCommandFactory.setAssistant('/assistant'), '{"cmd":"set_assistant","path":"/assistant"}');
+      // An identified reference sends only its ID so the host cannot fall back to the path.
+      expectCommandJson(RemoteCommandFactory.setWorkspace('/repo', 'ws-1', 'saved', 'host'), '{"cmd":"set_workspace","workspace_id":"ws-1"}');
+      expectCommandJson(RemoteCommandFactory.setAssistant('/assistant', 'ws-2'), '{"cmd":"set_assistant","workspace_id":"ws-2"}');
     });
 
     it('builds session list and creation commands without unsupported fields', 0, () => {
-      const listCommand = RemoteCommandFactory.listSessions('/repo', 8, 16, '  auth  ');
+      const listCommand = RemoteCommandFactory.listSessions({ path: '/repo' }, 8, 16, '  auth  ');
       expectCommandJson(listCommand, '{"cmd":"list_sessions","workspace_path":"/repo","limit":8,"offset":16,"query":"auth"}');
       expect(JSON.stringify(listCommand).indexOf('agent_type')).assertEqual(-1);
+      const sshList = RemoteCommandFactory.listSessions({ path: '/repo', remoteConnectionId: 'saved', remoteSshHost: 'host' }, 8, 0, '');
+      expectCommandJson(sshList, '{"cmd":"list_sessions","workspace_path":"/repo","limit":8,"offset":0,"remote_connection_id":"saved","remote_ssh_host":"host"}');
+      const identifiedList = RemoteCommandFactory.listSessions(
+        { workspaceId: 'ws-1', path: '/repo', remoteConnectionId: 'saved', remoteSshHost: 'host' }, 8, 16, 'auth');
+      expectCommandJson(identifiedList, '{"cmd":"list_sessions","workspace_id":"ws-1","limit":8,"offset":16,"query":"auth"}');
 
       const createCommand = RemoteCommandFactory.createSession({
         agentType: 'cowork',
         title: '',
         instruction: 'hello'
       }, '/repo');
-      expectCommandJson(createCommand, '{"cmd":"create_session","agent_type":"cowork","session_name":"Remote Cowork Session","workspace_path":"/repo"}');
+      expectCommandJson(createCommand, '{"cmd":"create_session","agent_type":"cowork","session_name":"Remote Cowork Session","workspace_path":"/repo","remote_connection_id":""}');
       expect(JSON.stringify(createCommand).indexOf('run_mode')).assertEqual(-1);
 
       const minimal = RemoteCommandFactory.createSession({
@@ -1903,6 +1939,11 @@ export default function transportAndGeneralChatUnitTest() {
       }, '/repo');
       expect(minimal.agent_type || '').assertEqual('minimal');
       expect(ultimate.agent_type || '').assertEqual('Ultra');
+
+      const identified = RemoteCommandFactory.createSession({
+        agentType: 'code', title: '', instruction: '', workspaceId: 'ws-1', remoteConnectionId: 'saved', remoteSshHost: 'host'
+      }, '/repo');
+      expectCommandJson(identified, '{"cmd":"create_session","agent_type":"code","session_name":"Remote Code Session","workspace_id":"ws-1"}');
     });
 
     it('builds message and polling commands', 0, () => {
@@ -2004,6 +2045,27 @@ export default function transportAndGeneralChatUnitTest() {
       expect(visible.length).assertEqual(1);
       expect(visible[0].id).assertEqual('native-session');
       expect(raw.length).assertEqual(3);
+    });
+
+    it('hides child sessions so Desktop side questions are not standalone rows', 0, () => {
+      const items: SessionItemResponse[] = [{
+        session_id: 'parent-session',
+        name: 'iOS sidebar spacing'
+      }, {
+        session_id: 'btw-session',
+        name: 'why did it grep with bash',
+        parent_session_id: 'parent-session',
+        relationship_kind: 'btw'
+      }];
+
+      const visible = RemoteResponseMapper.sessions(items);
+      const raw = RemoteResponseMapper.allSessions(items);
+
+      expect(visible.length).assertEqual(1);
+      expect(visible[0].id).assertEqual('parent-session');
+      expect(raw.length).assertEqual(2);
+      expect(raw[1].parentSessionId).assertEqual('parent-session');
+      expect(raw[1].relationshipKind).assertEqual('btw');
     });
 
     it('maps alternate session time fields', 0, () => {

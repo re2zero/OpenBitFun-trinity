@@ -1,3 +1,5 @@
+import { RemoteResponseMapper } from '../main/ets/services/RemoteResponseMapper';
+import { AccountLoginErrorPolicy } from '../main/ets/pages/policy/AccountLoginErrorPolicy';
 import { describe, it, expect } from '@ohos/hypium';
 import { RemoteI18n } from '../main/ets/i18n/RemoteI18n';
 import { ChatComposerPolicy, ComposerPrimaryAction } from '../main/ets/services/ChatComposerPolicy';
@@ -23,10 +25,11 @@ import {
 import { AssistantProcessLayoutPolicy } from '../main/ets/pages/policy/AssistantProcessLayoutPolicy';
 import { ConversationMessageRenderPolicy } from '../main/ets/pages/policy/ConversationMessageRenderPolicy';
 import { ToolCollapsePolicy } from '../main/ets/pages/policy/ToolCollapsePolicy';
-import { ChatMessageStructurePolicy } from '../main/ets/pages/policy/ChatMessageStructurePolicy';
+import { ChatMessageStructurePolicy, StructuredRenderGroup } from '../main/ets/pages/policy/ChatMessageStructurePolicy';
 import { ToolStatusPresentationPolicy } from '../main/ets/pages/policy/ToolStatusPresentationPolicy';
 import { PlanToolPolicy } from '../main/ets/pages/policy/PlanToolPolicy';
 import {
+  ConversationUiImage,
   ConversationUiMessage,
   ConversationUiMessageItem,
   ConversationUiToolStatus
@@ -50,8 +53,19 @@ import {
   DetectedUrlAction
 } from '../main/ets/services/ConnectScanDecisionPolicy';
 
+interface LoginFailureFixture { code?: number; statusCode?: number; }
+
 export default function conversationPresentationUnitTest() {
   describe('HarnessProfilePolicy', () => {
+    it('workspace_host_survives_mapping_and_legacy_payloads', 0, () => {
+      const workspaces = RemoteResponseMapper.recentWorkspaces([
+        { path: '/remote', name: 'App', remote_ssh_host: '10.0.0.8' },
+        { path: '/local', name: 'App' }
+      ]);
+      expect(workspaces[0].remoteSshHost).assertEqual('10.0.0.8');
+      expect(workspaces[0].name).assertEqual('App');
+      expect(workspaces[1].remoteSshHost).assertUndefined();
+    });
     it('maps mobile execution levels to canonical host Agents', 0, () => {
       expect(HarnessProfilePolicy.agentType('minimal')).assertEqual('minimal');
       expect(HarnessProfilePolicy.agentType('standard')).assertEqual('agentic');
@@ -202,6 +216,16 @@ export default function conversationPresentationUnitTest() {
   });
 
   describe('ConversationMessageRenderPolicy', () => {
+    it('names an attachment the host could not inline instead of drawing a blank frame', 0, () => {
+      const inlined: ConversationUiImage = { name: 'chart.png', data_url: 'data:image/png;base64,YQ==' };
+      const pathOnly: ConversationUiImage = { name: 'dropped-on-the-desktop.png', data_url: '' };
+
+      expect(ConversationMessageRenderPolicy.hasRenderableImagePixels(inlined)).assertTrue();
+      expect(ConversationMessageRenderPolicy.hasRenderableImagePixels(pathOnly)).assertFalse();
+      expect(ConversationMessageRenderPolicy.hasRenderableImagePixels({ name: 'blank.png', data_url: '   ' }))
+        .assertFalse();
+    });
+
     it('does not throw when assistant text is missing and still shows structured content', 0, () => {
       expect(ConversationMessageRenderPolicy.visibleText(undefined)).assertEqual('');
       expect(ConversationMessageRenderPolicy.visibleText('(空消息)')).assertEqual('');
@@ -309,6 +333,119 @@ export default function conversationPresentationUnitTest() {
       ]);
       expect(parentOutput.length).assertEqual(2);
       expect(parentOutput[0].subItems?.length || 0).assertEqual(0);
+    });
+
+    it('folds a Task restatement once instead of drawing its children twice', 0, () => {
+      const task = toolStatus('task-1', 'Task', 'running');
+      const childThinking: ConversationUiMessageItem = {
+        type: 'thinking',
+        content: 'Inspect child files',
+        is_subagent: true
+      };
+      const childRead: ConversationUiMessageItem = {
+        type: 'tool',
+        tool: toolStatus('read-child', 'Read', 'running'),
+        is_subagent: true
+      };
+      const parentTask: ConversationUiMessageItem = { type: 'tool', tool: task };
+      parentTask.subItems = [childThinking, childRead];
+
+      const scoped = ChatMessageStructurePolicy.scopeSubagentItems([parentTask, childThinking, childRead]);
+      expect(scoped.length).assertEqual(1);
+      expect(scoped[0].subItems?.length || 0).assertEqual(2);
+    });
+
+    it('keeps a child that repeats inside the Task', 0, () => {
+      const task = toolStatus('task-2', 'Task', 'running');
+      const childRead: ConversationUiMessageItem = {
+        type: 'tool',
+        tool: toolStatus('read-child-2', 'Read', 'completed'),
+        is_subagent: true
+      };
+      const parentTask: ConversationUiMessageItem = { type: 'tool', tool: task };
+      parentTask.subItems = [childRead, childRead];
+
+      const scoped = ChatMessageStructurePolicy.scopeSubagentItems([parentTask, childRead, childRead]);
+      expect(scoped[0].subItems?.length || 0).assertEqual(2);
+    });
+
+    it('matches only original nested occurrences and preserves repeated flat text', 0, () => {
+      [true, false].forEach((marked: boolean) => {
+        [0, 1, 2].forEach((nestedCount: number) => {
+          const child: ConversationUiMessageItem = { type: 'text', content: 'Checking again', is_subagent: marked };
+          const nested: ConversationUiMessageItem[] = [];
+          for (let index = 0; index < nestedCount; index++) nested.push(child);
+          const task: ConversationUiMessageItem = {
+            type: 'tool', tool: toolStatus('task', 'Task', 'running'), subItems: nested
+          };
+          const scoped = ChatMessageStructurePolicy.scopeSubagentItems([task, child, child, child, child, child]);
+          expect(scoped[0].subItems?.length).assertEqual(5);
+          expect(task.subItems?.length).assertEqual(nestedCount);
+        });
+      });
+    });
+
+    it('updates a nested tool from its flat restatement without mutating the source', 0, () => {
+      [true, false].forEach((marked: boolean) => {
+        const nested: ConversationUiMessageItem = {
+          type: 'tool', content: 'old', tool: toolStatus('read', 'Read', 'running'),
+          subItems: [{ type: 'text', content: 'nested detail' }]
+        };
+        const task: ConversationUiMessageItem = {
+          type: 'tool', tool: toolStatus('task', 'Task', 'running'), subItems: [nested]
+        };
+        const completed = toolStatus('read', 'Read', 'completed');
+        completed.result_preview = 'new output';
+        completed.name = undefined;
+        if (nested.tool) nested.tool.input_preview = 'original input';
+        const flat: ConversationUiMessageItem = { type: 'tool', content: 'new', tool: completed, is_subagent: marked };
+        const children = ChatMessageStructurePolicy.scopeSubagentItems([task, flat])[0].subItems || [];
+        expect(children.length).assertEqual(1);
+        expect(children[0].tool?.status).assertEqual('completed');
+        expect(children[0].tool?.result_preview).assertEqual('new output');
+        expect(children[0].content).assertEqual('new');
+        expect(children[0].tool?.name).assertEqual('Read');
+        expect(children[0].tool?.input_preview).assertEqual('original input');
+        expect(children[0].subItems?.length).assertEqual(1);
+        expect(nested.tool?.status).assertEqual('running');
+      });
+    });
+
+    it('keeps a reasoning block path when an earlier item arrives in front of it', 0, () => {
+      const onlyThinking = ChatMessageStructurePolicy.structuredGroups([
+        { type: 'thinking', content: 'Inspect' }
+      ], 'item', true, 'active');
+      const withSteeringFirst = ChatMessageStructurePolicy.structuredGroups([
+        { type: 'user-steering', steering_id: 'steering-1', content: 'Use plan B' },
+        { type: 'thinking', content: 'Inspect' }
+      ], 'item', true, 'active');
+      expect(onlyThinking.length).assertEqual(1);
+      expect(onlyThinking[0].type).assertEqual('item');
+      const thinkingGroup = withSteeringFirst.filter((group: StructuredRenderGroup) =>
+        group.items.length > 0 && ChatMessageStructurePolicy.isThinkingEntry(group.items[0]))[0];
+      expect(thinkingGroup.path).assertEqual(onlyThinking[0].path);
+      expect(thinkingGroup.key).assertEqual(onlyThinking[0].key);
+    });
+
+    it('keeps a Task path and its children when an earlier tool arrives late', 0, () => {
+      const task = toolStatus('task-3', 'Task', 'running');
+      const childThinking: ConversationUiMessageItem = {
+        type: 'thinking',
+        content: 'Child reasoning',
+        is_subagent: true
+      };
+      const parentTask: ConversationUiMessageItem = { type: 'tool', tool: task };
+      parentTask.subItems = [childThinking];
+
+      const taskOnly = ChatMessageStructurePolicy.structuredGroups([parentTask], 'item', true, 'active');
+      const withEarlierTool = ChatMessageStructurePolicy.structuredGroups([
+        { type: 'tool', tool: toolStatus('read-late', 'Read', 'completed') },
+        parentTask
+      ], 'item', true, 'active');
+      const taskGroup = withEarlierTool.filter((group: StructuredRenderGroup) =>
+        group.type === 'item' && (group.items[0].tool?.name || '') === 'Task')[0];
+      expect(taskOnly[0].path).assertEqual(taskGroup.path);
+      expect((taskGroup.items[0].subItems || []).length).assertEqual(1);
     });
 
     it('keeps one plain assistant text item on the lightweight markdown path', 0, () => {
@@ -610,7 +747,7 @@ export default function conversationPresentationUnitTest() {
       expect(RemoteI18n.t('sidebar.newChat')).assertEqual('聊天');
       expect(RemoteI18n.t('sidebar.connectDesktop')).assertEqual('连接电脑');
       expect(RemoteI18n.t('sidebar.scanToConnect')).assertEqual('扫码连接电脑');
-      expect(RemoteI18n.t('sidebar.signInOpenBitFunAccount')).assertEqual('使用 GitHub 登录');
+      expect(RemoteI18n.t('sidebar.signInOpenBitFunAccount')).assertEqual('使用邮箱或 GitHub 登录');
       expect(RemoteI18n.t('connect.chooseConnectionTitle')).assertEqual('连接电脑');
       expect(RemoteI18n.t('sidebar.local')).assertEqual('sidebar.local');
       expect(RemoteI18n.t('sidebar.code')).assertEqual('sidebar.code');
@@ -712,7 +849,34 @@ export default function conversationPresentationUnitTest() {
     });
   });
 
+  describe('AccountLoginErrorPolicy', () => {
+    it('uses actionable copy for SDK transport failures', 0, () => {
+      expect(AccountLoginErrorPolicy.messageKey({ code: 2300006 } as LoginFailureFixture)).assertEqual('account.errorNetwork');
+      expect(AccountLoginErrorPolicy.messageKey({ code: 2300028 } as LoginFailureFixture)).assertEqual('account.errorTimeout');
+      expect(AccountLoginErrorPolicy.messageKey({ code: 2300060 } as LoginFailureFixture)).assertEqual('account.errorSecureConnection');
+      expect(AccountLoginErrorPolicy.messageKey({ statusCode: 429 } as LoginFailureFixture)).assertEqual('account.errorRateLimited');
+    });
+    it('does not expose unknown exception text or server bodies', 0, () => {
+      expect(AccountLoginErrorPolicy.messageKey(new Error('raw SDK JSON')))
+        .assertEqual('remote.settings.accountLoginFailed');
+      expect(AccountLoginErrorPolicy.messageKey({ statusCode: 500 } as LoginFailureFixture))
+        .assertEqual('remote.settings.accountLoginFailed');
+    });
+  });
+
   describe('RemoteCompactHomePolicy', () => {
+    it('keeps the welcome entry without replacing a retained control target', 0, () => {
+      expect(RemoteCompactHomePolicy.shouldShowWelcomeHome('none', 'idle')).assertTrue();
+      expect(RemoteCompactHomePolicy.shouldShowWelcomeHome('none', 'idle', true)).assertFalse();
+      expect(RemoteCompactHomePolicy.shouldShowWelcomeHome('none', 'failed', true)).assertFalse();
+      expect(RemoteCompactHomePolicy.shouldShowWelcomeHome('none', 'disconnected')).assertTrue();
+      expect(RemoteCompactHomePolicy.shouldShowWelcomeHome('none', 'failed')).assertTrue();
+      expect(RemoteCompactHomePolicy.shouldShowWelcomeHome('none', 'pairing')).assertTrue();
+      expect(RemoteCompactHomePolicy.shouldShowWelcomeHome('account_device', 'disconnected')).assertFalse();
+      expect(RemoteCompactHomePolicy.shouldShowWelcomeHome('account_device', 'reconnecting')).assertFalse();
+      expect(RemoteCompactHomePolicy.shouldShowWelcomeHome('account_device', 'connected')).assertFalse();
+    });
+
     it('keeps pick-session chrome only while the desktop link is actually connected', 0, () => {
       expect(RemoteCompactHomePolicy.shouldShowConnectHome('connected')).assertFalse();
     });
@@ -722,7 +886,8 @@ export default function conversationPresentationUnitTest() {
       expect(RemoteCompactHomePolicy.shouldShowConnectHome('failed')).assertTrue();
       expect(RemoteCompactHomePolicy.shouldShowConnectHome('disconnected')).assertTrue();
       expect(RemoteCompactHomePolicy.shouldShowConnectHome('idle')).assertTrue();
-      expect(RemoteCompactHomePolicy.headerSubtitle('reconnecting', 'Studio')).assertEqual('');
+      expect(RemoteCompactHomePolicy.headerSubtitle('reconnecting', 'Studio')).assertEqual('Studio');
+      expect(RemoteCompactHomePolicy.headerSubtitle('idle', 'Studio')).assertEqual('');
       expect(RemoteCompactHomePolicy.headerSubtitle('connected', 'Studio')).assertEqual('Studio');
     });
   });

@@ -38,6 +38,8 @@ pub mod tray;
 mod trinity;
 mod webview_recovery;
 mod window_state_support;
+#[cfg(target_os = "windows")]
+mod window_webview_geometry;
 
 use openbitfun_agent_runtime::sdk::{attach_session_event_cursor, SessionEventJournal};
 use openbitfun_core::agentic::tools::computer_use_capability::set_computer_use_desktop_available;
@@ -60,7 +62,6 @@ use std::sync::{
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tauri::Emitter;
 use tauri::Manager;
-use tauri_plugin_window_state::{AppHandleExt, StateFlags, WindowExt};
 
 // Re-export API
 pub use api::*;
@@ -290,6 +291,12 @@ fn show_main_window_for_secondary_launch(
     main_window
         .unminimize()
         .map_err(|error| format!("failed to unminimize main window: {}", error))?;
+    if let Err(error) = window_state_support::repair_for_activation(&main_window) {
+        log::warn!(
+            "Failed to repair main window geometry from secondary launch: {}",
+            error
+        );
+    }
     main_window
         .show()
         .map_err(|error| format!("failed to show main window: {}", error))?;
@@ -331,59 +338,8 @@ pub(crate) fn e2e_storage_guard_enabled() -> bool {
         .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
 }
 
-fn main_window_state_flags() -> StateFlags {
-    main_window_geometry_state_flags() | StateFlags::MAXIMIZED
-}
-
-fn main_window_geometry_state_flags() -> StateFlags {
-    StateFlags::SIZE | StateFlags::POSITION | StateFlags::FULLSCREEN
-}
-
-/// Restore deliberately excludes `MAXIMIZED` on Windows: maximizing a hidden
-/// undecorated window does not survive `show()` and leaves Windows tracking a
-/// bogus normal-placement rect. Other platforms use the plugin's complete
-/// restore behavior.
-#[cfg(target_os = "windows")]
-fn main_window_restore_flags() -> StateFlags {
-    main_window_geometry_state_flags()
-}
-
-#[cfg(not(target_os = "windows"))]
-fn main_window_restore_flags() -> StateFlags {
-    main_window_state_flags()
-}
-
 fn persist_main_window_state(app: &tauri::AppHandle, reason: &str) -> Result<(), String> {
-    persist_main_window_state_with_flags(app, reason, main_window_state_flags())
-}
-
-fn persist_main_window_geometry_state(app: &tauri::AppHandle, reason: &str) -> Result<(), String> {
-    persist_main_window_state_with_flags(app, reason, main_window_geometry_state_flags())
-}
-
-fn persist_main_window_state_with_flags(
-    app: &tauri::AppHandle,
-    reason: &str,
-    flags: StateFlags,
-) -> Result<(), String> {
-    let result = app
-        .save_window_state(flags)
-        .map_err(|error| error.to_string());
-    if let Err(error) = &result {
-        log::warn!(
-            "Failed to save main window state: reason={}, error={}",
-            reason,
-            error
-        );
-        return result;
-    }
-
-    #[cfg(target_os = "windows")]
-    if flags.contains(StateFlags::MAXIMIZED) {
-        window_state_support::correct_saved_main_window_state(app);
-    }
-
-    Ok(())
+    window_state_support::save(app, reason)
 }
 
 pub(crate) fn save_main_window_state(app: &tauri::AppHandle, reason: &str) {
@@ -434,115 +390,8 @@ pub(crate) fn set_main_window_transient_geometry(
     })
 }
 
-fn has_standard_main_window_size(width: f64, height: f64) -> bool {
-    width >= MAIN_WINDOW_MIN_WIDTH && height >= MAIN_WINDOW_MIN_HEIGHT
-}
-
 pub(crate) fn restore_main_window_state(window: &tauri::WebviewWindow) -> bool {
-    if let Err(error) = window.restore_state(main_window_restore_flags()) {
-        log::warn!("Failed to restore main window state: {}", error);
-    }
-
-    #[cfg(target_os = "windows")]
-    let reapply_maximized =
-        window_state_support::read_persisted_main_maximized(window.app_handle()).unwrap_or(false);
-
-    #[cfg(not(target_os = "windows"))]
-    let reapply_maximized = false;
-
-    let is_maximized = window.is_maximized().unwrap_or(false);
-    let is_fullscreen = window.is_fullscreen().unwrap_or(false);
-    if !is_maximized && !is_fullscreen {
-        match (window.inner_size(), window.scale_factor()) {
-            (Ok(size), Ok(scale_factor)) => {
-                let logical_size = size.to_logical::<f64>(scale_factor);
-                if !has_standard_main_window_size(logical_size.width, logical_size.height) {
-                    log::info!(
-                        "Resetting undersized main window state: width={}, height={}",
-                        logical_size.width,
-                        logical_size.height
-                    );
-
-                    let resize_result = window.set_size(tauri::LogicalSize::new(
-                        MAIN_WINDOW_DEFAULT_WIDTH,
-                        MAIN_WINDOW_DEFAULT_HEIGHT,
-                    ));
-                    let center_result = window.center();
-                    let resize_succeeded = match resize_result {
-                        Ok(()) => true,
-                        Err(error) => {
-                            log::warn!("Failed to reset main window size: {}", error);
-                            false
-                        }
-                    };
-                    if let Err(error) = center_result {
-                        log::warn!("Failed to center reset main window: {}", error);
-                    }
-                    if resize_succeeded {
-                        if let Err(error) = persist_main_window_geometry_state(
-                            window.app_handle(),
-                            "startup_geometry_repair",
-                        ) {
-                            log::warn!("Failed to persist repaired main window state: {}", error);
-                        }
-                    }
-                }
-            }
-            (Err(error), _) => {
-                log::warn!("Failed to read restored main window size: {}", error);
-            }
-            (_, Err(error)) => {
-                log::warn!("Failed to read main window scale factor: {}", error);
-            }
-        }
-    }
-
-    if let Err(error) = window.set_min_size(Some(tauri::LogicalSize::new(
-        MAIN_WINDOW_MIN_WIDTH,
-        MAIN_WINDOW_MIN_HEIGHT,
-    ))) {
-        log::warn!("Failed to set main window minimum size: {}", error);
-    }
-
-    reapply_maximized
-}
-
-#[cfg(test)]
-mod main_window_geometry_tests {
-    use super::{
-        has_standard_main_window_size, main_window_geometry_state_flags, main_window_restore_flags,
-        main_window_state_flags,
-    };
-    use tauri_plugin_window_state::StateFlags;
-
-    #[test]
-    fn floating_toolbar_sizes_are_not_valid_main_window_sizes() {
-        assert!(!has_standard_main_window_size(440.0, 680.0));
-        assert!(!has_standard_main_window_size(700.0, 140.0));
-    }
-
-    #[test]
-    fn default_client_size_is_a_valid_main_window_size() {
-        assert!(has_standard_main_window_size(1200.0, 800.0));
-    }
-
-    #[test]
-    fn geometry_saves_do_not_overwrite_maximized_state() {
-        assert!(!main_window_geometry_state_flags().contains(StateFlags::MAXIMIZED));
-        assert!(main_window_state_flags().contains(StateFlags::MAXIMIZED));
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn windows_restore_defers_maximized_state_until_after_show() {
-        assert!(!main_window_restore_flags().contains(StateFlags::MAXIMIZED));
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    #[test]
-    fn non_windows_restore_keeps_plugin_maximized_behavior() {
-        assert!(main_window_restore_flags().contains(StateFlags::MAXIMIZED));
-    }
+    window_state_support::restore(window)
 }
 
 #[tauri::command]
@@ -862,17 +711,9 @@ pub async fn run() {
         )
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(
-            tauri_plugin_window_state::Builder::default()
-                // Restore explicitly after the main window is built, and save
-                // explicitly at normal-geometry boundaries. Empty automatic
-                // flags keep toolbar-mode resize/move events out of the
-                // plugin cache and prevent its exit hook from overwriting the
-                // last normal main-window geometry.
-                .with_state_flags(StateFlags::empty())
-                .with_filter(|label| label == "main")
-                .build(),
-        )
+        // The desktop owns validated snapshots and atomic writes. Do not install
+        // window-state: its exit hook can overwrite repairs with stale cached data.
+        .manage(window_state_support::MainWindowState::default())
         .manage(app_state)
         .manage(sleep_prevention::SleepPreventionState::default())
         .manage(desktop_runtime)
@@ -1238,7 +1079,7 @@ pub async fn run() {
                 let app_handle_for_menu = app.handle().clone();
                 let app_state: tauri::State<'_, api::app_state::AppState> = app.state();
                 let config_service = app_state.config_service.clone();
-                let workspace_path = app_state.workspace_path.clone();
+                let workspace_id = app_state.workspace_id.clone();
                 let macos_edit_menu_mode = app_state.macos_edit_menu_mode.clone();
 
                 tokio::spawn(async move {
@@ -1247,7 +1088,7 @@ pub async fn run() {
                         .await
                         .unwrap_or_else(|_| "zh-CN".to_string());
 
-                    let has_workspace = workspace_path.read().await.is_some();
+                    let has_workspace = workspace_id.read().await.is_some();
                     let mode = if has_workspace {
                         crate::macos_menubar::MenubarMode::Workspace
                     } else {
@@ -1357,6 +1198,14 @@ pub async fn run() {
         })
         .on_window_event({
             move |window, event| {
+                #[cfg(target_os = "windows")]
+                window_webview_geometry::handle_event(window, event);
+                if window.label() == "main"
+                    && !MAIN_WINDOW_USES_TRANSIENT_GEOMETRY.load(Ordering::SeqCst)
+                    && matches!(event, tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_))
+                {
+                    window_state_support::remember_normal(window);
+                }
                 if window.label() == "main"
                     && matches!(event, tauri::WindowEvent::CloseRequested { .. })
                 {
@@ -1434,6 +1283,9 @@ pub async fn run() {
             api::agentic_api::reload_session_context,
             api::agentic_api::update_session_title,
             api::agentic_api::ensure_coordinator_session,
+            api::agentic_api::ensure_control_conversation,
+            api::agentic_api::create_control_conversation,
+            api::agentic_api::record_voice_exchange,
             api::agentic_api::start_dialog_turn,
             api::agentic_api::compact_session,
             api::agentic_api::activate_session_goal,
@@ -1447,6 +1299,7 @@ pub async fn run() {
             api::agentic_api::interrupt_dialog_turn,
             api::agentic_api::recover_interrupted_dialog_turn,
             api::agentic_api::steer_dialog_turn,
+            api::agentic_api::manage_dialog_queue,
             api::agentic_api::control_deep_review_queue,
             api::agentic_api::cancel_session,
             api::agentic_api::set_subagent_timeout,
@@ -1466,6 +1319,7 @@ pub async fn run() {
             webdriver_bridge_result,
             get_startup_native_trace,
             api::agentic_api::list_sessions,
+            api::agentic_api::get_session_interaction_mailbox,
             api::agentic_api::list_pending_permission_requests,
             api::agentic_api::subscribe_permission_requests,
             api::agentic_api::respond_permission,
@@ -1490,11 +1344,13 @@ pub async fn run() {
             apply_external_hook_import_command,
             mutate_external_hook_import_command,
             get_external_source_snapshot,
+            get_instruction_source_catalog,
             get_workspace_reference_snapshot,
             plan_external_mcp_import_command,
             apply_external_mcp_import_command,
             reveal_external_source_location,
             get_external_source_control_snapshot,
+            get_external_source_discovery_snapshot,
             apply_external_source_control_action_command,
             get_external_ecosystem_awareness_command,
             acknowledge_external_ecosystems_command,
@@ -1516,11 +1372,13 @@ pub async fn run() {
             choose_external_mcp_conflict_command,
             api::context_upload_api::upload_image_contexts,
             get_all_tools_info,
+            get_chat_mcp_catalog,
             get_readonly_tools_info,
             get_tool_info,
             validate_tool_input,
             execute_tool,
             submit_user_answers,
+            start_user_question_interaction,
             initialize_workspace_startup_state,
             get_available_tools,
             report_ide_control_result,
@@ -1552,12 +1410,14 @@ pub async fn run() {
             delete_agent_companion_pet_package,
             read_file_content,
             write_file_content,
+            workspace_file_upload,
             reset_workspace_persona_files,
             check_path_exists,
             get_file_metadata,
             get_file_editor_sync_hash,
             rename_file,
             export_local_file_to_path,
+            api::local_file_download::local_file_download,
             reveal_in_explorer,
             get_file_tree,
             explorer_get_file_tree,
@@ -1585,11 +1445,16 @@ pub async fn run() {
             stop_file_watch,
             get_watched_paths,
             get_clipboard_files,
+            get_clipboard_image,
             api::browser_file_drop_api::resolve_browser_dropped_file_paths,
+            api::file_drop_preview_api::set_file_drop_preview_target,
             paste_files,
             get_config,
             get_configs,
             computer_use_get_status,
+            computer_use_control_status,
+            computer_use_control_stop,
+            computer_use_control_preview,
             computer_use_request_permissions,
             computer_use_open_system_settings,
             set_config,
@@ -1796,6 +1661,7 @@ pub async fn run() {
             get_global_config_status,
             get_model_configs,
             get_ai_model_catalog,
+            get_local_models_dev_catalogs,
             project_ai_model_reasoning_catalog,
             get_models_dev_catalog_status,
             refresh_models_dev_catalog_now,
@@ -1877,6 +1743,7 @@ pub async fn run() {
             api::system_api::quit_app,
             api::system_api::minimize_to_tray,
             api::system_api::initialize_tray_after_startup,
+            api::system_api::set_tray_unread_count,
             api::system_api::startup_window_control,
             api::system_api::set_main_window_transient_geometry,
             api::system_api::toggle_main_window_fullscreen,
@@ -1920,8 +1787,13 @@ pub async fn run() {
             api::remote_connect_api::account_get_credential_hint,
             api::remote_connect_api::account_token_expired,
             api::remote_connect_api::account_list_devices,
+            api::remote_connect_api::account_update_device_alias,
+            api::remote_connect_api::account_relay_capabilities,
             api::remote_connect_api::account_delete_device,
             api::remote_connect_api::account_device_rpc,
+            api::remote_connect_api::account_subscribe_session,
+            api::remote_connect_api::account_unsubscribe_session,
+            api::remote_connect_api::account_load_older_session,
             // OpenBitFun Page API
             api::pages_api::page_publish,
             api::pages_api::page_save_version,
@@ -1980,6 +1852,7 @@ pub async fn run() {
             api::miniapp_api::miniapp_get_customization_metadata,
             api::miniapp_api::miniapp_decline_builtin_update,
             api::miniapp_market_api::miniapp_market_browse,
+            api::market_image_api::market_image_load,
             api::miniapp_market_api::miniapp_market_get_listing,
             api::miniapp_market_api::miniapp_market_capture_window,
             api::miniapp_market_api::miniapp_market_set_rating,
@@ -2017,6 +1890,7 @@ pub async fn run() {
             api::browser_api::browser_webview_navigate,
             api::browser_api::browser_webview_reload,
             api::browser_api::browser_webview_set_bounds,
+            api::browser_api::browser_webview_capture_preview,
             api::browser_api::browser_webview_set_agent_target_state,
             api::browser_api::browser_get_url,
             api::html_preview_api::html_preview_create,
@@ -2159,7 +2033,7 @@ async fn init_agentic_system() -> anyhow::Result<(
     let persistence_manager = Arc::new(persistence::PersistenceManager::new(path_manager.clone())?);
 
     let context_store = Arc::new(session::SessionContextStore::new());
-    let context_compressor = Arc::new(session::ContextCompressor::new(Default::default()));
+    let context_compressor = Arc::new(session::ContextCompressor::new());
 
     let session_manager = Arc::new(session::SessionManager::new(
         context_store,
@@ -2245,10 +2119,6 @@ async fn init_agentic_system() -> anyhow::Result<(
                 session_manager.clone(),
             ),
         ),
-    );
-    event_router.subscribe_internal(
-        "thread_goal_tokens".to_string(),
-        Arc::new(openbitfun_core::agentic::goal_mode::ThreadGoalTokenSubscriber),
     );
 
     log::info!("Token usage service initialized and subscriber registered");
@@ -2562,6 +2432,7 @@ async fn deliver_event_to_webview(
     event: AgenticEvent,
     session_event_journal: &SessionEventJournal,
 ) {
+    openbitfun_core::service::remote_connect::notify_session_catalog_event(&event);
     let cursor = session_event_journal.record(&event);
     let Some(mut projected) = openbitfun_events::project_agentic_frontend_event(event) else {
         log::warn!("Unhandled AgenticEvent type in desktop delivery");
@@ -2571,6 +2442,60 @@ async fn deliver_event_to_webview(
         attach_session_event_cursor(&mut projected.payload, cursor);
     }
 
+    if let (Some(hub), Some(session_id)) = (
+        api::remote_connect_api::host_stream_hub().await,
+        projected
+            .payload
+            .get("sessionId")
+            .or_else(|| projected.payload.get("session_id"))
+            .and_then(serde_json::Value::as_str),
+    ) {
+        let name = projected.event_name.as_str();
+        let policy =
+            openbitfun_core::service::remote_connect::session_records::session_event_publication(
+                name,
+                &projected.payload,
+            );
+        if policy.synchronize_records {
+            if let Err(error) = async {
+                if let Some(turn) = projected
+                    .payload
+                    .get("turnId")
+                    .or_else(|| projected.payload.get("settledTurnId"))
+                    .and_then(serde_json::Value::as_str)
+                {
+                    openbitfun_core::service::remote_connect::synchronize_session_record_turn(
+                        &hub, session_id, turn,
+                    )
+                    .await
+                } else if name == "agentic://session-history-changed" {
+                    openbitfun_core::service::remote_connect::synchronize_session_records(
+                        &hub, session_id,
+                    )
+                    .await
+                } else {
+                    Ok(())
+                }
+            }
+            .await
+            {
+                log::error!("Unable to synchronize host session records: {error}");
+            }
+        }
+        if policy.persist_control {
+            if let Err(error) = hub
+                .append(
+                    session_id.to_owned(),
+                    projected.event_name.clone(),
+                    projected.payload.clone(),
+                )
+                .await
+            {
+                log::error!("Unable to publish session control event: {error}");
+            }
+        }
+    }
+
     if let Err(e) = transport
         .emit_generic(&projected.event_name, projected.payload.clone())
         .await
@@ -2578,9 +2503,8 @@ async fn deliver_event_to_webview(
         log::error!("Failed to emit event: {:?}", e);
     }
 
-    if !api::peer_host_invoke::attached_controllers().is_empty() {
-        api::remote_connect_api::fanout_peer_device_event(projected.event_name, projected.payload);
-    }
+    // Session events reach controllers through host streams they read on
+    // demand. Do not duplicate every payload on the per-controller ephemeral channel.
 }
 
 /// Update the rate EMA from a flush that produced `flushed_chars` characters.
@@ -2820,6 +2744,11 @@ fn init_services(app_handle: tauri::AppHandle, default_log_level: log::LevelFilt
             );
         }
 
+        // Workspaces opened by remote controllers, IM bots, or Peer Mode
+        // controllers change the host catalog without a webview command;
+        // the webview re-reads its opened/recent lists on this hint.
+        service::workspace::start_workspace_catalog_publication(emitter.clone());
+
         let event_system = infrastructure::events::get_global_event_system();
         event_system.set_emitter(emitter).await;
     });
@@ -2915,7 +2844,8 @@ fn spawn_workspace_search_feature_listener(app_handle: tauri::AppHandle) {
 
     let app_state: tauri::State<'_, api::AppState> = app_handle.state();
     let workspace_search_service = app_state.workspace_search_service.clone();
-    let workspace_path = app_state.workspace_path.clone();
+    let workspace_id = app_state.workspace_id.clone();
+    let workspace_service = app_state.workspace_service.clone();
 
     tokio::spawn(async move {
         let mut feature_enabled =
@@ -2956,14 +2886,17 @@ fn spawn_workspace_search_feature_listener(app_handle: tauri::AppHandle) {
                         continue;
                     }
 
-                    let current_workspace = workspace_path.read().await.clone();
+                    let selected_id = workspace_id.read().await.clone();
+                    let current_workspace = if let Some(id) = selected_id {
+                        workspace_service.get_workspace(&id).await
+                    } else {
+                        None
+                    };
                     if let Some(current_workspace) = current_workspace {
-                        let workspace_str = current_workspace.to_string_lossy().to_string();
-                        if !openbitfun_core::service::remote_ssh::workspace_state::is_remote_path(
-                            workspace_str.trim(),
-                        )
-                        .await
+                        if current_workspace.workspace_kind
+                            != openbitfun_core::service::workspace::WorkspaceKind::Remote
                         {
+                            let current_workspace = current_workspace.root_path;
                             match workspace_search_service.open_repo(&current_workspace).await {
                                 Ok(_) => {
                                     workspace_search_service.schedule_auto_index(
@@ -3176,4 +3109,11 @@ mod event_loop_driver_tests {
         driver.abort();
         producer.abort();
     }
+}
+
+/// Opt-in native regression entry; requires a disposable fixture launched by
+/// scripts/test-macos-control-roundtrip.mjs and a pumping macOS main run loop.
+#[cfg(all(feature = "devtools", target_os = "macos"))]
+pub async fn run_native_computer_use_roundtrip_fixture() {
+    computer_use::native_control_roundtrip::run().await;
 }

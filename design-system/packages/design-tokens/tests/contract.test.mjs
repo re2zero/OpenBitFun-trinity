@@ -31,6 +31,32 @@ test("system tokens remain color and brand independent", async () => {
   );
 });
 
+test("search height preserves the compact reference and follows other density scales", () => {
+  const value = (name, mode) => tokenCatalog.find(token => token.name === name).values[mode];
+  for (const mode of tokenModes) {
+    for (const size of ["sm", "md", "lg"]) {
+      const height = value(`control.searchField.height.${size}`, mode);
+      assert.equal(height, mode === "compact" && size === "sm" ? "30px" : value(`control.height.${size}`, mode));
+      assert.ok(parseFloat(height) > parseFloat(value("control.iconButton.xsSize", mode)));
+    }
+  }
+  assert.equal(value("control.height.sm", "compact"), "28px");
+  assert.equal(value("control.iconButton.xsSize", "compact"), "22px");
+  assert.equal(value("space.component.inline", "compact"), "10px");
+});
+
+test("Empty media geometry owns semantic artwork sizes", () => {
+  assert.equal(tokens["layout.empty.gap"], "10px");
+  assert.equal(tokens["layout.empty.paddingBlock"], "32px");
+  assert.equal(tokens["layout.empty.paddingInline"], "16px");
+  assert.equal(tokens["layout.empty.mediaSizeSm"], "24px");
+  assert.equal(tokens["layout.empty.mediaSizeMd"], "32px");
+  assert.equal(tokens["layout.empty.mediaSizeLg"], "40px");
+  assert.equal(tokens["layout.empty.iconSizeSm"], "24px");
+  assert.equal(tokens["layout.empty.iconSizeMd"], "32px");
+  assert.equal(tokens["layout.empty.iconSizeLg"], "40px");
+});
+
 test("Switch geometry preserves the compact reference contract", () => {
   assert.equal(tokens["control.switch.trackWidth"], "28px");
   assert.equal(tokens["control.switch.trackHeight"], "16px");
@@ -46,6 +72,8 @@ test("Icon geometry exposes every catalog size without product semantics", () =>
   assert.equal(tokens["control.icon.sizeSm"], "14px");
   assert.equal(tokens["control.icon.sizeMd"], "16px");
   assert.equal(tokens["control.icon.sizeLg"], "24px");
+  assert.equal(tokens["control.icon.strokeWidth"], 1.6);
+  assert.equal(tokens["control.icon.strokeWidthStrong"], 2);
 });
 
 test("TabGroup geometry preserves the capsule selected and outline contract", async () => {
@@ -60,7 +88,7 @@ test("TabGroup geometry preserves the capsule selected and outline contract", as
   assert.equal(tokens["control.tabGroup.itemPaddingBlockSm"], "7px");
   assert.equal(tokens["control.tabGroup.itemPaddingInlineSm"], "12px");
   assert.equal(tokens["control.tabGroup.itemActionSize"], "20px");
-  assert.equal(tokens["control.tabGroup.itemActionInset"], "8px");
+  assert.equal(tokens["control.tabGroup.itemActionInset"], "4px");
   assert.equal(systemDocument.control.tabGroup.itemRadius.$value, "{radius.pill}");
   assert.equal(tokens["control.tabGroup.itemRadius"], "9999px");
 });
@@ -214,9 +242,19 @@ test("Menu tokens preserve the compact grouped surface contract", async () => {
   const systemDocument = await readSource("system.tokens.json");
 
   assert.equal(tokens["overlay.menu.inlineSize"], "220px");
+  assert.equal(tokens["overlay.menu.minInlineSize"], "160px");
+  assert.ok(
+    Number.parseFloat(tokens["overlay.menu.minInlineSize"]) < Number.parseFloat(tokens["overlay.menu.inlineSize"]),
+    "content-sized menus need a minimum strictly below the fixed width",
+  );
   assert.equal(tokens["overlay.menu.maxBlockSize"], "480px");
   assert.equal(tokens["overlay.menu.headingHeight"], "24px");
   assert.equal(tokens["overlay.menu.itemHeight"], "30px");
+  for (const mode of tokenModes) {
+    assert.equal(tokenCatalog.find(token => token.name === "overlay.menu.rowGap").values[mode], "2px");
+  }
+  assert.notEqual(tokens["overlay.menu.rowGap"], tokens["overlay.menu.itemGap"]);
+  assert.notEqual(tokens["overlay.menu.rowGap"], tokens["overlay.menu.sectionGap"]);
   assert.equal(tokens["overlay.menu.itemIconSize"], "14px");
   assert.equal(systemDocument.overlay.menu.surfacePadding.$value, "{space.2}");
   assert.equal(systemDocument.overlay.menu.surfaceRadius.$value, "{radius.xl}");
@@ -340,6 +378,11 @@ test("Dialog tokens preserve the reference surface and chrome contract", async (
   assert.equal(tokens["overlay.dialog.headerPaddingBlockStart"], "24px");
   assert.equal(tokens["overlay.dialog.headerPaddingBlockEnd"], "20px");
   assert.equal(tokens["overlay.dialog.headerPaddingInline"], "24px");
+  assert.equal(tokens["overlay.dialog.footerPaddingBlockEnd"], "24px");
+  assert.equal(
+    tokens["overlay.dialog.footerPaddingBlockEnd"],
+    tokens["overlay.dialog.footerPaddingInline"],
+  );
   assert.equal(systemDocument.overlay.dialog.scrollbarWidth.$value, "{scrollbar.width}");
   assert.equal(tokens["overlay.dialog.scrollbarWidth"], "6px");
   assert.equal(tokens["overlay.dialog.footerBlur"], "blur(10px)");

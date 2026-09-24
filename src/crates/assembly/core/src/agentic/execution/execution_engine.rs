@@ -269,6 +269,20 @@ pub(crate) async fn prepare_compression_cancellable<T>(
     result
 }
 
+fn compression_plan_error(error: OpenBitFunError, plan: usize) -> OpenBitFunError {
+    match error {
+        OpenBitFunError::AIProvider(mut error)
+        | OpenBitFunError::RecoverableContextOverflow(mut error) => {
+            error.message = format!(
+                "Context compression failed on plan {plan}: {}",
+                error.message
+            );
+            OpenBitFunError::AIProvider(error)
+        }
+        error => error,
+    }
+}
+
 fn manual_compaction_terminal_error(error: OpenBitFunError) -> OpenBitFunError {
     match error {
         error @ OpenBitFunError::Cancelled(_) => error,
@@ -565,6 +579,13 @@ struct FinalizeRoundInput<'a> {
     context: &'a ExecutionContext,
     ai_client: Arc<crate::infrastructure::ai::AIClient>,
 }
+
+#[path = "compression_job.rs"]
+mod compression_job;
+#[path = "compression_lifecycle.rs"]
+mod compression_lifecycle;
+
+use compression_job::{CompressionJob, PrefetchedCompression};
 
 struct CompressionModelSummaryInput<'a> {
     trace_config: Option<ModelExchangeTraceConfig>,
@@ -1889,7 +1910,10 @@ impl ExecutionEngine {
 
         let agent_registry = get_agent_registry();
         let fallback_model_id = agent_registry
-            .get_model_id_for_agent(agent_type, workspace.map(|binding| binding.root_path()))
+            .get_model_id_for_agent(
+                agent_type,
+                workspace.and_then(|binding| binding.workspace_id.as_deref()),
+            )
             .await
             .map_err(|e| OpenBitFunError::AIClient(format!("Failed to get model ID: {}", e)))?;
         let configured_model_id = session
@@ -2202,7 +2226,15 @@ impl ExecutionEngine {
                 }
                 MessageContent::ToolResult { .. } => {
                     if !attach_images {
-                        result.push(AIMessage::from(msg));
+                        let mut ai = AIMessage::from(msg);
+                        if ai
+                            .tool_image_attachments
+                            .take()
+                            .is_some_and(|images| !images.is_empty())
+                        {
+                            ai.content = Some(format!("{}\n\n[Tool image pixels were not sent: the resolved model does not support image inputs.]", ai.content.as_deref().unwrap_or("")));
+                        }
+                        result.push(ai);
                         continue;
                     }
                     let mut ai = AIMessage::from(msg.clone());
@@ -2289,279 +2321,6 @@ impl ExecutionEngine {
         content
     }
 
-    async fn build_compression_request_messages(
-        &self,
-        runtime_messages: &[Message],
-        dialog_turn_id: &str,
-        workspace: Option<&WorkspaceBinding>,
-        workspace_services: Option<&crate::agentic::workspace::WorkspaceServices>,
-        provider: &str,
-        attach_images: bool,
-        prepended_prompt_reminders: &PrependedPromptReminders,
-    ) -> OpenBitFunResult<Vec<AIMessage>> {
-        let prepended_reminders = prepended_prompt_reminders.ordered_reminders();
-        let mut compression_messages = Self::build_ai_messages_for_send(
-            runtime_messages,
-            provider,
-            workspace,
-            workspace_services,
-            dialog_turn_id,
-            attach_images,
-            &prepended_reminders,
-        )
-        .await?;
-        compression_messages.push(AIMessage::user(
-            self.context_compressor.build_compact_prompt(),
-        ));
-        Ok(compression_messages)
-    }
-
-    async fn request_compression_summary_with_retry(
-        &self,
-        ai_client: Arc<crate::infrastructure::ai::AIClient>,
-        request_messages: Vec<AIMessage>,
-        tool_definitions: Option<Vec<ToolDefinition>>,
-        model_request_context: &ModelRequestContext,
-        trace_config: Option<ModelExchangeTraceConfig>,
-        max_tries: usize,
-    ) -> OpenBitFunResult<String> {
-        let mut last_error = None;
-        let base_wait_time_ms = 500;
-
-        for attempt in 0..max_tries {
-            let result = ai_client
-                .send_message_with_trace_and_request_context(
-                    request_messages.clone(),
-                    tool_definitions.clone(),
-                    Some(model_request_context.clone()),
-                    trace_config.clone(),
-                )
-                .await;
-
-            match result {
-                Ok(response) => {
-                    if response.tool_calls.is_some() {
-                        return Err(OpenBitFunError::AIClient(
-                            "Compression request returned tool calls instead of a summary"
-                                .to_string(),
-                        ));
-                    }
-                    if attempt > 0 {
-                        debug!(
-                            "Compression summary generation succeeded (attempt {}/{})",
-                            attempt + 1,
-                            max_tries
-                        );
-                    }
-                    return Ok(response.text);
-                }
-                Err(err) => {
-                    let provider_error = err
-                        .downcast_ref::<openbitfun_core_types::errors::AiProviderError>()
-                        .cloned();
-                    let err_msg = err.to_string();
-                    warn!(
-                        "Compression summary generation failed (attempt {}/{}): {}",
-                        attempt + 1,
-                        max_tries,
-                        err_msg
-                    );
-                    let category = provider_error
-                        .as_ref()
-                        .map(|error| error.category.clone())
-                        .unwrap_or_else(|| {
-                            openbitfun_core_types::errors::classify_ai_error_message(&err_msg)
-                        });
-                    if category == openbitfun_core_types::errors::ErrorCategory::ContextOverflow {
-                        return Err(OpenBitFunError::RecoverableContextOverflow(
-                            provider_error.unwrap_or_else(|| {
-                                openbitfun_core_types::errors::AiProviderError::classified(
-                                    err_msg,
-                                    openbitfun_core_types::errors::ErrorCategory::ContextOverflow,
-                                )
-                            }),
-                        ));
-                    }
-                    last_error = Some(err);
-
-                    if attempt < max_tries - 1 {
-                        let delay_ms = base_wait_time_ms * (1 << attempt.min(3));
-                        debug!(
-                            "Waiting {}ms before compression summary retry {}...",
-                            delay_ms,
-                            attempt + 2
-                        );
-                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                    }
-                }
-            }
-        }
-
-        Err(OpenBitFunError::AIClient(format!(
-            "Compression summary generation failed after {} attempts: {}",
-            max_tries,
-            last_error
-                .map(|err| err.to_string())
-                .unwrap_or_else(|| "Unknown error".to_string())
-        )))
-    }
-
-    async fn generate_compression_model_summary(
-        &self,
-        input: CompressionModelSummaryInput<'_>,
-    ) -> OpenBitFunResult<Option<String>> {
-        let request_messages = self
-            .build_compression_request_messages(
-                input.runtime_messages,
-                input.dialog_turn_id,
-                input.workspace,
-                input.workspace_services,
-                &input.ai_client.config.format,
-                input.primary_supports_image_understanding,
-                input.prepended_prompt_reminders,
-            )
-            .await?;
-
-        let raw_summary = self
-            .request_compression_summary_with_retry(
-                input.ai_client,
-                request_messages,
-                input.tool_definitions.clone(),
-                input.model_request_context,
-                input.trace_config,
-                2,
-            )
-            .await?;
-        let summary =
-            ContextCompressor::normalize_model_summary_output(&raw_summary).ok_or_else(|| {
-                OpenBitFunError::AIClient(
-                    "Model-based compression returned an empty summary".to_string(),
-                )
-            })?;
-        Ok(Some(summary))
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn build_planned_compression_result(
-        &self,
-        session_id: &str,
-        dialog_turn_id: &str,
-        runtime_messages: &[Message],
-        context_window: usize,
-        compression_contract: Option<crate::agentic::core::CompressionContract>,
-        ai_client: Arc<crate::infrastructure::ai::AIClient>,
-        model_request_context: &ModelRequestContext,
-        tool_definitions: &Option<Vec<ToolDefinition>>,
-        prepended_prompt_reminders: &PrependedPromptReminders,
-        primary_supports_image_understanding: bool,
-        workspace: Option<&WorkspaceBinding>,
-        workspace_services: Option<&crate::agentic::workspace::WorkspaceServices>,
-        trace_config: Option<ModelExchangeTraceConfig>,
-    ) -> OpenBitFunResult<Option<crate::agentic::session::CompressionResult>> {
-        let max_initial_recent = context_window.saturating_div(2).max(1);
-        let mut recent_target =
-            ContextCompressor::DEFAULT_RECENT_CONTEXT_TOKENS.min(max_initial_recent);
-        let mut selected_plan = None;
-        let mut model_summary = None;
-
-        for attempt in 0..Self::MAX_COMPRESSION_OVERFLOW_ATTEMPTS {
-            let Some(plan) = self.context_compressor.plan_compression_for_turn(
-                session_id,
-                dialog_turn_id,
-                runtime_messages,
-                context_window,
-                recent_target,
-            )?
-            else {
-                break;
-            };
-            info!(
-                "Compression context plan: session_id={}, turn_id={}, attempt={}/{}, retained_user_token_budget={}, retained_user_tokens={}, retained_user_messages={}, recent_target_tokens={}, recent_tail_tokens={}, cutoff_message_index={}, summary_messages={}, recent_tail_messages={}",
-                session_id,
-                dialog_turn_id,
-                attempt + 1,
-                Self::MAX_COMPRESSION_OVERFLOW_ATTEMPTS,
-                plan.retained_user_token_budget,
-                plan.retained_user_tokens,
-                plan.retained_user_messages.len(),
-                plan.recent_target_tokens,
-                plan.recent_tail_tokens,
-                plan.cutoff_message_index,
-                plan.summary_messages.len(),
-                plan.recent_tail_messages.len()
-            );
-
-            let summary_result = self
-                .generate_compression_model_summary(CompressionModelSummaryInput {
-                    ai_client: ai_client.clone(),
-                    model_request_context,
-                    runtime_messages: &plan.summary_request_messages,
-                    dialog_turn_id,
-                    workspace,
-                    workspace_services,
-                    tool_definitions,
-                    prepended_prompt_reminders,
-                    primary_supports_image_understanding,
-                    trace_config: trace_config.clone(),
-                })
-                .await;
-
-            match summary_result {
-                Ok(summary) => {
-                    selected_plan = Some(plan);
-                    model_summary = summary;
-                    break;
-                }
-                Err(err) if err.is_recoverable_context_overflow() => {
-                    warn!(
-                        "Compression request exceeded provider context: session_id={}, turn_id={}, attempt={}/{}, recent_target_tokens={}, cutoff_message_index={}, next_recent_target_tokens={:?}, error={}",
-                        session_id,
-                        dialog_turn_id,
-                        attempt + 1,
-                        Self::MAX_COMPRESSION_OVERFLOW_ATTEMPTS,
-                        plan.recent_target_tokens,
-                        plan.cutoff_message_index,
-                        plan.next_recent_target_tokens,
-                        err
-                    );
-                    let can_retry = attempt + 1 < Self::MAX_COMPRESSION_OVERFLOW_ATTEMPTS
-                        && plan.next_recent_target_tokens.is_some();
-                    let next_recent_target = plan.next_recent_target_tokens;
-                    selected_plan = Some(plan);
-                    if can_retry {
-                        recent_target = recent_target
-                            .saturating_add(ContextCompressor::RECENT_CONTEXT_RETRY_STEP_TOKENS)
-                            .max(next_recent_target.expect("retry target checked above"));
-                        continue;
-                    }
-                    break;
-                }
-                Err(err @ OpenBitFunError::Cancelled(_)) => return Err(err),
-                Err(err) => {
-                    warn!(
-                        "Model-based compression failed, falling back to structured local compression: {}",
-                        err
-                    );
-                    selected_plan = Some(plan);
-                    break;
-                }
-            }
-        }
-
-        let Some(selected_plan) = selected_plan else {
-            return Ok(None);
-        };
-        self.context_compressor
-            .compress_plan_with_contract(
-                session_id,
-                context_window,
-                selected_plan,
-                compression_contract,
-                model_summary,
-            )
-            .map(Some)
-    }
-
     async fn resolve_compression_runtime_scaffold(
         &self,
         session: &Session,
@@ -2573,7 +2332,7 @@ impl ExecutionEngine {
                 context
                     .workspace
                     .as_ref()
-                    .map(|workspace| workspace.root_path()),
+                    .and_then(|workspace| workspace.workspace_id.as_deref()),
             )
             .await;
 
@@ -2583,7 +2342,7 @@ impl ExecutionEngine {
                 context
                     .workspace
                     .as_ref()
-                    .map(|workspace| workspace.root_path()),
+                    .and_then(|workspace| workspace.workspace_id.as_deref()),
             )
             .ok_or_else(|| {
                 OpenBitFunError::NotFound(format!("Agent not found: {}", context.agent_type))
@@ -2699,7 +2458,7 @@ impl ExecutionEngine {
                 context
                     .workspace
                     .as_ref()
-                    .map(|workspace| workspace.root_path()),
+                    .and_then(|workspace| workspace.workspace_id.as_deref()),
             )
             .await;
         let allowed_tools = tool_policy.allowed_tools.clone();
@@ -2792,294 +2551,13 @@ impl ExecutionEngine {
         model: &'a str,
     ) -> NativeHookSessionFacts<'a> {
         NativeHookSessionFacts {
+            workspace_id: workspace.and_then(|workspace| workspace.workspace_id.as_deref()),
             session_id,
             turn_id: Some(dialog_turn_id),
             workspace_root: workspace.map(|workspace| workspace.root_path()),
             is_remote_workspace: workspace.is_some_and(|workspace| workspace.is_remote()),
             model,
             bypass_permissions: false,
-        }
-    }
-
-    /// Compress context, will emit compression events (Started, Completed, and Failed)
-    #[allow(clippy::too_many_arguments)]
-    async fn compress_messages(
-        &self,
-        session_id: &str,
-        dialog_turn_id: &str,
-        trigger: &str,
-        runtime_messages: Vec<Message>,
-        before_pressure: TokenPressureSnapshot,
-        context_window: usize,
-        ai_client: Arc<crate::infrastructure::ai::AIClient>,
-        model_request_context: &ModelRequestContext,
-        tool_definitions: &Option<Vec<ToolDefinition>>,
-        system_prompt_message: Message,
-        prepended_prompt_reminders: &PrependedPromptReminders,
-        primary_supports_image_understanding: bool,
-        compression_contract_limit: usize,
-        workspace: Option<&WorkspaceBinding>,
-        workspace_services: Option<&crate::agentic::workspace::WorkspaceServices>,
-    ) -> OpenBitFunResult<Option<(usize, Vec<Message>)>> {
-        let mut session = self
-            .session_manager
-            .get_session(session_id)
-            .ok_or_else(|| {
-                OpenBitFunError::NotFound(format!("Session not found: {}", session_id))
-            })?;
-
-        // Record start time
-        let start_time = std::time::Instant::now();
-
-        let old_messages_len = runtime_messages.len();
-        if !runtime_messages
-            .iter()
-            .any(|message| message.role != MessageRole::System)
-        {
-            return Ok(None);
-        }
-        // Generate compression ID
-        let compression_id = format!("compression_{}", uuid::Uuid::new_v4());
-        // Captured before `ai_client` is consumed by summary generation.
-        let ai_client_model = ai_client.config.model.clone();
-
-        let cancellation_token = self.round_executor.ensure_cancel_token(dialog_turn_id);
-        let planned_result = prepare_compression_cancellable(&cancellation_token, async {
-            native_hooks::dispatch_pre_compact(
-                Self::native_hook_facts(session_id, dialog_turn_id, workspace, &ai_client_model),
-                trigger,
-            )
-            .await;
-
-            // Emit compression started event
-            self.emit_event(
-                AgenticEvent::ContextCompressionStarted {
-                    session_id: session_id.to_string(),
-                    turn_id: dialog_turn_id.to_string(),
-                    compression_id: compression_id.clone(),
-                    trigger: trigger.to_string(),
-                    tokens_before: before_pressure.total_tokens,
-                    context_window,
-                },
-                EventPriority::Normal,
-            )
-            .await;
-
-            // Execute compression
-            let compression_contract = self
-                .session_manager
-                .compression_contract_for_session(session_id, compression_contract_limit);
-            let model_exchange_trace_dir = self
-                .session_manager
-                .persistent_model_exchange_trace_dir(session_id)
-                .await;
-            let trace_config = prepare_model_exchange_trace_for_workspace(
-                session_id,
-                dialog_turn_id,
-                workspace,
-                model_exchange_trace_dir.as_deref(),
-                ModelExchangeTraceOperation {
-                    kind: "context_compression",
-                    id: &compression_id,
-                    trigger: Some(trigger),
-                },
-                ai_client.as_ref(),
-            )
-            .await;
-            let planned_result = self
-                .build_planned_compression_result(
-                    session_id,
-                    dialog_turn_id,
-                    &runtime_messages,
-                    context_window,
-                    compression_contract,
-                    ai_client,
-                    model_request_context,
-                    tool_definitions,
-                    prepended_prompt_reminders,
-                    primary_supports_image_understanding,
-                    workspace,
-                    workspace_services,
-                    trace_config,
-                )
-                .await;
-            let mut compression_result = match planned_result? {
-                Some(result) => result,
-                None => return Ok(None),
-            };
-            let boundary_turn_index = self
-                .session_manager
-                .get_turn_count(session_id)
-                .saturating_sub(1);
-            match self
-                .session_manager
-                .create_compression_transcript_reference(
-                    session_id,
-                    boundary_turn_index,
-                    &compression_id,
-                    trigger,
-                )
-                .await
-            {
-                Ok(Some(reference)) => {
-                    self.context_compressor.append_transcript_reference(
-                        &mut compression_result,
-                        &reference.uri,
-                        &reference.index_range,
-                    );
-                }
-                Ok(None) => {}
-                Err(error) => warn!(
-                    "Failed to create automatic compression transcript; continuing without reference: session_id={}, turn_id={}, error={}",
-                    session_id, dialog_turn_id, error
-                ),
-            }
-            Ok(Some(compression_result))
-        })
-        .await;
-        // Preparation has no context writes. Once admitted here, finish the
-        // context commit without dropping it halfway through persistence.
-        match planned_result {
-            Ok(Some(compression_result)) => {
-                self.session_manager
-                    .replace_context_messages(session_id, compression_result.messages.clone())
-                    .await;
-                if self
-                    .session_manager
-                    .rebuild_skill_agent_listing_baseline_to_latest(session_id)
-                    .await
-                {
-                    debug!(
-                        "Rebuilt skill-agent listing baseline after compression: session_id={}",
-                        session_id
-                    );
-                }
-                self.session_manager
-                    .invalidate_prompt_cache(
-                        session_id,
-                        crate::agentic::session::PromptCacheScope::All,
-                        "context_compression_applied",
-                    )
-                    .await;
-                let mut new_messages = vec![system_prompt_message];
-                new_messages.extend(compression_result.messages);
-                // Update session compression state
-                session.compression_state.increment_compression_count();
-
-                // Update session state
-                let _ = self
-                    .session_manager
-                    .update_compression_state(session_id, session.compression_state.clone())
-                    .await;
-
-                // Calculate duration
-                let duration_ms = elapsed_ms_u64(start_time);
-
-                // Recalculate tokens after compression
-                let prepended_reminders = prepended_prompt_reminders.ordered_reminders();
-                let prepended_reminder_tokens =
-                    Self::prepended_reminder_tokens_for_pressure(&prepended_reminders);
-                let after_pressure = Self::estimate_auto_compression_pressure(
-                    &new_messages,
-                    tool_definitions.as_deref(),
-                    context_window,
-                    CompressionTriggerBudget {
-                        input_limit: before_pressure.input_limit,
-                        output_reserve_tokens: before_pressure.output_reserve_tokens,
-                        safety_reserve_tokens: before_pressure.safety_reserve_tokens,
-                    },
-                    prepended_reminder_tokens,
-                );
-                let compressed_tokens = after_pressure.total_tokens;
-                let summary_source = if compression_result.has_model_summary {
-                    "model"
-                } else {
-                    "local_fallback"
-                };
-
-                info!(
-                    "Compression completed: session_id={}, turn_id={}, messages {} -> {}, total_tokens {} -> {}, system_tokens {} -> {}, tool_tokens {} -> {}, prepended_reminder_tokens {} -> {}, conversation_tokens {} -> {}, context_window={}, input_limit={}, output_reserve={}, safety_reserve={}, usage {:.3} -> {:.3}, compression_count={}, duration_ms={}, summary_source={}",
-                    session_id,
-                    dialog_turn_id,
-                    old_messages_len,
-                    new_messages.len(),
-                    before_pressure.total_tokens,
-                    after_pressure.total_tokens,
-                    before_pressure.system_tokens,
-                    after_pressure.system_tokens,
-                    before_pressure.tool_tokens,
-                    after_pressure.tool_tokens,
-                    before_pressure.prepended_reminder_tokens,
-                    after_pressure.prepended_reminder_tokens,
-                    before_pressure.conversation_tokens,
-                    after_pressure.conversation_tokens,
-                    before_pressure.context_window,
-                    before_pressure.input_limit,
-                    before_pressure.output_reserve_tokens,
-                    before_pressure.safety_reserve_tokens,
-                    before_pressure.usage_ratio,
-                    after_pressure.usage_ratio,
-                    session.compression_state.compression_count,
-                    duration_ms,
-                    summary_source
-                );
-
-                // Emit compression completed event
-                self.emit_event(
-                    AgenticEvent::ContextCompressionCompleted {
-                        session_id: session_id.to_string(),
-                        turn_id: dialog_turn_id.to_string(),
-                        compression_id: compression_id.clone(),
-                        compression_count: session.compression_state.compression_count,
-                        tokens_before: before_pressure.total_tokens,
-                        tokens_after: compressed_tokens,
-                        compression_ratio: if before_pressure.total_tokens == 0 {
-                            1.0
-                        } else {
-                            (compressed_tokens as f64) / (before_pressure.total_tokens as f64)
-                        },
-                        duration_ms,
-                        has_summary: compression_result.has_model_summary,
-                        summary_source: summary_source.to_string(),
-                        applied: true,
-                    },
-                    EventPriority::Normal,
-                )
-                .await;
-
-                let _ = prepare_compression_cancellable(&cancellation_token, async {
-                    native_hooks::dispatch_post_compact(
-                        Self::native_hook_facts(
-                            session_id,
-                            dialog_turn_id,
-                            workspace,
-                            &ai_client_model,
-                        ),
-                        trigger,
-                    )
-                    .await;
-                    Ok(())
-                })
-                .await;
-
-                Ok(Some((compressed_tokens, new_messages)))
-            }
-            Ok(None) => Ok(None),
-            Err(e) => {
-                // Emit compression failed event
-                self.emit_event(
-                    AgenticEvent::ContextCompressionFailed {
-                        session_id: session_id.to_string(),
-                        turn_id: dialog_turn_id.to_string(),
-                        compression_id: compression_id.clone(),
-                        error: e.to_string(),
-                    },
-                    EventPriority::High,
-                )
-                .await;
-
-                Err(manual_compaction_terminal_error(e))
-            }
         }
     }
 
@@ -3317,11 +2795,7 @@ impl ExecutionEngine {
                     after_pressure.usage_ratio,
                     compression_count,
                     duration_ms,
-                    if compression_result.has_model_summary {
-                        "model"
-                    } else {
-                        "local_fallback"
-                    }
+                    "model"
                 );
 
                 self.emit_event(
@@ -3334,12 +2808,8 @@ impl ExecutionEngine {
                         tokens_after,
                         compression_ratio,
                         duration_ms,
-                        has_summary: compression_result.has_model_summary,
-                        summary_source: if compression_result.has_model_summary {
-                            "model".to_string()
-                        } else {
-                            "local_fallback".to_string()
-                        },
+                        has_summary: true,
+                        summary_source: "model".to_string(),
                         applied: true,
                     },
                     EventPriority::Normal,
@@ -3364,12 +2834,8 @@ impl ExecutionEngine {
                     tokens_after,
                     compression_ratio,
                     duration_ms,
-                    has_summary: compression_result.has_model_summary,
-                    summary_source: if compression_result.has_model_summary {
-                        "model".to_string()
-                    } else {
-                        "local_fallback".to_string()
-                    },
+                    has_summary: true,
+                    summary_source: "model".to_string(),
                     applied: true,
                 })
             }
@@ -3441,6 +2907,7 @@ impl ExecutionEngine {
     ) -> OpenBitFunResult<ExecutionResult> {
         let start_time = std::time::Instant::now();
         let dialog_turn_id = context.dialog_turn_id.clone();
+        let control_owner = context.session_id.clone();
         self.generation_messages
             .remove(&(context.session_id.clone(), dialog_turn_id.clone()));
 
@@ -3450,6 +2917,21 @@ impl ExecutionEngine {
         let result = self
             .execute_dialog_turn_impl(agent_type, initial_messages, context, start_time)
             .await;
+
+        // GUI capture/input is a turn-owned host resource. Release it on normal
+        // completion and errors as well as cancellation; never stop another task.
+        if let Some(host) = self.round_executor.computer_use_host() {
+            let control = host.control_snapshot();
+            if control.owner.as_deref() == Some(control_owner.as_str()) && control.state == "active"
+            {
+                if let Err(error) = host
+                    .stop_control_generation(&control_owner, control.generation)
+                    .await
+                {
+                    debug!("Computer use resource cleanup: {}", error);
+                }
+            }
+        }
 
         // Cleanup cancellation token
         self.round_executor
@@ -3487,7 +2969,7 @@ impl ExecutionEngine {
                 context
                     .workspace
                     .as_ref()
-                    .map(|workspace| workspace.root_path()),
+                    .and_then(|workspace| workspace.workspace_id.as_deref()),
             )
             .await;
         let current_agent = agent_registry
@@ -3496,7 +2978,7 @@ impl ExecutionEngine {
                 context
                     .workspace
                     .as_ref()
-                    .map(|workspace| workspace.root_path()),
+                    .and_then(|workspace| workspace.workspace_id.as_deref()),
             )
             .ok_or_else(|| OpenBitFunError::NotFound(format!("Agent not found: {}", agent_type)))?;
         info!(
@@ -3522,7 +3004,9 @@ impl ExecutionEngine {
         // Edit constraint guard: process each distinct user instruction once.
         // The fast extractor receives the active state so explicit additions
         // and revocations form an auditable session-persistent state machine.
-        if !original_user_input.trim().is_empty() {
+        if crate::agentic::execution::edit_constraint_guard::is_enabled().await
+            && !original_user_input.trim().is_empty()
+        {
             let revocation_authorized = context
                 .context
                 .get("edit_constraint_revocation_authorized")
@@ -3694,7 +3178,7 @@ impl ExecutionEngine {
                 context
                     .workspace
                     .as_ref()
-                    .map(|workspace| workspace.root_path()),
+                    .and_then(|workspace| workspace.workspace_id.as_deref()),
             )
             .await;
         let allowed_tools = tool_policy.allowed_tools.clone();
@@ -3818,8 +3302,6 @@ impl ExecutionEngine {
         let mut total_tools = 0;
         let mut last_partial_recovery_reason: Option<String> = None;
         let mut finalization_reason: Option<&'static str> = None;
-        let mut consecutive_compression_failures: u32 = 0;
-        const MAX_CONSECUTIVE_COMPRESSION_FAILURES: u32 = 3;
         let mut main_context_overflow_recoveries = 0usize;
         let mut active_round_lifecycle: Option<ModelRoundLifecycle> = None;
 
@@ -3831,7 +3313,7 @@ impl ExecutionEngine {
         const MAX_FAILED_TOOL_RECOVERY_ATTEMPTS: usize = 3;
         const MAX_PARTIAL_CONTINUATION_ATTEMPTS: usize = 3;
         let mut full_compression_count = 0usize;
-        let mut compression_failure_count = 0u32;
+        let compression_failure_count = 0u32;
 
         // Save the last token usage statistics
         let mut last_usage: Option<crate::util::types::ai::GeminiUsage> = None;
@@ -3864,6 +3346,16 @@ impl ExecutionEngine {
         );
 
         let enable_context_compression = session.config.enable_context_compression;
+        let prefetch_enabled = match get_global_config_service().await {
+            Ok(service) => service
+                .get_config::<bool>(Some("ai.enable_context_compression_prefetch"))
+                .await
+                .unwrap_or(true),
+            Err(_) => true,
+        };
+        // Execution-local ownership deliberately prevents cross-turn reuse. Drop
+        // cancels both pending IO and backoff on every exit path.
+        let mut compression_prefetch: Option<PrefetchedCompression> = None;
         let compression_trigger_budget =
             Self::compression_trigger_budget(context_window, ai_client.config.max_tokens);
 
@@ -4029,12 +3521,67 @@ impl ExecutionEngine {
                 && token_pressure.total_tokens >= token_pressure.input_limit;
             let mut send_pressure_reusable = true;
 
-            // Circuit breaker: skip full compression if it has failed too many
-            // consecutive times.  Microcompact and emergency truncation still run.
-            let circuit_breaker_open =
-                consecutive_compression_failures >= MAX_CONSECUTIVE_COMPRESSION_FAILURES;
-
             if !should_compress {
+                if enable_context_compression
+                    && prefetch_enabled
+                    && compression_prefetch.is_none()
+                    && openbitfun_agent_runtime::compression_prefetch::in_prefetch_window(
+                        token_pressure.total_tokens,
+                        token_pressure.input_limit,
+                    )
+                {
+                    let prefetch_id = format!("prefetch_{}", uuid::Uuid::new_v4());
+                    info!(
+                        "Compression prefetch admitted: session_id={}, turn_id={}, round_index={}, total_tokens={}, prefetch_limit={}, input_limit={}, context_window={}",
+                        context.session_id, context.dialog_turn_id, round_index,
+                        token_pressure.total_tokens,
+                        token_pressure.input_limit.saturating_sub(openbitfun_agent_runtime::compression_prefetch::PREFETCH_LEAD_TOKENS),
+                        token_pressure.input_limit, context_window
+                    );
+                    let trace_dir = self
+                        .session_manager
+                        .persistent_model_exchange_trace_dir(&context.session_id)
+                        .await;
+                    let trace_config = prepare_model_exchange_trace_for_workspace(
+                        &context.session_id,
+                        &context.dialog_turn_id,
+                        context.workspace.as_ref(),
+                        trace_dir.as_deref(),
+                        ModelExchangeTraceOperation {
+                            kind: "context_compression_prefetch",
+                            id: &prefetch_id,
+                            trigger: Some("prefetch"),
+                        },
+                        ai_client.as_ref(),
+                    )
+                    .await;
+                    let job = CompressionJob::new(
+                        self.context_compressor.clone(),
+                        &context.session_id,
+                        context_window,
+                        0,
+                        CompressionModelSummaryInput {
+                            ai_client: ai_client.clone(),
+                            model_request_context: &model_request_context,
+                            runtime_messages: &messages,
+                            dialog_turn_id: &context.dialog_turn_id,
+                            workspace: context.workspace.as_ref(),
+                            workspace_services: context.workspace_services.as_ref(),
+                            tool_definitions: &tool_definitions,
+                            prepended_prompt_reminders: &turn_prompt_scaffold
+                                .prepended_prompt_reminders,
+                            primary_supports_image_understanding,
+                            trace_config,
+                        },
+                    );
+                    compression_prefetch = Some(
+                        job.spawn_prefetch(
+                            &self
+                                .round_executor
+                                .ensure_cancel_token(&context.dialog_turn_id),
+                        ),
+                    );
+                }
                 debug!(
                     "No compression needed: session={}, total_tokens={}, input_limit={}, context_window={}, output_reserve={}, safety_reserve={}, usage={:.1}%",
                     context.session_id,
@@ -4044,11 +3591,6 @@ impl ExecutionEngine {
                     token_pressure.output_reserve_tokens,
                     token_pressure.safety_reserve_tokens,
                     token_pressure.usage_ratio * 100.0
-                );
-            } else if circuit_breaker_open {
-                warn!(
-                    "Compression circuit breaker open ({} consecutive failures), skipping full compression for round {}",
-                    consecutive_compression_failures, round_index
                 );
             } else {
                 info!(
@@ -4079,6 +3621,7 @@ impl ExecutionEngine {
                         context_profile_policy.compression_contract_limit,
                         context.workspace.as_ref(),
                         context.workspace_services.as_ref(),
+                        compression_prefetch.take(),
                     )
                     .await
                 {
@@ -4115,25 +3658,15 @@ impl ExecutionEngine {
                             &turn_prompt_scaffold,
                         );
                         full_compression_count += 1;
-                        consecutive_compression_failures = 0;
                         send_pressure_reusable = false;
                     }
                     Ok(None) => {
-                        debug!("No eligible multi-turn context available for compression");
-                        consecutive_compression_failures = 0;
+                        return Err(OpenBitFunError::AIClient(
+                            "Context compression has no eligible plan".to_string(),
+                        ));
                     }
                     Err(err @ OpenBitFunError::Cancelled(_)) => return Err(err),
-                    Err(e) => {
-                        consecutive_compression_failures += 1;
-                        compression_failure_count += 1;
-                        error!(
-                            "Round {} compression failed ({}/{}): {}, continuing with uncompressed context",
-                            round_index,
-                            consecutive_compression_failures,
-                            MAX_CONSECUTIVE_COMPRESSION_FAILURES,
-                            e
-                        );
-                    }
+                    Err(e) => return Err(e),
                 }
             }
 
@@ -4314,6 +3847,7 @@ impl ExecutionEngine {
                     tool_definitions.clone(),
                     Some(context_window),
                     round_lifecycle,
+                    Some(self.session_manager.as_ref()),
                 )
                 .await
             {
@@ -4351,6 +3885,7 @@ impl ExecutionEngine {
                             context_profile_policy.compression_contract_limit,
                             context.workspace.as_ref(),
                             context.workspace_services.as_ref(),
+                            compression_prefetch.take(),
                         )
                         .await
                     {
@@ -4400,7 +3935,6 @@ impl ExecutionEngine {
                                 )
                                 .await;
                             full_compression_count += 1;
-                            consecutive_compression_failures = 0;
                             continue;
                         }
                         Ok(None) => {
@@ -4419,7 +3953,7 @@ impl ExecutionEngine {
                                 round_index,
                                 compression_error
                             );
-                            return Err(err);
+                            return Err(compression_error);
                         }
                     }
                 }
@@ -4473,13 +4007,12 @@ impl ExecutionEngine {
                 &round_result.assistant_message,
             );
 
-            // Update the in-memory message caches immediately so subsequent rounds see it.
-            if let Err(e) = self
-                .session_manager
-                .add_message(&context.session_id, round_result.assistant_message.clone())
-                .await
-            {
-                warn!("Failed to update assistant message in memory: {}", e);
+            // Publish the assistant message and all tool results as one context
+            // mutation.  A fork must never observe the assistant tool calls
+            // without their corresponding results.
+            let mut committed_round_messages = Vec::new();
+            if !round_result.assistant_message_committed {
+                committed_round_messages.push(round_result.assistant_message.clone());
             }
 
             // Add tool result messages to history
@@ -4490,15 +4023,14 @@ impl ExecutionEngine {
                     &context.dialog_turn_id,
                     tool_result_msg,
                 );
-
-                // Update the in-memory message caches immediately so subsequent rounds see it.
-                if let Err(e) = self
-                    .session_manager
-                    .add_message(&context.session_id, tool_result_msg.clone())
-                    .await
-                {
-                    warn!("Failed to update tool result message in memory: {}", e);
-                }
+                committed_round_messages.push(tool_result_msg.clone());
+            }
+            if let Err(e) = self
+                .session_manager
+                .add_messages(&context.session_id, committed_round_messages)
+                .await
+            {
+                warn!("Failed to update round messages in memory: {}", e);
             }
 
             #[cfg(feature = "agent-runtime")]
@@ -5320,6 +4852,10 @@ impl ExecutionEngine {
 }
 
 #[cfg(test)]
+#[path = "compression_tests.rs"]
+mod compression_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{
         activate_conditional_instructions_after_round, manual_compaction_terminal_error,
@@ -5356,6 +4892,140 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
+
+    #[tokio::test]
+    async fn computer_use_pixels_and_geometry_reach_real_provider_wire() {
+        use base64::Engine;
+        use openbitfun_ai_adapters::providers::{
+            anthropic::AnthropicMessageConverter, gemini::GeminiMessageConverter,
+            openai::OpenAIMessageConverter,
+        };
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(6, 4)
+            .write_to(&mut png, image::ImageFormat::Png)
+            .unwrap();
+        let pixels = base64::engine::general_purpose::STANDARD.encode(png.into_inner());
+        let observation = json!({ "screenshot_id": "frame-visual", "image_width": 6, "image_height": 4,
+            "image_global_bounds": { "left": 200, "top": 100, "width": 60, "height": 40 }, "has_screenshot": true });
+        let source = Message::tool_result(ToolResult {
+            tool_id: "observe-visual".into(),
+            tool_name: "ComputerUse".into(),
+            effective_tool_name: None,
+            result: observation.clone(),
+            result_for_assistant: Some(observation.to_string()),
+            is_error: false,
+            duration_ms: Some(1),
+            image_attachments: Some(vec![crate::util::types::ToolImageAttachment {
+                mime_type: "image/png".into(),
+                data_base64: pixels.clone(),
+            }]),
+        })
+        .with_turn_id("visual-turn".into());
+        fn image_values(value: &serde_json::Value, output: &mut Vec<String>) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    for (key, value) in map {
+                        if key == "data" {
+                            if let Some(text) = value.as_str() {
+                                output.push(text.into());
+                            }
+                        } else {
+                            image_values(value, output);
+                        }
+                    }
+                }
+                serde_json::Value::Array(values) => {
+                    for value in values {
+                        image_values(value, output);
+                    }
+                }
+                serde_json::Value::String(text) => {
+                    if let Some(bytes) = text.strip_prefix("data:image/png;base64,") {
+                        output.push(bytes.into());
+                    }
+                }
+                _ => {}
+            }
+        }
+        fn find_geometry(value: &serde_json::Value) -> Option<serde_json::Value> {
+            if value
+                .get("screenshot_id")
+                .and_then(serde_json::Value::as_str)
+                == Some("frame-visual")
+            {
+                return Some(value.clone());
+            }
+            match value {
+                serde_json::Value::Object(map) => map.values().find_map(find_geometry),
+                serde_json::Value::Array(values) => values.iter().find_map(find_geometry),
+                serde_json::Value::String(text) => serde_json::from_str::<serde_json::Value>(text)
+                    .ok()
+                    .as_ref()
+                    .and_then(find_geometry),
+                _ => None,
+            }
+        }
+        for provider in ["openai", "responses", "anthropic", "gemini"] {
+            let messages = ExecutionEngine::build_ai_messages_for_send(
+                &[source.clone()],
+                provider,
+                None,
+                None,
+                "visual-turn",
+                true,
+                &[],
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                messages[0].content.as_deref(),
+                Some(observation.to_string().as_str())
+            );
+            let wire = match provider {
+                "openai" => json!(OpenAIMessageConverter::convert_messages(messages)),
+                "responses" => {
+                    json!(OpenAIMessageConverter::convert_messages_to_responses_input(messages).1)
+                }
+                "anthropic" => json!(AnthropicMessageConverter::convert_messages(messages).1),
+                _ => json!(GeminiMessageConverter::convert_messages(messages, "gemini-3-pro").1),
+            };
+            let mut encoded_images = Vec::new();
+            image_values(&wire, &mut encoded_images);
+            assert_eq!(
+                encoded_images,
+                vec![pixels.clone()],
+                "{provider}: exact image bytes must reach the wire"
+            );
+            let decoded = image::load_from_memory(
+                &base64::engine::general_purpose::STANDARD
+                    .decode(&encoded_images[0])
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!((decoded.width(), decoded.height()), (6, 4));
+            assert_eq!(find_geometry(&wire), Some(observation.clone()), "{provider}: screenshot ref and projection geometry must remain attached to these pixels");
+        }
+        let text_only = ExecutionEngine::build_ai_messages_for_send(
+            &[source.clone()],
+            "openai",
+            None,
+            None,
+            "visual-turn",
+            false,
+            &[],
+        )
+        .await
+        .unwrap();
+        assert!(text_only[0].tool_image_attachments.is_none());
+        // Provider projection must not strip pixels from immutable stored history.
+        let crate::agentic::core::MessageContent::ToolResult {
+            image_attachments, ..
+        } = source.content
+        else {
+            panic!("tool result")
+        };
+        assert_eq!(image_attachments.unwrap()[0].data_base64, pixels);
+    }
 
     #[tokio::test]
     async fn image_inputs_keep_pixels_for_native_models_and_tool_paths_for_text_models() {
@@ -6074,19 +5744,13 @@ mod tests {
             .to_string()
             .contains("Old rule"));
 
-        let compressor = ContextCompressor::new(Default::default());
+        let compressor = ContextCompressor::new();
         let plan = compressor
             .plan_compression(&context.session_id, &persisted, 128_000, 100)
             .expect("compression plan")
             .expect("compressible context");
         let compressed = compressor
-            .compress_plan_with_contract(
-                &context.session_id,
-                128_000,
-                plan,
-                None,
-                Some("summary".to_string()),
-            )
+            .compress_plan_with_contract(&context.session_id, plan, None, "summary".to_string())
             .expect("compression result")
             .messages;
         session_manager
@@ -6144,6 +5808,7 @@ mod tests {
         .with_round_id(round_id.to_string());
         RoundResult {
             assistant_message: assistant,
+            assistant_message_committed: false,
             tool_calls: Vec::new(),
             tool_result_messages: vec![tool_result],
             has_more_rounds: true,

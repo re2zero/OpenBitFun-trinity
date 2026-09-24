@@ -186,14 +186,14 @@
   "terminal": {
     "sections": {
       "terminal": "終端",
-      "terminalHint": "默認 Shell 與新增終端行為",
+      "terminalHint": "預設 Shell",
       "defaultTerminal": "默認終端"
     },
     "controls": {
       "refreshTooltip": "重新整理可用終端列表",
       "autoDetect": "自動檢測 (推薦)",
-      "description": "新增終端以及本地工作區中 agent 執行命令時使用的默認 Shell 類型",
-      "cmdFallbackMessage": "Agent 執行命令時實際使用 PowerShell。",
+      "description": "新增終端以及本地工作區中智能體執行命令時使用的默認 Shell 類型",
+      "cmdFallbackMessage": "智能體執行命令時實際使用 PowerShell。",
       "placeholder": "選擇默認終端",
       "noShells": "未檢測到可用的終端"
     },
@@ -262,7 +262,7 @@
       "hint": "啟動後是否自動檢查新版本"
     },
     "toggleLabel": "自動檢查更新",
-    "toggleDescription": "開啟後，啟動片刻若發現新版本可能會提示。關閉後仍可在「關於」中手動檢查更新。",
+    "toggleDescription": "啟動後及執行期間自動檢查更新，每個版本只主動提醒一次。關閉後仍可在左下角「更多」選單中手動檢查更新。",
     "messages": {
       "loading": "載入中…",
       "loadFailed": "無法讀取更新相關設定",

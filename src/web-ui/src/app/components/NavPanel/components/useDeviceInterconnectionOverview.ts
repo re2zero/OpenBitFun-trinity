@@ -1,3 +1,4 @@
+import { useDeviceDirectory, resolveDeviceName, resolveDeviceNameFrom } from '@/infrastructure/account/deviceDirectory';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAccountLoginState } from '@/infrastructure/account/useAccountLoginState';
 import { api } from '@/infrastructure/api/service-api/ApiClient';
@@ -19,6 +20,7 @@ const TOPOLOGY_POLL_MS = 15_000;
 
 export function useDeviceInterconnectionOverview(fallbackLocalDeviceName: string, fallbackMobileDeviceName?: string) {
   const account = useAccountLoginState();
+  const directory = useDeviceDirectory();
   const peerContext = usePeerDeviceModeOptional();
   const dispatchJobs = useDispatchJobStore(state => state.jobs);
 
@@ -108,11 +110,11 @@ export function useDeviceInterconnectionOverview(fallbackLocalDeviceName: string
         target: {
           kind: 'device' as const,
           id: job.target.deviceId,
-          name: job.target.displayName,
+          name: resolveDeviceNameFrom(directory.devices, job.target.deviceId, job.target.displayName),
         },
       };
     })
-  ), [dispatchJobs]);
+  ), [dispatchJobs, directory]);
 
   const peer = useMemo(() => (
     peerContext?.peerMode.active
@@ -123,11 +125,29 @@ export function useDeviceInterconnectionOverview(fallbackLocalDeviceName: string
       : null
   ), [peerContext?.peerMode]);
 
-  const localDeviceName = localDevice?.device_name?.trim() || fallbackLocalDeviceName;
+  // A system and a kind are facts a device reports to the Relay, so the account
+  // directory row is where they are stated for every device. That holds for this
+  // machine too: the device info call answers with identity only, and the row is
+  // the same one the device list draws. Never the browser's own platform, which
+  // identifies the window rather than the machine.
+  const localEntry = directory.localId
+    ? directory.devices.find(device => device.device_id === directory.localId)
+    : undefined;
+  const localDeviceOs = localEntry?.device_os ?? null;
+  const localDeviceKind = localEntry?.device_kind ?? null;
+  const peerEntry = peer
+    ? directory.devices.find(device => device.device_id === peer.deviceId)
+    : undefined;
+
+  const localDeviceName = account.deviceName ?? (localDevice ? resolveDeviceName(localDevice.device_id, localDevice.device_name) : fallbackLocalDeviceName);
   const overview = useMemo(() => projectDeviceInterconnectionOverview({
     localDeviceName,
     fallbackMobileDeviceName,
+    localDeviceOs,
+    localDeviceKind,
     peer,
+    peerDeviceOs: peerEntry?.device_os ?? null,
+    peerDeviceKind: peerEntry?.device_kind ?? null,
     remoteStatus,
     remoteStatusState,
     dispatchJobs: projectedDispatchJobs,
@@ -136,7 +156,10 @@ export function useDeviceInterconnectionOverview(fallbackLocalDeviceName: string
     accountService,
     localDeviceName,
     fallbackMobileDeviceName,
+    localDeviceOs,
+    localDeviceKind,
     peer,
+    peerEntry,
     projectedDispatchJobs,
     remoteStatus,
     remoteStatusState,

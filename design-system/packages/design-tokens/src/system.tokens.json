@@ -33,7 +33,7 @@
       },
       "mono": {
         "$type": "fontFamily",
-        "$value": "'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Monaco, 'Cascadia Mono', 'Cascadia Code', Consolas, 'Liberation Mono', 'Courier New', monospace"
+        "$value": "'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Monaco, 'Cascadia Mono', 'Cascadia Code', Consolas, 'Liberation Mono', 'Courier New', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei UI', 'Microsoft YaHei', monospace"
       }
     },
     "size": {
@@ -328,6 +328,10 @@
     "modifier": {
       "$description": "Single-property semantic modifiers for intentional deviations from a complete typography role.",
       "leading": {
+        "intrinsic": {
+          "$description": "Font-metric leading for OverflowText's inner single-line box. Numeric leading cannot express platform font ascent/descent; the outer box retains the owner's larger line height.",
+          "lineHeight": { "$type": "string", "$value": "normal" }
+        },
         "none": { "lineHeight": { "$value": "{lineHeight.none}" } },
         "tight": {
           "$description": "Compact text leading for message bubbles: 18px at the default 15px body size, scaling with user typography.",
@@ -515,8 +519,8 @@
       "controlGap": { "$value": "{space.2}" },
       "controlPaddingBlock": { "$value": "{space.1}" },
       "controlPaddingInline": { "$value": "0.75rem" },
-      "contentPaddingInline": { "$value": "3rem" },
-      "contentPaddingInlineMobile": { "$value": "1.5rem" },
+      "contentPaddingInline": { "$value": "0.75rem" },
+      "contentPaddingInlineMobile": { "$value": "{control.flowChat.contentPaddingInline}" },
       "cardGap": { "$value": "{control.flowChat.flowItemGap}" },
       "cardRadius": { "$value": "{radius.base}" },
       "cardPaddingBlock": { "$value": "0.625rem" },
@@ -539,18 +543,36 @@
       "expandedPaddingInline": { "$value": "0.625rem" }
     },
     "icon": {
-      "$type": "dimension",
-      "size2xs": { "$value": "8px" },
-      "sizeXs": { "$value": "12px" },
-      "sizeSm": { "$value": "14px" },
-      "sizeMd": { "$value": "16px" },
-      "sizeLg": { "$value": "24px" }
+      "size2xs": { "$type": "dimension", "$value": "8px" },
+      "sizeXs": { "$type": "dimension", "$value": "12px" },
+      "sizeSm": { "$type": "dimension", "$value": "14px" },
+      "sizeMd": { "$type": "dimension", "$value": "16px" },
+      "sizeLg": { "$type": "dimension", "$value": "24px" },
+      "strokeWidth": {
+        "$description": "Default optical line weight for Lucide-based interface icons.",
+        "$type": "number",
+        "$value": 1.6
+      },
+      "strokeWidthStrong": {
+        "$description": "Stronger optical line weight for compact navigation and other emphasized icon groups.",
+        "$type": "number",
+        "$value": 2
+      }
     },
     "height": {
       "$type": "dimension",
       "sm": { "$value": "32px" },
       "md": { "$value": "40px" },
       "lg": { "$value": "48px" }
+    },
+    "searchField": {
+      "$description": "Search input-row layout height, independent of decorative strokes. Compact sm follows the original 30px search geometry without changing generic controls.",
+      "height": {
+        "$type": "dimension",
+        "sm": { "$value": "{control.height.sm}" },
+        "md": { "$value": "{control.height.md}" },
+        "lg": { "$value": "{control.height.lg}" }
+      }
     },
     "hitTarget": {
       "$type": "dimension",
@@ -578,7 +600,7 @@
       "itemPaddingBlockSm": { "$value": "7px" },
       "itemPaddingInlineSm": { "$value": "{space.3}" },
       "itemActionSize": { "$value": "{space.5}" },
-      "itemActionInset": { "$value": "{space.2}" },
+      "itemActionInset": { "$value": "{space.1}" },
       "itemRadius": { "$value": "{radius.pill}" }
     },
     "segmentedControl": {
@@ -703,6 +725,18 @@
     "overflowText": {
       "fadeExtent": { "$value": "{space.4}" }
     },
+    "empty": {
+      "$description": "Shared empty-state media geometry. Callers select a semantic size and do not size artwork directly.",
+      "gap": { "$value": "10px" },
+      "paddingBlock": { "$value": "{space.8}" },
+      "paddingInline": { "$value": "{space.4}" },
+      "mediaSizeSm": { "$value": "{control.icon.sizeLg}" },
+      "mediaSizeMd": { "$value": "{control.height.sm}" },
+      "mediaSizeLg": { "$value": "{control.height.md}" },
+      "iconSizeSm": { "$value": "{control.icon.sizeLg}" },
+      "iconSizeMd": { "$value": "{control.height.sm}" },
+      "iconSizeLg": { "$value": "{control.height.md}" }
+    },
     "field": {
       "rootGap": { "$value": "{space.2}" },
       "horizontalGap": { "$value": "{space.5}" },
@@ -825,9 +859,17 @@
     "menu": {
       "$type": "dimension",
       "inlineSize": { "$value": "220px" },
+      "minInlineSize": {
+        "$description": "Lower bound for content-sized menus; overlay.menu.inlineSize stays their upper bound.",
+        "$value": "160px"
+      },
       "maxBlockSize": { "$value": "480px" },
       "surfacePadding": { "$value": "{space.2}" },
       "surfaceRadius": { "$value": "{radius.xl}" },
+      "rowGap": {
+        "$description": "Space between menu or listbox row surfaces, independent of spacing inside a row or between sections.",
+        "$value": "2px"
+      },
       "sectionGap": { "$value": "{space.2}" },
       "headingHeight": { "$value": "24px" },
       "headingPaddingInline": { "$value": "{space.2}" },
@@ -895,7 +937,7 @@
       "headerActionsGap": { "$value": "{space.2}" },
       "footerGap": { "$value": "{space.2}" },
       "footerPaddingBlockStart": { "$value": "{space.2}" },
-      "footerPaddingBlockEnd": { "$value": "{space.5}" },
+      "footerPaddingBlockEnd": { "$value": "{space.6}" },
       "footerPaddingInline": { "$value": "{space.6}" },
       "footerHeight": {
         "$description": "Total visual height of the floating dialog action bar.",

@@ -16,6 +16,8 @@ export interface RemoteActivityViewModelHooks {
   readonly onConnectionState: (state: string) => void;
   readonly onStatus: (status: string) => void;
   readonly onConnectionError: (err: Object) => Promise<boolean>;
+  readonly onObserveCatalog?: () => void;
+  readonly onStopCatalog?: () => void;
   readonly onStartPolling: () => void;
   readonly onStopPolling: () => void;
   readonly onPoll: () => Promise<void>;
@@ -23,13 +25,13 @@ export interface RemoteActivityViewModelHooks {
   readonly onRestoreSession: (session: SessionSummary) => Promise<void>;
 }
 
-/** Owns foreground recovery, heartbeat health checks, and idempotent resume cancellation. */
+/** Owns foreground recovery, host catalog observation, and idempotent resume cancellation. */
 export class RemoteActivityViewModel {
   private readonly activity: RemoteActivityLifecycleController;
   private readonly connection: RemoteConnectionCoordinator;
   private readonly gate: AsyncLifecycleGate;
   private readonly hooks: RemoteActivityViewModelHooks;
-  private recovering: boolean = false;
+  private recoveryToken: number = 0;
 
   constructor(
     activity: RemoteActivityLifecycleController,
@@ -44,52 +46,43 @@ export class RemoteActivityViewModel {
   }
 
   startHeartbeat(): void {
+    // Relay liveness does not prove that the selected host can answer commands.
     this.activity.startHeartbeat();
+    this.hooks.onObserveCatalog?.();
   }
 
   stopHeartbeat(): void {
     this.activity.stopHeartbeat();
+    this.hooks.onStopCatalog?.();
   }
 
-  /**
-   * A health check while the link is up, a recovery probe once it is not.
-   *
-   * A failed ping used to park the connection in `failed` and stop the
-   * heartbeat with it. Nothing survived that: the poller was stopped too, and
-   * `failed` disables every remote action, so a desktop that blinked out for a
-   * moment left the phone dead until the user backgrounded and refocused the
-   * app. The heartbeat is the only thing still ticking at that point, which
-   * makes it the only thing that can notice the desktop coming back — so it
-   * keeps ticking, and the first ping that answers puts the session back on the
-   * wire. Ticks are serialised by the heartbeat itself, and a ping is cheap
-   * enough to repeat every interval for as long as the drop lasts.
-   */
+  /** Bounded host probe used by the foreground heartbeat and explicit recovery. */
   async checkConnectionHealth(): Promise<void> {
-    if (this.hooks.isBusy() || this.recovering || !this.hooks.hasRemoteBinding()) {
+    if (this.hooks.isBusy() || this.recoveryToken !== 0 || !this.hooks.hasRemoteBinding()) {
       return;
     }
     const wasConnected = this.hooks.isConnected();
     if (!wasConnected && !this.hooks.isReconnecting()) {
       return;
     }
-    if (!wasConnected) {
-      const token = this.gate.begin();
-      this.recovering = true;
-      try {
-        await this.reconnect(token);
-      } catch (err) {
-        if (this.gate.isCurrent(token)) {
-          this.hooks.onStatus(ConnectionErrorPolicy.errorText(err));
-        }
-      } finally {
-        this.recovering = false;
-      }
-      return;
-    }
+    const token = this.gate.begin();
+    this.recoveryToken = token;
     try {
       await this.connection.ping();
+      if (!this.gate.isCurrent(token)) return;
+      if (!wasConnected) {
+        this.hooks.onConnectionState('connected');
+        this.hooks.onStatus(RemoteI18n.t('connection.connected'));
+        if (this.hooks.isRemoteChat()) this.hooks.onStartPolling();
+      }
     } catch (err) {
+      if (!this.gate.isCurrent(token)) {
+        return;
+      }
       if (await this.hooks.onConnectionError(err)) {
+        return;
+      }
+      if (!this.gate.isCurrent(token)) {
         return;
       }
       this.hooks.onStatus(ConnectionErrorPolicy.errorText(err));
@@ -98,6 +91,8 @@ export class RemoteActivityViewModel {
         this.hooks.onStopPolling();
         this.hooks.onConnectionState('reconnecting');
       }
+    } finally {
+      if (this.recoveryToken === token) this.recoveryToken = 0;
     }
   }
 
@@ -119,15 +114,9 @@ export class RemoteActivityViewModel {
     }
     const token = this.gate.begin();
     try {
-      this.hooks.onConnectionState('reconnecting');
       await this.connection.ping();
       if (!this.gate.isCurrent(token)) {
         return;
-      }
-      this.hooks.onConnectionState('connected');
-      this.hooks.onStatus(RemoteI18n.t('connection.connected'));
-      if (this.hooks.isRemoteChat() && this.hooks.activeSession().sessionId.length > 0) {
-        await this.hooks.onPoll();
       }
     } catch (err) {
       if (!this.gate.isCurrent(token)) {
@@ -136,24 +125,44 @@ export class RemoteActivityViewModel {
       if (await this.hooks.onConnectionError(err)) {
         return;
       }
+      if (!this.gate.isCurrent(token)) {
+        return;
+      }
       this.hooks.onStatus(ConnectionErrorPolicy.errorText(err));
       this.hooks.onConnectionState('reconnecting');
-      // The heartbeat keeps running through this. If the reconnect below fails
-      // there is nothing else left to try again, and its next tick is the retry
-      // — it just has to stay out of the way while this one is in flight.
-      this.recovering = true;
+      // Only a failed host probe starts recovery; foregrounding a healthy
+      // connection must not flash a reconnect warning.
+      this.recoveryToken = token;
       try {
         await this.reconnect(token);
       } catch (reconnectErr) {
-        this.hooks.onStatus(ConnectionErrorPolicy.errorText(reconnectErr));
+        if (this.gate.isCurrent(token)) {
+          this.hooks.onStatus(ConnectionErrorPolicy.errorText(reconnectErr));
+        }
       } finally {
-        this.recovering = false;
+        if (this.recoveryToken === token) {
+          this.recoveryToken = 0;
+        }
+      }
+      return;
+    }
+    this.hooks.onConnectionState('connected');
+    this.hooks.onStatus(RemoteI18n.t('connection.connected'));
+    if (this.hooks.isRemoteChat() && this.hooks.activeSession().sessionId.length > 0) {
+      try {
+        await this.hooks.onPoll();
+      } catch (err) {
+        // A transcript refresh error is not evidence that the host ping failed.
+        if (this.gate.isCurrent(token)) {
+          this.hooks.onStatus(ConnectionErrorPolicy.errorText(err));
+        }
       }
     }
   }
 
   invalidate(): void {
     this.gate.invalidate();
+    this.recoveryToken = 0;
     this.hooks.onStopPolling();
     this.stopHeartbeat();
   }
@@ -161,6 +170,7 @@ export class RemoteActivityViewModel {
   /** Keeps only the active-turn poll alive during a transient background window. */
   suspendKeepingActiveTurnPoll(): void {
     this.gate.invalidate();
+    this.recoveryToken = 0;
     this.stopHeartbeat();
   }
 
@@ -173,6 +183,9 @@ export class RemoteActivityViewModel {
     }
     if (shouldRestore) {
       await this.hooks.onRestoreSession(session);
+      if (!this.gate.isCurrent(token)) {
+        return;
+      }
       this.hooks.onStartPolling();
       await this.hooks.onPoll();
     }

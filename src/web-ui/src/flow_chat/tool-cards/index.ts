@@ -8,6 +8,7 @@ import { isMcpToolName } from '@/infrastructure/mcp/toolName';
 export {
   TOOL_CARD_CONFIGS,
   getToolCardConfig,
+  getToolItemCardConfig,
   requiresConfirmation,
   getAllToolNames,
   COLLAPSIBLE_TOOL_NAMES,
@@ -56,7 +57,9 @@ import { ReviewSessionSummaryCard } from './ReviewSessionSummaryCard';
 import { SessionControlToolCard } from './SessionControlToolCard';
 import { SessionMessageToolCard } from './SessionMessageToolCard';
 import { ComputerUseToolCard } from './ComputerUseToolCard';
+import { CronToolCard } from './CronToolCard';
 import { ViewImageToolCard } from './ViewImageToolCard';
+import { OpenBitFunControlToolCard } from './OpenBitFunControlToolCard';
 
 /**
  * Standard tool adapters backed by concrete `@openbitfun/ui/flow-chat` views.
@@ -102,6 +105,9 @@ export const STANDARD_TOOL_CARD_ADAPTERS = {
   'SessionControl': SessionControlToolCard,
   'SessionMessage': SessionMessageToolCard,
 
+  // Scheduled jobs
+  'Cron': CronToolCard,
+
   // Code-mode agents: one program per step instead of one card per action
   'RunCode': RunCodeToolCard,
 
@@ -135,6 +141,7 @@ export const PRODUCT_OWNED_TOOL_CARD_COMPONENTS = {
   'InitMiniApp': InitMiniAppDisplay,
   'GenerativeUI': GenerativeWidgetToolCard,
   'ComputerUse': ComputerUseToolCard,
+  'OpenBitFunControl': OpenBitFunControlToolCard,
 
   // OpenBitFun Canvas tools
   'CreateCanvas': CanvasToolCard,

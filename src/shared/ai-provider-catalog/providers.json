@@ -47,7 +47,7 @@
     },
     {
       "id": "zhipu",
-      "display_order": 10,
+      "display_order": 20,
       "region": "cn",
       "name": "Zhipu AI",
       "description": "Zhipu GLM series",
@@ -70,7 +70,7 @@
     },
     {
       "id": "qwen",
-      "display_order": 20,
+      "display_order": 50,
       "region": "cn",
       "name": "Qwen (Alibaba)",
       "description": "Alibaba Qwen series",
@@ -92,7 +92,7 @@
     },
     {
       "id": "deepseek",
-      "display_order": 30,
+      "display_order": 10,
       "region": "cn",
       "name": "DeepSeek",
       "description": "DeepSeek AI models",
@@ -111,7 +111,7 @@
     },
     {
       "id": "volcengine",
-      "display_order": 40,
+      "display_order": 60,
       "region": "cn",
       "name": "Volcengine",
       "description": "ByteDance Volcengine",
@@ -131,7 +131,7 @@
     },
     {
       "id": "minimax",
-      "display_order": 50,
+      "display_order": 40,
       "region": "cn",
       "name": "MiniMax",
       "description": "MiniMax AI models",
@@ -152,7 +152,7 @@
     },
     {
       "id": "moonshot",
-      "display_order": 60,
+      "display_order": 30,
       "region": "cn",
       "name": "Moonshot (Kimi)",
       "description": "Moonshot Kimi series",
@@ -169,6 +169,28 @@
       "model_policy": {
         "mode": "catalog_with_fallback",
         "curated_models": ["kimi-k3", "kimi-k2.7-code", "kimi-k2.6"],
+        "additional_models": []
+      }
+    },
+    {
+      "id": "xiaomi",
+      "display_order": 65,
+      "region": "cn",
+      "name": "Xiaomi MiMo",
+      "description": "Xiaomi MiMo API and Token Plan",
+      "help_url": "https://platform.xiaomimimo.com",
+      "requires_api_key": true,
+      "catalog_provider_ids": [],
+      "endpoints": [
+        { "id": "default", "base_url": "https://api.xiaomimimo.com/v1", "api_format": "openai", "label": "default", "is_default": true, "trusted_for_auto_detection": true, "catalog_provider_ids": [] },
+        { "id": "responses", "base_url": "https://api.xiaomimimo.com/v1/responses", "api_format": "responses", "label": "responses", "trusted_for_auto_detection": true, "catalog_provider_ids": [] },
+        { "id": "anthropic", "base_url": "https://api.xiaomimimo.com/anthropic", "api_format": "anthropic", "label": "anthropic", "trusted_for_auto_detection": true, "catalog_provider_ids": [] },
+        { "id": "token-plan", "base_url": "https://token-plan-cn.xiaomimimo.com/v1", "api_format": "openai", "label": "tokenPlan", "trusted_for_auto_detection": true, "catalog_provider_ids": [] },
+        { "id": "token-plan-anthropic", "base_url": "https://token-plan-cn.xiaomimimo.com/anthropic", "api_format": "anthropic", "label": "tokenPlanAnthropic", "trusted_for_auto_detection": true, "catalog_provider_ids": [] }
+      ],
+      "model_policy": {
+        "mode": "curated",
+        "curated_models": ["mimo-v2.6-pro", "mimo-v2.6-flash", "mimo-v2.6-pro-ultraspeed", "mimo-v2.5-pro", "mimo-v2.5"],
         "additional_models": []
       }
     },
@@ -294,6 +316,36 @@
         "curated_models": ["glm-5.2", "deepseek-v4-flash", "deepseek-v4-pro"],
         "additional_models": []
       }
+    },
+    {
+      "region": "any",
+      "requires_api_key": true,
+      "display_order": 140,
+      "endpoints": [
+        {
+          "catalog_provider_ids": [
+            "opencode-go"
+          ],
+          "label": "default",
+          "id": "default",
+          "api_format": "openai",
+          "base_url": "https://opencode.ai/zen/go/v1",
+          "trusted_for_auto_detection": true,
+          "is_default": true
+        }
+      ],
+      "catalog_provider_ids": [
+        "opencode-go"
+      ],
+      "id": "opencode-go",
+      "model_policy": {
+        "additional_models": [],
+        "mode": "catalog",
+        "curated_models": []
+      },
+      "help_url": "https://opencode.ai/console",
+      "description": "A model subscription plan from OpenCode.",
+      "name": "OpenCode Go"
     }
   ]
 }

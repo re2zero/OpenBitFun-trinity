@@ -1,14 +1,8 @@
 /**
- * Active-session snapshot reconciliation for the rendered device surface.
- *
- * DeviceEvent fan-out is the real-time path, but the relay protocol has no
- * ACK/replay recovery. A controller that attaches mid-turn can therefore miss
- * lifecycle events required by the local FlowChat state machine. The same gap
- * exists on the **local** surface: a turn that keeps running on this machine
- * while the UI renders another device produces events that surface routing
- * drops, so returning to it needs the same repair. This module periodically
- * reconciles a small host snapshot and also supports immediate refresh
- * requests when an event gap is detected.
+ * Attach restores a host-owned view once. The durable session subscription
+ * then follows Socket.IO notifications and replays by receive cursor. Explicit
+ * runtime gaps or surface activation may request reconciliation; idle windows
+ * do not repeatedly download snapshots.
  */
 
 import {
@@ -16,6 +10,7 @@ import {
   isSurfaceChangedError,
 } from '@/infrastructure/peer-device/deviceSurface';
 import { isSurfaceReconcileEnabled } from '@/infrastructure/peer-device/deviceSurfaceReconcile';
+import { remoteConnectAPI } from '@/infrastructure/api/service-api/RemoteConnectAPI';
 import { agentAPI } from '@/infrastructure/api/service-api/AgentAPI';
 import type {
   RuntimeProjectedAgenticEvent,
@@ -45,7 +40,6 @@ import type { FlowChatContext } from './types';
 
 const log = createLogger('PeerSessionRefresh');
 
-export const PEER_SESSION_REFRESH_INTERVAL_MS = 3000;
 export const PEER_SESSION_STREAM_STALE_MS = 6000;
 
 /**
@@ -62,19 +56,19 @@ export const PEER_SESSION_STREAM_STALE_MS = 6000;
  */
 type AttachableSession = Pick<
   Session,
-  'workspacePath' | 'isTransient' | 'isHistorical' | 'historyState'
-> & { workspacePath: string };
+  'workspaceId' | 'isTransient' | 'isHistorical' | 'historyState'
+> & { workspaceId: string };
 
 export function isSessionProjectionAttachable(
   session: Pick<
     Session,
-    'workspacePath' | 'isTransient' | 'isHistorical' | 'historyState'
+    'workspaceId' | 'isTransient' | 'isHistorical' | 'historyState'
   > | null | undefined,
 ): session is AttachableSession {
-  const workspacePath = session?.workspacePath?.trim();
+  const workspaceId = session?.workspaceId?.trim();
   return Boolean(
     session &&
-    workspacePath &&
+    workspaceId &&
     !session.isTransient &&
     !session.isHistorical &&
     (session.historyState === 'ready' || session.historyState === 'new'),
@@ -336,7 +330,7 @@ async function tryIncrementalCatchUp(
 
     attachment.finish(
       { streamId: backfill.streamId, cursor: backfill.cursor },
-      { projectionCaughtUp: true },
+      { projectionCaughtUp: true, events: backfill.events },
     );
     fenceResolved = true;
     log.debug('Runtime session projection caught up incrementally', {
@@ -359,7 +353,7 @@ async function tryIncrementalCatchUp(
     if (!fenceResolved) {
       // Release the held events rather than stranding them. On a superseded
       // read this is a no-op, which is why it is safe unconditionally.
-      attachment.abort();
+      attachment.abort({ discard: !surfaceScope.isCurrent() });
     }
   }
 }
@@ -409,6 +403,27 @@ export function installPeerSessionRefresh(context: FlowChatContext): () => void 
   let inFlight = false;
   const queuedSessionIds = new Set<string | undefined>();
   let immediateTimer: ReturnType<typeof setTimeout> | null = null;
+  let retrySubscription: ReturnType<typeof setTimeout> | null = null;
+  let retryDelay = 1000;
+  function releaseSubscription(): void {
+    if (retrySubscription !== null) { clearTimeout(retrySubscription); retrySubscription = null; }
+  }
+  function ensureSubscription(): void {
+    if (disposed) return;
+    const surface = getActiveSurfaceScope();
+    const sessionId = context.flowChatStore.getState().activeSessionId;
+    if (surface.surfaceId === 'local' || !sessionId) return;
+    void context.flowChatStore.loadRelaySessionHistory(sessionId).then(() => {
+      retryDelay = 1000;
+    }).catch(error => {
+      if (disposed || !surface.isCurrent()) return;
+      log.warn('Session stream subscription deferred', { sessionId, error });
+      if (retrySubscription !== null) return;
+      retrySubscription = setTimeout(() => { retrySubscription = null; ensureSubscription(); }, retryDelay);
+      retryDelay = Math.min(retryDelay * 2, 30000);
+    });
+  }
+
 
   function enqueueFollowUpRefresh(sessionId?: string): void {
     queuedSessionIds.add(sessionId);
@@ -431,6 +446,12 @@ export function installPeerSessionRefresh(context: FlowChatContext): () => void 
       if (inFlight) {
         enqueueFollowUpRefresh(requestedSessionId);
       }
+      return;
+    }
+    // Peer history and live records share the durable subscription. Runtime
+    // projection hydration remains only for the controller's local surface.
+    if (getActiveSurfaceScope().surfaceId !== 'local') {
+      ensureSubscription();
       return;
     }
     // Hidden only skips the 3s liveness poll. A named repair or first attach
@@ -464,7 +485,7 @@ export function installPeerSessionRefresh(context: FlowChatContext): () => void 
     if (!isSessionProjectionAttachable(session)) {
       return;
     }
-    const workspacePath = session.workspacePath.trim();
+    ensureSubscription();
     pendingQueueManager.reconcileAgainstLiveTurns(
       sessionId,
       state.sessions.get(sessionId)?.dialogTurns ?? [],
@@ -492,10 +513,12 @@ export function installPeerSessionRefresh(context: FlowChatContext): () => void 
     // (regression: send-to-first-token latency, and the fence churn that left
     // an interactive card unanswerable after a device switch).
     //
+    // A gap/refused event precedes the delivered cursor. A suffix starting
+    // after that cursor cannot repair it; rebuild from the journal prefix.
     // `forceRuntimeReplay` is deliberately excluded: an idle or errored
     // machine has no live projection to continue, and wants the snapshot.
     const canRepairIncrementally =
-      !forceRuntimeReplay && (projectionStale || streamIsStale);
+      !forceRuntimeReplay && !projectionStale && streamIsStale;
     if (canRepairIncrementally) {
       inFlight = true;
       try {
@@ -525,7 +548,6 @@ export function installPeerSessionRefresh(context: FlowChatContext): () => void 
     try {
       const result = await context.flowChatStore.refreshPeerSessionSnapshot(
         sessionId,
-        workspacePath,
         {
           // A background session on this surface still owns its projection.
           // Requiring the focused tab aborted the dropped-event repair for
@@ -573,7 +595,7 @@ export function installPeerSessionRefresh(context: FlowChatContext): () => void 
           attachment.finish({
             streamId: snapshot.streamId,
             cursor: snapshot.cursor,
-          }, { projectionCaughtUp: true });
+          }, { projectionCaughtUp: true, events: snapshot.events });
           attachmentFinished = true;
           log.debug('Runtime session projection already current', {
             sessionId,
@@ -585,7 +607,9 @@ export function installPeerSessionRefresh(context: FlowChatContext): () => void 
         // Establish an empty current-Turn base before replay. The journal is
         // authoritative for everything after DialogTurnStarted, so no
         // UI-written partial checkpoint is allowed to overlap it.
-        context.eventBatcher.clear();
+        // Only this Session is fenced. Other Sessions may have accumulated
+        // text/tool events during the read; publish them instead of erasing them.
+        context.eventBatcher.flushNow();
         context.contentBuffers.delete(sessionId);
         context.activeTextItems.delete(sessionId);
         const replayTurnId = snapshot.activeTurnId ?? result.latestTurnId;
@@ -631,7 +655,7 @@ export function installPeerSessionRefresh(context: FlowChatContext): () => void 
         attachment.finish({
           streamId: snapshot.streamId,
           cursor: snapshot.cursor,
-        }, { projectionCaughtUp });
+        }, { projectionCaughtUp, events: snapshot.events });
         attachmentFinished = true;
         if (!projectionCaughtUp) {
           markRuntimeSessionProjectionStale(surfaceScope.surfaceId, sessionId);
@@ -722,6 +746,7 @@ export function installPeerSessionRefresh(context: FlowChatContext): () => void 
         }
       }
       inFlight = false;
+      ensureSubscription();
       drainFollowUpRefresh();
     }
   }
@@ -743,6 +768,7 @@ export function installPeerSessionRefresh(context: FlowChatContext): () => void 
   }
 
   installedRefreshRequester = scheduleRefresh;
+  const unsubscribeSourceGap = remoteConnectAPI.onSessionGap(event => scheduleRefresh(event.sessionId));
 
   const unsubscribeActiveSession = context.flowChatStore.subscribeSelector(
     state => {
@@ -751,16 +777,15 @@ export function installPeerSessionRefresh(context: FlowChatContext): () => void 
       return JSON.stringify([
         sessionId ?? '',
         session?.historyState ?? '',
-        session?.workspacePath ?? '',
+        session?.workspaceId ?? '',
         session?.isTransient === true,
         session?.isHistorical === true,
       ]);
     },
     () => scheduleRefresh(),
   );
-  const interval = setInterval(() => {
-    void runRefresh(undefined, true);
-  }, PEER_SESSION_REFRESH_INTERVAL_MS);
+  // Durable Socket.IO notifications and after-sequence recovery replace the
+  // previous three-second snapshot poll. Attach still reads the host once.
   const unsubscribeRuntimeGaps = subscribeRuntimeSessionEventGaps(
     (surfaceId, sessionId) => {
       if (getActiveSurfaceScope().surfaceId === surfaceId) {
@@ -769,7 +794,7 @@ export function installPeerSessionRefresh(context: FlowChatContext): () => void 
     },
   );
 
-  const handlePeerModeChanged = (): void => scheduleRefresh();
+  const handlePeerModeChanged = (): void => { releaseSubscription(); scheduleRefresh(); };
   const handleVisibilityChanged = (): void => {
     if (typeof document === 'undefined' || document.visibilityState === 'visible') {
       scheduleRefresh();
@@ -792,9 +817,10 @@ export function installPeerSessionRefresh(context: FlowChatContext): () => void 
     if (immediateTimer !== null) {
       clearTimeout(immediateTimer);
     }
-    clearInterval(interval);
+    releaseSubscription();
     unsubscribeActiveSession();
     unsubscribeRuntimeGaps();
+    unsubscribeSourceGap();
     if (typeof window !== 'undefined') {
       window.removeEventListener('peer-mode:changed', handlePeerModeChanged);
     }

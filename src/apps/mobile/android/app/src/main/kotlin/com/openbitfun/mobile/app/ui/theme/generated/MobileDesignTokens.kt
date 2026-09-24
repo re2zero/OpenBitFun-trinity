@@ -13,11 +13,13 @@ internal object MobileDesignColors {
         val Transparent = Color(0x00000000)
         val PageBg = Color(0xFFFFFFFF)
         val PageBgFade = Color(0x00FFFFFF)
+        val PageBgOverlay = Color(0xB8FFFFFF)
         val Ink = Color(0xFF171717)
         val Muted = Color(0xFF706F6A)
         val Subtle = Color(0xFFA5A39B)
         val Line = Color(0xFFE9E7E2)
         val Card = Color(0xFFFFFFFF)
+        val CardOverlay = Color(0xCCFFFFFF)
         val Accent = Color(0xFF111111)
         val FileLink = Color(0xFF2563EB)
         val PrimaryAction = Color(0xFF111111)
@@ -40,6 +42,15 @@ internal object MobileDesignColors {
         val FloatingBorder = Color(0x18000000)
         val Soft = Color(0xFFF4F3F0)
         val FloatingPanelBg = Color(0xFFF7F7F5)
+        val SidebarBg = Color(0xFFF8F8F9)
+        val SidebarBgFade = Color(0x00F8F8F9)
+        val SidebarRaised = Color(0xFFFFFFFF)
+        val SidebarLine = Color(0x14101A27)
+        val SidebarHover = Color(0xFFF3F3F5)
+        val SidebarSelection = Color(0x14000000)
+        val SidebarInk = Color(0xCC000000)
+        val SidebarMuted = Color(0x99000000)
+        val SidebarSubtle = Color(0x66000000)
         val StatusSuccess = Color(0xFF27C46A)
         val StatusDanger = Color(0xFFE04F4F)
         val CodeLineNumber = Color(0xFFAAA69D)
@@ -52,6 +63,12 @@ internal object MobileDesignColors {
         val CodeConstant = Color(0xFFA04444)
         val CodeProperty = Color(0xFF466D78)
         val CodeTargetBg = Color(0xFFFFF1BE)
+        val BrandDot = Color(0xFF16B9CE)
+        val WelcomeDock = Color(0xFF171917)
+        val WelcomeButton = Color(0xFFFFFFFF)
+        val WelcomeButtonLabel = Color(0xFF171917)
+        val WelcomeSecondary = Color(0xFFB9BCB9)
+        val StatusWarning = Color(0xFFFF8C00)
     }
 
     object Dark {
@@ -59,11 +76,13 @@ internal object MobileDesignColors {
         val Transparent = Color(0x00000000)
         val PageBg = Color(0xFF151514)
         val PageBgFade = Color(0x00151514)
+        val PageBgOverlay = Color(0xB8151514)
         val Ink = Color(0xFFF4F3EF)
         val Muted = Color(0xFFAAA8A0)
         val Subtle = Color(0xFF77756E)
         val Line = Color(0xFF363531)
         val Card = Color(0xFF252522)
+        val CardOverlay = Color(0xCC252522)
         val Accent = Color(0xFF5B5954)
         val FileLink = Color(0xFF60A5FA)
         val PrimaryAction = Color(0xFF454540)
@@ -86,6 +105,15 @@ internal object MobileDesignColors {
         val FloatingBorder = Color(0x18000000)
         val Soft = Color(0xFF2D2C28)
         val FloatingPanelBg = Color(0xFF1E1E1C)
+        val SidebarBg = Color(0xFF0E0E10)
+        val SidebarBgFade = Color(0x000E0E10)
+        val SidebarRaised = Color(0xFF1C1C1F)
+        val SidebarLine = Color(0x1FFFFFFF)
+        val SidebarHover = Color(0x0FFFFFFF)
+        val SidebarSelection = Color(0x1FFFFFFF)
+        val SidebarInk = Color(0xFFE8E8E8)
+        val SidebarMuted = Color(0xFFB0B0B0)
+        val SidebarSubtle = Color(0xFF858585)
         val StatusSuccess = Color(0xFF3BD47B)
         val StatusDanger = Color(0xFFFF6B6B)
         val CodeLineNumber = Color(0xFF77756E)
@@ -98,6 +126,12 @@ internal object MobileDesignColors {
         val CodeConstant = Color(0xFFE79A9A)
         val CodeProperty = Color(0xFF9CC8D0)
         val CodeTargetBg = Color(0xFF5A4E24)
+        val BrandDot = Color(0xFF16B9CE)
+        val WelcomeDock = Color(0xFF171917)
+        val WelcomeButton = Color(0xFFFFFFFF)
+        val WelcomeButtonLabel = Color(0xFF171917)
+        val WelcomeSecondary = Color(0xFFB9BCB9)
+        val StatusWarning = Color(0xFFFF8C00)
     }
 }
 
@@ -118,6 +152,28 @@ internal object MobileDesignTypography {
     val LabelLarge = TextStyle(fontSize = 15.sp, lineHeight = 20.sp, fontWeight = FontWeight.Medium)
     val LabelMedium = TextStyle(fontSize = 14.sp, lineHeight = 18.sp, fontWeight = FontWeight.Medium)
     val LabelSmall = TextStyle(fontSize = 12.sp, lineHeight = 16.sp, fontWeight = FontWeight.Normal)
+    val BrandWordmark = TextStyle(fontSize = 42.sp, lineHeight = 56.sp, fontWeight = FontWeight.Medium)
+}
+
+/**
+ * Normalises how big one logical unit of type is on the glass. The ramp was
+ * tuned on 153.3 logical units per inch; a screen whose dp is physically larger
+ * shrinks its text by the ratio, clamped, so a 16.sp reads as the same
+ * millimetres. Returns 1 for displays whose xdpi is implausible against their
+ * nominal 160-per-dp density rather than trusting bad metrics.
+ */
+internal object MobileTextScale {
+    const val ReferenceLogicalDpi: Float = 153.3f
+    const val MinFactor: Float = 0.85f
+    const val MaxFactor: Float = 1f
+
+    fun resolve(xdpi: Float, density: Float): Float {
+        if (!(xdpi > 0f) || !(density > 0f)) return 1f
+        val nominalDpi = density * 160f
+        if (xdpi < nominalDpi * 0.5f || xdpi > nominalDpi * 2f) return 1f
+        val factor = (xdpi / density / ReferenceLogicalDpi).coerceIn(MinFactor, MaxFactor)
+        return Math.round(factor * 1000f) / 1000f
+    }
 }
 
 internal object MobileDesignGeometry {
@@ -127,6 +183,8 @@ internal object MobileDesignGeometry {
     val ContentGutter = 16.dp
     val ConnectionStripHeight = 48.dp
     val TimelineTopPadding = 22.dp
+    val ConversationOverlaySideInset = 16.dp
+    val ConversationEdgeFadeHeight = 28.dp
     val MessageSpacing = 18.dp
     val MessageBubbleMaxWidth = 276.dp
     val MessageBubbleHorizontalPadding = 14.dp
@@ -180,6 +238,27 @@ internal object MobileDesignGeometry {
     val ModelListBottomPadding = 16.dp
     val ModelEmptyAccountHeight = 80.dp
     val ModelEditorHeight = 560.dp
+    val WelcomeMaxWidth = 520.dp
+    val WelcomeGutter = 25.dp
+    val WelcomeHeaderHeight = 58.dp
+    val WelcomeButtonHeight = 49.dp
+    val WelcomeButtonGap = 11.dp
+    val WelcomeDockRadius = 30.dp
+    val WelcomeDockBottom = 39.dp
+    val WelcomeMarkSize = 92.dp
+    val WelcomeWordSize = 34.dp
+    val WelcomeStageHeight = 220.dp
+    val WelcomeHeaderWordSize = 17.dp
+    val RecentHomeGutter = 24.dp
+    val RecentHomeMarkSize = 132.dp
+    val RecentHomeTitleSize = 25.dp
+    val RecentHomeMaxWidth = 560.dp
+    val RecentHomeRowPadding = 18.dp
+    val ApprovalCardRadius = 12.dp
+    val ApprovalCardPadding = 12.dp
+    val ApprovalCardGap = 8.dp
+    val ApprovalActionRadius = 8.dp
+    val ApprovalActionHeight = 36.dp
 }
 
 internal object MobileDesignBreakpoints {
@@ -191,4 +270,5 @@ internal object MobileDesignBreakpoints {
 internal object MobileDesignMotion {
     const val Quick: Int = 180
     const val Structure: Int = 220
+    const val StartupBrand: Int = 6800
 }

@@ -4,7 +4,6 @@
 //! runtime owners. Client-facing SDK consumers should use `crate::sdk`, which
 //! does not expose raw PluginRuntimeClient contracts.
 
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use openbitfun_agent_tools::{ToolRegistry, ToolRegistryItem};
@@ -119,6 +118,10 @@ impl RuntimeError {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentSessionRestoreRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    /// Upgrade-only pre-ID wire field.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub workspace_path: String,
     pub session_id: String,
     #[serde(default)]
@@ -197,7 +200,7 @@ impl AgentEventStream {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RuntimeAgentRegistryQuery<'a> {
-    pub workspace_root: Option<&'a Path>,
+    pub workspace_id: Option<&'a str>,
 }
 
 pub trait RuntimeAgentRegistry: Send + Sync {
@@ -740,6 +743,9 @@ pub enum SessionSelector {
     Create {
         session_name: String,
         agent_type: String,
+        /// Owning workspace ID; authoritative when present.
+        workspace_id: Option<String>,
+        /// Legacy execution root for pre-ID callers.
         workspace_path: Option<String>,
         metadata: serde_json::Map<String, serde_json::Value>,
     },
@@ -760,9 +766,24 @@ impl SessionSelector {
         Self::Create {
             session_name: session_name.into(),
             agent_type: agent_type.into(),
+            workspace_id: None,
             workspace_path,
             metadata: serde_json::Map::new(),
         }
+    }
+
+    /// Select the owning workspace by ID. The path, when also present, is
+    /// only an IO projection for hosts that still record it.
+    pub fn with_workspace_id(mut self, workspace_id: Option<String>) -> Self {
+        if let Self::Create {
+            workspace_id: slot, ..
+        } = &mut self
+        {
+            *slot = workspace_id
+                .map(|id| id.trim().to_string())
+                .filter(|id| !id.is_empty());
+        }
+        self
     }
 
     pub fn with_metadata(mut self, metadata: serde_json::Map<String, serde_json::Value>) -> Self {
@@ -858,6 +879,24 @@ impl AgentRuntime {
             .as_ref()
             .map(|manager| manager.interactive_pending_requests())
             .ok_or(RuntimeError::MissingPermissionRequestManager)
+    }
+
+    /// Dismiss only the session-scoped question, including after interaction.
+    pub fn cancel_user_question(
+        &self,
+        session_id: &str,
+        tool_id: &str,
+    ) -> Result<(), crate::user_questions::UserInputSendError> {
+        get_user_input_manager().cancel_for_session(session_id, tool_id)
+    }
+
+    /// Stop the unattended deadline in the same owner mailbox used for reattachment.
+    pub fn start_user_question_interaction(
+        &self,
+        session_id: &str,
+        tool_id: &str,
+    ) -> Result<(), crate::user_questions::UserInputSendError> {
+        get_user_input_manager().start_interaction(session_id, tool_id)
     }
 
     /// Capture every blocking interaction needed to resume rendering one
@@ -1566,6 +1605,26 @@ impl AgentRuntime {
             .map_err(RuntimeError::from)
     }
 
+    pub async fn manage_dialog_queue(
+        &self,
+        request: openbitfun_runtime_ports::DialogQueueRequest,
+    ) -> Result<openbitfun_runtime_ports::DialogQueueSnapshot, RuntimeError> {
+        let session_id = request.session_id.clone();
+        let result = self
+            .dialog_turn
+            .as_ref()
+            .ok_or(RuntimeError::MissingDialogTurnPort)?
+            .manage_dialog_queue(request)
+            .await
+            .map_err(RuntimeError::from)?;
+        if result.session_id != session_id {
+            return Err(
+                PortError::new(PortErrorKind::Backend, "Queue session identity mismatch").into(),
+            );
+        }
+        Ok(result)
+    }
+
     pub async fn submit_dialog_turn(
         &self,
         request: AgentDialogTurnRequest,
@@ -1807,6 +1866,7 @@ impl AgentRuntime {
             SessionSelector::Create {
                 session_name,
                 agent_type,
+                workspace_id,
                 workspace_path,
                 metadata,
             } => {
@@ -1818,7 +1878,7 @@ impl AgentRuntime {
                         workspace_path,
                         project_workspace_path: None,
                         execution_target: None,
-                        workspace_id: None,
+                        workspace_id,
                         remote_connection_id: None,
                         remote_ssh_host: None,
                         model_id: None,
@@ -2103,6 +2163,8 @@ mod tests {
                 .unwrap()
                 .push(request);
             Ok(Some(AgentSessionWorkspaceBinding {
+                workspace_kind: None,
+                project_workspace_id: None,
                 workspace_id: Some("workspace_1".to_string()),
                 workspace_path: "/workspace/project".to_string(),
                 project_workspace_path: None,
@@ -2306,6 +2368,7 @@ mod tests {
                         parent_tool_call_id: None,
                         subagent_type: None,
                         agent_id: None,
+                        workspace_id: Some("workspace-project".to_string()),
                         workspace_path: Some("/workspace/project".to_string()),
                         remote_connection_id: None,
                         remote_ssh_host: None,
@@ -2323,6 +2386,7 @@ mod tests {
                         parent_tool_call_id: Some("tool_1".to_string()),
                         subagent_type: Some("explore".to_string()),
                         agent_id: Some("child-agent".to_string()),
+                        workspace_id: Some("workspace-project".to_string()),
                         workspace_path: Some("/workspace/project".to_string()),
                         remote_connection_id: None,
                         remote_ssh_host: None,
@@ -2605,6 +2669,7 @@ mod tests {
             .build()
             .expect("runtime");
         let request = AgentSessionForkBeforeTurnRequest {
+            workspace_id: None,
             workspace_path: "/workspace/project".to_string(),
             source_session_id: "session-1".to_string(),
             source_turn_id: "turn-2".to_string(),
@@ -2633,6 +2698,7 @@ mod tests {
             .build()
             .expect("runtime");
         let request = AgentSessionRevertRequest {
+            workspace_id: None,
             workspace_path: "/workspace/project".to_string(),
             session_id: "session-1".to_string(),
             remote_connection_id: None,
@@ -2934,6 +3000,34 @@ mod tests {
         assert_eq!(ports.interrupted_turns.lock().unwrap().len(), 1);
     }
 
+    #[test]
+    fn restore_request_reads_legacy_payload_and_round_trips_id_only_scope() {
+        let legacy: AgentSessionRestoreRequest = serde_json::from_value(serde_json::json!({
+            "workspacePath": "/project", "sessionId": "session-1"
+        }))
+        .unwrap();
+        assert!(legacy.workspace_id.is_none());
+        assert_eq!(
+            serde_json::from_value::<AgentSessionRestoreRequest>(
+                serde_json::to_value(&legacy).unwrap()
+            )
+            .unwrap(),
+            legacy
+        );
+        let current: AgentSessionRestoreRequest = serde_json::from_value(serde_json::json!({
+            "workspaceId": "workspace-1", "sessionId": "session-1"
+        }))
+        .unwrap();
+        assert!(current.workspace_path.is_empty());
+        let json = serde_json::to_value(&current).unwrap();
+        assert!(json.get("workspacePath").is_none());
+        assert_eq!(json["workspaceId"], "workspace-1");
+        assert_eq!(
+            serde_json::from_value::<AgentSessionRestoreRequest>(json).unwrap(),
+            current
+        );
+    }
+
     #[tokio::test]
     async fn session_management_requires_registered_port() {
         let ports = Arc::new(FakeAgentRuntimePorts::default());
@@ -2944,6 +3038,7 @@ mod tests {
 
         let err = runtime
             .list_sessions(AgentSessionListRequest {
+                workspace_id: None,
                 workspace_path: "/workspace/project".to_string(),
                 remote_connection_id: None,
                 remote_ssh_host: None,
@@ -2965,6 +3060,7 @@ mod tests {
 
         let sessions = runtime
             .list_sessions(AgentSessionListRequest {
+                workspace_id: None,
                 workspace_path: "/workspace/project".to_string(),
                 remote_connection_id: None,
                 remote_ssh_host: None,
@@ -2973,6 +3069,7 @@ mod tests {
             .expect("list sessions");
         runtime
             .delete_session(AgentSessionDeleteRequest {
+                workspace_id: None,
                 workspace_path: "/workspace/project".to_string(),
                 session_id: "session_1".to_string(),
                 remote_connection_id: None,
@@ -2982,6 +3079,7 @@ mod tests {
             .expect("delete session");
         runtime
             .rename_session(AgentSessionRenameRequest {
+                workspace_id: None,
                 workspace_path: "/workspace/project".to_string(),
                 session_id: "session_1".to_string(),
                 session_name: "Renamed".to_string(),
@@ -2992,6 +3090,7 @@ mod tests {
             .expect("rename session");
         runtime
             .archive_session(AgentSessionArchiveRequest {
+                workspace_id: None,
                 workspace_path: "/workspace/project".to_string(),
                 session_id: "session_1".to_string(),
                 remote_connection_id: None,
@@ -3001,6 +3100,7 @@ mod tests {
             .expect("archive session");
         runtime
             .set_session_archived(AgentSessionArchiveStateRequest {
+                workspace_id: None,
                 workspace_path: "/workspace/project".to_string(),
                 session_id: "session_1".to_string(),
                 archived: false,
@@ -3237,6 +3337,7 @@ mod tests {
 
         let restored = runtime
             .restore_session(AgentSessionRestoreRequest {
+                workspace_id: None,
                 workspace_path: "/workspace/project".to_string(),
                 session_id: "session_1".to_string(),
                 include_internal: false,
@@ -3270,6 +3371,7 @@ mod tests {
 
         let snapshot = runtime
             .get_session_lineage(AgentSessionLineageRequest {
+                workspace_id: None,
                 workspace_path: "/workspace/project".to_string(),
                 anchor_session_id: "child_1".to_string(),
                 remote_connection_id: None,
@@ -3280,6 +3382,7 @@ mod tests {
             .expect("lineage");
         let inspection = runtime
             .read_lineage_session_transcript(AgentSessionLineageTranscriptRequest {
+                workspace_id: None,
                 workspace_path: "/workspace/project".to_string(),
                 root_session_id: "root_1".to_string(),
                 session_id: "child_1".to_string(),
@@ -3308,6 +3411,7 @@ mod tests {
 
         let result = runtime
             .cancel_lineage_session(AgentSessionLineageCancellationRequest {
+                workspace_id: None,
                 workspace_path: "/workspace/project".to_string(),
                 root_session_id: "root_1".to_string(),
                 session_id: "child_1".to_string(),
@@ -3330,6 +3434,7 @@ mod tests {
 
         let error = runtime
             .cancel_lineage_session(AgentSessionLineageCancellationRequest {
+                workspace_id: None,
                 workspace_path: "/workspace/project".to_string(),
                 root_session_id: "root_1".to_string(),
                 session_id: "outside".to_string(),
@@ -3410,6 +3515,7 @@ mod tests {
     #[test]
     fn session_restore_contract_serializes_runtime_owned_state() {
         let request = AgentSessionRestoreRequest {
+            workspace_id: None,
             workspace_path: "/workspace/project".to_string(),
             session_id: "session_1".to_string(),
             include_internal: true,
@@ -3454,6 +3560,7 @@ mod tests {
 
         let error = runtime
             .restore_session(AgentSessionRestoreRequest {
+                workspace_id: None,
                 workspace_path: "/workspace/project".to_string(),
                 session_id: "session_1".to_string(),
                 include_internal: false,
@@ -3527,6 +3634,7 @@ mod tests {
                 execution: Default::default(),
                 agent_type: "Standard".to_string(),
                 workspace_path: Some("/workspace/project".to_string()),
+                workspace_id: None,
                 remote_connection_id: None,
                 remote_ssh_host: None,
                 policy: DialogSubmissionPolicy::new(
@@ -3583,6 +3691,7 @@ mod tests {
                 execution: Default::default(),
                 agent_type: "Standard".to_string(),
                 workspace_path: Some("/workspace/project".to_string()),
+                workspace_id: None,
                 remote_connection_id: None,
                 remote_ssh_host: None,
                 policy: DialogSubmissionPolicy::new(
@@ -3658,6 +3767,7 @@ mod tests {
                 turn_id: "turn_1".to_string(),
                 execution_generation: 0,
                 workspace_path: Some("/workspace/project".to_string()),
+                workspace_id: None,
                 remote_connection_id: None,
                 remote_ssh_host: None,
             })
@@ -3703,6 +3813,7 @@ mod tests {
                 execution: Default::default(),
                 agent_type: "Standard".to_string(),
                 workspace_path: Some("/workspace/project".to_string()),
+                workspace_id: None,
                 remote_connection_id: None,
                 remote_ssh_host: None,
                 policy: DialogSubmissionPolicy::for_source(AgentSubmissionSource::SdkHost),

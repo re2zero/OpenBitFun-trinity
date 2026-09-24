@@ -171,7 +171,7 @@
     overflow: hidden;
     padding: 0;
     border: var(--openbitfun-border-width-default) solid var(--openbitfun-color-border-subtle);
-    border-radius: var(--openbitfun-overlay-menu-surface-radius);
+    border-radius: var(--openbitfun-control-select-radius);
     color: var(--openbitfun-color-action-neutral-content);
     background: var(--openbitfun-color-surface-panel);
     box-shadow: var(--openbitfun-shadow-menu);
@@ -234,15 +234,6 @@
     flex: 1 1 auto;
     min-inline-size: 0;
     min-block-size: 0;
-  }
-
-  .listbox [data-openbitfun-part="list"],
-  .listbox [data-openbitfun-part="group-options"] {
-    gap: calc(var(--openbitfun-space-1) / 2);
-  }
-
-  .listbox [data-openbitfun-part="group"] {
-    gap: var(--openbitfun-overlay-menu-section-gap);
   }
 
   .listbox [data-openbitfun-listbox-option][data-selected="true"] [data-openbitfun-part="label"] {

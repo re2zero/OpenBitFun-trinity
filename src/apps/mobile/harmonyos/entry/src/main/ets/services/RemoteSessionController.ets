@@ -39,6 +39,9 @@ export class RemoteSessionController {
   private hasMore: boolean = false;
   private offset: number = 0;
   private openGeneration: number = 0;
+  private listGeneration: number = 0;
+  private listing: boolean = false;
+  private loadingMore: boolean = false;
 
   constructor(
     client: RemoteSessionClient,
@@ -58,6 +61,7 @@ export class RemoteSessionController {
   }
 
   setSessions(sessions: RemoteSession[], hasMore: boolean): void {
+    this.supersedeListRequest();
     this.sessions = sessions.slice();
     this.hasMore = hasMore;
     this.offset = this.sessions.length;
@@ -65,6 +69,7 @@ export class RemoteSessionController {
   }
 
   clearSessions(): void {
+    this.supersedeListRequest();
     this.sessions = [];
     this.hasMore = false;
     this.offset = 0;
@@ -81,11 +86,14 @@ export class RemoteSessionController {
     query: string,
     filter: string,
     remoteAvailable: boolean,
-    isConnected: boolean
+    isConnected: boolean,
+    propagateFailure: boolean = false
   ): Promise<void> {
     if (!remoteAvailable) {
       return;
     }
+    const generation = this.supersedeListRequest();
+    this.listing = true;
     try {
       if (!isConnected) {
         this.callbacks.onReconnecting();
@@ -94,6 +102,7 @@ export class RemoteSessionController {
       this.callbacks.onLoading(true);
       this.offset = 0;
       const result = await this.client.listSessions(this.pageSize, this.offset, query, filter);
+      if (generation !== this.listGeneration) return;
       this.sessions = result.sessions;
       this.hasMore = result.hasMore;
       this.offset = this.sessions.length;
@@ -102,10 +111,12 @@ export class RemoteSessionController {
       this.callbacks.onStatusText(RemoteI18n.t('connection.connected'));
       this.callbacks.onStartHeartbeat();
     } catch (err) {
+      if (generation !== this.listGeneration) return;
       this.callbacks.onSessionError(ConnectionErrorPolicy.errorText(err));
       this.callbacks.onConnectionFailed(err);
+      if (propagateFailure) throw new Error(String(err));
     } finally {
-      this.callbacks.onLoading(false);
+      if (generation === this.listGeneration) this.finishListRequest();
     }
   }
 
@@ -118,23 +129,41 @@ export class RemoteSessionController {
     if (isBusy || !this.hasMore || !remoteAvailable) {
       return;
     }
+    const generation = this.supersedeListRequest();
+    this.listing = true;
+    this.loadingMore = true;
     try {
       this.callbacks.onBusy(true);
       this.callbacks.onLoading(true);
       this.callbacks.onStatusText(RemoteI18n.t('status.loadMoreSessions'));
       const result = await this.client.listSessions(this.pageSize, this.offset, query, filter);
+      if (generation !== this.listGeneration) return;
       this.sessions = RemoteUiState.mergeSessions(this.sessions, result.sessions);
       this.hasMore = result.hasMore;
       this.offset = this.sessions.length;
       this.callbacks.onSessions(this.sessions, this.hasMore);
       this.callbacks.onStatusText(RemoteI18n.t('status.sessionsUpdated'));
     } catch (err) {
+      if (generation !== this.listGeneration) return;
       this.callbacks.onSessionError(ConnectionErrorPolicy.errorText(err));
       this.callbacks.onConnectionFailed(err);
     } finally {
-      this.callbacks.onBusy(false);
-      this.callbacks.onLoading(false);
+      if (generation === this.listGeneration) this.finishListRequest();
     }
+  }
+
+  /** A sidebar snapshot or target reset supersedes older list responses. */
+  private supersedeListRequest(): number {
+    this.listGeneration++;
+    this.finishListRequest();
+    return this.listGeneration;
+  }
+
+  private finishListRequest(): void {
+    if (this.loadingMore) this.callbacks.onBusy(false);
+    if (this.listing) this.callbacks.onLoading(false);
+    this.loadingMore = false;
+    this.listing = false;
   }
 
   async create(
@@ -144,7 +173,10 @@ export class RemoteSessionController {
     onCreated: (session: SessionSummary) => Promise<void>,
     instruction: string = '',
     modelId: string = '',
-    workspacePath: string = ''
+    workspacePath: string = '',
+    remoteConnectionId?: string,
+    remoteSshHost?: string,
+    workspaceId?: string
   ): Promise<SessionSummary | undefined> {
     if (isBusy || !remoteAvailable) {
       return undefined;
@@ -160,11 +192,14 @@ export class RemoteSessionController {
         await onCreated(session);
       };
       const session = await this.client.createSession({
+        workspaceId: workspaceId?.trim() || undefined,
         agentType,
         title: '',
         instruction,
         modelId,
-        workspacePath
+        workspacePath,
+        remoteConnectionId,
+        remoteSshHost
       }, handleAllocated);
       if (!allocationHandled) {
         await handleAllocated(session);
@@ -205,7 +240,10 @@ export class RemoteSessionController {
       const session: SessionSummary = {
         sessionId: item.id,
         title: item.title,
-        workspacePath,
+        workspaceId: item.workspaceIdentity?.workspaceId,
+        workspacePath: item.workspaceIdentity?.path || workspacePath,
+        remoteConnectionId: item.workspaceIdentity?.remoteConnectionId,
+        remoteSshHost: item.workspaceIdentity?.remoteSshHost,
         agentType: item.agentType
       };
       this.callbacks.onActiveSession(session);

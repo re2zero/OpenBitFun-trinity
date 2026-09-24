@@ -1,6 +1,7 @@
-import { Icon, type IconName } from '@openbitfun/ui';
+import { Icon, Textarea, type IconName } from '@openbitfun/ui';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useI18n } from '@/infrastructure/i18n';
 import {
   AlertTriangle,
   AlertCircle,
@@ -188,6 +189,15 @@ const PHASE_CONFIG: Record<ReviewActionPhase, {
 
 export const ReviewActionBar: React.FC<ReviewActionBarProps> = ({ childSessionId: scopedChildSessionId }) => {
   const { t } = useTranslation('flow-chat');
+  const { t: translateError } = useI18n('errors');
+  const localizeActionError = useCallback((error: unknown, fallback: string) => {
+    const rawMessage = normalizeActionErrorMessage(error);
+    const launchMessage = getReviewActionErrorMessage(error, t, fallback);
+    if (launchMessage !== rawMessage.trim()) return launchMessage;
+    const presentation = getAiErrorPresentation({ rawMessage });
+    const title = presentation.category === 'unknown' ? fallback : translateError(presentation.titleKey);
+    return `${title} ${translateError(presentation.messageKey)}`;
+  }, [t, translateError]);
   const store = useReviewActionBarStore();
   const scopedState = scopedChildSessionId
     ? getReviewActionBarStateForSession(store, scopedChildSessionId)
@@ -522,13 +532,13 @@ export const ReviewActionBar: React.FC<ReviewActionBarProps> = ({ childSessionId
       store.updatePhase(isTimeout ? 'fix_timeout' : 'fix_failed', message, childSessionId);
       store.restore(childSessionId ?? undefined);
       notificationService.error(
-        message,
-        { duration: 5000 },
+        localizeActionError(error, t('deepReviewActionBar.fixFailed')),
+        { duration: 5000, metadata: { rawError: msg } },
       );
     } finally {
       store.setActiveAction(null, undefined, childSessionId);
     }
-  }, [reviewData, childSessionId, childSession, selectedRemediationIds, remediationItems, completedRemediationIds, customInstructions, reviewMode, isDeepReview, decisionSelections, store, t]);
+  }, [reviewData, childSessionId, childSession, selectedRemediationIds, remediationItems, completedRemediationIds, customInstructions, reviewMode, isDeepReview, decisionSelections, store, t, localizeActionError]);
 
   const handleReviewFixes = useCallback(async () => {
     if (!isTauriRuntime()) {
@@ -595,16 +605,19 @@ export const ReviewActionBar: React.FC<ReviewActionBarProps> = ({ childSessionId
             '/review',
             workspacePath,
             childSession.remoteConnectionId,
+            childSession.workspaceId,
           )
         : followUpReviewTargetFilePaths.length > 0
         ? await prepareReviewLaunchFromSessionFiles(followUpReviewTargetFilePaths, {
             workspacePath,
+            workspaceId: childSession.workspaceId,
             remoteConnectionId: childSession.remoteConnectionId,
           })
         : await prepareReviewLaunchFromSlashCommand(
             '/review',
             workspacePath,
             childSession.remoteConnectionId,
+            childSession.workspaceId,
           );
       if (prepared.mode === 'strict' && prepared.requiresConsent) {
         const confirmed = await confirmDeepReviewLaunch(prepared.runManifest, {
@@ -656,8 +669,11 @@ export const ReviewActionBar: React.FC<ReviewActionBarProps> = ({ childSessionId
         reviewMode,
         error,
       });
-      const message = getReviewActionErrorMessage(error, t, t('deepReviewActionBar.actionStartFailed'));
-      notificationService.error(message, { duration: 5000 });
+      const message = normalizeActionErrorMessage(error);
+      notificationService.error(localizeActionError(error, t('deepReviewActionBar.reviewError')), {
+        duration: 5000,
+        metadata: { rawError: message },
+      });
     } finally {
       store.setActiveAction(null, undefined, childSessionId);
     }
@@ -665,6 +681,7 @@ export const ReviewActionBar: React.FC<ReviewActionBarProps> = ({ childSessionId
     childSession,
     childSessionId,
     confirmDeepReviewLaunch,
+    localizeActionError,
     parentSessionId,
     remediationModifiedFilePaths,
     remediationScopeRequiresWorkspaceFallback,
@@ -720,12 +737,15 @@ export const ReviewActionBar: React.FC<ReviewActionBarProps> = ({ childSessionId
       store.minimize(childSessionId);
     } catch (error) {
       log.error('Failed to start DeepReview retry coverage', { childSessionId, error });
-      const message = getReviewActionErrorMessage(error, t, t('deepReviewActionBar.retryIncompleteFailed'));
-      notificationService.error(message, { duration: 5000 });
+      const message = normalizeActionErrorMessage(error);
+      notificationService.error(localizeActionError(error, t('deepReviewActionBar.retryIncompleteFailed')), {
+        duration: 5000,
+        metadata: { rawError: message },
+      });
     } finally {
       store.setActiveAction(null, undefined, childSessionId);
     }
-  }, [childSessionId, retryableSlices, store, t]);
+  }, [childSessionId, retryableSlices, store, t, localizeActionError]);
 
   const handleFillBackInput = useCallback(async () => {
     if (!reviewData) return;
@@ -796,7 +816,7 @@ export const ReviewActionBar: React.FC<ReviewActionBarProps> = ({ childSessionId
       const message = t('deepReviewActionBar.resumeFailedMessage');
       store.updatePhase('resume_failed', message, childSessionId ?? undefined);
       store.restore(childSessionId ?? undefined);
-      notificationService.error(message, { duration: 5000 });
+      notificationService.error(message, { duration: 5000, metadata: { rawError: normalizeActionErrorMessage(error) } });
     } finally {
       store.setActiveAction(null, undefined, childSessionId ?? undefined);
     }
@@ -826,11 +846,7 @@ export const ReviewActionBar: React.FC<ReviewActionBarProps> = ({ childSessionId
     }
   }, []);
 
-  const displayErrorMessage = useMemo(() => {
-    if (!errorMessage) return null;
 
-    return getReviewActionErrorMessage(errorMessage, t, t('deepReviewActionBar.actionStartFailed'));
-  }, [errorMessage, t]);
 
   const handleCopyDiagnostics = useCallback(async () => {
     const detail = interruption?.errorDetail;
@@ -914,8 +930,8 @@ export const ReviewActionBar: React.FC<ReviewActionBarProps> = ({ childSessionId
 
   return (
     <div
-      data-openbitfun-component="deep-review-action-bar"
-      data-openbitfun-part="root"
+      data-openbitfun-product-component="deep-review-action-bar"
+      data-openbitfun-product-part="root"
       data-openbitfun-phase={phase}
       data-openbitfun-variant={phaseConfig.variant}
       className={`deep-review-action-bar deep-review-action-bar--${phaseConfig.variant}`}
@@ -923,11 +939,16 @@ export const ReviewActionBar: React.FC<ReviewActionBarProps> = ({ childSessionId
       onTouchMove={stopNestedScrollPropagation}
     >
       <ReviewActionHeader
+        isReviewRunning={phase === 'review_running'}
         reviewData={reviewData}
         PhaseIcon={PhaseIcon}
         phaseIconClass={phaseConfig.iconClass}
         phaseTitle={phaseTitle}
-        errorMessage={displayErrorMessage}
+        errorMessage={errorMessage}
+        errorSummary={errorMessage
+          ? localizeActionError(errorMessage, phaseTitle)
+          : undefined}
+        errorDetailsLabel={t('deepReviewActionBar.diagnosticsTechnicalDetails')}
         minimizeLabel={t('deepReviewActionBar.minimize')}
         onMinimize={handleMinimize}
       />
@@ -937,8 +958,8 @@ export const ReviewActionBar: React.FC<ReviewActionBarProps> = ({ childSessionId
           className="deep-review-action-bar__progress"
           role="status"
           aria-live="polite"
-          data-openbitfun-component="deep-review-action-bar"
-          data-openbitfun-part="progress"
+          data-openbitfun-product-component="deep-review-action-bar"
+          data-openbitfun-product-part="progress"
         >
           <span className="deep-review-action-bar__progress-text">
             {t('deepReviewActionBar.managedCoverageProgress', {
@@ -959,7 +980,7 @@ export const ReviewActionBar: React.FC<ReviewActionBarProps> = ({ childSessionId
 
       {/* Running progress */}
       {(['review_running', 'fix_running', 'resume_running'].includes(phase)) && progressSummary && (
-        <div className="deep-review-action-bar__progress" data-openbitfun-component="deep-review-action-bar" data-openbitfun-part="progress">
+        <div className="deep-review-action-bar__progress" data-openbitfun-product-component="deep-review-action-bar" data-openbitfun-product-part="progress">
           <span className="deep-review-action-bar__progress-text">
             {progressText}
           </span>
@@ -1009,8 +1030,8 @@ export const ReviewActionBar: React.FC<ReviewActionBarProps> = ({ childSessionId
       {showInterruptionDetails && errorAttribution && (
         <div
           className={`deep-review-action-bar__attribution deep-review-action-bar__attribution--${errorAttribution.severity}`}
-          data-openbitfun-component="deep-review-action-bar"
-          data-openbitfun-part="attribution"
+          data-openbitfun-product-component="deep-review-action-bar"
+          data-openbitfun-product-part="attribution"
           role="status"
           aria-live="polite"
         >
@@ -1027,7 +1048,7 @@ export const ReviewActionBar: React.FC<ReviewActionBarProps> = ({ childSessionId
 
       {/* Context overflow degradation options */}
       {showInterruptionDetails && interruption?.errorDetail?.category === 'context_overflow' && (
-        <div className="deep-review-action-bar__degradation" data-openbitfun-component="deep-review-action-bar" data-openbitfun-part="degradation">
+        <div className="deep-review-action-bar__degradation" data-openbitfun-product-component="deep-review-action-bar" data-openbitfun-product-part="degradation">
           <span className="deep-review-action-bar__degradation-title">
             {t('deepReviewActionBar.contextOverflowTitle')}
           </span>
@@ -1036,8 +1057,8 @@ export const ReviewActionBar: React.FC<ReviewActionBarProps> = ({ childSessionId
               key={option.type}
               type="button"
               className="deep-review-action-bar__degradation-option"
-              data-openbitfun-component="deep-review-action-bar"
-              data-openbitfun-part="degradationOption"
+              data-openbitfun-product-component="deep-review-action-bar"
+              data-openbitfun-product-part="degradationOption"
               disabled={!option.enabled}
               onClick={() => handleDegradationAction(option.type)}
             >
@@ -1093,7 +1114,7 @@ export const ReviewActionBar: React.FC<ReviewActionBarProps> = ({ childSessionId
 
       {/* Friendly message when review completed with no remediation items */}
       {phase === 'review_completed' && remediationItems.length === 0 && (
-        <div className="deep-review-action-bar__no-issues" data-openbitfun-component="deep-review-action-bar" data-openbitfun-part="noIssues">
+        <div className="deep-review-action-bar__no-issues" data-openbitfun-product-component="deep-review-action-bar" data-openbitfun-product-part="noIssues">
           <Icon name="check-circle" size="lg" style={{ width: 18, height: 18 }} className="deep-review-action-bar__no-issues-icon" />
           <span className="deep-review-action-bar__no-issues-text">
             {t('reviewActionBar.noIssuesFound')}
@@ -1103,7 +1124,7 @@ export const ReviewActionBar: React.FC<ReviewActionBarProps> = ({ childSessionId
 
       {/* Fix completed — show success message */}
       {phase === 'fix_completed' && (
-        <div className="deep-review-action-bar__fix-done" data-openbitfun-component="deep-review-action-bar" data-openbitfun-part="fixDone">
+        <div className="deep-review-action-bar__fix-done" data-openbitfun-product-component="deep-review-action-bar" data-openbitfun-product-part="fixDone">
           <Icon name="check-circle" size="md" className="deep-review-action-bar__fix-done-icon" />
           <span className="deep-review-action-bar__fix-done-text">
             {t('deepReviewActionBar.fixCompletedMessage')}
@@ -1115,8 +1136,8 @@ export const ReviewActionBar: React.FC<ReviewActionBarProps> = ({ childSessionId
       {phase === 'review_completed' && remediationItems.length > 0 && !pendingDecisionAction && (
         <div
           className="deep-review-action-bar__custom"
-          data-openbitfun-component="deep-review-action-bar"
-          data-openbitfun-part="custom"
+          data-openbitfun-product-component="deep-review-action-bar"
+          data-openbitfun-product-part="custom"
           data-openbitfun-state={showCustomInput ? 'expanded' : undefined}
         >
           <button
@@ -1132,10 +1153,10 @@ export const ReviewActionBar: React.FC<ReviewActionBarProps> = ({ childSessionId
             </span>
           </button>
           {showCustomInput && (
-            <textarea
+            <Textarea
               className="deep-review-action-bar__custom-textarea"
-              data-openbitfun-component="deep-review-action-bar"
-              data-openbitfun-part="customInput"
+              data-openbitfun-product-component="deep-review-action-bar"
+              data-openbitfun-product-part="customInput"
               placeholder={t('deepReviewActionBar.customInstructionsPlaceholder')}
               value={customInstructions}
               onChange={(e) => store.setCustomInstructions(e.target.value, childSessionId ?? undefined)}

@@ -55,8 +55,8 @@
     "modeCoder": "Coder",
     "switchToCowork": "切换到 Cowork 模式",
     "switchToCoder": "切换到 Coder 模式",
-    "hideAgentic": "隐藏 Agent",
-    "activateAgentic": "激活 Agent",
+    "hideAgentic": "隐藏智能体",
+    "activateAgentic": "激活智能体",
     "switchWorkspace": "切换工作区",
     "recentWorkspaces": "最近项目",
     "noRecentWorkspaces": "暂无最近项目",
@@ -93,7 +93,7 @@
       "persona": "智能成员 — 展开查看基于角色和记忆的成员会话",
       "todos": "任务看板 — 管理全部任务",
       "longTermTracking": "长期跟踪 — 持续任务与长期对话",
-      "agents": "它能调用哪些 Agent",
+      "agents": "它能调用哪些智能体",
       "skills": "它懂什么专项知识 — 技能知识文件",
       "ecosystemCompatibility": "生态兼容 — 管理其他 AI 应用的兼容能力与扩展",
       "ecosystemCompatibilityUnseen": "生态兼容 — 发现了新的兼容应用",
@@ -228,7 +228,7 @@
       "unavailable": "无法获取终端状态，请重试",
       "actionFailed": "终端操作失败：{{error}}",
       "manual": "我的",
-      "agent": "Agent",
+      "agent": "智能体",
       "status": {
         "running": "$t(shared:statuses.running)",
         "saved": "已保存",
@@ -243,10 +243,10 @@
       "title": "Shell",
       "views": {
         "manual": "我的",
-        "agent": "Agent"
+        "agent": "智能体"
       },
       "actions": {
-        "newTerminal": "新建终端",
+        "newTerminal": "新建终端会话",
         "refresh": "刷新"
       },
       "context": {
@@ -266,7 +266,7 @@
       "empty": {
         "all": "暂无终端",
         "manual": "还没有用户终端",
-        "agent": "还没有 Agent 终端",
+        "agent": "还没有智能体终端",
         "quickNew": "快速新建"
       }
     },
@@ -349,7 +349,7 @@
         "source": {
           "label": "来源",
           "openbitfun": "$t(shared:product.name)",
-          "external": "外部 Agent"
+          "external": "外部智能体"
         },
         "archived": "归档会话",
         "collapseAll": "全部折叠",
@@ -381,6 +381,9 @@
       "parentSession": "父会话",
       "childSourceWithoutTurn": "来自 {{parentTitle}}",
       "childSourceWithTurn": "来自 {{parentTitle}} · 第 {{turnIndex}} 轮",
+      "worktreeTooltip": "正在隔离的 worktree 中执行：{{path}}",
+      "openWorktreeWorkspace": "打开 worktree 工作区",
+      "openWorktreeWorkspaceFailed": "无法将 worktree 目录作为工作区打开。",
       "reviewRunning": "审核中",
       "deepReviewRunning": "审核中",
       "unreadCompleted": "已完成 — 未读",
@@ -406,7 +409,7 @@
       "ariaInputResolved": "会话已不再等待输入",
       "ariaInputResolvedRemaining": "会话 '{{name}}' 已收到输入。还有 {{count}} 个会话等待中。",
       "badgeBackgroundSubagents": "后台 {{count}}",
-      "backgroundSubagentsRunning": "{{count}} 个后台子 Agent 运行中",
+      "backgroundSubagentsRunning": "{{count}} 个后台子智能体运行中",
       "needProjectWorkspaceForSession": "请先打开或添加项目工作区，再新建项目会话。",
       "manage": "批量管理会话",
       "batchManageDescription": "选择此工作区中的会话，然后批量归档或删除。",
@@ -457,6 +460,7 @@
       "title": "定时任务",
       "open": "定时任务",
       "shortLabel": "定时任务",
+      "badgeTooltip": "{{count}} 个定时任务",
       "listTitle": "任务列表",
       "assistantFallback": "当前助理",
       "loading": "正在加载定时任务...",
@@ -465,7 +469,7 @@
       "fields": {
         "workspacePath": "工作区路径",
         "session": "会话",
-        "agentType": "Agent 类型",
+        "agentType": "智能体类型",
         "name": "任务名称",
         "enabled": "启用状态",
         "enabledHint": "启用该任务",
@@ -485,7 +489,7 @@
         "name": "例如：每日全球新闻简报",
         "anchorMs": "留空则使用创建时刻",
         "timezone": "例如：Asia/Shanghai",
-        "prompt": "请输入定时触发时发送给 Agent 的内容"
+        "prompt": "请输入定时触发时发送给智能体的内容"
       },
       "hints": {
         "cronExpr": "Cron 格式：分 时 日 月 周，例如 0 8 * * * 表示每天 08:00。"
@@ -505,8 +509,7 @@
         }
       },
       "targets": {
-        "session": "会话",
-        "newSession": "新会话"
+        "session": "会话"
       },
       "status": {
         "idle": "待命",
@@ -535,6 +538,11 @@
         "title": "删除任务“{{name}}”？"
       },
       "messages": {
+        "reviewAvailable": "审查可用，打开查看",
+        "reviewFailedInspect": "审查失败，打开查看详情",
+        "reviewResultUnloaded": "审查已完成，打开加载结果",
+        "reviewResultUnavailable": "审查已完成，但结果不可用，打开查看详情",
+        "reviewError": "审查出错",
         "loadFailed": "加载定时任务失败：{{error}}",
         "saveFailed": "保存定时任务失败：{{error}}",
         "updateFailed": "更新定时任务失败：{{error}}",
@@ -665,7 +673,7 @@
     "agents": {
       "allAgents": "全部子智能体",
       "newAgent": "新建子智能体",
-      "agentsOverview": "Agent 总览"
+      "agentsOverview": "智能体总览"
     },
     "skills": {
       "allSkills": "全部技能",
@@ -720,6 +728,9 @@
     "errorCreateFailed": "创建工作区失败"
   },
   "peerConnection": {
+    "reconnectingShort": "正在重连…",
+    "returnLocalShort": "返回本机",
+    "returningShort": "正在返回…",
     "reconnecting": "正在重新连接「{{name}}」。内容可能暂未更新。"
   },
   "peerDirectoryPicker": {
@@ -736,6 +747,10 @@
     "select": "选择此目录"
   },
   "deviceOverview": {
+    "devicesAndConnections": "设备与连接",
+    "connectDevice": "连接该设备",
+    "previousDevice": "上一台设备",
+    "nextDevice": "下一台设备",
     "title": "设备状态",
     "thisDevice": "这台设备",
     "thisWindows": "这台 Windows",
@@ -752,6 +767,7 @@
     "footerDistributedExecution": "{{count}} 台设备正在执行",
     "current": "当前",
     "currentUse": "当前使用",
+    "currentLocalDevice": "当前本地设备",
     "controlling": "正在控制",
     "executingTasks": "{{count}} 个任务",
     "connectedDevices": "协同设备",
@@ -779,11 +795,22 @@
     "backupFailed": "加密备份 · 同步遇到问题",
     "statusUnavailable": "其他设备状态暂不可用，本机工作不受影响",
     "connectOtherDevices": "连接其他设备",
-    "backToThisDevice": "返回这台设备",
-    "returningToThisDevice": "正在返回这台设备…",
-    "returnedToThisDevice": "已返回这台设备"
+    "backToThisDevice": "返回本地设备",
+    "returningToThisDevice": "正在返回本地设备…",
+    "returnedToThisDevice": "已返回本地设备",
+    "deviceClientIncompatible": "客户端版本不兼容，无法互控。",
+    "deviceClientIncompatibleWithVersion": "客户端版本不兼容（{{version}}），无法互控。"
   },
   "accountLogin": {
+    "deviceAlias": "设备别名",
+    "deviceAliasPlaceholder": "可选显示名称（留空恢复技术名称）",
+    "editDeviceAlias": "编辑名称",
+    "saveDeviceAlias": "保存名称",
+    "deviceAliasUpdated": "设备名称已更新",
+    "deviceAliasUnsupported": "当前主机或 Relay 不支持设备别名，请升级后重试。",
+    "deviceClientIncompatible": "该设备运行的客户端版本与本机不兼容，无法互控。",
+    "deviceClientIncompatibleWithVersion": "该设备运行的 OpenBitFun {{version}} 与本机不兼容，无法互控。",
+    "deviceClientIncompatibleTag": "客户端不兼容",
     "signedInAccount": "已登录账号",
     "username": "用户名",
     "password": "密码",
@@ -791,7 +818,7 @@
     "usernamePlaceholder": "请输入用户名",
     "passwordPlaceholder": "请输入密码",
     "authServerPlaceholder": "https://auth.example.com",
-    "login": "使用 GitHub 登录",
+    "login": "使用邮箱或 GitHub 登录",
     "cancel": "取消",
     "emptyFields": "请填写所有字段",
     "invalidCredentialsLength": "用户名或密码过长",
@@ -799,7 +826,7 @@
     "insecureServerTitle": "服务器连接未加密",
     "insecureServerConfirm": "此服务器使用未加密的 HTTP，网络攻击者可能截获登录会话。仍要继续吗？",
     "continueInsecure": "仍要继续",
-    "securityNote": "在浏览器中通过 GitHub 授权 OpenBitFun。设备间消息使用端到端加密。",
+    "securityNote": "在浏览器中通过 OpenBitFun 授权 OpenBitFun。设备间消息使用端到端加密。",
     "showPassword": "显示密码",
     "hidePassword": "隐藏密码",
     "loginSuccess": "登录成功：{{user_id}}",
@@ -854,8 +881,12 @@
     "noCurrentWorkspace": "该设备当前没有打开的工作区，请选择最近工作区或新建",
     "noSessions": "当前工作区暂无会话",
     "sessionExpired": "登录已失效，请重新登录",
-    "relayUnreachable": "无法连接中继服务。请检查服务地址与网络，或退出登录后重试。",
     "retryConnect": "重试连接",
+    "relayFailureNetwork": "无法连接中继服务，请检查网络后重试。",
+    "relayFailureUnavailable": "中继服务暂时不可用，请稍后重试。",
+    "relayFailureVersionRetired": "当前中继版本已停用，请更新 OpenBitFun 后重新登录。",
+    "relayFailureClientOutdated": "当前 OpenBitFun 版本过低，无法使用中继或互控，请更新 OpenBitFun。",
+    "relayFailureUnknown": "中继拒绝了连接，请检查网络或更新 OpenBitFun 后重试。",
     "enteredPeerMode": "已连接到远程设备：{{name}}",
     "peerRemoteLabel": "{{name}}",
     "peerRemoteBadgeTitle": "远程设备：{{name}}",
@@ -886,6 +917,7 @@
     "syncPhaseExportingSessions": "正在备份会话 {{current}}/{{total}}",
     "copyServerUrl": "复制服务器地址",
     "copyServerFailed": "无法复制服务器地址，请检查剪贴板权限后重试。",
+    "reopen": "重新打开登录页",
     "loginValueProp": "登录以关联你的多台设备，并互相远程控制。",
     "linkedDevices": "已关联设备"
   },
@@ -989,12 +1021,12 @@
     "centerTitle": "设备与连接",
     "overviewIntro": "管理你的设备，以及接入当前工作区的连接。",
     "myDevicesTitle": "我的设备",
-    "accountDevicesTitle": "GitHub 账号与设备",
+    "accountDevicesTitle": "OpenBitFun 账号与设备",
     "myDevicesDescription": "连接在线设备，远程操作对端的 OpenBitFun。",
     "accountSignedIn": "已登录",
     "accountSignedOut": "未登录",
     "connectThisDeviceTitle": "连接这台设备",
-    "connectThisDeviceDescription": "使用同一 GitHub 账号登录后连接",
+    "connectThisDeviceDescription": "使用同一 OpenBitFun 账号登录后连接",
     "mobileBrowserTitle": "手机或浏览器",
     "mobileBrowserDescription": "在手机或浏览器中下发任务。",
     "chatAppsTitle": "聊天应用",
@@ -1010,7 +1042,7 @@
     "connecting": "连接中...",
     "disconnect": "断开连接",
     "cancel": "取消",
-    "scanHint": "扫描二维码后，使用同一 GitHub 账号登录。",
+    "scanHint": "扫描二维码后，使用同一 OpenBitFun 账号登录。",
     "botHint": "将配对码发送给机器人完成配对",
     "connectedHint": "移动设备已连接，可以关闭此对话框",
     "connectedUserId": "用户 ID",
@@ -1079,13 +1111,13 @@
     "disclaimerKeyRisks": "核心风险",
     "disclaimerFullDetails": "查看完整的安全、隐私、网络与合规说明",
     "disclaimerItemGeneralRisk": "远程操作与任务执行可能读取或修改所选设备和工作区中的文件、运行命令。请核对目标与权限；错误操作、功能缺陷或连接异常可能造成数据丢失等损失。",
-    "disclaimerItemSecurity": "设备、手机和浏览器通过同一 GitHub 账号连接；聊天应用通过各自的授权与配对流程接入。请只在可信设备上登录，并仅向可信人员开放控制权限。",
+    "disclaimerItemSecurity": "设备、手机和浏览器通过同一 OpenBitFun 账号连接；聊天应用通过各自的授权与配对流程接入。请只在可信设备上登录，并仅向可信人员开放控制权限。",
     "disclaimerItemEncryption": "通过官方中继或局域网中继传输的设备间控制消息与任务数据采用端到端加密。账号标识、设备名称、在线状态和连接地址等元数据不属于消息密文；聊天应用通道也不受这层端到端加密保护。",
     "disclaimerItemOpenSource": "OpenBitFun 远程连接的加密实现完全开源，你可以自行审计源码以验证安全性。",
     "disclaimerItemPrivacy": "任务内容、附件和执行结果可能包含敏感信息，并显示在连接端或聊天记录中。执行设备的日志、浏览器以及接入的第三方服务也可能保留相关数据，请按需控制发送内容与访问权限。",
     "disclaimerItemDataUsage": "OpenBitFun 不会将你的远程连接业务内容用于训练或商业化使用；你选择接入的模型服务和聊天平台（如飞书、Telegram、微信）可能按各自条款处理数据。",
-    "disclaimerItemCredentials": "请妥善保护 GitHub 账号、各设备与浏览器的登录凭证，以及聊天应用的 Token、App Secret 等接入凭证。凭证泄露或设备失窃可能导致他人下发任务或访问数据。",
-    "disclaimerItemQrCode": "连接二维码和链接包含中继地址与目标设备标识，打开后仍需使用同一 GitHub 账号登录。请避免向无关人员传播，并在登录和连接前核对地址与目标设备。",
+    "disclaimerItemCredentials": "请妥善保护 OpenBitFun 账号、各设备与浏览器的登录凭证，以及聊天应用的 Token、App Secret 等接入凭证。凭证泄露或设备失窃可能导致他人下发任务或访问数据。",
+    "disclaimerItemQrCode": "连接二维码和链接包含中继地址与目标设备标识，打开后仍需使用同一 OpenBitFun 账号登录。请避免向无关人员传播，并在登录和连接前核对地址与目标设备。",
     "disclaimerItemRelay": "官方中继与局域网中继用于连接和转发消息，不代替执行设备运行任务。执行设备需要保持在线；关闭连接窗口或取消邀请不会自动断开已建立的账号连接，请在连接管理中主动断开。",
     "disclaimerItemNetwork": "局域网连接需要设备之间能够互相访问；路由器隔离、防火墙和代理设置可能阻止连接。官方中继还依赖互联网与服务可用性，网络变化可能造成中断或延迟。",
     "disclaimerItemBot": "聊天应用配对码用于建立与执行设备的连接，配对后可通过聊天应用下发任务。请勿向无关人员泄露配对码，并注意聊天账号、群组成员及平台权限设置。",
@@ -1106,7 +1138,7 @@
     "copyCommit": "复制提交哈希",
     "dialogTitle": "关于 OpenBitFun",
     "brandStatement": "AGENTS\nFOR A MORE\nOPEN WORLD",
-    "tagline": "智能体运行环境 · Agent Runtime",
+    "tagline": "智能体运行环境",
     "details": "版本与构建信息",
     "version": "版本 {{version}}",
     "versionLabel": "版本",
@@ -1149,13 +1181,13 @@
     "installWarning": "安装将重启本设备上的 OpenBitFun，并中断此设备上的活动会话。",
     "installAndRestart": "安装并重启",
     "installing": "正在安装…",
-    "deferredMessage": "更新已保留，可随时前往「关于」点击「安装并重启」。",
+    "deferredMessage": "更新已保留，可随时点击左下角的对勾安装并重启。",
     "downloadAgain": "重新下载",
     "installedMessage": "更新已安装。重启 OpenBitFun 后即可使用新版本。",
     "progressPercent": "{{percent}}%",
     "progressUnknown": "正在下载…",
     "backgroundDownloading": "正在后台下载",
-    "backgroundDownloadHint": "下载完成后会询问是否安装并重启，期间可以继续使用 OpenBitFun。",
+    "backgroundDownloadHint": "下载期间可以继续使用 OpenBitFun，安装并重启需要你的确认。",
     "restartHint": "安装完成后需要重启应用。",
     "restartNow": "立即重启",
     "restartLater": "稍后",
@@ -1167,8 +1199,25 @@
       "noUpdateAvailable": "当前没有可用的更新包，请稍后再试。",
       "notFound": "服务器上未找到更新信息，发布可能尚未完成。",
       "tls": "无法与更新服务器建立安全连接。",
-      "generic": "更新失败：{{detail}}"
-    }
+      "generic": "更新失败：{{detail}}",
+      "versionChanged": "可用版本已变化，请重新检查更新并查看新版本后下载。",
+      "installMetadata": "更新包已保留，请联网后重试安装。"
+    },
+    "availableVersion": "发现新版本 {{version}}",
+    "downloadUpdate": "下载更新",
+    "releaseTitle": "{{name}} v{{version}}",
+    "openReleaseNotes": "{{title}}，查看更新说明",
+    "noticeReady": "更新已下载",
+    "downloadProgress": "正在下载更新 · {{percent}}%",
+    "openDownloadDetails": "{{status}}，查看更新详情",
+    "readyHint": "更新已下载。你可以继续工作，准备好后再安装并重启。",
+    "moreAttention": "更多，有更新待处理",
+    "detailsTitle": "应用更新",
+    "retryDownload": "重试下载",
+    "skippedVersion": "已跳过版本 {{version}}",
+    "restoreReminder": "恢复提醒",
+    "lastChecked": "上次检查：{{time}}",
+    "thisDevice": "本设备的应用更新"
   },
   "actions": {
     "confirm": "确认",
@@ -1570,7 +1619,7 @@
       },
       "team": {
         "title": "你的 AI 团队",
-        "description": "为不同场景配置 Code、Cowork 和更多 Agent，让它们分工协作，完成复杂任务。"
+        "description": "为不同场景配置 Code、Cowork 和更多智能体，让它们分工协作，完成复杂任务。"
       },
       "assistant": {
         "title": "助理会持续成长",
@@ -1732,8 +1781,8 @@
       "containerShell": "容器 Shell",
       "containerUser": "容器用户",
       "optional": "可选",
-      "remoteDockerHint": "先通过 SSH 到达 Docker 宿主；终端、Agent 命令与工作区文件操作随后都在该容器内执行。",
-      "localDockerHint": "使用本机 Docker CLI；终端、Agent 命令与工作区文件操作都在该容器内执行。",
+      "remoteDockerHint": "先通过 SSH 到达 Docker 宿主；终端、智能体命令与工作区文件操作随后都在该容器内执行。",
+      "localDockerHint": "使用本机 Docker CLI；终端、智能体命令与工作区文件操作都在该容器内执行。",
       "containerSshdHint": "上方主机、端口、用户和认证信息需直接指向容器内的 sshd。",
       "host": "主机地址",
       "port": "端口",
@@ -1744,7 +1793,7 @@
       "authMethod": "认证方式",
       "password": "密码",
       "privateKey": "私钥",
-      "sshAgent": "SSH Agent",
+      "sshAgent": "SSH 密钥代理",
       "keyboardInteractive": "键盘交互认证",
       "privateKeyPath": "私钥文件路径",
       "certificatePath": "OpenSSH 证书",
@@ -1757,8 +1806,8 @@
       "passphraseOptional": "留空表示无密码短语",
       "showPassword": "显示密码",
       "hidePassword": "隐藏密码",
-      "agentFingerprint": "Agent 密钥指纹",
-      "agentFallbackKey": "Agent 不可用时的备用私钥",
+      "agentFingerprint": "密钥代理的密钥指纹",
+      "agentFallbackKey": "密钥代理不可用时的备用私钥",
       "challengePassword": "交互认证密码",
       "verificationCode": "验证码 / OTP",
       "challengeResponseRequired": "键盘交互认证至少需要一个应答",
@@ -1864,6 +1913,56 @@
       "minutesAgo": "{{count}} 分钟前",
       "hoursAgo": "{{count}} 小时前",
       "daysAgo": "{{count}} 天前"
+    },
+    "errors": {
+      "gitUnavailable": "Git 不可用。请在运行此工作区的环境中安装 Git 并将其加入 PATH，然后重试。",
+      "loadFailed": "加载拉取请求失败",
+      "invalidRepository": "无法读取此 Git 仓库，请检查工作区路径和访问权限。",
+      "repositoryUntrusted": "Git 尚未信任此仓库，请确认仓库所有权后重试。",
+      "remoteNotFound": "所选远程仓库已不存在，请刷新并重新选择。",
+      "unsupportedPlatform": "不支持此仓库提供方。",
+      "providerFailed": "仓库提供方无法完成请求，请重试或检查提供方服务。",
+      "authenticationRequired": "需要认证，请登录或更新令牌后重试。",
+      "permissionDenied": "访问被拒绝，请检查账号和令牌权限。",
+      "notFound": "未找到请求的仓库或条目，或当前账号无权访问。",
+      "networkFailed": "无法连接仓库提供方，请检查网络后重试。",
+      "invalidResponse": "仓库提供方返回了无法解析的响应。",
+      "staleTarget": "拉取请求已变化，请刷新后继续审查。",
+      "evidenceTooLarge": "提供方证据超出支持的大小，请缩小审查范围后重试。",
+      "targetIsPullRequest": "此条目是拉取请求，请按拉取请求打开，而不是按问题打开。"
+    },
+    "messages": {
+      "noWorkspace": "没有可用的活动工作区。",
+      "unsupportedLink": "此链接不是受支持的拉取请求链接。",
+      "detailsFailed": "加载拉取请求详情失败。",
+      "ciLogFailed": "加载 CI 错误日志失败。",
+      "chatRequired": "请先打开或创建会话，再发送拉取请求上下文。",
+      "reviewChatRequired": "请先打开或创建会话，再审查此拉取请求。",
+      "reviewUncertain": "审查已发起，但尚未确认启动结果。",
+      "reviewFailed": "启动拉取请求审查失败。",
+      "tokenRequired": "请输入令牌。",
+      "saveTokenFailed": "保存令牌失败。",
+      "clearTokenFailed": "清除令牌失败。",
+      "openAuthFailed": "打开 GitHub CLI 认证失败。",
+      "copyAuthFailed": "复制 GitHub CLI 登录命令失败。",
+      "unresolvedPullRequest": "无法从当前工作区的远程仓库中找到此拉取请求。",
+      "ghAuthRequired": "需要 GitHub CLI 认证",
+      "tokenRequiredTitle": "需要令牌",
+      "tokenScopeTitle": "需要令牌权限",
+      "tokenUpdateTitle": "需要更新令牌",
+      "headUnavailable": "无法获取 GitHub 拉取请求的源提交 SHA。",
+      "noActionsJob": "未找到与此检查匹配的 GitHub Actions 任务。",
+      "noActionsJobId": "匹配的 GitHub Actions 任务未提供任务 ID。",
+      "authError": "认证错误",
+      "reviewFailedInspect": "审查失败 · 打开以查看详情",
+      "reviewResultUnavailable": "审查已完成 · 结果不可用 · 打开以查看详情",
+      "reviewError": "审查错误"
+    },
+    "auth": {
+      "github": "请在工作区运行环境中完成 GitHub 认证后重试：{{command}}",
+      "missing": "请为 {{host}} 添加访问令牌以访问此仓库。",
+      "invalid": "{{host}} 的访问令牌被拒绝，请更新后重试。",
+      "insufficientScope": "{{host}} 的访问令牌权限不足，请更新后重试。"
     }
   },
   "dispatch": {
@@ -2084,5 +2183,19 @@
     "framework": {
       "chip": "认知框架 · {{count}} 个工具"
     }
+  },
+  "computerControl": {
+    "title": "应用控制",
+    "observe": "正在观察",
+    "background": "正在后台控制",
+    "foreground": "正在使用桌面输入控制",
+    "stopped": "控制已停止",
+    "unavailable": "暂时无法获取控制状态，仍可尝试停止。",
+    "previewAlt": "带有 Agent 指针的应用窗口画面",
+    "previewUnavailable": "暂时无法显示窗口预览。",
+    "showPreview": "显示预览",
+    "hidePreview": "收起预览",
+    "stop": "停止控制",
+    "stopping": "正在停止…"
   }
 }

@@ -10,6 +10,7 @@ import {
   AmbientToolCardHeader,
   CommandToolCard,
   ContextCompressionToolCard,
+  CronToolCard,
   DefaultToolCard,
   DirectoryListToolCard,
   FileDiffToolCard,
@@ -211,6 +212,17 @@ test("cancelled and rejected tool cards rely on status copy instead of a duplica
   assert.doesNotMatch(ambientMarkup, /data-openbitfun-part="statusLayer"|lucide-x/);
 });
 
+test("default tool cards do not render a text icon", () => {
+  const markup = renderToStaticMarkup(createElement(DefaultToolCard, {
+    displayName: "Custom tool",
+    toolName: "custom_tool",
+    icon: "TOOL",
+    status: "cancelled",
+    summary: "Cancelled",
+  }));
+  assert.doesNotMatch(markup, /TOOL|data-openbitfun-part="toolIconLayer"/);
+});
+
 test("file-operation failures stay collapsed and use the warning emphasis status icon", async () => {
   const createFailedCard = (isExpanded) => renderToStaticMarkup(
     createElement(FileOperationToolCard, {
@@ -293,7 +305,7 @@ test("FlowChat tool-card shells stay flat at rest and on hover", async () => {
   assert.doesNotMatch(styles, /box-shadow\s+var\(--_tool-card-transition\)/);
 });
 
-test("ambient tool-card summary geometry stays stable while details expand", async () => {
+test("expanded ambient headers match prominent cards while collapsed traces stay compact", async () => {
   const styles = await readFile(
     new URL("../src/flow-chat/tool-cards/FlowChatToolCard.module.css", import.meta.url),
     "utf8",
@@ -302,15 +314,77 @@ test("ambient tool-card summary geometry stays stable while details expand", asy
   const expandedAmbientSurfaceRule = styles.match(
     /\.ambientExpandedShell \.ambientSurface\s*\{([^}]*)\}/s,
   )?.[1];
+  const prominentSummaryRule = styles.match(/\.prominentSummary\s*\{([^}]*)\}/s)?.[1];
+  const expandedIconRule = styles.match(
+    /\.ambientExpandedShell \.ambientSurface \.iconSlot\s*\{([^}]*)\}/s,
+  )?.[1];
 
   assert.ok(ambientSurfaceRule);
   assert.ok(expandedAmbientSurfaceRule);
+  assert.ok(prominentSummaryRule);
+  assert.ok(expandedIconRule);
   assert.match(
     ambientSurfaceRule,
     /min-block-size:\s*max\(1lh,\s*var\(--openbitfun-control-tool-card-ambient-row-min-block-size\)\)/,
   );
   assert.doesNotMatch(ambientSurfaceRule, /--openbitfun-control-height-sm/);
-  assert.doesNotMatch(expandedAmbientSurfaceRule, /min-block-size|padding/);
+  for (const property of ["min-block-size", "gap", "padding-block", "padding-inline", "line-height"]) {
+    const declaration = new RegExp(`${property}:\\s*([^;]+);`);
+    assert.equal(
+      expandedAmbientSurfaceRule.match(declaration)?.[1],
+      prominentSummaryRule.match(declaration)?.[1],
+      `expanded ambient ${property} must match the prominent header`,
+    );
+  }
+  assert.match(expandedIconRule, /--_tool-card-action-size:\s*var\(--openbitfun-space-6\)/);
+  assert.match(expandedIconRule, /--_flow-chat-tool-card-icon-size:\s*var\(--openbitfun-font-size-xl\)/);
+});
+
+test("prominent summary rows keep one symmetric inset and inert empty slots", async () => {
+  const styles = await readFile(
+    new URL("../src/flow-chat/tool-cards/FlowChatToolCard.module.css", import.meta.url),
+    "utf8",
+  );
+  const rootRule = styles.match(/\.prominentRoot,\s*\.ambientRoot\s*\{([^}]*)\}/s)?.[1];
+  const prominentSummaryRule = styles.match(/\.prominentSummary\s*\{([^}]*)\}/s)?.[1];
+  const expandedAmbientSurfaceRule = styles.match(
+    /\.ambientExpandedShell \.ambientSurface\s*\{([^}]*)\}/s,
+  )?.[1];
+  const actionRegionRule = styles.match(/\.actionRegion\s*\{\s*overflow:\s*hidden;([^}]*)\}/s)?.[1];
+  const revealedActionRegionRule = styles.match(
+    /\.prominentRoot\[data-actions-visible="true"\] \.actionRegion\s*\{([^}]*)\}/s,
+  )?.[1];
+
+  assert.ok(rootRule, "root token block");
+  assert.ok(prominentSummaryRule, "prominent summary rule");
+  assert.ok(expandedAmbientSurfaceRule, "expanded ambient surface rule");
+  assert.ok(actionRegionRule, "hidden action region rule");
+  assert.ok(revealedActionRegionRule, "revealed action region rule");
+
+  // A single inset owns both ends of the row, so trailing metadata (+N -N counts,
+  // status summaries) keeps the same distance to the card edge as the leading
+  // slot. Declaring a start/end pair here is what let the hidden action region
+  // pull that metadata onto the card edge.
+  assert.match(rootRule, /--_tool-card-summary-inset:\s*var\(--openbitfun-space-3\)/);
+  assert.match(prominentSummaryRule, /padding-inline:\s*var\(--_tool-card-summary-inset\);/);
+  assert.match(expandedAmbientSurfaceRule, /padding-inline:\s*var\(--_tool-card-summary-inset\);/);
+
+  // The hidden slot owns no row space and never claims the end inset; the
+  // revealed actions keep their own corner gutter (row inset minus one space
+  // step) and that gutter stays animated with the reveal.
+  assert.match(actionRegionRule, /margin-inline-end:\s*0;/);
+  assert.match(actionRegionRule, /transition:[\s\S]*margin-inline-end var\(--_tool-card-transition\)/);
+  assert.match(
+    revealedActionRegionRule,
+    /margin-inline-end:\s*calc\(-1 \* var\(--openbitfun-space-2\)\);/,
+  );
+
+  // A fragment whose conditions are all false still mounts the slot.
+  assert.match(styles, /\.extra:empty\s*\{[^}]*display:\s*none/);
+  assert.match(
+    styles,
+    /\.extra:empty \+ \.statusIcon\[data-divider="true"\]\s*\{[^}]*border-inline-start-width:\s*0/,
+  );
 });
 
 test("ambient tool-card collapse has no delayed shell state or layout-changing shell chrome", async () => {
@@ -521,7 +595,7 @@ test("standard FlowChat tool views publish their concrete component contracts", 
   assert.match(commandMarkup, /57 tests passed/);
   assert.match(deleteMarkup, /data-openbitfun-operation="delete"/);
   assert.match(deleteMarkup, /data-openbitfun-attention="ambient"/);
-  assert.match(deleteMarkup, /data-openbitfun-part="action">Delete file<\/span>/);
+  assert.match(deleteMarkup, /data-openbitfun-part="action"><span[^>]*data-overflow="false"[^>]*><span[^>]*data-overflow-content="">Delete file<\/span><\/span><\/span>/);
   assert.match(deleteMarkup, /data-openbitfun-part="content">/);
   assert.match(editMarkup, /data-openbitfun-operation="edit"/);
   assert.match(editMarkup, /data-openbitfun-attention="prominent"/);
@@ -559,6 +633,11 @@ test("every migrated FlowChat tool view publishes a stable concrete card identit
       status: "completed",
       summary: "Completed",
       toolName: "custom_tool",
+    })],
+    ["cron", createElement(CronToolCard, {
+      action: "Scheduled job:",
+      status: "completed",
+      summary: "Created scheduled job",
     })],
     ["directory-list", createElement(DirectoryListToolCard, {
       results: [{ key: "src", title: "src/" }],

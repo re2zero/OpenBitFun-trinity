@@ -1,3 +1,4 @@
+import { InteractionMailboxState } from '../../model/InteractionMailbox';
 import { MobileDesignTypography } from '../../generated/MobileDesignTokens';
 import { ConversationUiImage, ConversationUiMessage, ConversationUiMessageItem, ConversationUiQuestionAnswer, ConversationUiToolStatus } from '../state/ConversationUiModels';
 import { RemoteI18n } from '../../i18n/RemoteI18n';
@@ -46,6 +47,7 @@ export struct ChatUserMessageRow {
 @ReusableV2
 @ComponentV2
 export struct ChatMessageBubble {
+  @Param interactionMailbox: InteractionMailboxState = new InteractionMailboxState();
   @Param item: ConversationUiMessage = {
     id: '',
     role: 'assistant',
@@ -335,9 +337,11 @@ export struct ChatMessageBubble {
   }
 
   @Builder
-  SubagentGroup(entry: ConversationUiMessageItem, _path: string, activeScope: boolean = false) {
+  SubagentGroup(entry: ConversationUiMessageItem, path: string, activeScope: boolean = false) {
     SubagentTaskCard({
+      interactionMailbox: this.interactionMailbox,
       title: this.subagentTitle(entry),
+      path: path,
       status: entry.tool?.status || (activeScope ? 'running' : 'completed'),
       items: entry.subItems || [],
       renderRevision: this.renderRevision,
@@ -376,6 +380,7 @@ export struct ChatMessageBubble {
   @Builder
   Tools(tools: ConversationUiToolStatus[], thinkingParts: ActivityThinkingPart[] = []) {
     ToolStatusList({
+      interactionMailbox: this.interactionMailbox,
       tools,
       thinkingParts,
       renderRevision: this.renderRevision,

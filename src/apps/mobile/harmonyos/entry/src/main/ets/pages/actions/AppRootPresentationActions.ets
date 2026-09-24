@@ -1,3 +1,4 @@
+import { WorkspaceToolsIntent } from '../state/WorkspaceToolsState';
 import { RemotePermissionMode, RemoteSession } from '../../model/RemoteModels';
 import { CloudAccountDevice } from '../../services/CloudAccountClient';
 import { DetectedUrlAction } from '../../services/ConnectScanDecisionPolicy';
@@ -5,6 +6,7 @@ import { ConversationIntent } from './ConversationIntent';
 import { AppRoute } from '../navigation/AppRouteContract';
 
 export interface AppRootPresentationActions {
+  readonly onWorkspaceTools: (intent: WorkspaceToolsIntent) => void;
   readonly onNavigationBack: (route: AppRoute) => boolean;
   readonly onConversationIntent: (route: AppRoute, intent: ConversationIntent) => void;
   readonly onCloseSidebar: () => void;
@@ -26,6 +28,7 @@ export interface FilePreviewPresentationActions {
 }
 
 export interface RemoteHomePresentationActions {
+  readonly openMiniApps: () => void;
   readonly openSidebar: () => void;
   readonly connectWorkspace: () => void;
   readonly addConnection: () => void;
@@ -33,8 +36,8 @@ export interface RemoteHomePresentationActions {
   readonly refresh: () => void;
   readonly showWorkspaces: () => void;
   readonly showAssistants: () => void;
-  readonly selectWorkspace: (path: string, deviceId?: string) => void;
-  readonly selectAssistant: (path: string) => void;
+  readonly selectWorkspace: (path: string, deviceId?: string, connectionId?: string, sshHost?: string, workspaceId?: string) => void;
+  readonly selectAssistant: (path: string, workspaceId?: string) => void;
   readonly cancelWorkspace: () => void;
   readonly cancelAssistant: () => void;
   readonly queryChanged: (query: string) => void;
@@ -45,12 +48,12 @@ export interface RemoteHomePresentationActions {
   readonly clearPairing: () => void;
   readonly create: (agentType: string) => void;
   readonly createInPlace: (agentType: string) => void;
-  readonly createInWorkspace: (path: string, agentType: string, deviceId?: string) => void;
-  readonly createInWorkspaceInPlace: (path: string, agentType: string, deviceId?: string) => void;
+  readonly createInWorkspace: (path: string, agentType: string, deviceId?: string, connectionId?: string, sshHost?: string, workspaceId?: string) => void;
+  readonly createInWorkspaceInPlace: (path: string, agentType: string, deviceId?: string, connectionId?: string, sshHost?: string, workspaceId?: string) => void;
   readonly selectDirectoryDevice: (deviceId: string) => void;
   readonly addDirectoryWorkspace: (deviceId: string) => void;
   readonly retryDirectoryDevice: (deviceId: string) => void;
-  readonly loadWorkspaceSessions: (deviceId: string, path: string) => Promise<void>;
+  readonly loadWorkspaceSessions: (deviceId: string, path: string, remoteConnectionId?: string, remoteSshHost?: string, workspaceId?: string) => Promise<void>;
   readonly openSession: (session: RemoteSession) => void;
   readonly openSessionInPlace: (session: RemoteSession) => void;
   readonly deleteSession: (session: RemoteSession) => void;
@@ -64,8 +67,9 @@ export interface SidebarPresentationActions {
   readonly scanDesktop: () => void;
   /** Opens the QR scanner from the device-section add button. */
   readonly addDesktop: () => void;
-  /** Refreshes account device presence from the relay. */
+  /** Refreshes device presence and the disclosed workspace session lists. */
   readonly refreshDevices: () => Promise<void>;
+  readonly refreshSessions: () => Promise<void>;
   readonly settings: () => void;
   readonly openAccount: () => void;
   readonly openSession: (session: RemoteSession) => void;
@@ -106,12 +110,14 @@ export interface ConnectPresentationActions {
 
 export function emptyAppRootPresentationActions(): AppRootPresentationActions {
   return {
+    onWorkspaceTools: () => {},
     onNavigationBack: () => false,
     onConversationIntent: () => {},
     onCloseSidebar: () => {},
     onCompactLayoutEntered: () => {},
     onLayoutModeChanged: () => {},
     onRemoteHome: {
+      openMiniApps: () => {},
       openSidebar: () => {}, connectWorkspace: () => {}, addConnection: () => {}, openSettings: () => {},
       refresh: () => {}, showWorkspaces: () => {}, showAssistants: () => {}, selectWorkspace: () => {},
       selectAssistant: () => {}, cancelWorkspace: () => {}, cancelAssistant: () => {}, queryChanged: () => {},
@@ -123,7 +129,7 @@ export function emptyAppRootPresentationActions(): AppRootPresentationActions {
     },
     onSidebar: {
       close: () => {}, newChat: () => {}, enterCode: () => {}, scanDesktop: () => {}, addDesktop: () => {},
-      refreshDevices: async () => {}, settings: () => {}, openAccount: () => {},
+      refreshDevices: async () => {}, refreshSessions: async () => {}, settings: () => {}, openAccount: () => {},
       openSession: () => {}, deleteSession: () => {}
     },
     onSettings: {

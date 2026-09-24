@@ -29,6 +29,7 @@ test("registry exposes only the formal stable components", () => {
       "Combobox",
       "ConfirmDialog",
       "ContextCompressionToolCard",
+      "CronToolCard",
       "DefaultToolCard",
       "Disclosure",
       "Empty",
@@ -126,6 +127,7 @@ test("every registered component declares states and owned tokens", () => {
           token.startsWith("border.") ||
           token.startsWith("color.") ||
           (component.name === "Button" && token.startsWith("component.button.")) ||
+          (component.name === "Empty" && token.startsWith("component.empty.")) ||
           (component.name === "TabGroup" && [
             "component.button.outlineBorder",
             "component.button.outlineBorderInteractive",

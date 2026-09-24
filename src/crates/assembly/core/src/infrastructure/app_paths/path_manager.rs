@@ -320,6 +320,15 @@ impl PathManager {
         self.user_cron_dir().join("jobs.json")
     }
 
+    /// Lease file identifying the process that owns scheduled job scheduling.
+    ///
+    /// It sits beside `jobs.json` because it guards exactly that store: the
+    /// holder is the only process allowed to schedule jobs and write the file.
+    /// The file itself is inert — ownership is the OS lock on it.
+    pub fn cron_scheduler_lease_file(&self) -> PathBuf {
+        self.user_cron_dir().join("scheduler.lock")
+    }
+
     /// Get miniapps root directory: ~/.config/openbitfun/data/miniapps/
     pub fn miniapps_dir(&self) -> PathBuf {
         self.user_data_dir().join("miniapps")
@@ -573,7 +582,7 @@ impl Default for PathManager {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl PathManager {
     pub(crate) fn with_user_root_for_tests(user_root: PathBuf) -> Self {
         let base = user_root

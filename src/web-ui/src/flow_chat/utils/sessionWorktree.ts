@@ -1,6 +1,7 @@
 import type { Session } from '../types/flow-chat';
 import { isProjectedSessionEmpty } from './flowChatTurnIdentity';
-import { sessionProjectWorkspacePath } from './sessionWorkspace';
+import { isWorktreeIsolatedSession } from './sessionOrdering';
+import { sessionProjectWorkspaceId, sessionProjectWorkspacePath } from './sessionWorkspace';
 
 type SessionWorktreeFacts = Pick<
   Session,
@@ -11,6 +12,7 @@ type SessionWorktreeFacts = Pick<
   | 'turnCatalog'
   | 'workspaceId'
   | 'workspacePath'
+  | 'projectWorkspaceId'
   | 'projectWorkspacePath'
   | 'config'
 >;
@@ -39,8 +41,29 @@ export function isSessionWorktreeIsolationEnabled(
     ?? isSessionWorktreeMaterialized(session);
 }
 
+type SessionWorktreeRootFacts = Pick<
+  SessionWorktreeFacts,
+  'workspaceId' | 'projectWorkspaceId' | 'config' | 'workspacePath'
+>;
+
+/**
+ * Directory in which a worktree-isolated session actually runs, or `undefined`
+ * when the session runs in its project root.
+ *
+ * Every surface that starts work for the session (navigation badge, tooltip,
+ * terminal cwd) reads this one fact, so none of them can disagree about where
+ * the worktree is.
+ */
+export function sessionWorktreeRootPath(session: SessionWorktreeRootFacts): string | undefined {
+  if (!isWorktreeIsolatedSession(session)) return undefined;
+  const rootPath = (session.config.executionTarget?.rootPath ?? session.workspacePath ?? '').trim();
+  return rootPath || undefined;
+}
+
 export interface SessionWorktreeMaterializationPlan {
   enabled: boolean;
+  /** Owning project workspace ID; the path below is only the Git IO operand. */
+  projectWorkspaceId?: string;
   projectWorkspacePath: string;
 }
 
@@ -66,7 +89,12 @@ export function sessionWorktreeMaterializationPlan(
   if (!projectWorkspacePath) {
     throw new Error('Project workspace path is required to prepare worktree isolation');
   }
-  return { enabled: requested, projectWorkspacePath };
+  const projectWorkspaceId = sessionProjectWorkspaceId(session);
+  return {
+    enabled: requested,
+    ...(projectWorkspaceId ? { projectWorkspaceId } : {}),
+    projectWorkspacePath,
+  };
 }
 
 /**
@@ -82,6 +110,7 @@ export function sessionWorktreeBindingSubscriptionKey(session: SessionWorktreeFa
     session.turnCatalog?.totalTurnCount ?? '',
     session.workspaceId ?? '',
     session.workspacePath ?? '',
+    session.projectWorkspaceId ?? '',
     session.projectWorkspacePath ?? '',
     session.config.projectWorkspacePath ?? '',
     session.config.executionTarget?.kind ?? '',

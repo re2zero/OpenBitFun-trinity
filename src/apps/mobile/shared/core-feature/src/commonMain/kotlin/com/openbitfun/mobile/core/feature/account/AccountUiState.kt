@@ -23,7 +23,18 @@ public data class AccountDeviceUi public constructor(
     public val name: String,
     public val online: Boolean,
     public val lastSeenAt: Long?,
-)
+    /**
+     * Relay-computed: whether this desktop and this client run matching
+     * builds. `false` is confirmed incompatible and is never a control target;
+     * null is an older Relay that does not gate, "unknown but usable".
+     */
+    public val compatible: Boolean? = null,
+) {
+    public constructor(id: String, name: String, online: Boolean, lastSeenAt: Long?) : this(id, name, online, lastSeenAt, null)
+
+    /** The single gate every control entry point reuses; see [compatible]. */
+    public val controllable: Boolean get() = compatible != false
+}
 
 public sealed interface AccountUiState {
     public data object Idle : AccountUiState
@@ -59,6 +70,16 @@ public sealed interface AccountUiState {
         public val refreshFailure: AccountFailureReason?,
         public val avatarUrl: String?,
     ) : AccountUiState {
+        /** Preserve callers created before explicit Relay selection was added. */
+        public constructor(
+            userId: String,
+            username: String,
+            devices: List<AccountDeviceUi>,
+            selectedDeviceId: String?,
+            selectedDeviceName: String?,
+        ) : this(userId, AccountDefaults.CLOUD_RELAY_URL, username, devices,
+            selectedDeviceId, selectedDeviceName, false, null, null)
+
         public constructor(
             userId: String, relayUrl: String, username: String, devices: List<AccountDeviceUi>,
             selectedDeviceId: String?, selectedDeviceName: String?, refreshing: Boolean,
@@ -74,13 +95,6 @@ public sealed interface AccountUiState {
             selectedDeviceName: String?,
         ) : this(userId, relayUrl, username, devices, selectedDeviceId, selectedDeviceName, false, null)
 
-        public constructor(
-            userId: String,
-            username: String,
-            devices: List<AccountDeviceUi>,
-            selectedDeviceId: String?,
-            selectedDeviceName: String?,
-        ) : this(userId, username, com.openbitfun.mobile.core.transport.DEFAULT_CLOUD_RELAY_URL, devices, selectedDeviceId, selectedDeviceName)
     }
     public data class Failed public constructor(
         public val reason: AccountFailureReason,

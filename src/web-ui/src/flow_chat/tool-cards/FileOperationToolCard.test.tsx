@@ -786,7 +786,7 @@ describe('FileOperationToolCard', () => {
       );
     });
 
-    const contentRegion = container.querySelector('[data-openbitfun-part="content"]');
+    const contentRegion = container.querySelector('[data-openbitfun-component="flow-chat-tool-card"][data-openbitfun-part="content"]');
     const extraRegion = container.querySelector('[data-openbitfun-part="extra"]');
     const changeSummary = extraRegion?.querySelector('[data-openbitfun-part="changeSummary"]');
 
@@ -968,6 +968,71 @@ describe('FileOperationToolCard', () => {
 
     expect(container.textContent).toContain(
       'Use Read to load the current contents of src/main.rs before calling Edit on it.',
+    );
+    expect(container.querySelector('[data-openbitfun-part="error"] [data-guidance="true"]')).not.toBeNull();
+    expect(container.textContent).not.toContain('toolCards.file.guidanceTitle');
+    expect(container.querySelector('[data-openbitfun-icon="warning"]')).toBeNull();
+  });
+
+  it.each(['edit_no_change', 'edit_target_not_found', 'edit_target_ambiguous'])('renders structured %s quietly even when the outer status is completed', async (code) => {
+    const toolItem: FlowToolItem = {
+      id: 'tool-2',
+      type: 'tool',
+      toolName: 'Edit',
+      status: 'completed',
+      toolCall: {
+        id: 'call-2',
+        name: 'Edit',
+        input: {
+          file_path: 'src/main.rs',
+          old_string: 'foo',
+          new_string: 'bar',
+        },
+      },
+      toolResult: {
+        success: false,
+        result: { error_detail: { code, kind: 'guidance' } },
+        error:
+          'Edit inputs need correction.',
+      },
+    } as FlowToolItem;
+
+    const config: ToolCardConfig = {
+      toolName: 'Edit',
+      displayName: 'Edit',
+      icon: 'EDIT',
+      requiresConfirmation: false,
+      resultDisplayType: 'detailed',
+      description: 'Edit a file',
+      displayMode: 'standard',
+    };
+
+    await act(async () => {
+      root.render(
+        <FileOperationToolCard
+          toolItem={toolItem}
+          config={config}
+          sessionId="session-1"
+        />
+      );
+    });
+
+    expect(container.textContent).not.toContain('toolCards.file.guidanceHint');
+    expect(container.querySelector('[data-openbitfun-icon="warning"]')).toBeNull();
+    expect(container.textContent).not.toContain('toolCards.file.failed');
+    expect(container.textContent).toContain('main.rs');
+    expect(container.textContent).not.toContain(
+      'Edit inputs need correction.',
+    );
+    expect(container.querySelector('[data-openbitfun-part="error"]')).toBeNull();
+
+    await act(async () => {
+      container.querySelector('[data-openbitfun-part="affordanceButton"]')
+        ?.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain(
+      'Edit inputs need correction.',
     );
     expect(container.querySelector('[data-openbitfun-part="error"] [data-guidance="true"]')).not.toBeNull();
     expect(container.textContent).not.toContain('toolCards.file.guidanceTitle');

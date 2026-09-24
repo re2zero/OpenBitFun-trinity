@@ -1,3 +1,12 @@
+import {
+  Globe as LucideGlobe,
+  LayoutGrid as LucideLayoutGrid,
+  Moon as LucideMoon,
+  Sun as LucideSun,
+  X as LucideX,
+} from 'lucide-react';
+import { deviceDisplayName, type RelayDeviceInfo } from '../services/RelayHttpClient';
+import { isDeviceControllable } from '../services/accountDeviceSelection';
 import AccountAvatar from './AccountAvatar';
 import React from 'react';
 import {
@@ -9,13 +18,9 @@ import {
   MobileSheet,
 } from '@openbitfun/ui/mobile';
 import { useI18n } from '../i18n';
-import LanguageToggleButton from './LanguageToggleButton';
+import { MOBILE_LOCALES } from '../i18n/localeRegistry';
 
-interface SettingsDevice {
-  device_id: string;
-  device_name: string;
-  online: boolean;
-}
+type SettingsDevice = RelayDeviceInfo;
 
 interface CompactSettingsSheetProps {
   accountLabel: string | null;
@@ -25,18 +30,19 @@ interface CompactSettingsSheetProps {
   isDark: boolean;
   onClose: () => void;
   onDisconnectRequest: () => void;
+  onOpenDevices?: () => void;
   onSelectDevice: (device: SettingsDevice) => void;
   onToggleTheme: () => void;
   open: boolean;
-  renderDeviceIcon: (name: string) => React.ReactNode;
+  renderDeviceIcon: (device: SettingsDevice) => React.ReactNode;
   selectedDeviceId: string | null;
 }
 
 function ThemeToggleIcon({ isDark }: { isDark: boolean }) {
   return isDark ? (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" /></svg>
+    <LucideMoon width="20" height="20" stroke="currentColor" aria-hidden="true" />
   ) : (
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.93 4.93l1.42 1.42M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.42-1.41M17.66 6.34l1.41-1.41" /></svg>
+    <LucideSun width="20" height="20" stroke="currentColor" aria-hidden="true" />
   );
 }
 
@@ -48,18 +54,19 @@ export default function CompactSettingsSheet({
   isDark,
   onClose,
   onDisconnectRequest,
+  onOpenDevices,
   onSelectDevice,
   onToggleTheme,
   open,
   renderDeviceIcon,
   selectedDeviceId,
 }: CompactSettingsSheetProps) {
-  const { t } = useI18n();
+  const { t, language, setLanguage } = useI18n();
 
   return (
     <MobileSheet
       className="harmony-sidebar__settings-sheet"
-      headerAction={<MobileIconButton appearance="plain" onClick={onClose} aria-label={t('common.close')} icon={<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>} />}
+      headerAction={<MobileIconButton appearance="plain" onClick={onClose} aria-label={t('common.close')} icon={<LucideX width="20" height="20" stroke="currentColor" aria-hidden="true" />} />}
       onOpenChange={onClose}
       open={open}
       title={t('shared.features.settings')}
@@ -78,6 +85,12 @@ export default function CompactSettingsSheet({
           {accountLabel && <MobileBadge className="harmony-sidebar__verified" tone="success">{t('settings.signedIn')}</MobileBadge>}
         </MobileCard>
 
+        {onOpenDevices && (
+          <MobileButton appearance="plain" block onClick={onOpenDevices} aria-label={t('devices.title')}>
+            {t('devices.title')}
+          </MobileButton>
+        )}
+
         <h3>{t('settings.generalSection')}</h3>
         <MobileCard padding="none" className="harmony-sidebar__settings-card">
           <MobileButton appearance="plain" block className="harmony-sidebar__settings-row" role="switch" aria-checked={isDark} aria-label={t('settings.darkAppearance')} onClick={onToggleTheme}>
@@ -86,17 +99,29 @@ export default function CompactSettingsSheet({
             <small>{t(isDark ? 'settings.dark' : 'settings.light')}</small>
             <span className="harmony-sidebar__theme-switch" data-checked={isDark} aria-hidden="true" />
           </MobileButton>
-          <div className="harmony-sidebar__settings-row">
-            <span className="harmony-sidebar__settings-row-icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9" /><path d="M3.5 9h17M3.5 15h17M12 3c2.2 2.45 3.3 5.45 3.3 9S14.2 18.55 12 21M12 3C9.8 5.45 8.7 8.45 8.7 12s1.1 6.55 3.3 9" /></svg></span>
+          <div className="harmony-sidebar__settings-row harmony-sidebar__settings-row--language">
+            <span className="harmony-sidebar__settings-row-icon" aria-hidden="true"><LucideGlobe width="20" height="20" stroke="currentColor" aria-hidden="true" /></span>
             <span className="harmony-sidebar__settings-label">{t('settings.language')}</span>
-            <LanguageToggleButton className="harmony-sidebar__settings-language" />
+            <div className="harmony-sidebar__settings-languages" role="group" aria-label={t('settings.language')}>
+              {MOBILE_LOCALES.map((locale) => (
+                <MobileButton
+                  key={locale.id}
+                  appearance="plain"
+                  className="harmony-sidebar__settings-language"
+                  aria-pressed={language === locale.id}
+                  onClick={() => setLanguage(locale.id)}
+                >
+                  {locale.shortName}
+                </MobileButton>
+              ))}
+            </div>
           </div>
         </MobileCard>
 
         <h3>{t('settings.modelSection')}</h3>
         <MobileCard padding="none" className="harmony-sidebar__settings-card">
           <div className="harmony-sidebar__settings-row">
-            <span className="harmony-sidebar__settings-row-icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65"><rect x="3" y="3" width="7" height="7" rx="2" /><rect x="14" y="3" width="7" height="7" rx="2" /><rect x="3" y="14" width="7" height="7" rx="2" /><rect x="14" y="14" width="7" height="7" rx="2" /></svg></span>
+            <span className="harmony-sidebar__settings-row-icon" aria-hidden="true"><LucideLayoutGrid width="20" height="20" stroke="currentColor" aria-hidden="true" /></span>
             <span className="harmony-sidebar__settings-label">{t('settings.defaultModel')}</span>
             <small>{t('settings.followDesktop')}</small>
           </div>
@@ -106,17 +131,21 @@ export default function CompactSettingsSheet({
         <MobileCard padding="none" className="harmony-sidebar__settings-card harmony-sidebar__settings-card--devices">
           {devices.map((device) => {
             const current = device.device_id === selectedDeviceId;
+            // A confirmed-incompatible device stays listed but is never a target.
+            const controllable = isDeviceControllable(device);
             return (
               <MobileListRow
                 appearance="plain"
                 className={`harmony-sidebar__settings-device${current ? ' is-current' : ''}`}
-                disabled={!device.online}
+                disabled={!device.online || !controllable}
                 key={device.device_id}
-                label={device.device_name || device.device_id}
-                leading={<span className="harmony-sidebar__settings-device-icon">{renderDeviceIcon(device.device_name || device.device_id)}</span>}
+                label={deviceDisplayName(device)}
+                leading={<span className="harmony-sidebar__settings-device-icon">{renderDeviceIcon(device)}</span>}
                 onClick={() => onSelectDevice(device)}
                 selected={current}
-                supportingText={current ? t('settings.currentDevice') : device.online ? t('devices.online') : t('devices.offline')}
+                supportingText={!controllable
+                  ? t('devices.clientIncompatible')
+                  : current ? t('settings.currentDevice') : device.online ? t('devices.online') : t('devices.offline')}
                 trailing={<span className={`harmony-sidebar__status${device.online ? ' is-online' : ''}`} />}
               />
             );

@@ -18,6 +18,13 @@ class ConversationScrollPolicyTest {
     }
 
     @Test
+    fun aDragTakesOverBeforeTheFirstMovementAwayFromTheTail() {
+        assertFalse(ConversationScrollPolicy.shouldStickToBottom(
+            currentlySticking = true, isAtBottom = true, isScrollInProgress = true,
+        ))
+    }
+
+    @Test
     fun stopsStickingWhenReaderLeavesTail() {
         assertFalse(
             ConversationScrollPolicy.shouldStickToBottom(
@@ -50,10 +57,10 @@ class ConversationScrollPolicyTest {
     }
 
     @Test
-    fun lastItemIndexAccountsForTheLoadOlderHeader() {
-        org.junit.Assert.assertEquals(2, ConversationScrollPolicy.lastItemIndex(rowCount = 3, hasMoreMessages = false))
-        org.junit.Assert.assertEquals(3, ConversationScrollPolicy.lastItemIndex(rowCount = 3, hasMoreMessages = true))
-        org.junit.Assert.assertEquals(0, ConversationScrollPolicy.lastItemIndex(rowCount = 0, hasMoreMessages = false))
-        org.junit.Assert.assertEquals(0, ConversationScrollPolicy.lastItemIndex(rowCount = 0, hasMoreMessages = true))
+    fun lastItemIndexAccountsForTheLeadingHeader() {
+        org.junit.Assert.assertEquals(2, ConversationScrollPolicy.lastItemIndex(rowCount = 3, hasLeadingItem = false))
+        org.junit.Assert.assertEquals(3, ConversationScrollPolicy.lastItemIndex(rowCount = 3, hasLeadingItem = true))
+        org.junit.Assert.assertEquals(0, ConversationScrollPolicy.lastItemIndex(rowCount = 0, hasLeadingItem = false))
+        org.junit.Assert.assertEquals(0, ConversationScrollPolicy.lastItemIndex(rowCount = 0, hasLeadingItem = true))
     }
 }

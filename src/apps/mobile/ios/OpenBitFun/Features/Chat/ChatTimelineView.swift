@@ -1,31 +1,84 @@
 import Foundation
+import OSLog
 import OpenBitFunMobileCore
 import SwiftUI
 import UIKit
 
+private let timelinePerfLog = Logger(
+    subsystem: "com.openbitfun.mobile.ios",
+    category: "performance"
+)
+
 struct ChatTimelineView: View {
     @ObservedObject var model: MobileAppModel
-    @State private var userScrolledUp = false
+    var onLoadOlderMessages: (() -> Void)? = nil
+    /// Height of the floating bottom layer, so the jump-to-bottom button rides
+    /// above the composer instead of hiding behind it. The transcript's own
+    /// padding comes from `safeAreaInset`; an overlay does not get that, which
+    /// is why this one number still has to be passed in.
+    var bottomOverlayInset: CGFloat = 0
+    @StateObject private var scrollController = TimelineScrollController()
 
-    var body: some View {
-        ScrollViewReader { proxy in
+    var body: some View { timelineContent() }
+
+    /// Temporary perf scaffolding: the transcript's view graph is built eagerly, so
+    /// one state update costs one full pass over the loaded rows.
+    private func timelineContent() -> some View {
+        #if DEBUG
+        let renderStartedAt = ProcessInfo.processInfo.systemUptime
+        defer {
+            let milliseconds = Int((ProcessInfo.processInfo.systemUptime - renderStartedAt) * 1_000)
+            let blocks = model.timelineRows.reduce(0) { $0 + $1.blocks.count }
+            timelinePerfLog.info(
+                "Timeline body render rows=\(model.timelineRows.count, privacy: .public) blocks=\(blocks, privacy: .public) ms=\(milliseconds, privacy: .public)"
+            )
+        }
+        #endif
+        return ScrollViewReader { _ in
             ScrollView(showsIndicators: false) {
-                LazyVStack(spacing: MobileDesignGeometry.messageSpacing) {
-                    if model.surface == .remote && model.remoteHasMoreMessages {
-                        Button { model.loadOlderRemoteMessages() } label: {
+                VStack(spacing: MobileDesignGeometry.messageSpacing) {
+                    // History is already paged by the session store. Measure the
+                    // loaded page exactly: an estimated lazy history above a growing
+                    // eager tail can repeatedly invalidate its own placement phases
+                    // during keyboard dismissal and long streamed replies.
+                    VStack(spacing: MobileDesignGeometry.messageSpacing) {
+                        if model.surface == .remote && model.remoteTranscriptUnconfirmed {
+                            // These rows are this device's stored copy, which stops
+                            // wherever its last write stopped — inside the turn that
+                            // was running when the app went away. Say the rest is on
+                            // its way instead of letting a half-finished turn read as
+                            // the session.
                             HStack(spacing: 7) {
-                                if model.busy { ProgressView().controlSize(.small) }
-                                Text(model.localized(model.busy ? "正在加载" : "加载更早消息"))
+                                ProgressView().controlSize(.small)
+                                Text(model.localized("正在同步"))
                                     .font(MobileDesignTypography.labelSmall.font)
                             }
                             .foregroundStyle(OpenBitFunTheme.muted)
                             .frame(maxWidth: .infinity, minHeight: 38)
+                            .accessibilityIdentifier("timeline.syncing")
                         }
-                        .buttonStyle(.plain)
-                        .disabled(model.busy)
+                        if model.surface == .remote && model.remoteHasMoreMessages {
+                            Button {
+                                requestOlderHistoryPage()
+                            } label: {
+                                HStack(spacing: 7) {
+                                    if model.remoteHistoryLoading { ProgressView().controlSize(.small) }
+                                    Text(model.localized(model.remoteHistoryLoading ? "正在加载" : (model.remoteHistoryFailed ? "Could not load earlier messages. Tap to retry." : "加载更早消息")))
+                                        .font(MobileDesignTypography.labelSmall.font)
+                                }
+                                .foregroundStyle(OpenBitFunTheme.muted)
+                                .frame(maxWidth: .infinity, minHeight: 38)
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(model.busy || model.remoteHistoryLoading)
+                            .accessibilityIdentifier("timeline.loadOlder")
+                        }
+                        ForEach(historyRows) { row in timelineRow(row) }
                     }
-                    ForEach(model.timelineRows) { row in
-                        ConversationRowView(row: row, model: model).id(row.id)
+                    // Keep the user's message and its reply in the same measured
+                    // tail, including acknowledgement and completion transitions.
+                    ForEach(currentTurnItems) { item in
+                        timelineRow(item.row, identity: item.id)
                     }
                     if model.timelineRows.isEmpty && model.isSending {
                         TypingIndicator().frame(maxWidth: .infinity, alignment: .leading)
@@ -33,45 +86,42 @@ struct ChatTimelineView: View {
                     OpenBitFunTheme.transparent.frame(height: 1).id("timeline-bottom")
                 }
                 .padding(.horizontal, MobileDesignGeometry.contentGutter)
-                .padding(.top, MobileDesignGeometry.timelineTopPadding)
-                .padding(.bottom, 14)
+                // No top padding of its own: the top overlay's inset already ends
+                // where the header's fade does, which is the same content start
+                // Android's contentPadding and HarmonyOS's contentStartOffset use.
+                .padding(.bottom, 14 + scrollController.historyBottomSpace)
+                .background(TimelineScrollProbe(controller: scrollController))
             }
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 8).onChanged { value in
-                    if value.translation.height > 8 { userScrolledUp = true }
-                }
-            )
+            .coordinateSpace(name: "chat-timeline")
+            .onPreferenceChange(TimelineRowFramesKey.self) { frames in
+                scrollController.rowFrames = frames
+                scrollController.restoreHistoryAnchor()
+            }
+            .onChange(of: model.remoteHistoryLoading) { loading in
+                scrollController.historyLoadingChanged(loading)
+            }
             .scrollDismissesKeyboard(.interactively)
-            .onChange(of: model.selectedSessionID) { _ in
-                userScrolledUp = false
-                Task { @MainActor in
-                    await Task.yield()
-                    proxy.scrollTo("timeline-bottom", anchor: .bottom)
+            .onAppear {
+                scrollController.open(session: model.selectedSessionID)
+                // Reaching the start of the loaded transcript asks for the next
+                // page by itself; the row stays as the loading and retry state.
+                // Layout changes and busy gestures do not queue another page.
+                scrollController.onHistoryStartReached = {
+                    guard canRequestOlderHistoryPage else { return false }
+                    requestOlderHistoryPage()
+                    return true
                 }
             }
-            .onChange(of: model.isSending) { sending in
-                guard sending else { return }
-                userScrolledUp = false
-                Task { @MainActor in
-                    await Task.yield()
-                    proxy.scrollTo("timeline-bottom", anchor: .bottom)
-                }
+            .onChange(of: model.selectedSessionID) { session in
+                scrollController.open(session: session)
             }
-            .onChange(of: model.timelineRows) { _ in
-                guard !userScrolledUp else { return }
-                Task { @MainActor in
-                    await Task.yield()
-                    guard !userScrolledUp else { return }
-                    proxy.scrollTo("timeline-bottom", anchor: .bottom)
-                }
+            .onChange(of: model.composerSendGeneration) { _ in
+                scrollController.followBottom()
             }
             .overlay(alignment: .bottomTrailing) {
-                if userScrolledUp {
+                if !scrollController.followsBottom {
                     Button {
-                        userScrolledUp = false
-                        withAnimation(.easeOut(duration: 0.18)) {
-                            proxy.scrollTo("timeline-bottom", anchor: .bottom)
-                        }
+                        scrollController.followBottom()
                     } label: {
                         Image(systemName: "chevron.down")
                             .font(.system(size: 13, weight: .semibold))
@@ -84,11 +134,96 @@ struct ChatTimelineView: View {
                     }
                     .buttonStyle(.plain)
                     .padding(18)
+                    .padding(.bottom, bottomOverlayInset)
+                    .accessibilityIdentifier("timeline.scrollToBottom")
                     .accessibilityLabel(Text(model.localized("滚动到底部")))
                 }
             }
+            .background(OpenBitFunTheme.page)
         }
-        .background(OpenBitFunTheme.page)
+    }
+
+    private var currentTurnStart: Int {
+        if let userIndex = model.timelineRows.lastIndex(where: { $0.kind == "USER" }) {
+            return userIndex
+        }
+        return model.timelineRows.last?.live == true
+            ? max(0, model.timelineRows.count - 1) : model.timelineRows.count
+    }
+
+    private var currentTurnRows: ArraySlice<MobileConversationRow> {
+        model.timelineRows.dropFirst(currentTurnStart)
+    }
+
+    private struct CurrentTurnItem: Identifiable {
+        let id: String
+        let row: MobileConversationRow
+    }
+
+    private var currentTurnItems: [CurrentTurnItem] {
+        currentTurnRows.map { CurrentTurnItem(id: scrollTargetID($0.id), row: $0) }
+    }
+
+    private func scrollTargetID(_ rowID: String) -> String {
+        // Acknowledgement replaces the transport ID, not the visible message.
+        // Retain the current user leaf across that replacement; historical rows
+        // and assistant blocks continue to use their transcript identities.
+        if model.timelineRows.last(where: { $0.kind == "USER" })?.id == rowID {
+            return "current-user:\(model.selectedSessionID)"
+        }
+        return rowID
+    }
+
+    private var historyRows: ArraySlice<MobileConversationRow> {
+        model.timelineRows.prefix(currentTurnStart)
+    }
+
+    /// Whether the store would accept another page right now.
+    ///
+    /// A failed page stays a tap on the row: an automatic retry would keep
+    /// asking a host that has already said no, and the row is on screen saying so.
+    private var canRequestOlderHistoryPage: Bool {
+        model.surface == .remote && (onLoadOlderMessages != nil || model.remoteConnected) && model.remoteHasMoreMessages
+            && !model.remoteHistoryLoading && !model.remoteHistoryFailed && !model.busy
+    }
+
+    /// The one place a history page is asked for, from the row and from arriving
+    /// at the start of the loaded transcript.
+    ///
+    /// The anchor is captured before the request so the page that lands above the
+    /// reader does not move what they were reading, and following the bottom is
+    /// dropped so a page arriving cannot drag the viewport away from it.
+    private func requestOlderHistoryPage() {
+        guard onLoadOlderMessages != nil || model.remoteConnected,
+              model.remoteHasMoreMessages, !model.busy, !model.remoteHistoryLoading,
+              scrollController.beginHistoryRequest() else { return }
+        if let onLoadOlderMessages {
+            onLoadOlderMessages()
+            scrollController.historyLoadingChanged(model.remoteHistoryLoading)
+        } else {
+            model.loadOlderRemoteMessages()
+        }
+    }
+
+    private func timelineRow(_ row: MobileConversationRow, identity: String? = nil) -> some View {
+        ConversationRowView(row: row, model: model, language: model.appLanguage.rawValue)
+            .equatable().id(identity ?? row.id)
+            .environment(\.streamingRowIdentity, row.id)
+            .background(TimelineRowProbe(controller: scrollController, rowID: row.id))
+            .background {
+                GeometryReader { geometry in
+                    OpenBitFunTheme.transparent.preference(
+                        key: TimelineRowFramesKey.self,
+                        value: [row.id: geometry.frame(in: .named("chat-timeline"))])
+                }
+            }
+    }
+}
+
+private struct TimelineRowFramesKey: PreferenceKey {
+    static var defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, latest in latest })
     }
 }
 
@@ -108,6 +243,7 @@ struct ConversationLoadingState: View {
         .background(OpenBitFunTheme.page)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(MobileLocalization.text("正在加载")))
+        .accessibilityIdentifier("conversation.loading")
     }
 
     private func assistantSkeleton(width: CGFloat, height: CGFloat) -> some View {
@@ -146,9 +282,15 @@ struct ConversationLoadingState: View {
     }
 }
 
-private struct ConversationRowView: View {
+private struct ConversationRowView: View, Equatable {
+    @State private var expandedToolID: String? = nil
     let row: MobileConversationRow
-    @ObservedObject var model: MobileAppModel
+    let model: MobileAppModel
+    let language: String
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.row == rhs.row && lhs.language == rhs.language && lhs.model === rhs.model
+    }
 
     @ViewBuilder
     var body: some View {
@@ -185,11 +327,6 @@ private struct ConversationRowView: View {
                 .background(OpenBitFunTheme.soft)
                 .clipShape(RoundedRectangle(cornerRadius: MobileDesignGeometry.messageBubbleRadius))
             }
-            if row.pending {
-                Text(model.localized("正在发送"))
-                    .font(MobileDesignTypography.labelSmall.font)
-                    .foregroundStyle(OpenBitFunTheme.muted)
-            }
             if row.showRetry {
                 Button { model.retryMessage(row.text, images: row.images) } label: {
                     Label(model.localized("重新发送"), systemImage: "arrow.clockwise")
@@ -211,10 +348,10 @@ private struct ConversationRowView: View {
                 MessageBlockList(blocks: row.blocks, model: model)
             } else {
                 if let thinking = row.thinking, !thinking.isEmpty {
-                    ThinkingBlock(text: thinking, streaming: row.streaming)
+                    ThinkingBlock(text: thinking, streaming: row.streaming && row.text.isEmpty && row.tools.isEmpty)
                 }
-                if !row.text.isEmpty { MarkdownMessageView(text: row.text, model: model) }
-                if !row.tools.isEmpty { ToolStatusList(tools: row.tools, model: model) }
+                if !row.text.isEmpty { StreamingMarkdownMessageView(text: row.text, active: row.streaming, model: model) }
+                if !row.tools.isEmpty { ToolStatusList(tools: row.tools, model: model, expandedToolID: $expandedToolID) }
             }
             if !row.images.isEmpty { TimelineImageGrid(images: row.images) }
             if let error = row.error, !error.isEmpty {
@@ -301,20 +438,44 @@ private struct EmptyConversationRow: View {
 
 private struct MessageBlockList: View {
     let blocks: [MobileTimelineBlock]
-    @ObservedObject var model: MobileAppModel
+    let model: MobileAppModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ForEach(blocks) { block in
-                switch block {
-                case let .text(_, text, _):
-                    if !text.isEmpty { MarkdownMessageView(text: text, model: model) }
-                case let .thinking(_, text, streaming):
-                    ThinkingBlock(text: text, streaming: streaming)
-                case let .tools(_, tools):
-                    ToolStatusList(tools: tools, model: model)
-                case let .subagent(_, title, running, text, children):
-                    SubagentBlock(title: title, running: running, text: text, children: children, model: model)
+            ForEach(MobileProcessGroup.project(blocks)) { group in
+                ProcessGroupView(group: group, model: model)
+            }
+        }
+    }
+}
+
+private struct ProcessGroupView: View {
+    let group: MobileProcessGroup
+    let model: MobileAppModel
+    @State private var expandedToolID: String? = nil
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if group.toolsOnly {
+                ToolStatusList(tools: group.tools, model: model, expandedToolID: $expandedToolID)
+            } else {
+                if group.hasSummary {
+                    ToolSummaryButton(tools: group.tools, model: model, expanded: $expanded)
+                }
+                if !group.hasSummary || expanded {
+                    ForEach(group.blocks) { block in
+                        switch block {
+                        case let .text(id, text, streaming):
+                            if !text.isEmpty { StreamingMarkdownMessageView(text: text, active: streaming, model: model, partID: id) }
+                        case let .thinking(id, text, streaming):
+                            ThinkingBlock(text: text, streaming: streaming, partID: id)
+                        case let .tools(_, tools):
+                            ToolStatusList(tools: tools, model: model, expandedToolID: $expandedToolID)
+                        case let .subagent(id, title, running, text, children, status):
+                            SubagentBlock(id: id, title: title, running: running, text: text, children: children, model: model, status: status)
+                        }
+                    }
                 }
             }
         }
@@ -322,12 +483,17 @@ private struct MessageBlockList: View {
 }
 
 private struct SubagentBlock: View {
+    let id: String
     let title: String
     let running: Bool
     let text: String
     let children: [MobileTimelineBlock]
-    @ObservedObject var model: MobileAppModel
-    @State private var expanded = true
+    let model: MobileAppModel
+    var status: String = ""
+    @State private var expanded = false
+    private var failed: Bool { MobileSubagentPresentation.failed(status) }
+    private var processBlocks: [MobileTimelineBlock] { MobileSubagentPresentation.blocks(children, running: running) }
+    private var hasDetails: Bool { !processBlocks.isEmpty || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -338,31 +504,81 @@ private struct SubagentBlock: View {
                         .font(MobileDesignTypography.labelMedium.font).lineLimit(1)
                     Spacer()
                     if running { ProgressView().controlSize(.mini) }
-                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                    Text(model.localized(running ? "运行中" : (failed ? "失败" : "已完成")))
                         .font(MobileDesignTypography.labelSmall.font)
+                    if hasDetails {
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                            .font(MobileDesignTypography.labelSmall.font)
+                    }
                 }
-                .foregroundStyle(OpenBitFunTheme.muted)
+                .foregroundStyle(failed ? OpenBitFunTheme.statusDanger : OpenBitFunTheme.muted)
                 .frame(minHeight: 32)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            if expanded {
-                if !text.isEmpty { MarkdownMessageView(text: text, model: model) }
-                if !children.isEmpty { MessageBlockList(blocks: children, model: model) }
+            .accessibilityIdentifier("subagent.toggle.\(id)")
+            .disabled(!hasDetails)
+            if expanded && hasDetails {
+                // The parent content is often the Task summary, not another output.
+                // Keep it only as a fallback for older hosts without child items.
+                let blocks = processBlocks
+                if blocks.isEmpty && !text.isEmpty { outputPreview(text, key: id) }
+                ForEach(blocks) { block in
+                    switch block {
+                    case let .text(key, value, _):
+                        outputPreview(value, key: key)
+                    case let .thinking(key, value, streaming):
+                        ThinkingBlock(text: value, streaming: streaming, partID: key)
+                    case let .tools(_, tools):
+                        SubagentToolRow(tools: tools, model: model)
+                    case let .subagent(key, title, live, value, nested, status):
+                        SubagentBlock(id: key, title: title, running: live,
+                            text: value, children: nested, model: model, status: status)
+                    }
+                }
             }
         }
         .padding(.leading, 12)
         .overlay(alignment: .leading) { Rectangle().fill(OpenBitFunTheme.line).frame(width: 2) }
+    }
+
+    private func outputPreview(_ raw: String, key: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(model.localized("子任务输出"))
+                .font(MobileDesignTypography.labelSmall.font)
+                .foregroundStyle(OpenBitFunTheme.muted)
+            Text(MobileSubagentPresentation.preview(raw))
+                .font(MobileDesignTypography.bodySmall.font)
+                .lineSpacing(MobileDesignTypography.bodySmall.lineSpacing)
+                .lineLimit(4)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityIdentifier("subagent.output.\(key)")
+        }
+    }
+}
+
+private struct SubagentToolRow: View {
+    let tools: [MobileTimelineTool]
+    let model: MobileAppModel
+    @State private var expandedToolID: String?
+
+    var body: some View {
+        ToolStatusList(tools: tools, model: model, expandedToolID: $expandedToolID)
     }
 }
 
 private struct ThinkingBlock: View {
     let text: String
     let streaming: Bool
+    let partID: String
+    @Environment(\.streamingRowIdentity) private var rowID
     @State private var expanded: Bool
 
-    init(text: String, streaming: Bool) {
+    init(text: String, streaming: Bool, partID: String = "thinking") {
         self.text = text
         self.streaming = streaming
+        self.partID = partID
         _expanded = State(initialValue: streaming)
     }
 
@@ -380,8 +596,10 @@ private struct ThinkingBlock: View {
                 }
                 .foregroundStyle(OpenBitFunTheme.muted)
                 .frame(minHeight: 32)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityIdentifier("thinking.toggle.\(partID)")
             if expanded {
                 Text(text)
                     .font(MobileDesignTypography.bodyLarge.font)
@@ -389,6 +607,15 @@ private struct ThinkingBlock: View {
                     .lineSpacing(MobileDesignTypography.bodyLarge.lineSpacing)
                     .textSelection(.enabled)
             }
+        }
+        // Match Harmony: preserve manual toggles during one thinking phase,
+        // then fold when later output starts and expand for a new phase.
+        .onChange(of: streaming) { running in expanded = running }
+        .background {
+            #if DEBUG
+            ThinkingLayoutProbe(rowID: rowID, partID: partID, characters: text.count,
+                                streaming: streaming, expanded: expanded)
+            #endif
         }
     }
 }
@@ -409,9 +636,68 @@ private struct TypingIndicator: View {
     }
 }
 
+private struct StreamingRowIdentityKey: EnvironmentKey {
+    static let defaultValue = ""
+}
+
+private extension EnvironmentValues {
+    var streamingRowIdentity: String {
+        get { self[StreamingRowIdentityKey.self] }
+        set { self[StreamingRowIdentityKey.self] = newValue }
+    }
+}
+
+private struct StreamingMarkdownMessageView: View {
+    let text: String
+    let active: Bool
+    let model: MobileAppModel
+    var partID = "body"
+    @Environment(\.streamingRowIdentity) private var rowID
+
+    var body: some View {
+        let key = "\(model.remoteTargetEpoch)|\(model.selectedSessionID)|\(rowID)|\(partID)"
+        StreamingMarkdownRevealView(text: text, active: active, model: model, key: key)
+            .id(key)
+    }
+}
+
+private struct StreamingMarkdownRevealView: View {
+    let text: String
+    let active: Bool
+    let model: MobileAppModel
+    let key: String
+    @State private var reveal: StreamingTextState
+
+    init(text: String, active: Bool, model: MobileAppModel, key: String) {
+        self.text = text
+        self.active = active
+        self.model = model
+        self.key = key
+        var state = StreamingTextState(text: active ? StreamingRevealCache.shared.text(for: key) : text)
+        state.update(text, active: active)
+        _reveal = State(initialValue: state)
+    }
+
+    var body: some View {
+        MarkdownMessageView(text: reveal.visible, model: model)
+            .onChange(of: text) { value in reveal.update(value, active: active) }
+            .onChange(of: active) { value in reveal.update(text, active: value) }
+            .onChange(of: reveal.visible) { value in StreamingRevealCache.shared.save(value, for: key) }
+            .onDisappear { StreamingRevealCache.shared.save(reveal.visible, for: key) }
+            .task(id: active && reveal.ticksRemaining > 0) {
+                guard active && reveal.ticksRemaining > 0 else { return }
+                while !Task.isCancelled && reveal.ticksRemaining > 0 {
+                    do { try await Task.sleep(nanoseconds: 40_000_000) }
+                    catch { return }
+                    reveal.advance()
+                }
+            }
+    }
+}
+
 struct MarkdownMessageView: View {
     let text: String
-    @ObservedObject var model: MobileAppModel
+    let model: MobileAppModel
 
     var body: some View {
         let projection = MarkdownProjectionCache.shared.projection(for: text)
@@ -483,6 +769,7 @@ private struct MarkdownBlockView: View {
                 .overlay(alignment: .leading) { Rectangle().fill(OpenBitFunTheme.line).frame(width: 2) }
                 .textSelection(.enabled)
         case "list":
+            let markerWidth = listMarkerWidth
             VStack(alignment: .leading, spacing: 5) {
                 ForEach(block.items, id: \.id) { item in
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
@@ -500,7 +787,8 @@ private struct MarkdownBlockView: View {
                             .padding(.horizontal, 2)
                         } else {
                             Text(item.marker).foregroundStyle(OpenBitFunTheme.muted)
-                                .frame(width: 20, alignment: .trailing)
+                                .fixedSize(horizontal: true, vertical: false)
+                                .frame(width: markerWidth, alignment: .trailing)
                         }
                         Text(listItemInlineString(item)).foregroundStyle(OpenBitFunTheme.ink)
                             .lineSpacing(MobileDesignTypography.bodyLarge.lineSpacing)
@@ -536,6 +824,16 @@ private struct MarkdownBlockView: View {
         if prefix == "[x]" { return true }
         if prefix == "[ ]" { return false }
         return nil
+    }
+
+    private var listMarkerWidth: CGFloat {
+        let token = MobileDesignTypography.bodyLarge
+        let font = UIFontMetrics(forTextStyle: token.textStyle).scaledFont(
+            for: UIFont.systemFont(ofSize: token.size, weight: token.weight)
+        )
+        return block.items.reduce(CGFloat(20)) { width, item in
+            max(width, ceil((item.marker as NSString).size(withAttributes: [.font: font]).width))
+        }
     }
 
     private func listItemInlineString(_ item: MarkdownListItem) -> AttributedString {
@@ -691,11 +989,15 @@ private func markdownInlineString(
     var result = AttributedString()
     for inline in inlines {
         var part = AttributedString(inline.text)
+        // Presentation intents inherit the enclosing Text's font, so an inline
+        // run keeps the role size (and Dynamic Type) of the paragraph it sits
+        // in — the same as the ArkUI and Compose renderers, which only change
+        // weight, slant, or family.
         switch inline.type {
-        case "strong": part.font = .system(size: 14, weight: .semibold)
-        case "emphasis": part.font = .system(size: 14).italic()
+        case "strong": part.inlinePresentationIntent = .stronglyEmphasized
+        case "emphasis": part.inlinePresentationIntent = .emphasized
         case "code":
-            part.font = .system(size: 13, design: .monospaced)
+            part.inlinePresentationIntent = .code
             part.backgroundColor = OpenBitFunTheme.soft
         case "link":
             part.foregroundColor = MobileDesignColors.fileLink
@@ -795,15 +1097,9 @@ private struct TimelineImageGrid: View {
         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 7) {
             ForEach(images) { image in
                 Button { selected = image } label: {
-                    if let uiImage = image.uiImage {
-                        Image(uiImage: uiImage).resizable().scaledToFill()
-                            .frame(height: images.count == 1 ? 180 : 112).frame(maxWidth: .infinity)
-                            .clipped().clipShape(RoundedRectangle(cornerRadius: 14))
-                    } else {
-                        Image(systemName: "photo").foregroundStyle(OpenBitFunTheme.muted)
-                            .frame(maxWidth: .infinity, minHeight: 112).background(OpenBitFunTheme.soft)
-                            .clipShape(RoundedRectangle(cornerRadius: 14))
-                    }
+                    AsyncDecodedImage(dataURL: image.dataURL, fill: true)
+                        .frame(height: images.count == 1 ? 180 : 112).frame(maxWidth: .infinity)
+                        .clipped().clipShape(RoundedRectangle(cornerRadius: 14))
                 }
                 .buttonStyle(.plain)
             }
@@ -819,7 +1115,7 @@ private struct FullScreenTimelineImage: View {
     var body: some View {
         ZStack(alignment: .topTrailing) {
             OpenBitFunTheme.mediaBackground.ignoresSafeArea()
-            if let uiImage = image.uiImage { Image(uiImage: uiImage).resizable().scaledToFit().ignoresSafeArea() }
+            AsyncDecodedImage(dataURL: image.dataURL).ignoresSafeArea()
             Button { dismiss() } label: {
                 Image(systemName: "xmark").font(.system(size: 15, weight: .semibold)).foregroundStyle(OpenBitFunTheme.contentOnAction)
                     .frame(width: 44, height: 44).background(OpenBitFunTheme.mediaControlBackground).clipShape(Circle())
@@ -829,10 +1125,42 @@ private struct FullScreenTimelineImage: View {
     }
 }
 
-private extension MobileTimelineImage {
-    var uiImage: UIImage? {
-        guard let marker = dataURL.range(of: "base64,") else { return nil }
-        return Data(base64Encoded: String(dataURL[marker.upperBound...])).flatMap(UIImage.init(data:))
+/// Decode once off the UI executor, and discard results after source changes.
+struct AsyncDecodedImage: View {
+    var data: Data? = nil
+    var dataURL: String? = nil
+    var fill = false
+    @State private var image: UIImage?
+    @State private var loading = true
+    private struct Source: Equatable { let data: Data?; let url: String? }
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image).resizable().aspectRatio(contentMode: fill ? .fill : .fit)
+            } else if loading {
+                ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                Image(systemName: "photo").foregroundStyle(OpenBitFunTheme.muted)
+            }
+        }
+        .task(id: Source(data: data, url: dataURL)) {
+            image = nil
+            loading = true
+            let bytes = data
+            let url = dataURL
+            let decoded = await Task.detached(priority: .userInitiated) {
+                let source: Data?
+                if let bytes { source = bytes }
+                else if let url, let marker = url.range(of: "base64,") {
+                    source = Data(base64Encoded: String(url[marker.upperBound...]))
+                } else { source = nil }
+                guard let source, let original = UIImage(data: source) else { return nil as UIImage? }
+                return original.preparingForDisplay() ?? original
+            }.value
+            guard !Task.isCancelled else { return }
+            image = decoded
+            loading = false
+        }
     }
 }
 
@@ -846,14 +1174,28 @@ private enum ToolDisplayRow: Identifiable {
 
 private struct ToolStatusList: View {
     let tools: [MobileTimelineTool]
-    @ObservedObject var model: MobileAppModel
+    let model: MobileAppModel
+    @Binding var expandedToolID: String?
+    @State private var summariesExpanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             ForEach(displayRows) { row in
                 switch row {
-                case let .tool(tool): ToolStatusRow(tool: tool, model: model)
-                case let .collapsed(_, tools): CollapsedToolsRow(tools: tools, model: model)
+                case let .tool(tool):
+                    if let path = tool.planPath {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(tool.planName.isEmpty ? model.localized("计划") : tool.planName).font(MobileDesignTypography.titleSmall.font)
+                            if !tool.planOverview.isEmpty { Text(tool.planOverview).font(MobileDesignTypography.bodySmall.font) }
+                            Button(model.localized("查看计划")) { model.openRemoteFile(reference: path, label: tool.planName) }.disabled(path.isEmpty)
+                            Button(model.localized("执行计划")) { model.buildRemotePlan(path: path, name: tool.planName) }
+                                .disabled(!model.remoteHostCapabilities.contains("plan_build_v1") || model.busy || model.isSending || !model.remoteConnected || tool.phase != "COMPLETED" || path.isEmpty)
+                            if !model.remoteHostCapabilities.contains("plan_build_v1") { Text(model.localized("此电脑暂不支持执行计划")) }
+                            else if model.isSending || model.busy { Text(model.localized("请等待当前操作完成")) }
+                        }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
+                            .background(OpenBitFunTheme.soft).clipShape(RoundedRectangle(cornerRadius: 14))
+                    } else { ToolStatusRow(tool: tool, model: model, expandedToolID: $expandedToolID) }
+                case let .collapsed(_, tools): CollapsedToolsRow(tools: tools, model: model, expanded: $summariesExpanded, expandedToolID: $expandedToolID)
                 }
             }
         }
@@ -865,7 +1207,7 @@ private struct ToolStatusList: View {
         func flush() {
             if pending.count < 2 { result.append(contentsOf: pending.map(ToolDisplayRow.tool)) }
             else if let first = pending.first {
-                result.append(.collapsed(id: "collapsed-\(first.id)-\(pending.count)", tools: pending))
+                result.append(.collapsed(id: "collapsed-\(first.id)", tools: pending))
             }
             pending.removeAll()
         }
@@ -877,31 +1219,42 @@ private struct ToolStatusList: View {
     }
 }
 
+private struct ToolSummaryButton: View {
+    let tools: [MobileTimelineTool]
+    let model: MobileAppModel
+    @Binding var expanded: Bool
+
+    var body: some View {
+        Button { withAnimation(.easeOut(duration: 0.18)) { expanded.toggle() } } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "doc.on.doc").font(.system(size: 12, weight: .medium))
+                    .frame(width: 20, height: 20).background(OpenBitFunTheme.soft)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                Text(model.localizedFormat("已完成 %lld 项操作", Int64(tools.count)))
+                    .font(MobileDesignTypography.bodySmall.font)
+                Spacer()
+                Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+            }
+            .foregroundStyle(OpenBitFunTheme.muted).frame(minHeight: 32)
+                    .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("tool.summary.\(tools.first?.id ?? "empty")")
+    }
+}
+
 private struct CollapsedToolsRow: View {
     let tools: [MobileTimelineTool]
-    @ObservedObject var model: MobileAppModel
-    @State private var expanded = false
+    let model: MobileAppModel
+    @Binding var expanded: Bool
+    @Binding var expandedToolID: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Button { withAnimation(.easeOut(duration: 0.18)) { expanded.toggle() } } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "doc.on.doc").font(.system(size: 12, weight: .medium))
-                        .frame(width: 20, height: 20).background(OpenBitFunTheme.soft)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
-                    Text(model.localizedFormat("已完成 %lld 项操作", Int64(tools.count)))
-                        .font(MobileDesignTypography.bodySmall.font)
-                    Spacer()
-                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 10, weight: .semibold))
-                }
-                .foregroundStyle(OpenBitFunTheme.muted).frame(minHeight: 32)
-            }
-            .buttonStyle(.plain)
+            ToolSummaryButton(tools: tools, model: model, expanded: $expanded)
             if expanded {
-                VStack(alignment: .leading, spacing: 3) {
-                    ForEach(tools) { ToolStatusRow(tool: $0, model: model) }
-                }
+                ForEach(tools) { ToolStatusRow(tool: $0, model: model, expandedToolID: $expandedToolID) }
             }
         }
     }
@@ -910,18 +1263,39 @@ private struct CollapsedToolsRow: View {
 private struct ToolStatusRow: View {
     let tool: MobileTimelineTool
     @ObservedObject var model: MobileAppModel
-    @State private var expanded = false
+    @Binding var expandedToolID: String?
+    private var expanded: Bool { expandedToolID == tool.id }
     @State private var answer = ""
+    @State private var editingApproval = false
+    @State private var approvalInput = ""
     @State private var selectedOptions: [Int: Set<String>] = [:]
     @State private var otherAnswers: [Int: String] = [:]
 
-    private var emphasized: Bool { !tool.actions.isEmpty || expanded || tool.phase == "FAILED" }
+    private var transcriptActions: Set<String> {
+        guard model.permissionMailbox?.ownsToolInteraction(toolId: tool.id) == true else { return tool.actions }
+        return tool.actions.subtracting(["ANSWER", "APPROVE", "REJECT"])
+            .subtracting(tool.actions.contains("ANSWER") ? ["CANCEL"] : [])
+    }
 
+    private var emphasized: Bool { !transcriptActions.isEmpty || expanded || tool.phase == "FAILED" }
+
+    var mailboxQuestion = false
+
+    @ViewBuilder
     var body: some View {
+        if mailboxQuestion {
+            if tool.questions.isEmpty { legacyAnswerPanel }
+            else { structuredAnswerPanel }
+        } else {
+            toolRow
+        }
+    }
+
+    private var toolRow: some View {
         VStack(alignment: .leading, spacing: 8) {
             Button {
                 if !tool.input.isEmpty || !tool.output.isEmpty || !tool.filePath.isEmpty {
-                    withAnimation(.easeOut(duration: 0.18)) { expanded.toggle() }
+                    withAnimation(.easeOut(duration: 0.18)) { expandedToolID = expanded ? nil : tool.id }
                 }
             } label: {
                 HStack(spacing: 8) {
@@ -935,8 +1309,10 @@ private struct ToolStatusRow: View {
                     else { Text(statusMark).font(MobileDesignTypography.labelSmall.font).foregroundStyle(statusColor) }
                 }
                 .frame(minHeight: 32)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityIdentifier("tool.toggle.\(tool.id)")
 
             if expanded {
                 if !tool.filePath.isEmpty {
@@ -950,19 +1326,42 @@ private struct ToolStatusRow: View {
                 if !tool.output.isEmpty { detailText(model.localized("输出"), tool.output) }
             }
 
-            if tool.actions.contains("ANSWER") {
+            if transcriptActions.contains("ANSWER") {
                 if tool.questions.isEmpty {
                     legacyAnswerPanel
                 } else {
                     structuredAnswerPanel
                 }
-            } else if tool.actions.contains("APPROVE") || tool.actions.contains("REJECT") {
-                HStack(spacing: 8) {
-                    if tool.actions.contains("REJECT") { toolAction(model.localized("拒绝"), primary: false) { model.rejectTool(tool.id) } }
-                    if tool.actions.contains("APPROVE") { toolAction(model.localized("允许"), primary: true) { model.approveTool(tool.id) } }
+            } else if transcriptActions.contains("APPROVE") || transcriptActions.contains("REJECT") {
+                if transcriptActions.contains("APPROVE") {
+                    HStack {
+                        Spacer(minLength: 0)
+                        Button(model.localized(editingApproval ? "收起参数" : "编辑参数")) {
+                            if !editingApproval && approvalInput.isEmpty { approvalInput = tool.input.isEmpty ? "{}" : tool.input }
+                            editingApproval.toggle()
+                        }
+                        .font(MobileDesignTypography.labelSmall.font).foregroundStyle(OpenBitFunTheme.muted)
+                        .frame(minHeight: 32)
+                    }
+                    if editingApproval {
+                        TextEditor(text: $approvalInput).font(.system(size: MobileDesignTypography.labelSmall.size, design: .monospaced))
+                            .frame(height: 96).scrollContentBackground(.hidden)
+                            .padding(8).background(OpenBitFunTheme.card, in: RoundedRectangle(cornerRadius: 8))
+                    }
+                }
+                HStack(spacing: MobileDesignGeometry.approvalCardGap) {
+                    Spacer(minLength: 0)
+                    if transcriptActions.contains("REJECT") {
+                        compactApprovalAction(model.localized("拒绝"), primary: false) { model.rejectTool(tool.id) }
+                    }
+                    if transcriptActions.contains("APPROVE") {
+                        compactApprovalAction(model.localized("批准"), primary: true) {
+                            model.approveTool(tool.id, updatedInput: editingApproval ? approvalInput : nil)
+                        }.disabled(editingApproval && ((try? JSONSerialization.jsonObject(with: Data(approvalInput.utf8))) as? [String: Any]) == nil)
+                    }
                 }
             }
-            if tool.actions.contains("CANCEL") {
+            if transcriptActions.contains("CANCEL") {
                 Button { model.cancelTool(tool.id) } label: {
                     Text(model.localized("停止执行"))
                         .font(MobileDesignTypography.labelMedium.font).foregroundStyle(OpenBitFunTheme.statusDanger)
@@ -977,6 +1376,16 @@ private struct ToolStatusRow: View {
         .overlay { if emphasized { RoundedRectangle(cornerRadius: 14).stroke(OpenBitFunTheme.line, lineWidth: 1) } }
     }
 
+    private func compactApprovalAction(_ title: String, primary: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title).font(MobileDesignTypography.labelMedium.font).padding(.horizontal, 16)
+                .frame(height: MobileDesignGeometry.approvalActionHeight)
+                .foregroundStyle(primary ? OpenBitFunTheme.contentOnAction : OpenBitFunTheme.ink)
+                .background(primary ? MobileDesignColors.primaryAction : OpenBitFunTheme.card,
+                    in: RoundedRectangle(cornerRadius: MobileDesignGeometry.approvalActionRadius))
+        }.buttonStyle(.plain)
+    }
+
     private var legacyAnswerPanel: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(tool.question ?? model.localized("请输入回复")).font(MobileDesignTypography.bodySmall.font)
@@ -985,7 +1394,7 @@ private struct ToolStatusRow: View {
                 .font(MobileDesignTypography.bodyLarge.font).lineLimit(2...5).padding(10)
                 .background(OpenBitFunTheme.card).clipShape(RoundedRectangle(cornerRadius: 11))
                 .overlay(RoundedRectangle(cornerRadius: 11).stroke(OpenBitFunTheme.line, lineWidth: 1))
-            Button { model.answerTool(tool.id, answer: answer); answer = "" } label: {
+            Button { model.answerTool(tool.id, answer: answer) } label: {
                 Text(model.localized("发送回复"))
                     .font(MobileDesignTypography.labelMedium.font).foregroundStyle(OpenBitFunTheme.contentOnAction)
                     .frame(maxWidth: .infinity, minHeight: 40)
@@ -1021,6 +1430,7 @@ private struct ToolStatusRow: View {
                             .padding(.vertical, 5)
                         }
                         .buttonStyle(.plain)
+                        .accessibilityIdentifier("question.option.\(tool.id).\(question.index).\(option.label)")
                         .disabled(model.busy)
                         if selected && isOther(option) {
                             TextField(model.localized("请输入回复"), text: Binding(
@@ -1045,7 +1455,7 @@ private struct ToolStatusRow: View {
                 .background(structuredAnswersValid && !model.busy ? OpenBitFunTheme.accent : OpenBitFunTheme.muted)
                 .clipShape(Capsule())
             }
-            .buttonStyle(.plain).disabled(!structuredAnswersValid || model.busy)
+            .buttonStyle(.plain).accessibilityIdentifier("question.submit.\(tool.id)").disabled(!structuredAnswersValid || model.busy)
         }
     }
 
@@ -1172,5 +1582,126 @@ private struct ToolStatusRow: View {
 
     private var statusMark: String {
         switch tool.phase { case "FAILED": "!"; case "PENDING_CONFIRMATION": "?"; case "CANCELLED": "×"; case "COMPLETED": "✓"; default: "•" }
+    }
+}
+
+private struct PermissionMailboxMaxHeightKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 280
+}
+
+extension EnvironmentValues {
+    var permissionMailboxMaxHeight: CGFloat {
+        get { self[PermissionMailboxMaxHeightKey.self] }
+        set { self[PermissionMailboxMaxHeightKey.self] = newValue }
+    }
+}
+
+struct PermissionMailboxPanel: View {
+    @ObservedObject var model: MobileAppModel
+    @Environment(\.permissionMailboxMaxHeight) private var maxHeight
+    @State private var expandedMailboxToolID: String?
+    @State private var contentHeight: CGFloat = 1
+    var body: some View {
+        if model.surface == .remote, let mailbox = model.permissionMailbox,
+           mailbox.failed || !mailbox.requests.isEmpty || !mailbox.questions.isEmpty {
+            ScrollView {
+                VStack(alignment: .leading, spacing: MobileDesignGeometry.approvalCardGap) {
+                    if mailbox.failed {
+                        HStack {
+                            Text(model.localized("Permission request could not be completed. Retry to refresh pending requests."))
+                                .foregroundStyle(OpenBitFunTheme.statusDanger)
+                            Button(model.localized("重试")) { model.refreshPermissionMailbox() }.disabled(mailbox.busy)
+                        }.font(MobileDesignTypography.bodySmall.font)
+                    }
+                    ForEach(mailbox.questions, id: \.id) { question in
+                        ToolStatusRow(tool: MobileAppModel.mapTool(question), model: model, expandedToolID: $expandedMailboxToolID, mailboxQuestion: true)
+                            .disabled(mailbox.busy)
+                            .simultaneousGesture(TapGesture().onEnded { model.startQuestionInteraction(question.id) })
+                    }
+                    ForEach(mailbox.requests, id: \.requestId) { request in
+                        PermissionMailboxRow(request: request, busy: mailbox.busy, model: model)
+                    }
+                }
+                .padding(.horizontal, MobileDesignGeometry.contentGutter).padding(.vertical, 8)
+                .background(GeometryReader { proxy in
+                    Color.clear.preference(key: PermissionMailboxHeightKey.self, value: proxy.size.height)
+                })
+            }
+            .frame(height: min(contentHeight, maxHeight))
+            .onPreferenceChange(PermissionMailboxHeightKey.self) { height in
+                contentHeight = height
+                #if DEBUG
+                Logger(subsystem: "com.openbitfun.mobile.ios", category: "permission-mailbox").info("Mailbox layout height=\(height) limit=\(maxHeight) requests=\(mailbox.requests.count)")
+                #endif
+            }
+            .id(model.selectedSessionID)
+        }
+    }
+}
+
+private struct PermissionMailboxHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 1
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+private struct PermissionMailboxRow: View {
+    let request: PermissionMailboxRequest
+    let busy: Bool
+    @ObservedObject var model: MobileAppModel
+    @State private var editing = false
+    @State private var input = "{}"
+    private var valid: Bool {
+        guard editing else { return true }
+        guard let data = input.data(using: .utf8), let object = try? JSONSerialization.jsonObject(with: data) else { return false }
+        return object is [String: Any]
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: MobileDesignGeometry.approvalCardGap) {
+            HStack(spacing: 8) {
+                Image("ApprovalShield").resizable().frame(width: 16, height: 16)
+                Text(request.source.isEmpty ? request.action : request.source)
+                    .font(MobileDesignTypography.bodySmall.font).foregroundStyle(OpenBitFunTheme.ink)
+                Spacer(minLength: 8)
+                Button(model.localized(editing ? "收起参数" : "编辑参数")) { editing.toggle() }
+                    .font(MobileDesignTypography.labelSmall.font).foregroundStyle(OpenBitFunTheme.muted)
+                    .frame(minHeight: 32).disabled(busy)
+            }
+            if !request.source.isEmpty && request.source.lowercased() != request.action.lowercased() {
+                Text(request.action).font(MobileDesignTypography.bodySmall.font).foregroundStyle(OpenBitFunTheme.muted)
+            }
+            if !request.resources.isEmpty {
+                Text(request.resources.joined(separator: "\n"))
+                    .font(.system(size: MobileDesignTypography.labelSmall.size, design: .monospaced))
+                    .foregroundStyle(OpenBitFunTheme.ink).frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10).background(OpenBitFunTheme.soft, in: RoundedRectangle(cornerRadius: 8))
+                    .textSelection(.enabled)
+            }
+            if editing {
+                TextEditor(text: $input).font(.system(size: MobileDesignTypography.labelSmall.size, design: .monospaced))
+                    .frame(height: 96).disabled(busy).scrollContentBackground(.hidden)
+                    .padding(8).background(OpenBitFunTheme.soft, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(valid ? OpenBitFunTheme.line : OpenBitFunTheme.statusDanger, lineWidth: 1))
+            }
+            HStack(spacing: MobileDesignGeometry.approvalCardGap) {
+                Spacer(minLength: 0)
+                Button { model.respondPermission(request.requestId, approve: false, updatedInput: nil) } label: {
+                    Text(model.localized("拒绝")).padding(.horizontal, 16)
+                        .frame(height: MobileDesignGeometry.approvalActionHeight)
+                        .foregroundStyle(OpenBitFunTheme.ink)
+                        .background(OpenBitFunTheme.soft, in: RoundedRectangle(cornerRadius: MobileDesignGeometry.approvalActionRadius))
+                }.disabled(busy)
+                .accessibilityIdentifier("permission.reject.\(request.requestId)")
+                Button { model.respondPermission(request.requestId, approve: true, updatedInput: editing ? input : nil) } label: {
+                    Text(model.localized("批准")).padding(.horizontal, 16)
+                        .frame(height: MobileDesignGeometry.approvalActionHeight)
+                        .foregroundStyle(OpenBitFunTheme.contentOnAction)
+                        .background(MobileDesignColors.primaryAction, in: RoundedRectangle(cornerRadius: MobileDesignGeometry.approvalActionRadius))
+                }.disabled(busy || !valid).opacity(busy || !valid ? 0.5 : 1)
+                .accessibilityIdentifier("permission.approve.\(request.requestId)")
+            }.font(MobileDesignTypography.labelMedium.font)
+        }
+        .buttonStyle(.plain).padding(MobileDesignGeometry.approvalCardPadding)
+        .background(OpenBitFunTheme.card, in: RoundedRectangle(cornerRadius: MobileDesignGeometry.approvalCardRadius))
+        .overlay(RoundedRectangle(cornerRadius: MobileDesignGeometry.approvalCardRadius).stroke(OpenBitFunTheme.line, lineWidth: 1))
     }
 }

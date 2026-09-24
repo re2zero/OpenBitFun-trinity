@@ -52,7 +52,7 @@ export class ToolAPI {
         request: {
           toolName: request.toolName,
           input: request.parameters,
-          workspacePath: request.workspacePath,
+          workspaceId: request.workspaceId,
         }
       });
     } catch (error) {
@@ -64,6 +64,10 @@ export class ToolAPI {
   /**
    * Submit user answers.
    */
+  async startUserQuestionInteraction(toolId: string, sessionId: string): Promise<void> {
+    await api.invoke('start_user_question_interaction', { request: { toolId, sessionId } });
+  }
+
   async submitUserAnswers(
     toolId: string,
     answers: Record<string, string | string[]>,

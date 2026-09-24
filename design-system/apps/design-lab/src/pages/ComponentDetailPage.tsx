@@ -304,21 +304,54 @@ function NumberInputPreview({ state }: { state: string }) {
 function SearchFieldStatePreview({ state }: { state: string }) {
   const { t } = useI18n();
   const [value, setValue] = useState(state === "default" ? "" : "OpenBitFun");
+  const sharedProps = {
+    disabled: state === "disabled",
+    invalid: state === "invalid",
+    readOnly: state === "read-only",
+    onValueChange: setValue,
+    value,
+    className: state === "hover" ? "lab-force-hover" : state === "focus-visible" ? "lab-force-focus" : undefined,
+  };
   return (
-    <SearchField
-      aria-label={t("components.preview.searchLabel")}
-      className={state === "hover" ? "lab-force-hover" : state === "focus-visible" ? "lab-force-focus" : undefined}
-      clearLabel={t("components.preview.searchClear")}
-      disabled={state === "disabled"}
-      invalid={state === "invalid"}
-      leadingIcon={<Icon name="search" />}
-      onClear={() => setValue("")}
-      onValueChange={setValue}
-      placeholder={t("components.preview.searchPlaceholder")}
-      readOnly={state === "read-only"}
-      shortcut={<KeyHint icon={<Icon name="command-mac" />}>K</KeyHint>}
-      value={value}
-    />
+    <div className="component-search-field-examples">
+      {(["sm", "md", "lg"] as const).map((size) => (
+        <div className="component-search-field-example" key={size}>
+          <code>{size}</code>
+          <SearchField
+            {...sharedProps}
+            size={size}
+            aria-label={t("components.preview.searchLabel")}
+            clearLabel={t("components.preview.searchClear")}
+            leadingIcon={<Icon name="search" />}
+            onClear={() => setValue("")}
+            placeholder={t("components.preview.searchPlaceholder")}
+            shortcut={<KeyHint icon={<Icon name="command-mac" />}>K</KeyHint>}
+          />
+          <SearchField
+            {...sharedProps}
+            size={size}
+            variant="panel"
+            aria-label={t("components.preview.searchLabel")}
+            placeholder={t("components.preview.searchPlaceholder")}
+            leadingIcon={<Icon name="search" />}
+            footer={<span>{t("components.preview.searchResults")}</span>}
+            trailingAction={(
+              <Tooltip content={t("components.preview.close")}>
+                <IconButton
+                  aria-label={t("components.preview.close")}
+                  disabled={sharedProps.disabled || sharedProps.readOnly}
+                  icon={<Icon name="xmark" />}
+                  size="xs"
+                  shape="square"
+                  onClick={() => setValue("")}
+                  onMouseDown={(event) => event.preventDefault()}
+                />
+              </Tooltip>
+            )}
+          />
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -359,6 +392,7 @@ export function ComponentDetailPage({
   const [actionCardSize, setActionCardSize] = useState<ActionCardSize>("md");
   const [tabGroupSize, setTabGroupSize] = useState<TabGroupSize>("sm");
   const [toolbarSize, setToolbarSize] = useState<ToolbarSize>("sm");
+  const [checkboxAppearance, setCheckboxAppearance] = useState<"custom" | "native">("custom");
   const [previewState, setPreviewState] = useState(
     component.name === "Card"
       ? "raised"
@@ -484,7 +518,7 @@ export function ComponentDetailPage({
     if (component.name === "Textarea") return `import { Textarea } from "@openbitfun/ui";\n\n<Textarea\n  label="${t("components.preview.inputLabel")}"\n  defaultValue="${t("components.preview.fieldValue")}"\n  hint="${t("components.preview.fieldDescription")}"\n  maxLength={200}\n  rows={3}\n  showCount\n/>`;
     if (component.name === "Alert") return `import { Alert } from "@openbitfun/ui";\n\n<Alert tone="info" title="${t("components.preview.notifications")}" message="${t("components.preview.fieldDescription")}" />`;
     if (component.name === "Avatar") return 'import { Avatar } from "@openbitfun/ui";\n\n<Avatar>BF</Avatar>';
-    if (component.name === "Checkbox" || component.name === "Radio") return `import { ${component.name} } from "@openbitfun/ui";\n\n<${component.name} label="${t("components.preview.notifications")}" defaultChecked />`;
+    if (component.name === "Checkbox" || component.name === "Radio") return `import { ${component.name} } from "@openbitfun/ui";\n\n<${component.name}${component.name === "Checkbox" ? ` appearance="${checkboxAppearance}"` : ""} label="${t("components.preview.notifications")}" defaultChecked />`;
     if (component.name === "NumberBadge") return `import { NumberBadge } from "@openbitfun/ui";\n\n<NumberBadge value={${JSON.stringify(numberBadgeValue)}} />;`;
     if (component.name === "NumberInput") return 'import { useState } from "react";\nimport { NumberInput } from "@openbitfun/ui";\n\nfunction Example() {\n  const [value, setValue] = useState(8);\n  return <NumberInput value={value} onValueChange={setValue} />;\n}';
     if (component.name === "Empty") return `import { Empty } from "@openbitfun/ui";\n\n<Empty title="${t("components.preview.cardTitle")}" description="${t("components.preview.cardDescription")}" />`;
@@ -1063,6 +1097,7 @@ export function ComponentDetailPage({
       return (
         <Alert
           message={t("components.preview.fieldDescription")}
+          role={tone === "error" || tone === "warning" ? "alert" : "status"}
           title={t("components.preview.notifications")}
           tone={tone}
         />
@@ -1083,7 +1118,7 @@ export function ComponentDetailPage({
           invalid={state === "invalid"}
           key={state}
           label={t("components.preview.notifications")}
-          {...(component.name === "Checkbox" ? { indeterminate: state === "indeterminate" } : {})}
+          {...(component.name === "Checkbox" ? { indeterminate: state === "indeterminate", appearance: checkboxAppearance } : {})}
         />
       );
     }
@@ -1850,6 +1885,9 @@ export function ComponentDetailPage({
                 <NavigationPanelItem reserveLeadingSpace>
                   {t("components.preview.navigationPanelMoreItem")}
                 </NavigationPanelItem>
+                <NavigationPanelItem labelBehavior="static" style={{ maxInlineSize: 180, whiteSpace: "normal" }}>
+                  {t("components.preview.cardDescription")}
+                </NavigationPanelItem>
               </NavigationPanelSection>
             </NavigationPanelContent>
           </NavigationPanelBody>
@@ -2176,6 +2214,13 @@ export function ComponentDetailPage({
                         </Fragment>
                       ))}
                     </div>
+                    <div className="component-preview-row">
+                      <code>labelBehavior="static"</code>
+                      <Button labelBehavior="static" size="sm" variant="text"
+                        style={{ maxInlineSize: 220, blockSize: "auto", whiteSpace: "normal" }}>
+                        {t("components.preview.cardDescription")}
+                      </Button>
+                    </div>
                   </section>
                 ))
               ) : component.name === "Icon" ? (
@@ -2365,6 +2410,14 @@ export function ComponentDetailPage({
                 </div>
               )}
               {component.name === "Menu" && <div className="component-menu-interaction"><NestedMenuPattern /></div>}
+              {component.name === "Disclosure" && (
+                <div className="component-preview-row">
+                  <code>presentation="native"</code>
+                  <Disclosure presentation="native" summary={t("components.preview.appearance")}>
+                    {t("components.preview.appearanceDescription")}
+                  </Disclosure>
+                </div>
+              )}
             </ThemeRoot>
           </section>
 
@@ -2432,6 +2485,11 @@ export function ComponentDetailPage({
                       options={fieldOrientations}
                       value={fieldOrientation}
                     />
+                  )}
+                  {component.name === "Checkbox" && (
+                    <InspectorSelect label="appearance" options={["custom", "native"]}
+                      value={checkboxAppearance} onChange={(value) => setCheckboxAppearance(value as "custom" | "native")}
+                      translateOptions={false} />
                   )}
                   {component.name === "PageHeader" && (
                     <InspectorSelect

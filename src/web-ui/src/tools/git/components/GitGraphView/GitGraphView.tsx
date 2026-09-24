@@ -2,7 +2,7 @@
 /** Git commit graph view (branch graph). */
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { Button, Icon, SearchField, ScrollArea } from '@openbitfun/ui';
+import { Button, Icon, IconButton, SearchField, ScrollArea } from '@openbitfun/ui';
 import { useTranslation } from 'react-i18next';
 import { Loader2 } from 'lucide-react';
 import { useI18n } from '@/infrastructure/i18n/hooks/useI18n';
@@ -18,6 +18,8 @@ import { i18nService } from '@/infrastructure/i18n';
 import { useAppearance } from '@/infrastructure/appearance';
 import { createLogger } from '@/shared/utils/logger';
 import { describeGitTrustFailure } from '../../services/GitService';
+import { useStableGitWorkspaceScope } from '../../hooks/useStableGitWorkspaceScope';
+import { useGitState } from '../../hooks/useGitState';
 import './GitGraphView.scss';
 
 const log = createLogger('GitGraphView');
@@ -36,17 +38,31 @@ const DEFAULT_CONFIG: GitGraphViewConfig = {
 const GIT_GRAPH_LANE_MIN_CONTRAST = 3;
 
 export const GitGraphView: React.FC<GitGraphViewProps> = ({
-  repositoryPath,
+  repositoryPath: workspaceReference,
   maxCount = 1000,
   config = {},
   onCommitSelect,
   className = ''
 }) => {
+  const repositoryPath = useStableGitWorkspaceScope(workspaceReference);
   const { t } = useTranslation('panels/git');
   const { t: tComponents } = useI18n('components');
   const { current: appearance } = useAppearance();
   const viewConfig = useMemo(() => ({ ...DEFAULT_CONFIG, ...config }), [config]);
 
+  // Subscribe to Git state so external branch changes (detected by the
+  // GitStateManager poll) trigger a graph reload instead of leaving a stale
+  // current-branch label and graph visible. We only need `basic` because
+  // that is the layer that reports `currentBranch`.
+  const { currentBranch } = useGitState({
+    repositoryPath,
+    layers: ['basic'],
+    isActive: true,
+    refreshOnMount: true,
+    refreshOnActive: true,
+    participateInWindowFocusRefresh: true,
+    debugSource: 'git_graph_view',
+  });
 
   const [graphData, setGraphData] = useState<GitGraph | null>(null);
   const [loading, setLoading] = useState(true);
@@ -85,6 +101,23 @@ export const GitGraphView: React.FC<GitGraphViewProps> = ({
   useEffect(() => {
     loadGraphData();
   }, [loadGraphData]);
+
+  // Reload the graph only when the shared current branch actually moves to a
+  // new value — an optimistic write from a manual switch, or the poll noticing
+  // an external `git checkout`. Comparing against the last value we acted on
+  // (rather than against `graphData.currentBranch`) keeps this from looping if
+  // the two sources ever disagree persistently.
+  const lastSeenBranchRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (currentBranch === null) return;
+    if (lastSeenBranchRef.current === null) {
+      lastSeenBranchRef.current = currentBranch;
+      return;
+    }
+    if (lastSeenBranchRef.current === currentBranch) return;
+    lastSeenBranchRef.current = currentBranch;
+    loadGraphData();
+  }, [currentBranch, loadGraphData]);
 
 
   useEffect(() => {
@@ -283,16 +316,20 @@ export const GitGraphView: React.FC<GitGraphViewProps> = ({
 
   const graphWidth = Math.max(800, (graphData.maxLane + 2) * viewConfig.laneWidth! + 600);
   const totalHeight = graphData.nodes.length * viewConfig.rowHeight!;
+  // The header label reads the shared branch so a manual switch shows here the
+  // instant it happens; the graph payload is only a fallback for the brief
+  // window before the shared state has ever been populated.
+  const displayedBranch = currentBranch ?? graphData.currentBranch;
 
   return (
     <div className={`git-graph-view ${className}`} data-openbitfun-component="git-tool" data-openbitfun-part="graphRoot">
       <div className="git-graph-view__header" data-openbitfun-component="git-tool" data-openbitfun-part="graphHeader">
         <div className="git-graph-view__header-left">
           <h3>{t('graph.title')}</h3>
-          {graphData.currentBranch && (
+          {displayedBranch && (
             <span className="git-graph-view__current-branch">
               <Icon name="git" size="sm" />
-              {graphData.currentBranch}
+              {displayedBranch}
             </span>
           )}
         </div>
@@ -327,22 +364,22 @@ export const GitGraphView: React.FC<GitGraphViewProps> = ({
                   <span className="git-graph-view__search-count">
                     {currentSearchIndex + 1} / {searchFilter.totalMatches}
                   </span>
-                  <button
+                  <IconButton
                     className="git-graph-view__search-nav-btn"
                     onClick={goToPreviousMatch}
                     title={t('graph.searchPrevious')}
+                    aria-label={t('graph.searchPrevious')}
                     disabled={searchFilter.totalMatches === 0}
-                  >
-                    <Icon name="chevron-up" size="sm" />
-                  </button>
-                  <button
+                    icon={<Icon name="chevron-up" size="sm" />}
+                  />
+                  <IconButton
                     className="git-graph-view__search-nav-btn"
                     onClick={goToNextMatch}
                     title={t('graph.searchNext')}
+                    aria-label={t('graph.searchNext')}
                     disabled={searchFilter.totalMatches === 0}
-                  >
-                    <Icon name="chevron-down" size="sm" />
-                  </button>
+                    icon={<Icon name="chevron-down" size="sm" />}
+                  />
                 </div>
               ) : searchFilter && debouncedSearchQuery && searchFilter.totalMatches === 0 ? (
                 <span className="git-graph-view__search-count git-graph-view__search-count--no-results">

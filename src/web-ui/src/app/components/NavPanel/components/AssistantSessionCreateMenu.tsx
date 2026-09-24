@@ -1,7 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
-;
-import { OverflowText, Icon, Menu, MenuItem, Tooltip } from '@openbitfun/ui';
+import { subscribeOverlayInteraction, createOverlayPortal, OverflowText, Icon, Menu, MenuItem, Tooltip } from '@openbitfun/ui';
 
 import { getAppearanceOverlayHost } from '@/infrastructure/appearance/runtime/AppearanceOverlayHost';
 import { useI18n } from '@/infrastructure/i18n/hooks/useI18n';
@@ -67,11 +65,11 @@ const AssistantSessionCreateMenu: React.FC<AssistantSessionCreateMenuProps> = ({
       if (event.key === 'Escape' && !isImeOwnedKeyboardEvent(event)) closeMenu();
     };
 
-    document.addEventListener('mousedown', handleMouseDown);
-    document.addEventListener('keydown', handleEscape, true);
+    const removeOverlayMousedown0 = subscribeOverlayInteraction(menuRef, 'mousedown', handleMouseDown);
+    const removeOverlayKeydown1 = subscribeOverlayInteraction(menuRef, 'keydown', handleEscape);
     return () => {
-      document.removeEventListener('mousedown', handleMouseDown);
-      document.removeEventListener('keydown', handleEscape, true);
+      removeOverlayMousedown0?.();
+      removeOverlayKeydown1?.();
     };
   }, [closeMenu, menuOpen]);
 
@@ -121,10 +119,11 @@ const AssistantSessionCreateMenu: React.FC<AssistantSessionCreateMenuProps> = ({
         </Tooltip>
       </div>
 
-      {menuOpen ? createPortal(
+      {menuOpen ? createOverlayPortal(
         <Menu
           ref={menuRef}
           className="openbitfun-nav-panel__assistant-session-menu"
+          inlineSize="content"
           aria-label={chooseAssistantLabel}
           data-testid="nav-assistant-session-menu"
           style={{
@@ -138,7 +137,7 @@ const AssistantSessionCreateMenu: React.FC<AssistantSessionCreateMenuProps> = ({
             return (
               <MenuItem data-overflow-trigger
                 key={workspace.id}
-                leading={<Icon name="plus" size="xs" aria-hidden="true" />}
+                leading={<Icon name="plus" size="sm" aria-hidden="true" />}
                 aria-label={t('nav.sessions.newAssistantSessionFor', { assistantName })}
                 onClick={() => {
                   closeMenu();

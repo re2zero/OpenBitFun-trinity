@@ -18,6 +18,8 @@ struct ComposerBar: View {
     @Environment(\.scenePhase) private var scenePhase
     @FocusState private var focused: Bool
     @StateObject private var speech = SpeechInputController()
+    @State private var inputExpansionRequested = false
+    @State private var photoPickerOpen = false
     @State private var pickerItems: [PhotosPickerItem] = []
     @State private var modelSelectorOpen = ProcessInfo.processInfo.arguments.contains(
         "--composer-model-picker"
@@ -30,7 +32,7 @@ struct ComposerBar: View {
     }
 
     private var expanded: Bool {
-        focused || modelSelectorOpen || model.draft.contains("\n")
+        inputExpansionRequested || focused || modelSelectorOpen || model.draft.contains("\n")
     }
 
     private var hasContent: Bool {
@@ -44,7 +46,7 @@ struct ComposerBar: View {
 
     private var primaryActionKind: ComposerPrimaryAction {
         if speech.isListening { return .stopListening }
-        if model.isSending { return .stopTurn }
+        if model.isSending && (!hasContent || model.surface != .remote) { return .stopTurn }
         if hasContent { return canSend ? .send : .sendBlocked }
         return model.busy ? .voiceBlocked : .voice
     }
@@ -72,7 +74,10 @@ struct ComposerBar: View {
         .frame(minHeight: expanded
             ? MobileDesignGeometry.composerExpandedHeight
             : MobileDesignGeometry.composerCollapsedHeight)
-        .background(OpenBitFunTheme.card)
+        // The transcript now runs underneath the pill, so the fill is a material
+        // and the blur does the separating rather than an opaque card colour.
+        .background(MobileDesignColors.cardOverlay)
+        .background(.ultraThinMaterial)
         .overlay(
             RoundedRectangle(
                 cornerRadius: expanded || !model.composerImages.isEmpty
@@ -89,12 +94,21 @@ struct ComposerBar: View {
             )
         )
         .shadow(color: OpenBitFunTheme.shadowSubtle, radius: 10, y: 2)
-        .padding(.horizontal, MobileDesignGeometry.contentGutter)
+        .padding(.horizontal, MobileDesignGeometry.conversationOverlaySideInset)
         .padding(.top, 8)
         .padding(.bottom, 14)
-        .background(OpenBitFunTheme.page)
         .animation(.easeOut(duration: 0.22), value: expanded)
         .animation(.easeOut(duration: 0.18), value: model.composerImages.count)
+        .photosPicker(isPresented: $photoPickerOpen, selection: $pickerItems,
+            maxSelectionCount: max(1, 4 - model.composerImages.count), matching: .images)
+        .onChange(of: focused) { value in
+            inputExpansionRequested = value
+        }
+        .onChange(of: model.composerSendGeneration) { _ in
+            inputExpansionRequested = false
+            focused = false
+            modelSelectorOpen = false
+        }
         .onDisappear { speech.stop() }
         .onChange(of: scenePhase) { if $0 != .active { speech.stop() } }
         .onChange(of: model.selectedSessionID) { _ in speech.stop() }
@@ -179,6 +193,19 @@ struct ComposerBar: View {
         .frame(minHeight: expanded
             ? MobileDesignGeometry.composerExpandedInputRowHeight
             : MobileDesignGeometry.composerCollapsedHeight)
+        // Dragging the input row down dismisses the keyboard, matching the
+        // Messages and WeChat composers. A simultaneous gesture keeps the text
+        // field's own tap, caret, and vertical scrolling intact.
+        .simultaneousGesture(
+            DragGesture(minimumDistance: ComposerDismissGesture.minimumDistance).onChanged { value in
+                guard ComposerDismissGesture.dismissesKeyboard(
+                    translation: value.translation,
+                    isFocused: focused
+                ) else { return }
+                inputExpansionRequested = false
+                focused = false
+            }
+        )
     }
 
     private var expandedActionRow: some View {
@@ -228,10 +255,13 @@ struct ComposerBar: View {
             .foregroundStyle(OpenBitFunTheme.ink)
             .lineLimit(1...maxLines)
             .focused($focused)
+            // Expand from the tap itself; keyboard/first-responder startup is
+            // independent and must not gate the local composer affordances.
+            .simultaneousGesture(TapGesture().onEnded { inputExpansionRequested = true })
             .accessibilityIdentifier("composer.input")
             .submitLabel(.send)
             .onSubmit {
-                if canSend { model.send() }
+                if canSend { submitMessage() }
             }
             if showsSupplementalVoice, !expanded {
                 supplementalVoiceAction
@@ -250,13 +280,7 @@ struct ComposerBar: View {
     @ViewBuilder
     private var attachmentAction: some View {
         if model.composerImages.count < 4 {
-            PhotosPicker(
-                selection: $pickerItems,
-                maxSelectionCount: 4 - model.composerImages.count,
-                matching: .images
-            ) {
-                plusGlyph
-            }
+            Button { photoPickerOpen = true } label: { plusGlyph }
             .buttonStyle(.plain)
             .accessibilityLabel(Text(model.localized("添加图片")))
         } else {
@@ -275,20 +299,24 @@ struct ComposerBar: View {
     }
 
     private var primaryAction: some View {
-        Button(action: performPrimaryAction) {
+        // Resolve once for this render. Button's deferred label closure and its
+        // disabled modifier must use the same state, including after keyboard
+        // focus changes and asynchronous connection updates.
+        let action = primaryActionKind
+        return Button(action: performPrimaryAction) {
             ZStack {
-                switch primaryActionKind {
+                switch action {
                 case .send, .sendBlocked:
                     Image(systemName: "arrow.up")
                         .font(.system(size: 17, weight: .bold))
                         .foregroundStyle(
-                            primaryActionKind == .send
+                            action == .send
                                 ? OpenBitFunTheme.contentOnAction
                                 : OpenBitFunTheme.muted
                         )
                         .frame(width: 32, height: 32)
                         .background(
-                            primaryActionKind == .send
+                            action == .send
                                 ? MobileDesignColors.primaryAction
                                 : OpenBitFunTheme.soft
                         )
@@ -306,7 +334,7 @@ struct ComposerBar: View {
                         width: 16,
                         height: 19,
                         color:
-                            primaryActionKind == .voice
+                            action == .voice
                                 ? OpenBitFunTheme.ink
                                 : OpenBitFunTheme.muted.opacity(0.38)
                     )
@@ -316,11 +344,14 @@ struct ComposerBar: View {
                 width: MobileDesignGeometry.composerActionSize,
                 height: MobileDesignGeometry.composerActionSize
             )
-            .background(primaryActionKind == .voiceBlocked ? OpenBitFunTheme.soft : OpenBitFunTheme.transparent)
+            .background(action == .voiceBlocked ? OpenBitFunTheme.soft : OpenBitFunTheme.transparent)
             .clipShape(Circle())
         }
         .buttonStyle(.plain)
-        .disabled(primaryActionKind == .sendBlocked || primaryActionKind == .voiceBlocked)
+        .disabled(action == .sendBlocked || action == .voiceBlocked ||
+                  (action == .stopTurn && model.surface == .remote &&
+                   (!model.remoteConnected || model.connectionPhase != .connected)))
+        .accessibilityIdentifier("composer.primaryAction")
         .accessibilityLabel(primaryActionLabel)
     }
 
@@ -357,16 +388,7 @@ struct ComposerBar: View {
             HStack(spacing: 8) {
                 ForEach(model.composerImages) { attachment in
                     ZStack(alignment: .topTrailing) {
-                        Group {
-                            if let image = UIImage(data: attachment.data) {
-                                Image(uiImage: image)
-                                    .resizable()
-                                    .scaledToFill()
-                            } else {
-                                Image(systemName: "photo")
-                                    .foregroundStyle(OpenBitFunTheme.muted)
-                            }
-                        }
+                        AsyncDecodedImage(data: attachment.data, fill: true)
                         .frame(width: 64, height: 64)
                         .background(OpenBitFunTheme.soft)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -431,8 +453,8 @@ struct ComposerBar: View {
                 LazyVStack(spacing: MobileDesignGeometry.composerModelSelectorRowGap) {
                     ForEach(selectorModels) { option in
                         Button {
-                            model.selectModel(option.id)
                             modelSelectorOpen = false
+                            model.selectModel(option.id)
                         } label: {
                             HStack(spacing: 10) {
                                 Image(systemName: option.selected ? "checkmark.circle" : "circle")
@@ -494,12 +516,20 @@ struct ComposerBar: View {
         case .stopTurn:
             model.stopSending()
         case .send:
-            model.send()
+            submitMessage()
         case .sendBlocked, .voiceBlocked:
             return
         case .voice:
             startVoiceInput()
         }
+    }
+
+    private func submitMessage() {
+        guard model.send() else { return }
+        speech.stop()
+        inputExpansionRequested = false
+        focused = false
+        modelSelectorOpen = false
     }
 
     private func startVoiceInput() {

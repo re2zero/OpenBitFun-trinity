@@ -35,6 +35,7 @@ import com.openbitfun.mobile.app.ui.theme.MotionDrawerHideMillis
 import com.openbitfun.mobile.app.ui.theme.MotionDrawerOpenMillis
 import com.openbitfun.mobile.app.ui.theme.MotionDrawerRevealMillis
 import com.openbitfun.mobile.app.ui.theme.MotionDrawerScrimMillis
+import com.openbitfun.mobile.app.ui.theme.openBitFunColors
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -218,7 +219,21 @@ internal fun OpenBitFunCompactDrawer(
     }
 
     Box(Modifier.fillMaxSize()) {
+        // The open drawer's fill is a floor under the whole shell, not a panel
+        // the width of the sidebar. The content card's rounded corners have to
+        // curve onto something: a fill that stopped at the card's left edge
+        // left them curving onto the page white, so a square-cornered grey
+        // block sat against a rounded card with a white wedge between them.
+        // Driven by contentProgress rather than drawerProgress so the floor is
+        // never thinner than the card has already moved, in either direction.
         if (compact && drawerComposed) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(openBitFunColors.sidebar.background)
+                    .graphicsLayer { alpha = contentProgress.value },
+            )
+
             Box(
                 modifier = Modifier
                     .width(drawerWidth)
@@ -249,7 +264,7 @@ internal fun OpenBitFunCompactDrawer(
                     translationX = drawerWidthPx * contentProgress.value
                     scaleX = 1f - (1f - CONTENT_SCALE_X) * contentProgress.value
                     scaleY = 1f - (1f - CONTENT_SCALE_Y) * contentProgress.value
-                    transformOrigin = TransformOrigin(0f, 0.5f)
+                    transformOrigin = TransformOrigin(0f, com.openbitfun.mobile.app.ui.theme.generated.MobileDesignGeometry.ConversationHeaderHeight.toPx() / 2f / size.height.coerceAtLeast(1f))
                 }
                 .then(
                     if (contentCard.phase == ContentCardPhase.Receded) {
@@ -268,7 +283,11 @@ internal fun OpenBitFunCompactDrawer(
                 Box(
                     Modifier
                         .fillMaxSize()
-                        .background(androidx.compose.material3.MaterialTheme.colorScheme.background)
+                        // Use the semantic scrim token. Using the page
+                        // background here makes a light-theme drawer paint a
+                        // white sheet over the entire detail page, so opening
+                        // the sidebar looks like the page disappeared.
+                        .background(androidx.compose.material3.MaterialTheme.colorScheme.scrim)
                         .graphicsLayer { alpha = scrimProgress.value }
                         .clickable(
                             enabled = open,

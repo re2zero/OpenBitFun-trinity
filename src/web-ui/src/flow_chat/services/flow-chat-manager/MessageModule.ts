@@ -1,3 +1,4 @@
+import { hostQueueSupported, hostDialogQueue, queueImageAttachments } from '../hostDialogQueue';
 /**
  * Message handling module
  * Shared submission choreography: busy-gate planning, queueing, mode
@@ -20,7 +21,11 @@ import type { FlowChatContext } from './types';
 import { isProjectedSessionEmpty } from '../../utils/flowChatTurnIdentity';
 import type { ImageContextData as ImageInputContextData } from '@/infrastructure/api/service-api/ImageContextTypes';
 import { pendingQueueManager } from './PendingQueueModule';
-import { isRuntimeSessionAttachmentInFlight } from '@/infrastructure/peer-device/runtimeSessionEventGate';
+import {
+  isRuntimeSessionAttachmentInFlight,
+  isRuntimeSessionProjectionStale,
+  subscribeRuntimeSessionAttachmentFinished,
+} from '@/infrastructure/peer-device/runtimeSessionEventGate';
 import { isSessionInUseError } from '@/infrastructure/api/errors/TauriCommandError';
 import { i18nService } from '@/infrastructure/i18n';
 import { driverForSession } from '../../session-drivers/registry';
@@ -28,6 +33,7 @@ import type { SendMessageOptions, SubmissionDraft, TurnTracker } from '../../ses
 import { assertSessionSubmissionAllowed } from '../../store/sessionMutationStore';
 import { hasInterruptedTurnHoldingQueue } from '../../utils/interruptedTurnRecovery';
 import { interruptedTurnRecoveryGate } from '../interruptedTurnRecoveryGate';
+import { hasPendingVoiceExchanges, replayVoiceExchanges } from '../controlConversation';
 
 export { syncSessionModelSelection } from '../../utils/modelSync';
 export { markCurrentTurnItemsAsCancelled } from '../../utils/turnCancellation';
@@ -263,6 +269,19 @@ export async function sendMessage(
         await driverForSession(sessionId, session).steer(context, sessionId, draft);
         return;
       }
+      if (hostQueueSupported(sessionId)) {
+        beginSubmission();
+        try {
+          const queue = hostDialogQueue(sessionId);
+          await queue.submit({ content: message, displayContent: displayMessage,
+            agentType: agentType?.trim() || session.mode || 'Standard',
+            attachments: queueImageAttachments(options?.imageContexts), metadata: options?.userMessageMetadata ?? {} },
+            { composerDraft: options?.pendingQueueDraft, imageContexts: options?.imageContexts, imageDisplayData: options?.imageDisplayData });
+          surfaceScopeAtSend.assertCurrent('accept queued message');
+          completeSessionSend(sendCoordinationKey, sendAttempt);
+          return;
+        } finally { endSubmission(); }
+      }
       try {
         const item = pendingQueueManager.enqueue({
           sessionId,
@@ -316,6 +335,12 @@ export async function sendMessage(
   beginSubmission();
 
   try {
+    // Recover final native replies before starting the next text turn. Keep
+    // normal text sends synchronous and inside the existing surface fence.
+    if (hasPendingVoiceExchanges(sessionId)) {
+      await replayVoiceExchanges(sessionId);
+      surfaceScopeAtSend.assertCurrent('restore conversation history before submission');
+    }
     const refreshedSession = context.flowChatStore.getState().sessions.get(sessionId) ?? session;
     const currentAgentType = (agentType?.trim() || refreshedSession.mode || 'Standard').trim();
     const acpClientId = acpClientIdFromMode(currentAgentType);
@@ -529,7 +554,9 @@ export async function drainPendingQueue(
   sessionId: string,
   options?: { allowInterruptedRecoveryAbandon?: boolean },
 ): Promise<void> {
-  if (isRuntimeSessionAttachmentInFlight(getActiveSurfaceId(), sessionId)) {
+  if (hostQueueSupported(sessionId) && !options?.allowInterruptedRecoveryAbandon) return;
+  if (isRuntimeSessionAttachmentInFlight(getActiveSurfaceId(), sessionId) ||
+      isRuntimeSessionProjectionStale(getActiveSurfaceId(), sessionId)) {
     return;
   }
   const machineState = stateMachineManager.getCurrentState(sessionId);
@@ -620,6 +647,21 @@ export async function drainPendingQueue(
 let queueDrainListenerInstalled = false;
 let queueDrainContext: FlowChatContext | null = null;
 
+const scheduledQueueDrains = new Set<string>();
+
+function schedulePendingQueueDrain(sessionId: string): void {
+  const scope = getActiveSurfaceScope();
+  const key = JSON.stringify([scope.surfaceId, scope.epoch, sessionId]);
+  if (scheduledQueueDrains.has(key)) return;
+  scheduledQueueDrains.add(key);
+  queueMicrotask(() => {
+    scheduledQueueDrains.delete(key);
+    if (!scope.isCurrent() || !queueDrainContext) return;
+    if (pendingQueueManager.list(sessionId).length === 0) return;
+    void drainPendingQueue(queueDrainContext, sessionId);
+  });
+}
+
 /** Install (once) the state-machine listener that drains the queue when a session returns to IDLE. */
 export function installPendingQueueDrainListener(context: FlowChatContext): void {
   queueDrainContext = context;
@@ -629,8 +671,9 @@ export function installPendingQueueDrainListener(context: FlowChatContext): void
   queueDrainListenerInstalled = true;
   stateMachineManager.subscribeGlobal((sessionId, machine) => {
     if (machine.currentState !== SessionExecutionState.IDLE) return;
-    if (!queueDrainContext) return;
-    if (pendingQueueManager.list(sessionId).length === 0) return;
-    void drainPendingQueue(queueDrainContext, sessionId);
+    schedulePendingQueueDrain(sessionId);
+  });
+  subscribeRuntimeSessionAttachmentFinished((surfaceId, sessionId) => {
+    if (surfaceId === getActiveSurfaceId()) schedulePendingQueueDrain(sessionId);
   });
 }

@@ -18,6 +18,12 @@ export function Example() {
 
 The package owns component anatomy, behavior, accessibility, and stable variants. It does not own theme selection persistence, product state, routes, locale resources, or platform APIs.
 
+Floating dialog/sheet overlays, menu popovers, select/combobox popups and tooltips declare
+`data-openbitfun-native-webview-occlusion` on their rendered floating surface.
+Native hosts use its visible bounds to temporarily hide overlapping child views;
+the components do not call platform APIs. Custom product popovers should declare
+the same marker on the floating element, including while its exit animation runs.
+
 ## Voice calls
 
 `VoiceCallPanel` owns the complete compact call surface: navigation, particle
@@ -33,6 +39,17 @@ font-size preferences. Compact-height layouts keep the same typography roles.
 User bubbles apply `type.modifier.leading.tight` for 18px leading, with 12px
 padding on all sides and a 12px corner radius. They fit their content and wrap
 within the conversation width; a single line is 42px high at the default size.
+
+`VoiceCallTranscript` exposes its `entries` part for host-owned reading insets
+and `data-scrolled` when records have moved below their starting position. Hosts
+can layer compact controls above that viewport without creating another scroller.
+Each entry may supply `activity` beneath its message; the host owns its real
+processing state, localized accessible label, and completion lifecycle.
+Its `presentation="chat"` variant uses FlowChat's `type.flow.control` text size
+and weight, `type.flow.body` font stack and leading, `color.content.primary`
+text, and `color.action.quiet.hover` user-bubble fill. `compact` controls spacing
+independently. The default `presentation="voice"` retains the call typography
+and inverse colors; hosts can switch presentation on the existing viewport.
 
 `VoiceParticleLogo` is also exported independently. Its `readAudio` callback
 reads `{ user, assistant, assistantSpeaking }` once per animation frame. The
@@ -56,6 +73,16 @@ The host allocates its dimensions; the product uses the existing 480 × 680
 compact-window contract. Build and source tests do not prove visual fidelity.
 
 ## Buttons
+
+`labelBehavior="overflow"` is the default and retains the shared OverflowText
+behavior. Use `labelBehavior="static"` for actions whose text must keep its
+existing wrapping or inline composition without adding clipping, a marquee,
+or an automatic overflow tooltip. Static labels inherit the button's whitespace
+and line height; button variants, sizes, loading, and disabled behavior stay the
+same. An explicitly composed OverflowText child retains its own behavior.
+The public `data-openbitfun-part` slots are `root`, `content`, `label`,
+`leading-icon`, `trailing-icon`, and `progress`; use them for scoped product
+layout instead of private CSS module classes.
 
 Choose variants by action role: use `primary` for the main save, submit, create,
 or confirm action, and `fill` for cancel, dismiss, or discard alongside it.
@@ -107,6 +134,13 @@ Use `OverflowText` for single-line, non-editable labels instead of local
 defaults to **fade-out truncation with an interaction marquee**: a background-independent
 gradient mask at the inline end, followed by scrolling on hover or keyboard focus.
 Both effects apply only when the text actually overflows. Short labels remain untouched.
+Single-line text uses a vertically centered inner box with the font's natural leading
+so tight control line heights do not clip descenders. The outer box keeps at least
+the owner's line height (`1lh`), without an extra inline baseline strut shifting
+the text relative to adjacent icons. This applies to plain-text
+fade and marquee labels; multiline clamps and rich composition retain their layout.
+Let text slots size naturally in the block direction instead of forcing a text-height
+box or adding outer pixel padding to compensate for clipped glyphs.
 Overflowing labels also open a wrapping, selectable tooltip on hover or keyboard
 focus, including when motion is reduced. The tooltip uses the owning
 `data-overflow-trigger` control and groups its clipped text slots into one popup.
@@ -136,6 +170,15 @@ its virtual active state through this contract. Selected
 tabs do not animate automatically. Motion respects `prefers-reduced-motion`;
 reduced-motion users keep the static fade. Text and movement follow RTL direction.
 
+Use `overflowStyle="ellipsis"` when a single-line slot requires a visible ellipsis
+instead of a resting fade. It works with static `behavior="fade"` labels and with
+`behavior="marquee"`, which reveals the full text on interaction and returns to
+the ellipsis afterward. Reduced motion keeps the ellipsis. Multiline clamps retain
+their existing behavior. Set `marqueeTrigger="interaction"` to ignore virtual
+active state on both the label and its owner; the default
+`"interaction-or-active"` preserves existing listbox behavior. This also prevents
+virtual activation from opening the label's tooltip; actual hover/focus still works.
+
 Rich children default to fade to preserve the label's existing inline composition.
 Composite containers keep their icons/actions fixed and give each text slot its
 own `OverflowText`. Marquee measures and
@@ -145,6 +188,18 @@ labels use their complete rendered text in the tooltip. A supplied `title`
 overrides that text; `title=""` opts out when a surrounding native title owns the
 content. An explicit enclosing `Tooltip` suppresses automatic nested tooltips.
 Do not use marquee as the sole way to access information on touch surfaces.
+
+Overflow measurement is deferred to a shared animation-frame queue per window.
+Mount, content, resize, and font notifications coalesce; all queued labels read
+geometry before publishing state. Unmounted labels cancel their pending work.
+Overflow indicators and automatic tooltips become available after that frame,
+while the complete accessible text is present immediately. This avoids forcing
+layout separately inside each label's React mount effect.
+Requests made during a batch survive for the next frame; cancellation also
+discards unpublished results. A failing label does not abort other labels,
+and its error is reported asynchronously. This scheduling contract does not
+claim an overall scrolling speedup; first-frame visual behavior requires
+browser validation.
 
 Multi-line descriptions should normally wrap. Editable fields, source code,
 structured paths that need to preserve their suffix, and native controls keep
@@ -205,6 +260,19 @@ Hosts without Web Animations render the current text immediately.
 The **RollingText** Design Lab entry includes manual standalone and TabGroup
 examples for repeated replacement and long labels.
 
+`ActionItem` and its `NavigationPanelItem` composition also accept
+`labelBehavior="static"` to preserve wrapping labels without an implicit overflow
+tooltip or marquee. Their default remains `"overflow"`. The public `label` part
+retains its typography, and the static label inherits whitespace from its owner.
+`NavigationPanelItem.className` styles the outer row; native button attributes and
+the ref reach its `trigger` part. Keep row layout separate from trigger styling.
+
+`TabGroupItem.tabProps` applies `className`, `style`, `title`, `aria-label`,
+`aria-describedby`, and `data-*` attributes directly to the native tab button.
+Use product-namespaced data attributes for product appearance identity. The
+component retains its own part marker, IDs, panel association, disabled state,
+selection, focus, and event handling. Keep IDs and panel IDs in the item fields.
+
 `TabGroup.renderItem(item, node, index)` can wrap the supplied standard item in
 a tooltip, context-menu owner, or drag target. Keep `node` intact so TabGroup
 continues to own selection, keyboard navigation, label overflow, and end-action
@@ -251,16 +319,38 @@ surface elevation, responsive inline sizing, composer geometry, transparent
 floating action layout, and sheet accessibility. Product state, localized copy,
 routing, and device or session operations stay in the consuming application.
 
+`Checkbox appearance="native"` uses the visible browser checkbox, retaining its
+native focus, disabled, checked, indeterminate, and form semantics. The default
+`custom` presentation remains unchanged. Both presentations share sm/md/lg
+sizing and the same label and description slots; native colors belong to the
+browser, with optional consumer `accent-color` styling.
+
+`Alert` preserves an explicit `role` and `aria-live`. An explicit `status` is
+polite and an explicit `alert` is assertive unless `aria-live` overrides it.
+Omitting both retains the existing default: role alert, polite announcements
+except for error tone. Use `showIcon={false}` for text-only notices.
+
 `Disclosure` is the shared expandable-content primitive. It owns controlled or
 uncontrolled open state, trigger/region accessibility wiring, focus exclusion
 while collapsed, reduced-motion behavior, and independent header actions.
 Product copy and the revealed content remain consumer-owned.
 
+Use `Disclosure presentation="native"` when the browser must own the existing
+`details`/`summary` behavior. This mode renders a real details element, a direct
+summary child, and the supplied content without extra wrappers. It accepts native
+`open`, `name`, and `onToggle` attributes, and its ref points to that details
+element. Browser focus, marker, wrapping, and content lifetime are preserved;
+custom-mode `defaultOpen`, `onOpenChange`, `disabled`, and header slots do not
+apply. Omitting `presentation` retains the custom disclosure contract above.
+
 Sized icon slots in buttons, tabs, menu items and fields own their glyph geometry.
 Pass catalog `Icon` nodes through `leadingIcon`, `trailingIcon`, `icon` or the
 matching component slot, just as for SVG icons. These slots constrain catalog
 icons to the component's size; a standalone `Icon` retains its explicit size
-(24px by default). Do not shrink the catalog globally to correct a slot mismatch.
+(24px by default). They also normalize a direct Lucide glyph that still has
+Lucide's default 2px stroke to the shared 1.6 line weight and inherit the slot's
+color. Explicit non-default strokes and non-Lucid SVG artwork remain unchanged.
+Do not shrink the catalog globally to correct a slot mismatch.
 
 `IconButton` defaults to `quiet`: its resting surface is transparent, hover and
 pressed states use shared action feedback, and keyboard focus keeps a visible
@@ -274,47 +364,35 @@ circle with a 16px glyph. Quiet and outline controls use the shared neutral
 hover surface for both hover and pressed states; outline keeps its border when
 disabled. Existing sm/md/lg sizes and the default sm size remain available.
 
-The 62 reviewed single-path, single-tone masks have opaque paths.
-`Icon` and `SessionIcon` retain their original 80% artwork opacity standalone;
-Button, IconButton, ActionItem and TabGroup slots own this opacity in controls
-through the public `--openbitfun-opacity-icon-artwork` contract. Button trailing
-slots use half the content opacity and restore full disabled content opacity.
-The progress-25 and legacy turn assets retain their internal transparency.
-Product callers should not add opacity or dimensions inside these owned slots.
+General-purpose icons use **Lucide**. Named icons and explicit `glyph` icons
+share a 1.6 line weight, semantic sizing, theme color and accessibility behavior.
+Only `minimal`, `standard`, `ultimate`, `creative` and `git` retain reviewed
+SVG masks. Product logos and mascots are separate brand artwork. The device
+overview retains its original device/server SVGs and MacBook image in the Web UI.
 
-The catalog uses exported vectors, including their view boxes and per-path
-opacity. Theme colors remain caller-owned through `currentColor`. Asset
-fingerprints are reviewed with intentional resource updates so replacing a
-glyph with a similarly named substitute cannot pass unnoticed.
-
-Prefer a catalog `name` whenever it is an exact semantic match. When the
-catalog has no matching symbol, pass the Lucide component through `glyph` so
-the shared boundary applies the standard 1.6 line weight, semantic sizing,
-tone and accessibility behavior:
+Use a semantic `name` when available, or import the required Lucide glyph:
 
 ```tsx
 import { Icon } from "@openbitfun/ui";
 import { Network } from "lucide-react";
 
+<Icon name="search" size="sm" />
 <Icon glyph={Network} size="sm" />
 ```
 
-Do not set `strokeWidth` at product call sites. Let a button, menu, tab or
-navigation slot own the final glyph geometry; use `size` only for standalone
-icons. Raw Lucide rendering remains appropriate for intentionally filled
-marks, progress indicators, illustrations, or a reviewed optical exception.
+Do not set `strokeWidth` at product call sites. Button, menu, tab and navigation
+slots own final geometry and opacity; standalone named icons retain the public
+`--openbitfun-opacity-icon-artwork` treatment. Brand assets retain their original
+geometry, and fixture fingerprints protect the five preserved masks.
 
-Use `canonicalIconNames` for galleries and pickers. `iconNames` also keeps the
-legacy `download`, `circle` and `turn` entries for compatibility; prefer
-`arrow-down`, `unselected` and `<NumberBadge value={18} />` respectively.
-`turn` is only the old empty background, not a complete numbered marker.
-`NumberBadge` owns a 24px filled surface and 11px regular text; longer
-values grow horizontally. Callers supply formatted values and contextual
-accessible labels. `ToolbarBadge` delegates to the same anatomy.
+Use `canonicalIconNames` for galleries and pickers. Existing names remain
+compatible: `download` aliases `arrow-down`, `circle` aliases `unselected`,
+and legacy `turn` renders a Lucide circle. Use `NumberBadge` for numbered
+markers; it owns a 24px filled surface and 11px regular text, growing horizontally
+for longer values. `ToolbarBadge` delegates to the same anatomy.
 
-Use `Icon name="session"` in new consumers. `SessionIcon` retains its SVG
-interface for existing integrations, with geometry checked against the same
-catalog asset.
+Use `Icon name="session"` in new consumers. `SessionIcon` keeps its SVG props
+and ref interface, using the same Lucide MessageCircle glyph.
 
 ## Advanced selection and menus
 
@@ -332,9 +410,23 @@ Selection visuals now come from the public field/menu semantic tokens.
 SearchField sizes its decorative wrapper through Input's icon slot, so default
 catalog icons and native SVGs occupy the same region. Shortcut hints and clear
 actions can coexist; disabled and read-only fields disable the clear action.
+Use `trailing` for inline text or indicators and `trailingAction` for terminal
+`IconButton size="xs" shape="square"` controls (including tooltip-wrapped controls). Actions
+follow the shortcut hint, with the built-in clear action last. Standalone and
+panel fields inset terminal actions equally from the inline-end and block
+layout edges using `(input row height - action size) / 2`. The search outline
+is centered on those edges and does not participate in layout; its inner edge
+reduces each visible clearance equally by half the stroke width. Text-only trailing content retains
+the ordinary trailing input padding; embedded fields retain container-owned geometry.
+Search rows use `control.searchField.height.sm/md/lg`; compact `sm` is 30px,
+while other sizes and densities alias the generic control heights. Leading
+padding uses `space.component.inline` and icon-to-text spacing uses `space.1`.
+An absolute-positioned search host must reserve that same search-row height.
+The built-in clear action uses the shared square xs quiet-button hover feedback.
 
 Choose `size` explicitly when composing form rows: selectors default to `md`,
-while `Input` defaults to `sm`. The shared `control.height.sm/md/lg` tokens and
+while `Input` defaults to `sm`. Except for SearchField's dedicated row contract,
+the shared `control.height.sm/md/lg` tokens and
 active density own the actual heights; consumers must not replace them with
 page-level heights or padding overrides. Picker bodies stay single-line and
 token-sized, with labels and validation messages outside that height. Select
@@ -378,11 +470,50 @@ restores focus before dispatching `onSelect`; the host owns asynchronous work
 and error handling. The popup flips and clamps to the viewport, keeps keyboard
 navigation in the active menu, and supports safe pointer travel to either side.
 
-Portals resolve through `DesignSystemProvider.portalHost`, then fall back to the
-nearest design-system root. Stable `parts` wrappers preserve host data hooks;
+Portals resolve through `DesignSystemProvider.portalHost`, then fall back to one
+document-owned overlay host above application content. Stable `parts` wrappers preserve host data hooks;
 they must forward all props and refs and retain public component ownership.
 `useSubmenuIntent` is available for product popovers that need the same pointer
 corridor behavior.
+
+Custom composed menus reuse `useDismissibleLayer` and the public `usePresence`
+hook. Keep the positioned/measured layer separate from its animated surface,
+retain geometry until presence unmounts it, and make exiting content inert.
+Presence cancels a pending exit when reopened and honors reduced motion.
+The host should opt a presence-owned surface out of its fallback animations;
+outside-pointer dismissal leaves the clicked control's focus alone, while
+Escape and menu actions restore the trigger before handing off to another UI.
+
+### Overlay ownership and ordering
+
+`Portal` (or its expression form `createOverlayPortal`) registers each presented
+surface with one coordinator per document. All providers in that document share
+the same order. New openings receive a later rank; content/progress updates and
+StrictMode effect replay retain their rank. Reopening a retained surface brings
+it forward. Do not use category z-index values to rank menus, dialogs or notices.
+
+Nested portals inherit ownership. Sibling portals and coordinate menus pass
+`ownerRef` for their source element, including menus rendered by a global
+renderer. Child menus remain above their owner, belong to its modal focus domain,
+and become hidden when that owner closes. A modal may have owned child portals;
+unrelated background surfaces remain inert through its exit transition.
+
+Use `open={open}` for retained exits and unmount when the exit completes.
+Custom modal portals additionally pass `modal`, `surfaceRef`, and `onDismiss`;
+their surface supplies dialog semantics and a label. The coordinator owns scroll
+locking, background inert state, top-layer Escape/outside dismissal and focus
+return after the modal barrier is released. Use `subscribeOverlayInteraction`
+for custom menu keyboard/outside handling instead of competing document listeners.
+Host shortcut routers can use `hasOverlayLayers()` to defer Escape.
+
+Background notices use `passive`. Their first presentation waits until a modal
+releases the document; already visible notices retain their rank behind later
+modals. Start dismissal timers inside the admitted content and pause them while
+`useHasModalOverlay()` is true. A notification stack uses a layout-only
+`OverlayRegion`, with one `OverlayLayer` per card. The region and scroll ancestors
+must not introduce a stacking context (z-index, fixed positioning, transform,
+filter, isolation or paint containment); apply material and motion to each card.
+Panel-local views and noninteractive export render trees remain local content.
 
 ## FlowChat tool cards
 
@@ -436,6 +567,14 @@ dynamic metadata, and `actions` contains controls revealed on hover or keyboard
 focus. Use `ToolCardChangeSummary` for added/removed counts; domain icons and
 interaction affordances belong in `actions`, not in the summary.
 
+The summary row insets both ends with one value (`--_tool-card-summary-inset`),
+so trailing metadata keeps the same distance to the card edge as the leading
+icon or label. The reveal gutter of `actions` belongs to the action region
+itself: while hidden it occupies no row space, and while revealed it compensates
+for its own corner gutter instead of shrinking the row inset. A consumer slot
+that renders empty (a fragment whose conditions are all false) stays inert: it
+adds no row gap and no divider for the trailing status icon.
+
 Concrete tool-card views compose those frameworks without importing product
 state. The published families cover file and command execution, search and web
 results, agent and session activity, Git and review summaries, page lifecycle,
@@ -455,9 +594,28 @@ leading roles scale with user typography. FieldGroup uses the form group tint,
 retaining its existing row padding, dividers, and radius. The Patterns form
 specimen shows both orientations and long values over a tinted container.
 
-Menus keep contiguous 30px rows with no additional list or heading-to-item gap;
-separators own their 8px vertical margins. Their keyboard focus indicator is
-inset so scrolling does not clip it or require extra permanent padding.
+Menu and Listbox row surfaces are separated by `overlay.menu.rowGap` (2px),
+including grouped options and the Listbox used by Select, Combobox and MultiSelect.
+This is distinct from `itemGap` (icon-to-label spacing) and `sectionGap` (8px).
+Menu keeps its 30px row height and no extra heading-to-item gap; separators and
+adjacent sections account for the row gap instead of adding it twice.
+The menu keyboard focus indicator stays inset so scrolling does not clip it.
+
+The list owns spacing; individual rows never add compensating margins. `Menu`
+and `MenuSection` use `MenuList` internally. If custom scrolling, animation or
+other markup wraps a collection of MenuItems, use `MenuList` immediately around
+the rows (for example, `<ScrollArea><MenuList>...</MenuList></ScrollArea>`).
+Flex gap only reaches immediate children, so a plain wrapper loses that contract.
+Product code owns positioning and viewport limits, and must not patch private
+list/section-items/group-options gaps. A deliberate density variation belongs
+on the owning surface via `--openbitfun-overlay-menu-row-gap`.
+
+Menus use `overlay.menu.inlineSize` by default. `Menu` / `MenuPopover` accept
+`inlineSize="content"` for short, product-owned surfaces such as a context menu:
+the surface then hugs its widest row, stays at or above
+`overlay.menu.minInlineSize`, and never exceeds the fixed token. Long menus that
+share a column with the same triggering control keep the fixed width.
+
 ActionItem hover and pressed surfaces use the semantic neutral hover fill;
 pressed text remains semibold. Menu and navigation captions consume the final
 caption color directly, avoiding a second opacity multiplier. The nested-menu

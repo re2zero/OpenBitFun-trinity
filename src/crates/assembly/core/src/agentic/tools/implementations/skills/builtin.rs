@@ -120,7 +120,9 @@ async fn write_installed_manifest(root: &Path) -> OpenBitFunResult<()> {
     Ok(())
 }
 
-async fn acquire_install_lock(user_skills_root: &Path) -> OpenBitFunResult<BuiltinSkillsInstallLock> {
+async fn acquire_install_lock(
+    user_skills_root: &Path,
+) -> OpenBitFunResult<BuiltinSkillsInstallLock> {
     let lock_path = builtin_skills_install_lock_path(user_skills_root);
 
     // Use an OS-backed advisory file lock so parallel test processes and app
@@ -321,6 +323,71 @@ mod tests {
             .unwrap_or_else(|| panic!("Missing embedded built-in skill file: {path}"))
             .contents_utf8()
             .unwrap_or_else(|| panic!("Built-in skill file is not UTF-8: {path}"))
+    }
+
+    #[test]
+    fn custom_agent_skill_embeds_parseable_templates() {
+        use openbitfun_agent_runtime::custom_agent::{
+            custom_agent_read_markdown_str, default_custom_agent_tools,
+            default_custom_agent_user_context_policy, CustomAgentKind, CustomAgentLevel,
+            CUSTOM_AGENT_SCHEMA_VERSION,
+        };
+
+        let skill = SkillData::from_markdown(
+            "/openbitfun-system/create-agent".to_string(),
+            embedded_skill_text("create-agent/SKILL.md"),
+            SkillLocation::User,
+            true,
+        )
+        .expect("agent authoring skill should parse");
+        assert_eq!(skill.name, "create-agent");
+        assert!(!embedded_skill_text("create-agent/references/tool-catalog.md").is_empty());
+
+        for (path, kind, levels, readonly, model, default_tools) in [
+            (
+                "create-agent/assets/mode.md",
+                CustomAgentKind::Mode,
+                vec![CustomAgentLevel::User],
+                false,
+                "primary",
+                true,
+            ),
+            (
+                "create-agent/assets/subagent.md",
+                CustomAgentKind::Subagent,
+                vec![CustomAgentLevel::User, CustomAgentLevel::Project],
+                true,
+                "fast",
+                false,
+            ),
+        ] {
+            for level in levels {
+                let parsed = custom_agent_read_markdown_str(embedded_skill_text(path), level)
+                    .expect("embedded agent template should parse");
+                let definition = parsed.definition;
+                assert_eq!(
+                    parsed.metadata.schema_version,
+                    Some(CUSTOM_AGENT_SCHEMA_VERSION)
+                );
+                assert!(!parsed.metadata.generated_id_from_name);
+                assert_eq!(parsed.metadata.used_default_tools, default_tools);
+                assert_eq!(definition.kind, kind);
+                assert_eq!(definition.level, level);
+                assert_eq!(definition.readonly, readonly);
+                assert!(!definition.review);
+                assert_eq!(definition.model, model);
+                assert!(!definition.model_is_explicit);
+                assert!(!definition.should_save_model());
+                assert_eq!(definition.tools, default_custom_agent_tools(kind));
+                assert_eq!(
+                    definition.user_context_policy,
+                    default_custom_agent_user_context_policy(kind)
+                );
+                assert!(!definition.name.trim().is_empty());
+                assert!(!definition.description.trim().is_empty());
+                assert!(!definition.prompt.trim().is_empty());
+            }
+        }
     }
 
     #[test]
@@ -556,6 +623,23 @@ mod tests {
         let workflow =
             embedded_skill_text("create-openbitfun-skin/references/authoring-workflow.md");
         assert!(workflow.contains("Bump it whenever the manifest"));
+    }
+
+    #[test]
+    fn commit_push_pr_is_bundled_with_attribution_and_owns_lightweight_pr_requests() {
+        let skill = embedded_skill_text("commit-push-pr/SKILL.md");
+        assert!(skill.contains("name: commit-push-pr"));
+        assert!(skill
+            .contains("Co-authored-by: OpenBitFun <318544290+bitfun-ai@users.noreply.github.com>"));
+        assert!(skill.contains("Generated with [OpenBitFun](https://github.com/bitfun-ai)"));
+
+        let ship = embedded_skill_text("gstack-ship/SKILL.md");
+        let ship_frontmatter = ship
+            .split("---")
+            .nth(1)
+            .expect("gstack-ship should have YAML frontmatter");
+        assert!(ship_frontmatter.contains("explicit `/ship`"));
+        assert!(ship_frontmatter.contains("built-in `commit-push-pr` skill instead"));
     }
 
     #[test]

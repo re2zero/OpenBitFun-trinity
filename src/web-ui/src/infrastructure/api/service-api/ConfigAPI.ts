@@ -1,3 +1,4 @@
+import { workspaceScopedRequest } from './legacyWorkspaceCompatibility';
  
 
 import { api } from './ApiClient';
@@ -14,6 +15,7 @@ import type {
   SkillLevel,
   SkillMarketDownloadResult,
   SkillMarketItem,
+  SkillMarketResults,
   SkillValidationResult,
 } from '../../config/types';
 import type {
@@ -25,7 +27,7 @@ export type { SaveCloudSpeechConfigRequest, SaveCloudSpeechConfigResult } from '
 
 export interface GetSkillConfigsParams {
   forceRefresh?: boolean;
-  workspacePath?: string;
+  workspaceId?: string;
 }
 
 function normalizeSkillScanReport<T>(response: T[] | Omit<SkillScanReport<T>, 'diagnosticsAvailable'>): SkillScanReport<T> {
@@ -41,10 +43,11 @@ function normalizeSkillScanReport<T>(response: T[] | Omit<SkillScanReport<T>, 'd
 export interface GetModeSkillConfigsParams {
   modeId: string;
   forceRefresh?: boolean;
-  workspacePath?: string;
+  workspaceId?: string;
 }
 
 export interface SetGlobalSkillDisabledParams {
+  workspaceId?: string;
   skillKey: string;
   disabled: boolean;
 }
@@ -53,29 +56,33 @@ export interface SetModeSkillDisabledParams {
   modeId: string;
   skillKey: string;
   disabled: boolean;
-  workspacePath?: string;
+  workspaceId?: string;
 }
 
 export interface ReplaceModeSkillSelectionParams {
   modeId: string;
   enabledSkillKeys: string[];
-  workspacePath?: string;
+  workspaceId?: string;
 }
 
 export interface ResetModeSkillSelectionParams {
   modeId: string;
-  workspacePath?: string;
+  workspaceId?: string;
 }
 
 export interface AddSkillParams {
+  expectedSourceFingerprint?: string;
+  targetName?: string;
+  sourceKey?: string;
   sourcePath: string;
   level: SkillLevel;
-  workspacePath?: string;
+  workspaceId?: string;
 }
 
 export interface DeleteSkillParams {
+  expectedImportId?: string;
   skillKey: string;
-  workspacePath?: string;
+  workspaceId?: string;
 }
 
 export interface WebSearchCredentialStatus {
@@ -86,7 +93,7 @@ export interface WebSearchCredentialStatus {
 export interface DownloadSkillMarketParams {
   packageId: string;
   level?: SkillLevel;
-  workspacePath?: string;
+  workspaceId?: string;
 }
 
 const SKILL_CONFIG_REQUEST_TIMEOUT_MS = 60_000;
@@ -157,7 +164,7 @@ export class ConfigAPI {
         request: { path, value } 
       });
     } catch (error) {
-      throw createTauriCommandError('set_config', error, { path, value });
+      throw createTauriCommandError('set_config', error, { path, value: path === 'app.skill_market' ? '[redacted]' : value });
     }
   }
 
@@ -369,16 +376,16 @@ export class ConfigAPI {
    
   async getSkillConfigs({
     forceRefresh,
-    workspacePath,
+    workspaceId,
   }: GetSkillConfigsParams = {}): Promise<SkillInfo[]> {
     try {
       return await api.invoke(
         'get_skill_configs',
-        { forceRefresh, workspacePath },
+        await workspaceScopedRequest({ forceRefresh, workspaceId }),
         { timeout: SKILL_CONFIG_REQUEST_TIMEOUT_MS },
       );
     } catch (error) {
-      throw createTauriCommandError('get_skill_configs', error, { forceRefresh, workspacePath });
+      throw createTauriCommandError('get_skill_configs', error, { forceRefresh, workspaceId });
     }
   }
 
@@ -386,58 +393,59 @@ export class ConfigAPI {
   async getModeSkillConfigs({
     modeId,
     forceRefresh,
-    workspacePath,
+    workspaceId,
   }: GetModeSkillConfigsParams): Promise<ModeSkillInfo[]> {
     try {
       return await api.invoke(
         'get_mode_skill_configs',
-        { modeId, forceRefresh, workspacePath },
+        await workspaceScopedRequest({ modeId, forceRefresh, workspaceId }),
         { timeout: SKILL_CONFIG_REQUEST_TIMEOUT_MS },
       );
     } catch (error) {
-      throw createTauriCommandError('get_mode_skill_configs', error, { modeId, forceRefresh, workspacePath });
+      throw createTauriCommandError('get_mode_skill_configs', error, { modeId, forceRefresh, workspaceId });
     }
   }
 
-  async getSkillScanReport({ forceRefresh, workspacePath }: GetSkillConfigsParams = {}): Promise<SkillScanReport> {
+  async getSkillScanReport({ forceRefresh, workspaceId }: GetSkillConfigsParams = {}): Promise<SkillScanReport> {
     try {
       const response = await api.invoke<SkillInfo[] | Omit<SkillScanReport, 'diagnosticsAvailable'>>(
-        'get_skill_configs', { forceRefresh, workspacePath, includeDiagnostics: true },
+        'get_skill_configs', await workspaceScopedRequest({ forceRefresh, workspaceId, includeDiagnostics: true }),
         { timeout: SKILL_CONFIG_REQUEST_TIMEOUT_MS },
       );
       return normalizeSkillScanReport(response);
     } catch (error) {
-      throw createTauriCommandError('get_skill_configs', error, { forceRefresh, workspacePath });
+      throw createTauriCommandError('get_skill_configs', error, { forceRefresh, workspaceId });
     }
   }
 
-  async getModeSkillScanReport({ modeId, forceRefresh, workspacePath }: GetModeSkillConfigsParams): Promise<SkillScanReport<ModeSkillInfo>> {
+  async getModeSkillScanReport({ modeId, forceRefresh, workspaceId }: GetModeSkillConfigsParams): Promise<SkillScanReport<ModeSkillInfo>> {
     try {
       const response = await api.invoke<ModeSkillInfo[] | Omit<SkillScanReport<ModeSkillInfo>, 'diagnosticsAvailable'>>(
-        'get_mode_skill_configs', { modeId, forceRefresh, workspacePath, includeDiagnostics: true },
+        'get_mode_skill_configs', await workspaceScopedRequest({ modeId, forceRefresh, workspaceId, includeDiagnostics: true }),
         { timeout: SKILL_CONFIG_REQUEST_TIMEOUT_MS },
       );
       return normalizeSkillScanReport(response);
     } catch (error) {
-      throw createTauriCommandError('get_mode_skill_configs', error, { modeId, forceRefresh, workspacePath });
+      throw createTauriCommandError('get_mode_skill_configs', error, { modeId, forceRefresh, workspaceId });
     }
   }
 
-  async getGlobalSkillSettings(): Promise<GlobalSkillSettings> {
+  async getGlobalSkillSettings(workspaceId?: string): Promise<GlobalSkillSettings> {
     try {
-      return await api.invoke('get_global_skill_settings');
+      return await api.invoke('get_global_skill_settings', workspaceId !== undefined ? { request: await workspaceScopedRequest({ workspaceId }) } : undefined);
     } catch (error) {
       throw createTauriCommandError('get_global_skill_settings', error);
     }
   }
 
   async setGlobalSkillDisabled({
+    workspaceId,
     skillKey,
     disabled,
   }: SetGlobalSkillDisabledParams): Promise<GlobalSkillSettings> {
     try {
       return await api.invoke('set_global_skill_disabled', {
-        request: { skillKey, disabled },
+        request: await workspaceScopedRequest({ skillKey, disabled, workspaceId }),
       });
     } catch (error) {
       throw createTauriCommandError('set_global_skill_disabled', error, { skillKey, disabled });
@@ -449,53 +457,53 @@ export class ConfigAPI {
     modeId,
     skillKey,
     disabled,
-    workspacePath,
+    workspaceId,
   }: SetModeSkillDisabledParams): Promise<string> {
     try {
-      return await api.invoke('set_mode_skill_disabled', { modeId, skillKey, disabled, workspacePath });
+      return await api.invoke('set_mode_skill_disabled', await workspaceScopedRequest({ modeId, skillKey, disabled, workspaceId }));
     } catch (error) {
-      throw createTauriCommandError('set_mode_skill_disabled', error, { modeId, skillKey, disabled, workspacePath });
+      throw createTauriCommandError('set_mode_skill_disabled', error, { modeId, skillKey, disabled, workspaceId });
     }
   }
 
   async replaceModeSkillSelection({
     modeId,
     enabledSkillKeys,
-    workspacePath,
+    workspaceId,
   }: ReplaceModeSkillSelectionParams): Promise<string> {
     try {
       return await api.invoke('replace_mode_skill_selection', {
-        request: { modeId, enabledSkillKeys, workspacePath },
+        request: await workspaceScopedRequest({ modeId, enabledSkillKeys, workspaceId }),
       });
     } catch (error) {
       throw createTauriCommandError('replace_mode_skill_selection', error, {
         modeId,
         enabledSkillKeys,
-        workspacePath,
+        workspaceId,
       });
     }
   }
 
   async resetModeSkillSelection({
     modeId,
-    workspacePath,
+    workspaceId,
   }: ResetModeSkillSelectionParams): Promise<string> {
     try {
       return await api.invoke('reset_mode_skill_selection', {
-        request: { modeId, workspacePath },
+        request: await workspaceScopedRequest({ modeId, workspaceId }),
       });
     } catch (error) {
       throw createTauriCommandError('reset_mode_skill_selection', error, {
         modeId,
-        workspacePath,
+        workspaceId,
       });
     }
   }
 
    
-  async validateSkillPath(path: string): Promise<SkillValidationResult> {
+  async validateSkillPath(path: string, source?: { sourceKey: string; workspaceId?: string }): Promise<SkillValidationResult> {
     try {
-      return await api.invoke('validate_skill_path', { path });
+      return await api.invoke('validate_skill_path', await workspaceScopedRequest({ path, ...source }));
     } catch (error) {
       throw createTauriCommandError('validate_skill_path', error, { path });
     }
@@ -503,26 +511,30 @@ export class ConfigAPI {
 
    
   async addSkill({
+    expectedSourceFingerprint,
+    targetName,
+    sourceKey,
     sourcePath,
     level,
-    workspacePath,
+    workspaceId,
   }: AddSkillParams): Promise<string> {
     try {
-      return await api.invoke('add_skill', { sourcePath, level, workspacePath });
+      return await api.invoke('add_skill', await workspaceScopedRequest({ sourcePath, level, workspaceId, ...(sourceKey ? { sourceKey } : {}), ...(targetName ? { targetName } : {}), ...(expectedSourceFingerprint !== undefined ? { expectedSourceFingerprint } : {}) }));
     } catch (error) {
-      throw createTauriCommandError('add_skill', error, { sourcePath, level, workspacePath });
+      throw createTauriCommandError('add_skill', error, { sourcePath, level, workspaceId });
     }
   }
 
    
   async deleteSkill({
+    expectedImportId,
     skillKey,
-    workspacePath,
+    workspaceId,
   }: DeleteSkillParams): Promise<string> {
     try {
-      return await api.invoke('delete_skill', { skillKey, workspacePath });
+      return await api.invoke('delete_skill', await workspaceScopedRequest({ skillKey, workspaceId, ...(expectedImportId ? { expectedImportId } : {}) }));
     } catch (error) {
-      throw createTauriCommandError('delete_skill', error, { skillKey, workspacePath });
+      throw createTauriCommandError('delete_skill', error, { skillKey, workspaceId });
     }
   }
 
@@ -546,20 +558,37 @@ export class ConfigAPI {
     }
   }
 
+  async querySkillMarkets(query?: string, limit?: number): Promise<SkillMarketResults> {
+    const command = query?.trim() ? 'search_skill_market' : 'list_skill_market';
+    try {
+      const result = await api.invoke<SkillMarketResults | SkillMarketItem[]>(command, {
+        request: { query, limit, includeDiagnostics: true },
+      });
+      // Older hosts ignore the additive request flag and return the original array.
+      if (Array.isArray(result)) return { skills: result, sourceErrors: [] };
+      if (!result || !Array.isArray(result.skills) || !Array.isArray(result.sourceErrors)) {
+        throw new Error('Invalid marketplace response');
+      }
+      return result;
+    } catch (error) {
+      throw createTauriCommandError(command, error, { query, limit });
+    }
+  }
+
   async downloadSkillMarket({
     packageId,
     level = 'project',
-    workspacePath,
+    workspaceId,
   }: DownloadSkillMarketParams): Promise<SkillMarketDownloadResult> {
     try {
       return await api.invoke('download_skill_market', {
-        request: { package: packageId, level, workspacePath }
+        request: await workspaceScopedRequest({ package: packageId, level, workspaceId })
       });
     } catch (error) {
       throw createTauriCommandError('download_skill_market', error, {
         package: packageId,
         level,
-        workspacePath,
+        workspaceId,
       });
     }
   }

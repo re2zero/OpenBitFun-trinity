@@ -1,3 +1,5 @@
+import { hostQueueSupported, hostDialogQueue, queueImageAttachments } from '../../services/hostDialogQueue';
+import { requireSessionOwningWorkspaceId, sessionOwningWorkspaceId } from '../../utils/sessionOrdering';
 /**
  * Local session driver: the default flavor backed by this machine's (or the
  * attached peer's) agent runtime via `agentAPI`.
@@ -35,14 +37,15 @@ import { syncSessionModelSelection } from '../../utils/modelSync';
 import { nextStorageTurnIndex } from '../../utils/flowChatTurnIdentity';
 import { markCurrentTurnItemsAsCancelled } from '../../utils/turnCancellation';
 import {
-  requireSessionProjectWorkspacePath,
   sessionProjectWorkspacePath,
+  sessionWorkspaceId,
 } from '../../utils/sessionWorkspace';
 import { sessionWorktreeMaterializationPlan } from '../../utils/sessionWorktree';
 import { cleanupSaveState, updateSessionMetadata } from '../../services/flow-chat-manager/PersistenceModule';
 import { cleanupSessionBuffers } from '../../services/flow-chat-manager/TextChunkModule';
-import { applyGeneratingTitlePlaceholder } from '../shared';
+import { addSubmittedDialogTurn, applyGeneratingTitlePlaceholder } from '../shared';
 import { initializeSessionTitleMetadata } from '../../services/sessionTitleMetadata';
+import { inheritReviewPermissionMode } from '../../services/inheritReviewPermissionMode';
 
 const log = createLogger('LocalSessionDriver');
 
@@ -115,8 +118,8 @@ export const localSessionDriver: SessionDriver = {
     };
 
     const createdTitleDescriptor = await initializeSessionTitleMetadata(
-      response.sessionId, titleDescriptor, effectiveProjectWorkspacePath,
-      surfaceScope, remoteConnectionId, remoteSshHost,
+      response.sessionId, titleDescriptor, requireSessionOwningWorkspaceId({ config: resolvedConfig }),
+      surfaceScope,
     );
 
     context.flowChatStore.createSession(
@@ -168,10 +171,7 @@ export const localSessionDriver: SessionDriver = {
 
     await sessionAPI.archiveSession(
       sessionId,
-      requireSessionProjectWorkspacePath(session, sessionId),
-      session.remoteConnectionId,
-      session.remoteSshHost,
-    );
+      requireSessionOwningWorkspaceId(session));
 
     context.flowChatStore.removeSession(
       sessionId,
@@ -199,6 +199,7 @@ export const localSessionDriver: SessionDriver = {
     const updatedTitle = await agentAPI.updateSessionTitle({
       sessionId,
       title,
+      workspaceId: sessionOwningWorkspaceId(session),
       workspacePath: sessionProjectWorkspacePath(session),
       remoteConnectionId: session.remoteConnectionId,
       remoteSshHost: session.remoteSshHost,
@@ -257,7 +258,8 @@ export const localSessionDriver: SessionDriver = {
     }
     await agentAPI.compactSession({
       sessionId,
-      workspacePath: session.workspacePath,
+      workspaceId: sessionOwningWorkspaceId(session),
+      workspacePath: sessionProjectWorkspacePath(session),
       remoteConnectionId: session.remoteConnectionId,
       remoteSshHost: session.remoteSshHost,
     });
@@ -320,6 +322,67 @@ export const localSessionDriver: SessionDriver = {
       options,
     } = input;
 
+    const prepareSubmission = async () => {
+      if (readySession.config.worktreeIsolationRequested !== undefined) {
+        const materialization = sessionWorktreeMaterializationPlan(readySession);
+        if (materialization) {
+          log.info('Materializing requested worktree after prompt submission', {
+            sessionId,
+            enabled: materialization.enabled,
+            projectWorkspaceId: materialization.projectWorkspaceId,
+            projectWorkspacePath: materialization.projectWorkspacePath,
+          });
+          const result = await worktreeAPI.bindSession(
+            sessionId,
+            materialization.enabled,
+            globalThis.crypto?.randomUUID?.() ?? `worktree-first-turn-${Date.now()}`,
+            materialization,
+          );
+          surfaceScope.assertCurrent('bind session worktree');
+          context.flowChatStore.updateSessionExecutionTarget(sessionId, {
+            workspacePath: result.workspacePath,
+            projectWorkspacePath: result.projectWorkspacePath,
+            workspaceId: result.workspaceId,
+            projectWorkspaceId: result.projectWorkspaceId,
+            executionTarget: result.executionTarget,
+          });
+          if (result.retainedWorktreePath) {
+            log.warn('Released worktree retained because it contains local work', {
+              sessionId,
+              retainedWorktreePath: result.retainedWorktreePath,
+            });
+          }
+        }
+        context.flowChatStore.setSessionWorktreeIsolationRequested(sessionId, undefined);
+      }
+
+      if (isFirstMessage) {
+        applyGeneratingTitlePlaceholder(context, sessionId, message);
+      }
+
+      if (!acpClientId) {
+        await syncSessionModelSelection(context, sessionId, currentAgentType, surfaceScope);
+      }
+    };
+    if (!acpClientId && hostQueueSupported(sessionId) && (!options?.execution || options.execution.kind === 'standard')) {
+      if (readySession.isHistorical || context.pendingHistoryLoads.has(surfaceScope.key('history-load', surfaceScope.epoch, sessionId))) {
+        throw new Error('Session history is still restoring, please retry once loading finishes');
+      }
+      await prepareSubmission();
+      await inheritReviewPermissionMode(readySession, context.flowChatStore.getState().sessions,
+        () => surfaceScope.assertCurrent('inherit review session permission mode'));
+      tracker.hostSubmitStarted = true;
+      await hostDialogQueue(sessionId).submit({ content: message, displayContent: displayMessage,
+        agentType: currentAgentType, attachments: queueImageAttachments(options?.imageContexts),
+        metadata: options?.userMessageMetadata ?? {} },
+        { composerDraft: options?.pendingQueueDraft, imageContexts: options?.imageContexts, imageDisplayData: options?.imageDisplayData }, options?.turnId);
+      tracker.hostAcceptedTurn = true;
+      surfaceScope.assertCurrent('accept host message');
+      context.flowChatStore.updateSessionLastSubmittedMode(sessionId, currentAgentType);
+      if (isFirstMessage) await updateSessionMetadata(context, sessionId, ['titleMetadata']);
+      return 'completed';
+    }
+
     const dialogTurnId = options?.turnId?.trim() ||
       `dialog_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     const hasImages = (options?.imageContexts?.length ?? 0) > 0;
@@ -358,7 +421,7 @@ export const localSessionDriver: SessionDriver = {
       storageTurnIndex: acpStorageTurnIndex,
     };
 
-    context.flowChatStore.addDialogTurn(sessionId, dialogTurn);
+    addSubmittedDialogTurn(context, surfaceScope, sessionId, dialogTurn);
     tracker.createdLocalTurnId = dialogTurnId;
     const isRestoringHistoricalSession =
       readySession.isHistorical
@@ -388,44 +451,7 @@ export const localSessionDriver: SessionDriver = {
       metadata: { sessionId: sessionId, dialogTurnId }
     });
 
-    if (readySession.config.worktreeIsolationRequested !== undefined) {
-      const materialization = sessionWorktreeMaterializationPlan(readySession);
-      if (materialization) {
-        log.info('Materializing requested worktree after prompt submission', {
-          sessionId,
-          enabled: materialization.enabled,
-          projectWorkspacePath: materialization.projectWorkspacePath,
-        });
-        const result = await worktreeAPI.bindSession(
-          sessionId,
-          materialization.enabled,
-          globalThis.crypto?.randomUUID?.() ?? `worktree-first-turn-${Date.now()}`,
-          materialization.projectWorkspacePath,
-        );
-        surfaceScope.assertCurrent('bind session worktree');
-        context.flowChatStore.updateSessionExecutionTarget(sessionId, {
-          workspacePath: result.workspacePath,
-          projectWorkspacePath: result.projectWorkspacePath,
-          workspaceId: result.workspaceId,
-          executionTarget: result.executionTarget,
-        });
-        if (result.retainedWorktreePath) {
-          log.warn('Released worktree retained because it contains local work', {
-            sessionId,
-            retainedWorktreePath: result.retainedWorktreePath,
-          });
-        }
-      }
-      context.flowChatStore.setSessionWorktreeIsolationRequested(sessionId, undefined);
-    }
-
-    if (isFirstMessage) {
-      applyGeneratingTitlePlaceholder(context, sessionId, message);
-    }
-
-    if (!acpClientId) {
-      await syncSessionModelSelection(context, sessionId, currentAgentType, surfaceScope);
-    }
+    await prepareSubmission();
 
     const updatedSession = context.flowChatStore.getState().sessions.get(sessionId);
     if (!updatedSession) {
@@ -435,6 +461,7 @@ export const localSessionDriver: SessionDriver = {
     context.contentBuffers.set(sessionId, new Map());
     context.activeTextItems.set(sessionId, new Map());
 
+    const workspaceId = sessionWorkspaceId(updatedSession);
     const workspacePath = updatedSession.workspacePath;
     const projectWorkspacePath = sessionProjectWorkspacePath(updatedSession);
 
@@ -446,6 +473,7 @@ export const localSessionDriver: SessionDriver = {
         userInput: message,
         originalUserInput: displayMessage || message,
         turnId: dialogTurnId,
+        workspaceId,
         workspacePath,
         imageContexts: options?.imageContexts,
         userMessageMetadata: options?.userMessageMetadata,
@@ -456,6 +484,11 @@ export const localSessionDriver: SessionDriver = {
       surfaceScope.assertCurrent('start ACP dialog turn');
       context.flowChatStore.updateSessionLastSubmittedMode(sessionId, currentAgentType);
     } else {
+      await inheritReviewPermissionMode(
+        updatedSession,
+        context.flowChatStore.getState().sessions,
+        () => surfaceScope.assertCurrent('inherit review session permission mode'),
+      );
       try {
         tracker.hostSubmitStarted = true;
         await agentAPI.startDialogTurn({
@@ -464,6 +497,7 @@ export const localSessionDriver: SessionDriver = {
           originalUserInput: displayMessage || message,
           turnId: dialogTurnId,
           agentType: currentAgentType,
+          workspaceId,
           workspacePath,
           projectWorkspacePath,
           remoteConnectionId: updatedSession.remoteConnectionId,
@@ -490,6 +524,11 @@ export const localSessionDriver: SessionDriver = {
           surfaceScope.assertCurrent('load backend session retry');
           await retryCreateBackendSession(context, sessionId);
           surfaceScope.assertCurrent('retry backend session creation');
+          await inheritReviewPermissionMode(
+            updatedSession,
+            context.flowChatStore.getState().sessions,
+            () => surfaceScope.assertCurrent('inherit recreated review session permission mode'),
+          );
 
           tracker.hostSubmitStarted = true;
           await agentAPI.startDialogTurn({
@@ -498,6 +537,7 @@ export const localSessionDriver: SessionDriver = {
             originalUserInput: displayMessage || message,
             turnId: dialogTurnId,
             agentType: currentAgentType,
+            workspaceId,
             workspacePath,
             projectWorkspacePath,
             remoteConnectionId: updatedSession.remoteConnectionId,

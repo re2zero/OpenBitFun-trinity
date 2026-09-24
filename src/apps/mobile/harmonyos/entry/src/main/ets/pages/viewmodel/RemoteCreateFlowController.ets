@@ -77,7 +77,10 @@ export class RemoteCreateFlowController {
     path: string,
     agentType: string = 'code',
     inPlace: boolean = false,
-    deviceId: string = ''
+    deviceId: string = '',
+    remoteConnectionId?: string,
+    remoteSshHost?: string,
+    workspaceId?: string
   ): Promise<void> {
     const runtime = requireRemoteRuntime(this.remoteRuntime);
     runtime.filePreview.close();
@@ -87,7 +90,10 @@ export class RemoteCreateFlowController {
       '',
       agentType,
       inPlace ? (sessionId: string): void => this.navigateInPlace(sessionId) :
-        (sessionId: string): void => this.navigateCreated(sessionId)
+        (sessionId: string): void => this.navigateCreated(sessionId),
+      '', true, remoteConnectionId,
+      remoteSshHost,
+      workspaceId
     );
   }
 

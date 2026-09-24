@@ -5,16 +5,15 @@ use openbitfun_product_domains::external_sources::{
     EcosystemId, ExternalMcpImportApplyOutcomeV1, ExternalMcpImportApplyRequestV1,
     ExternalMcpImportApplyResultV1, ExternalMcpImportDispositionV1, ExternalMcpImportPlanItemV1,
     ExternalMcpImportPlanV1, ExternalMcpImportedItemV1, ExternalMcpServerDefinition,
-    ExternalMcpStaticStatus, ExternalSourceOperationError, ExternalSourceOperationErrorCode,
-    ExternalSourceOperationResult, PreparedExternalMcpImportServer,
-    PreparedExternalMcpImportTransport, EXTERNAL_MCP_IMPORT_SCHEMA_V1,
+    ExternalSourceOperationError, ExternalSourceOperationErrorCode, ExternalSourceOperationResult,
+    PreparedExternalMcpImportServer, PreparedExternalMcpImportTransport,
+    EXTERNAL_MCP_IMPORT_SCHEMA_V1,
 };
 use openbitfun_services_integrations::mcp::config::{
     MCPImportError, MCPImportServer, MCPImportTransport, MCPUserImportSnapshot,
 };
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ExternalMcpImportPreparation {
@@ -30,6 +29,7 @@ pub(crate) struct ExternalMcpImportCandidate {
 }
 
 struct ComputedPlan {
+    source_ids: BTreeMap<String, String>,
     public: ExternalMcpImportPlanV1,
     target_fingerprint: String,
     target_native_ids: BTreeSet<String>,
@@ -40,16 +40,16 @@ const MAX_IMPORT_PLAN_ITEMS: usize = 256;
 const MAX_NATIVE_ID_BYTES: usize = 160;
 
 pub async fn plan_external_mcp_import(
-    workspace_root: Option<PathBuf>,
+    workspace_id: Option<String>,
 ) -> ExternalSourceOperationResult<ExternalMcpImportPlanV1> {
     let config_service = mcp_config_service().await?;
-    Ok(compute_current_plan(workspace_root, &config_service)
+    Ok(compute_current_plan(workspace_id, &config_service)
         .await?
         .public)
 }
 
 pub async fn apply_external_mcp_import(
-    workspace_root: Option<PathBuf>,
+    workspace_id: Option<String>,
     request: ExternalMcpImportApplyRequestV1,
 ) -> ExternalSourceOperationResult<ExternalMcpImportApplyResultV1> {
     request.validate().map_err(|_| {
@@ -60,7 +60,7 @@ pub async fn apply_external_mcp_import(
         )
     })?;
     let config_service = mcp_config_service().await?;
-    let computed = compute_current_plan(workspace_root.clone(), &config_service).await?;
+    let computed = compute_current_plan(workspace_id.clone(), &config_service).await?;
     if request.plan_fingerprint != computed.public.plan_fingerprint {
         return Ok(stale_result(computed.public));
     }
@@ -91,7 +91,7 @@ pub async fn apply_external_mcp_import(
             outcome: ExternalMcpImportApplyOutcomeV1::Applied { imported },
         }),
         Err(MCPImportError::StaleConfiguration | MCPImportError::TargetConflict { .. }) => {
-            let refreshed = compute_current_plan(workspace_root, &config_service).await?;
+            let refreshed = compute_current_plan(workspace_id, &config_service).await?;
             Ok(stale_result(refreshed.public))
         }
         Err(error) => Err(map_import_error(error)),
@@ -119,12 +119,12 @@ async fn mcp_config_service(
 }
 
 async fn compute_current_plan(
-    workspace_root: Option<PathBuf>,
+    workspace_id: Option<String>,
     config_service: &crate::service::mcp::config::MCPConfigService,
 ) -> ExternalSourceOperationResult<ComputedPlan> {
-    let workspace_root = ensure_local_workspace(workspace_root).await?;
+    let workspace_id = ensure_local_workspace(workspace_id).await?;
     let candidates =
-        crate::external_sources::collect_external_mcp_import_candidates(workspace_root.as_deref())
+        crate::external_sources::collect_external_mcp_import_candidates(workspace_id.as_deref())
             .await
             .map_err(|_| {
                 operation_error(
@@ -148,14 +148,25 @@ async fn compute_current_plan(
 }
 
 async fn ensure_local_workspace(
-    workspace_root: Option<PathBuf>,
-) -> ExternalSourceOperationResult<Option<PathBuf>> {
-    if let Some(root) = workspace_root.as_ref() {
-        if crate::service::remote_ssh::workspace_state::is_remote_path(
-            root.to_string_lossy().as_ref(),
-        )
-        .await
-        {
+    workspace_id: Option<String>,
+) -> ExternalSourceOperationResult<Option<String>> {
+    if let Some(id) = workspace_id.as_deref() {
+        let service =
+            crate::service::workspace::get_global_workspace_service().ok_or_else(|| {
+                operation_error(
+                    ExternalSourceOperationErrorCode::Unavailable,
+                    "Workspace service is unavailable",
+                    true,
+                )
+            })?;
+        let workspace = service.require_workspace(id).await.map_err(|_| {
+            operation_error(
+                ExternalSourceOperationErrorCode::InvalidRequest,
+                "Unknown workspace ID",
+                false,
+            )
+        })?;
+        if workspace.workspace_kind == crate::service::workspace::WorkspaceKind::Remote {
             return Err(operation_error(
                 ExternalSourceOperationErrorCode::Unsupported,
                 "External MCP import is not available for a remote workspace",
@@ -163,7 +174,7 @@ async fn ensure_local_workspace(
             ));
         }
     }
-    Ok(workspace_root)
+    Ok(workspace_id)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,6 +222,19 @@ fn selected_imports(
             .get(&selection.candidate_id)
             .ok_or(SelectionError::Stale)?;
         imports.push(MCPImportServer {
+            environment: prepared.environment.clone(),
+            headers: prepared.headers.clone(),
+            source_id: current.source_ids.get(&selection.candidate_id).cloned(),
+            working_directory: prepared
+                .working_directory
+                .as_ref()
+                .map(|path| path.to_string_lossy().into_owned()),
+            timeouts: openbitfun_services_integrations::mcp::MCPServerTimeouts {
+                startup_ms: prepared.timeouts.startup_ms,
+                catalog_ms: prepared.timeouts.catalog_ms,
+                execution_ms: prepared.timeouts.execution_ms,
+            },
+            oauth_enabled: prepared.oauth_enabled,
             native_id,
             candidate_id: selection.candidate_id.clone(),
             behavior_version: prepared.behavior_version.clone(),
@@ -235,6 +259,15 @@ fn build_import_plan(
     target: &MCPUserImportSnapshot,
     mut candidates: Vec<ExternalMcpImportCandidate>,
 ) -> ComputedPlan {
+    let source_ids = candidates
+        .iter()
+        .map(|candidate| {
+            (
+                candidate.definition.candidate_id(),
+                candidate.ecosystem_id.as_str().to_string(),
+            )
+        })
+        .collect();
     candidates.sort_by(|left, right| left.definition.id.cmp(&right.definition.id));
     let mut reserved = target.native_ids.clone();
     let mut prepared = BTreeMap::new();
@@ -247,17 +280,6 @@ fn build_import_plan(
         });
         let (proposed_native_id, disposition, reason_code) = if already_imported {
             (None, ExternalMcpImportDispositionV1::AlreadyImported, None)
-        } else if !candidate.definition.source_enabled
-            || !matches!(
-                candidate.definition.static_status,
-                ExternalMcpStaticStatus::Ready
-            )
-        {
-            (
-                None,
-                ExternalMcpImportDispositionV1::Unavailable,
-                Some("external_mcp.import_unavailable".to_string()),
-            )
         } else {
             match candidate.preparation {
                 ExternalMcpImportPreparation::Unavailable(reason) => (
@@ -300,6 +322,7 @@ fn build_import_plan(
     };
     public.plan_fingerprint = plan_fingerprint(target, &public, &prepared);
     ComputedPlan {
+        source_ids,
         public,
         target_fingerprint: target.fingerprint.clone(),
         target_native_ids: target.native_ids.clone(),
@@ -419,6 +442,17 @@ fn plan_fingerprint(
         &serde_json::to_vec(&facts).expect("MCP import plan serialization cannot fail"),
     );
     for (candidate_id, server) in prepared {
+        hash_part(
+            &mut hasher,
+            &serde_json::to_vec(&(
+                &server.working_directory,
+                &server.environment,
+                &server.headers,
+                server.timeouts,
+                server.oauth_enabled,
+            ))
+            .expect("MCP import options serialization cannot fail"),
+        );
         hash_part(&mut hasher, candidate_id.as_bytes());
         hash_part(&mut hasher, server.behavior_version.as_bytes());
         match &server.transport {
@@ -492,7 +526,7 @@ fn operation_error(
 mod tests {
     use super::*;
     use openbitfun_product_domains::external_sources::{
-        ExternalMcpTransportKind, SourceKey, SourceQualifiedMcpServerId,
+        ExternalMcpStaticStatus, ExternalMcpTransportKind, SourceKey, SourceQualifiedMcpServerId,
     };
 
     fn candidate(command: &str) -> ExternalMcpImportCandidate {
@@ -518,6 +552,11 @@ mod tests {
             },
             ecosystem_id: EcosystemId::new("opencode").unwrap(),
             preparation: ExternalMcpImportPreparation::Prepared(PreparedExternalMcpImportServer {
+                environment: Default::default(),
+                headers: Default::default(),
+                working_directory: None,
+                timeouts: Default::default(),
+                oauth_enabled: None,
                 id,
                 behavior_version: "sha256:behavior-v1".to_string(),
                 transport: PreparedExternalMcpImportTransport::Local {
@@ -533,6 +572,25 @@ mod tests {
             fingerprint: "sha256:target".to_string(),
             native_ids: ids.iter().map(|id| (*id).to_string()).collect(),
             imports: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn import_eligibility_uses_preparation_instead_of_external_runtime_status() {
+        for status in [
+            ExternalMcpStaticStatus::DisabledBySource,
+            ExternalMcpStaticStatus::Unsupported {
+                reason: "External lifecycle is not implemented".into(),
+            },
+        ] {
+            let mut value = candidate("docs");
+            value.definition.source_enabled = false;
+            value.definition.static_status = status;
+            let plan = build_import_plan(&target(&[]), vec![value]);
+            assert_eq!(
+                plan.public.items[0].disposition,
+                ExternalMcpImportDispositionV1::Eligible
+            );
         }
     }
 
@@ -559,6 +617,35 @@ mod tests {
             first.public.plan_fingerprint,
             second.public.plan_fingerprint
         );
+    }
+
+    #[test]
+    fn import_options_are_versioned_and_forwarded_to_the_config_owner() {
+        let baseline = build_import_plan(&target(&[]), vec![candidate("node")]);
+        let mut changed = candidate("node");
+        let cwd = std::env::current_dir().unwrap();
+        if let ExternalMcpImportPreparation::Prepared(server) = &mut changed.preparation {
+            server.working_directory = Some(cwd.clone());
+            server.timeouts.execution_ms = Some(60_000);
+        }
+        let plan = build_import_plan(&target(&[]), vec![changed]);
+        assert_ne!(
+            baseline.public.plan_fingerprint,
+            plan.public.plan_fingerprint
+        );
+        let request = ExternalMcpImportApplyRequestV1 {
+            schema_version: EXTERNAL_MCP_IMPORT_SCHEMA_V1,
+            plan_fingerprint: plan.public.plan_fingerprint.clone(),
+            selections: vec![
+                openbitfun_product_domains::external_sources::ExternalMcpImportSelectionV1 {
+                    candidate_id: plan.public.items[0].candidate_id.clone(),
+                    requested_native_id: None,
+                },
+            ],
+        };
+        let imports = selected_imports(&plan, &request).unwrap();
+        assert_eq!(imports[0].working_directory.as_deref(), cwd.to_str());
+        assert_eq!(imports[0].timeouts.execution_ms, Some(60_000));
     }
 
     #[test]

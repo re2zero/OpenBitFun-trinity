@@ -51,6 +51,7 @@ equivalent exists:
 | `/new` or `/clear` | Start a new session. |
 | `/timeline` | Navigate persisted user messages without changing the session. |
 | `/fork` | Fork the full session or fork immediately before a selected prompt. |
+| `/goal <objective>` | Start a persistent goal through the shared runtime; while working, steer the active turn toward it. |
 | `/compact` or `/summarize` | Compact model context without deleting the saved transcript. |
 | `/undo` / `/redo` | Move the persisted session timeline backward or forward. |
 | `/diff` | Review staged, unstaged, and untracked workspace changes. |
@@ -70,6 +71,28 @@ selected child Session's active execution subtree.
 `/editor` does not install or guess an editor. For GUI editors,
 configure a command that waits until the file is closed; missing commands,
 non-zero exits, and empty editor output leave the current draft unchanged.
+
+### Long-running goals
+
+A prompt beginning with `/goal <objective>` activates the goal on the executing
+host, including interactive input and `exec`. `exec` and detached dispatch keep
+observing the goal's continuation turns; a successful intermediate turn does not
+finish the job. Completion finishes successfully; blocked, paused, quota-limited,
+or budget-limited goals return an incomplete/error outcome with the saved session
+available for inspection and explicit resumption where supported.
+
+Plain `/goal` prompts have no token budget by default. The optional `create_goal`
+tool budget is set only on explicit request and accounts for non-cached input plus
+output on the main session, not provider-wide billing or child-session usage. It
+is a soft budget checked by the runtime, with one final wrap-up turn. An existing
+100-continuation safety stop marks an unfinished goal blocked; explicit resume
+starts a fresh continuation window without resetting accumulated usage.
+
+The host must contain this behavior; a newer mobile or peer controller cannot add
+it to an older target. Goal state survives in session storage, but host shutdown
+is not automatic restart/recovery. Review the saved session and explicitly resume
+after an interruption. Completion still depends on the model verifying the user's
+requirements against real evidence; the runtime does not prove arbitrary tasks.
 
 ### Prompt continuity
 
@@ -219,6 +242,25 @@ the limit is enforced at the stdin reader. stdin EOF is a deterministic
 disconnect: the Host cancels in-flight turns and exits. `app/initialize`
 advertises only the methods this Host actually serves.
 
+### Publishing Pages
+
+After `/login`, Standard and Claw sessions can use `PagePublish` to save page
+content and optionally publish it, and `PageDeploy` to deploy or roll back to a
+saved version. The tools appear only while the executing CLI Runtime has an
+account session. Existing tool permissions still apply; unattended `exec` and
+dispatch runs use their configured approval policy.
+
+The CLI restores its saved account session at startup, including for `exec` and
+Shared Runtime hosts. Shared TUI account login remains unsupported: sign in
+through an embedded TUI before starting the Shared Runtime. Login changes in a
+separate process require restarting the executing Runtime.
+
+Inline files work without a local workspace. Directory uploads read only a
+local workspace on the executing host; remote workspace directory uploads are
+rejected, so supply inline files instead. Publishing returns production and
+preview URLs; private pages still require account access in the browser. The
+CLI does not add a Pages management screen or Peer HostInvoke page commands.
+
 ### Always-on account device host
 
 After signing in with `/login`, a server can keep its account device route
@@ -252,3 +294,9 @@ before replacing either entrypoint.
 Use `doctor` for product/runtime assembly diagnostics and `health` for required
 capability registration. They do not claim that external Network, Git, or MCP
 services are currently reachable.
+
+Account sign-in opens the shared OpenBitFun page, where you can choose GitHub or
+an email verification code. Email sign-in creates an independent account without
+a password; it does not link to a GitHub account. Use the same method and account
+on every device you want to connect. A terminal without a browser can display the
+authorization URL for opening on another device.

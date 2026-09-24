@@ -22,7 +22,6 @@ import { useDesignSystem } from "../../overlay/useDesignSystem";
 import { useDismissibleLayer } from "../../overlay/useDismissibleLayer";
 import { useFocusScope } from "../../overlay/useFocusScope";
 import { usePresence } from "../../overlay/usePresence";
-import { useScrollLock } from "../../overlay/useScrollLock";
 import { IconButton, type IconButtonProps } from "../IconButton";
 import styles from "./Dialog.module.css";
 
@@ -60,6 +59,9 @@ function containsType(children: ReactNode, type: unknown): boolean {
 interface OverlaySurfaceProps
   extends Omit<HTMLAttributes<HTMLDivElement>, "children"> {
   autoFocus?: boolean;
+  restoreFocus?: boolean;
+  portalTarget?: HTMLElement | null;
+  overlayProps?: HTMLAttributes<HTMLDivElement> & { [key: `data-${string}`]: string | number | boolean | undefined };
   children: ReactNode;
   closeOnEscape?: boolean;
   closeOnPointerOutside?: boolean;
@@ -81,6 +83,9 @@ const OverlaySurface = forwardRef<HTMLDivElement, OverlaySurfaceProps>(function 
   "aria-label": ariaLabel,
   "aria-labelledby": ariaLabelledBy,
   autoFocus = true,
+  restoreFocus = true,
+  portalTarget,
+  overlayProps,
   children,
   className,
   closeOnEscape = true,
@@ -98,7 +103,7 @@ const OverlaySurface = forwardRef<HTMLDivElement, OverlaySurfaceProps>(function 
   ...surfaceProps
 }, forwardedRef) {
   const designSystem = useDesignSystem();
-  const resolvedPortalHost = resolvePortalTarget(designSystem.portalHost);
+  const resolvedPortalHost = resolvePortalTarget(portalTarget ?? designSystem.portalHost);
   const ownerDocument = resolvedPortalHost?.ownerDocument
     ?? (typeof document === "undefined" ? null : document);
   const surfaceRef = useRef<HTMLDivElement | null>(null);
@@ -147,24 +152,28 @@ const OverlaySurface = forwardRef<HTMLDivElement, OverlaySurfaceProps>(function 
     ownerDocument,
   });
   useFocusScope({
-    active: open,
+    // A closed dialog mounts its surface on the presence commit. Start the
+    // focus scope only once that ref exists, including every subsequent open.
+    active: open && present,
     autoFocus,
     containerRef: surfaceRef,
     initialFocusRef,
     ownerDocument,
     trapFocus,
+    restoreFocus,
   });
-  useScrollLock((open || present) && preventScroll, ownerDocument);
 
   if (!present || !resolvedPortalHost) return null;
   const exiting = state === "exiting";
 
   return (
-    <Portal target={resolvedPortalHost}>
+    <Portal target={resolvedPortalHost} open={open} modal preventScroll={preventScroll}>
       <div
-        className={styles.overlay}
+        {...overlayProps}
+        className={classNames(styles.overlay, overlayProps?.className)}
         data-openbitfun-component={kind}
         data-openbitfun-part="overlay"
+        data-openbitfun-native-webview-occlusion
         data-placement={placement}
         data-state={exiting ? "exiting" : "open"}
       >

@@ -678,6 +678,13 @@ impl AgentRuntime {
         self.inner.submit_turn(request).await
     }
 
+    pub async fn manage_dialog_queue(
+        &self,
+        request: openbitfun_runtime_ports::DialogQueueRequest,
+    ) -> Result<openbitfun_runtime_ports::DialogQueueSnapshot, RuntimeError> {
+        self.inner.manage_dialog_queue(request).await
+    }
+
     pub async fn submit_dialog_turn(
         &self,
         request: AgentDialogTurnRequest,
@@ -767,6 +774,23 @@ impl AgentRuntime {
         request: AgentUserAnswersRequest,
     ) -> Result<(), RuntimeError> {
         self.inner.submit_user_answers(request).await
+    }
+
+    pub fn cancel_user_question(
+        &self,
+        session_id: &str,
+        tool_id: &str,
+    ) -> Result<(), crate::user_questions::UserInputSendError> {
+        self.inner.cancel_user_question(session_id, tool_id)
+    }
+
+    pub fn start_user_question_interaction(
+        &self,
+        session_id: &str,
+        tool_id: &str,
+    ) -> Result<(), crate::user_questions::UserInputSendError> {
+        self.inner
+            .start_user_question_interaction(session_id, tool_id)
     }
 
     pub fn session_interaction_snapshot(&self, session_id: &str) -> SessionInteractionSnapshot {

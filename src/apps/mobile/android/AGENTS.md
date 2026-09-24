@@ -49,6 +49,12 @@ JAVA_HOME='/Applications/Android Studio.app/Contents/jbr/Contents/Home' ./gradle
 # Verify negotiated execution modes and legacy fallback on an emulator.
 JAVA_HOME='/Applications/Android Studio.app/Contents/jbr/Contents/Home' ./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.openbitfun.mobile.app.HarnessProfileMenuTest
 
+# Verify running-input, plan gating, offline tools, and attachment retention.
+./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.openbitfun.mobile.app.MobileParityTest
+
+# Verify terminal WebView focus and native keyboard routing inside the dialog.
+./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.openbitfun.mobile.app.RuntimeTerminalViewTest
+
 # Run shared JVM tests after core-feature changes.
 cd ../shared
 JAVA_HOME='/Applications/Android Studio.app/Contents/jbr/Contents/Home' ./gradlew jvmTest
@@ -57,3 +63,8 @@ JAVA_HOME='/Applications/Android Studio.app/Contents/jbr/Contents/Home' ./gradle
 Use the narrowest command covering the changed behavior. Keep credentials,
 keystores, signing values, device identifiers, and local SDK paths out of the
 repository.
+
+Run instrumented Gradle tests on a dedicated test emulator, not an authenticated
+manual-acceptance device. The test runner can uninstall the target application
+after the suite and remove its local account state. Use `adb install -r` for
+manual acceptance updates to preserve that state.

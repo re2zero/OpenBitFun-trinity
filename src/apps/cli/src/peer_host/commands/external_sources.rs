@@ -1,19 +1,17 @@
 //! External compatibility HostInvoke handlers for CLI Peer Host.
 
-use std::path::PathBuf;
-
 use openbitfun_core::external_sources::{
     apply_external_source_control_action, choose_external_mcp_conflict,
-    choose_external_subagent_conflict, external_source_snapshot,
-    get_external_source_control_snapshot, set_external_mcp_server_decision,
-    set_external_mcp_servers_enabled, set_external_prompt_command_conflict_choice,
-    set_external_source_enabled, set_external_subagent_activation,
-    set_external_subagent_model_binding, set_external_subagents_enabled,
-    set_external_tool_conflict_choice, set_external_tool_target_decision,
-    set_external_tool_targets_enabled, update_external_integration_policy,
-    ExternalIntegrationPolicyMutation, ExternalSourceControlRequestV1,
-    ExternalSourceHostCapabilities, ExternalSourceOperationError, ExternalSourceOperationErrorCode,
-    ExternalSourceOperationResult, ExternalSourcePublicSnapshot,
+    choose_external_subagent_conflict, external_source_discovery_snapshot,
+    external_source_snapshot, get_external_source_control_snapshot,
+    set_external_mcp_server_decision, set_external_mcp_servers_enabled,
+    set_external_prompt_command_conflict_choice, set_external_source_enabled,
+    set_external_subagent_activation, set_external_subagent_model_binding,
+    set_external_subagents_enabled, set_external_tool_conflict_choice,
+    set_external_tool_target_decision, set_external_tool_targets_enabled,
+    update_external_integration_policy, ExternalIntegrationPolicyMutation,
+    ExternalSourceControlRequestV1, ExternalSourceHostCapabilities, ExternalSourceOperationError,
+    ExternalSourceOperationErrorCode, ExternalSourceOperationResult, ExternalSourcePublicSnapshot,
     ExternalSubagentModelBindingTarget,
 };
 use serde_json::Value;
@@ -100,48 +98,34 @@ fn model_binding_target_field(
     }
 }
 
-pub(super) async fn workspace_root(
+pub(super) async fn workspace_id(
     state: &PeerHostState,
     request: &Value,
-) -> ExternalSourceOperationResult<Option<PathBuf>> {
-    let Some(requested) = optional_string_field(request, "workspacePath")? else {
+) -> ExternalSourceOperationResult<Option<String>> {
+    let id = optional_string_field(request, "workspaceId")?;
+    let legacy = optional_string_field(request, "workspacePath")?;
+    if id.is_none() && legacy.is_none() {
         return Ok(None);
-    };
-    let requested = PathBuf::from(requested);
-    if !requested.is_absolute() {
-        return Err(ExternalSourceOperationError::invalid_request(
-            "External sources require an absolute workspace path",
-        ));
     }
-    let requested = requested.canonicalize().map_err(|_| {
-        ExternalSourceOperationError::invalid_request(
-            "Workspace path is not available on this Host",
-        )
-    })?;
-    let current = state
+    let workspace = state
         .workspace_service
-        .get_current_workspace()
-        .await
-        .ok_or_else(|| {
-            ExternalSourceOperationError::new(
-                ExternalSourceOperationErrorCode::HostUnavailable,
-                "No workspace is open on the CLI Host",
-                true,
-            )
-        })?;
-    let current = current.root_path.canonicalize().map_err(|_| {
-        ExternalSourceOperationError::new(
-            ExternalSourceOperationErrorCode::HostUnavailable,
-            "The CLI Host workspace is not available",
-            true,
+        .resolve_legacy_workspace_reference(
+            id.as_deref(),
+            legacy.as_deref().unwrap_or_default(),
+            None,
+            None,
         )
-    })?;
-    if current != requested {
-        return Err(ExternalSourceOperationError::invalid_request(
-            "External compatibility is limited to the current Host workspace",
+        .await
+        .map_err(|error| ExternalSourceOperationError::invalid_request(error.to_string()))?
+        .ok_or_else(|| {
+            ExternalSourceOperationError::invalid_request("Unknown workspace reference")
+        })?;
+    if workspace.workspace_kind == openbitfun_core::service::workspace::WorkspaceKind::Remote {
+        return Err(ExternalSourceOperationError::host_capability_unavailable(
+            "External sources do not support remote workspaces",
         ));
     }
-    Ok(Some(requested))
+    Ok(Some(workspace.id))
 }
 
 fn public_snapshot(
@@ -178,8 +162,24 @@ async fn dispatch_inner(
         ));
     }
     let request = request_value(args);
-    let workspace = workspace_root(state, request).await?;
+    let workspace = workspace_id(state, request).await?;
     let workspace = workspace.as_deref();
+    if command == "get_external_source_discovery_snapshot" {
+        let snapshot = external_source_discovery_snapshot(
+            workspace,
+            optional_bool_field(request, "forceRefresh")?.unwrap_or(false),
+            ExternalSourceHostCapabilities::read_write(),
+        )
+        .await
+        .map_err(openbitfun_core::external_sources::sanitize_external_source_operation_error)?;
+        return serde_json::to_value(snapshot).map_err(|_| {
+            ExternalSourceOperationError::new(
+                ExternalSourceOperationErrorCode::Internal,
+                "External discovery response could not be encoded",
+                false,
+            )
+        });
+    }
     if command == "get_external_source_control_snapshot" {
         let snapshot = get_external_source_control_snapshot(
             workspace,

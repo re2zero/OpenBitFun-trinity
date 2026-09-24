@@ -1,7 +1,10 @@
 /**
  * Pending queue module
  *
- * Frontend-side message queue used while a session's current dialog turn is
+ * Legacy/fallback frontend queue and explicit recovery drafts. Native hosts
+ * advertising dialog_queue_v1 use HostDialogQueue for new submissions.
+ *
+ * This frontend queue is used while a session's current dialog turn is
  * still running. Items are kept here (NOT submitted to the backend scheduler)
  * until the session returns to IDLE, at which point the head item is drained
  * via the regular `sendMessage` path. Users may also pop an item early through
@@ -80,6 +83,7 @@ export interface EnqueueInput {
 }
 
 export type PendingQueueListener = (sessionId: string, items: QueuedMessage[]) => void;
+export type QueuedMessagePayloadUpdate = Pick<QueuedMessage, 'content' | 'displayMessage' | 'composerDraft' | 'userMessageMetadata'>;
 
 class PendingQueueManager {
   private static _instance: PendingQueueManager | null = null;
@@ -312,6 +316,25 @@ class PendingQueueManager {
     items[idx] = { ...items[idx], status };
     this.persist(sessionId);
     this.notify(sessionId);
+  }
+
+  /** Update a still-pending payload atomically without changing FIFO identity or attachments. */
+  updatePayloadForSurface(
+    surfaceId: DeviceSurfaceId,
+    sessionId: string,
+    id: string,
+    update: (current: QueuedMessage) => QueuedMessagePayloadUpdate | null,
+  ): boolean {
+    const key = this.queueKey(sessionId, surfaceId);
+    const items = this.queues.get(key);
+    const index = items?.findIndex(item => item.id === id) ?? -1;
+    if (!items || index < 0 || !['queued', 'failed'].includes(items[index].status)) return false;
+    const payload = update(items[index]);
+    if (!payload) return false;
+    this.queues.set(key, items.map((item, i) => i === index ? { ...item, ...payload } : item));
+    this.persist(sessionId, surfaceId);
+    this.notifySurface(surfaceId, sessionId);
+    return true;
   }
 
   /** Pop and return the head item (FIFO). */

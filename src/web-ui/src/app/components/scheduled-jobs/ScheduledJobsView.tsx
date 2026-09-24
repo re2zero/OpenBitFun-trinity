@@ -61,11 +61,8 @@ const log = createLogger('ScheduledJobsView');
 const NEW_JOB_ID = '__new__';
 
 export interface ScheduledJobsViewProps {
-  workspacePath?: string;
   workspaceId?: string;
   workspaceKind?: WorkspaceKind;
-  remoteConnectionId?: string | null;
-  remoteSshHost?: string | null;
   sessionId?: string;
   assistantName?: string;
   headerTitle?: string | null;
@@ -114,17 +111,13 @@ function formatJobMetaSummary(
   formatDate: (date: Date | number, options?: Intl.DateTimeFormatOptions) => string,
   t: (key: string, params?: Record<string, unknown>) => string,
   options?: {
-    showTarget: boolean;
     resolveSessionLabel: (sessionId: string) => string | undefined;
   },
 ): string {
   const scheduleSummary = formatScheduleSummary(job.schedule, formatDate, t);
-  if (options?.showTarget) {
-    if (job.target.kind === 'session') {
-      const sessionLabel = options.resolveSessionLabel(job.target.sessionId) || job.target.sessionId;
-      return `${sessionLabel} · ${scheduleSummary}`;
-    }
-    return `${t('nav.scheduledJobs.targets.newSession')} · ${scheduleSummary}`;
+  if (job.target.kind === 'session') {
+    const sessionLabel = options?.resolveSessionLabel(job.target.sessionId) || job.target.sessionId;
+    return `${sessionLabel} · ${scheduleSummary}`;
   }
   if (job.target.kind === 'workspace') {
     return `${job.target.launch.agentType} · ${scheduleSummary}`;
@@ -189,11 +182,8 @@ function buildWorkspaceAgentOptions(
 }
 
 const ScheduledJobsView: React.FC<ScheduledJobsViewProps> = ({
-  workspacePath,
   workspaceId,
   workspaceKind,
-  remoteConnectionId,
-  remoteSshHost,
   sessionId,
   headerTitle,
   targetLabel,
@@ -222,8 +212,8 @@ const ScheduledJobsView: React.FC<ScheduledJobsViewProps> = ({
     [assistantWorkspaceMode, targetKind, workspaceKind],
   );
   const workspaceRef = useMemo(
-    () => buildWorkspaceRef(workspacePath, workspaceId, remoteConnectionId, remoteSshHost),
-    [remoteConnectionId, remoteSshHost, workspaceId, workspacePath],
+    () => buildWorkspaceRef(workspaceId),
+    [workspaceId],
   );
 
   const [draft, setDraft] = useState<JobDraft>(() =>
@@ -269,18 +259,10 @@ const ScheduledJobsView: React.FC<ScheduledJobsViewProps> = ({
     return Array.from(flowChatState.sessions.values())
       .filter(s => {
         if (s.parentSessionId) return false;
-        if (workspaceId && s.workspaceId && s.workspaceId !== workspaceId) return false;
-        const trimmedWorkspacePath = workspacePath?.trim() ?? '';
-        if (!trimmedWorkspacePath) return !s.workspacePath;
-        return sessionBelongsToWorkspaceNavRow(
-          s,
-          trimmedWorkspacePath,
-          remoteConnectionId,
-          remoteSshHost,
-        );
+        return Boolean(workspaceId && sessionBelongsToWorkspaceNavRow(s, workspaceId));
       })
       .sort(compareSessionsForDisplay);
-  }, [flowChatState.sessions, remoteConnectionId, remoteSshHost, workspaceId, workspacePath]);
+  }, [flowChatState.sessions, workspaceId]);
 
   const defaultSessionIdForWorkspace = useMemo(
     () => sessionId || workspaceSessions[0]?.sessionId || '',
@@ -294,13 +276,17 @@ const ScheduledJobsView: React.FC<ScheduledJobsViewProps> = ({
   }), [jobs]);
 
   const loadJobs = useCallback(async () => {
+    if (!workspaceRef) { setJobs([]); return; }
     setLoading(true);
+    // Deliberately no `targetKind` filter: the agent's Cron tool creates
+    // session-targeted jobs, so a workspace-scoped list that asked for
+    // workspace-targeted jobs only would hide exactly the jobs the user just
+    // asked the agent to create.
     const request = {
-      workspacePath: workspaceRef?.workspacePath,
       workspaceId: workspaceRef?.workspaceId ?? undefined,
-      remoteConnectionId: workspaceRef?.remoteConnectionId ?? undefined,
-      sessionId: targetKind === 'session' && lockSessionId && !assistantWorkspaceMode ? sessionId || undefined : undefined,
-      targetKind: assistantWorkspaceMode ? undefined : targetKind,
+      sessionId: targetKind === 'session' && lockSessionId && !assistantWorkspaceMode
+        ? sessionId || undefined
+        : undefined,
     };
     try {
       const result = await cronAPI.listJobs(request);
@@ -678,7 +664,6 @@ const ScheduledJobsView: React.FC<ScheduledJobsViewProps> = ({
                     <div className="asv__item-meta-row" data-openbitfun-component="scheduled-jobs-view" data-openbitfun-part="jobMeta">
                       <div className="asv__item-meta"><OverflowText>
                         {formatJobMetaSummary(job, formatDate, t, {
-                          showTarget: assistantWorkspaceMode,
                           resolveSessionLabel: sessionId => sessionLabelById.get(sessionId),
                         })}
                       </OverflowText></div>

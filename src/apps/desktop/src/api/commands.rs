@@ -6,7 +6,7 @@ use crate::api::path_target::{
     create_directory as create_desktop_directory, create_empty_file,
     delete_directory as delete_desktop_directory, delete_file as delete_desktop_file,
     get_path_metadata, path_exists, read_text_file, rename_path, resolve_desktop_path_target,
-    write_text_file, DesktopPathTarget,
+    DesktopPathTarget,
 };
 use crate::api::search_api::{
     build_content_search_request, group_search_results, prepare_content_search_runner,
@@ -23,14 +23,10 @@ use openbitfun_core::infrastructure::{
 };
 use openbitfun_core::service::file_watch;
 use openbitfun_core::service::remote_ssh::get_remote_workspace_manager;
-use openbitfun_core::service::remote_ssh::workspace_state::is_remote_path;
 use openbitfun_core::service::remote_ssh::{
     search_remote_file_names, shell_quote_posix, RemoteFileNameSearch,
 };
-use openbitfun_core::service::workspace::WorkspaceInfoRuntimeExt;
-use openbitfun_core::service::workspace::{
-    ScanOptions, WorkspaceInfo, WorkspaceKind, WorkspaceOpenOptions,
-};
+use openbitfun_core::service::workspace::{ScanOptions, WorkspaceInfo, WorkspaceKind};
 use openbitfun_core_types::product_identity::hidden_data_directory;
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
@@ -368,6 +364,13 @@ fn serialize_search_response(
 
 #[derive(Debug, Deserialize)]
 pub struct OpenWorkspaceRequest {
+    /// Explicit folder creation; never resolve its environment through a path.
+    #[serde(default, rename = "createLocal")]
+    pub create_local: bool,
+    #[serde(default, rename = "workspaceId")]
+    pub workspace_id: Option<String>,
+    /// New-folder creation or upgrade-only payload from a pre-ID client.
+    #[serde(default)]
     pub path: String,
     /// Optional SSH connection scope for a remote root that is already known to OpenBitFun. Path-only
     /// callers may omit it; the workspace service then resolves the connection from history.
@@ -395,6 +398,10 @@ pub struct EnsureCognitiveBeingAssistantRequest {}
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanWorkspaceInfoRequest {
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    /// Upgrade-only: removed after pre-ID clients are no longer supported.
+    #[serde(default)]
     pub workspace_path: String,
 }
 
@@ -472,6 +479,8 @@ pub struct UpdateAppStatusRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct ReadFileContentRequest {
+    #[serde(default, rename = "workspaceId", alias = "workspace_id")]
+    pub workspace_id: Option<String>,
     #[serde(rename = "filePath")]
     pub file_path: String,
     pub encoding: Option<String>,
@@ -483,6 +492,10 @@ pub struct ReadFileContentRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ImportAgentCompanionPetPackageRequest {
     pub path: String,
+    #[serde(default)]
+    pub expected_fingerprint: Option<String>,
+    #[serde(default)]
+    pub builtin_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -491,43 +504,58 @@ pub struct DeleteAgentCompanionPetPackageRequest {
     pub package_path: String,
 }
 
-#[derive(Debug, Serialize)]
+pub use openbitfun_services_core::pet_packages::PetPackage as AgentCompanionPetPackageDto;
+
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentCompanionPetPackageDto {
-    pub id: String,
-    pub display_name: String,
-    pub description: Option<String>,
-    pub source: String,
-    pub package_path: String,
-    pub spritesheet_path: String,
-    pub spritesheet_mime_type: String,
+pub struct ListAgentCompanionPetsRequest {
+    #[serde(default)]
+    pub include_external: bool,
+    #[serde(default)]
+    pub builtin_import_version: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ListAgentCompanionPetsResponse {
     pub pets: Vec<AgentCompanionPetPackageDto>,
+    pub import_operations_version: u32,
+    pub builtin_import_version: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external: Option<openbitfun_services_core::pet_packages::PetCatalog>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct WriteFileContentRequest {
-    #[serde(rename = "workspacePath")]
+    #[serde(default, rename = "workspaceId", alias = "workspace_id")]
+    pub workspace_id: Option<String>,
+    /// Temporary legacy wire field; current clients select by ID.
+    #[serde(default, rename = "workspacePath")]
     pub workspace_path: String,
     #[serde(rename = "filePath")]
     pub file_path: String,
     pub content: String,
     #[serde(default, rename = "remoteConnectionId")]
     pub remote_connection_id: Option<String>,
+    #[serde(default, rename = "expectedHash")]
+    pub expected_hash: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResetWorkspacePersonaFilesRequest {
-    pub workspace_path: String,
+    /// Owning assistant workspace ID; authoritative when present.
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    /// Legacy path reference for pre-ID clients; the root is only an IO operand.
+    #[serde(default)]
+    pub workspace_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct CheckPathExistsRequest {
+    #[serde(default, rename = "workspaceId", alias = "workspace_id")]
+    pub workspace_id: Option<String>,
     pub path: String,
     #[serde(default, rename = "remoteConnectionId")]
     pub remote_connection_id: Option<String>,
@@ -535,6 +563,8 @@ pub struct CheckPathExistsRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct GetFileMetadataRequest {
+    #[serde(default, rename = "workspaceId", alias = "workspace_id")]
+    pub workspace_id: Option<String>,
     pub path: String,
     #[serde(default, rename = "remoteConnectionId")]
     pub remote_connection_id: Option<String>,
@@ -542,6 +572,8 @@ pub struct GetFileMetadataRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct GetFileTreeRequest {
+    #[serde(default, rename = "workspaceId", alias = "workspace_id")]
+    pub workspace_id: Option<String>,
     pub path: String,
     pub max_depth: Option<usize>,
     #[serde(default, rename = "remoteConnectionId")]
@@ -550,6 +582,8 @@ pub struct GetFileTreeRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct GetDirectoryChildrenRequest {
+    #[serde(default, rename = "workspaceId", alias = "workspace_id")]
+    pub workspace_id: Option<String>,
     pub path: String,
     #[serde(default, rename = "remoteConnectionId")]
     pub remote_connection_id: Option<String>,
@@ -558,11 +592,17 @@ pub struct GetDirectoryChildrenRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GetDirectoryChildrenPaginatedRequest {
+    #[serde(default, rename = "workspaceId", alias = "workspace_id")]
+    pub workspace_id: Option<String>,
     pub path: String,
     pub offset: Option<usize>,
     pub limit: Option<usize>,
     #[serde(default)]
     pub remote_connection_id: Option<String>,
+    #[serde(default)]
+    pub sort_by: Option<String>,
+    #[serde(default)]
+    pub sort_order: Option<String>,
 }
 
 pub type ExplorerGetFileTreeRequest = GetFileTreeRequest;
@@ -572,6 +612,10 @@ pub type ExplorerGetChildrenPaginatedRequest = GetDirectoryChildrenPaginatedRequ
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchFilesRequest {
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    /// Upgrade-only input. Current callers send workspaceId.
+    #[serde(default)]
     pub root_path: String,
     pub pattern: String,
     pub search_content: bool,
@@ -594,6 +638,10 @@ pub struct SearchFilesRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchFilenamesRequest {
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    /// Upgrade-only input. Current callers send workspaceId.
+    #[serde(default)]
     pub root_path: String,
     pub pattern: String,
     #[serde(default)]
@@ -647,6 +695,10 @@ mod search_filenames_request_tests {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchFileContentsRequest {
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    /// Upgrade-only input. Current callers send workspaceId.
+    #[serde(default)]
     pub root_path: String,
     pub pattern: String,
     #[serde(default)]
@@ -684,6 +736,8 @@ fn resolve_search_limit(requested: Option<usize>, fallback: usize) -> usize {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RenameFileRequest {
+    #[serde(default, rename = "workspaceId", alias = "workspace_id")]
+    pub workspace_id: Option<String>,
     pub old_path: String,
     pub new_path: String,
     #[serde(default)]
@@ -693,12 +747,18 @@ pub struct RenameFileRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExportLocalFileRequest {
+    #[serde(default)]
+    pub controller_local: bool,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
     pub source_path: String,
     pub destination_path: String,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct DeleteFileRequest {
+    #[serde(default, rename = "workspaceId", alias = "workspace_id")]
+    pub workspace_id: Option<String>,
     pub path: String,
     #[serde(default, rename = "remoteConnectionId")]
     pub remote_connection_id: Option<String>,
@@ -706,6 +766,8 @@ pub struct DeleteFileRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct DeleteDirectoryRequest {
+    #[serde(default, rename = "workspaceId", alias = "workspace_id")]
+    pub workspace_id: Option<String>,
     pub path: String,
     pub recursive: Option<bool>,
     #[serde(default, rename = "remoteConnectionId")]
@@ -714,6 +776,8 @@ pub struct DeleteDirectoryRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct CreateFileRequest {
+    #[serde(default, rename = "workspaceId", alias = "workspace_id")]
+    pub workspace_id: Option<String>,
     pub path: String,
     #[serde(default, rename = "remoteConnectionId")]
     pub remote_connection_id: Option<String>,
@@ -721,6 +785,8 @@ pub struct CreateFileRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct CreateDirectoryRequest {
+    #[serde(default, rename = "workspaceId", alias = "workspace_id")]
+    pub workspace_id: Option<String>,
     pub path: String,
     #[serde(default, rename = "remoteConnectionId")]
     pub remote_connection_id: Option<String>,
@@ -728,6 +794,8 @@ pub struct CreateDirectoryRequest {
 
 #[derive(Debug, Deserialize)]
 pub struct RevealInExplorerRequest {
+    #[serde(default, rename = "workspaceId", alias = "workspace_id")]
+    pub workspace_id: Option<String>,
     pub path: String,
 }
 
@@ -740,8 +808,7 @@ async fn clear_active_workspace_context(
     let _ = app;
 
     let step_started = Instant::now();
-    let previous_workspace_path = state.workspace_path.read().await.clone();
-    *state.workspace_path.write().await = None;
+    let previous_workspace_id = state.workspace_id.write().await.take();
     if let Some(trace) = startup_trace {
         trace.record_elapsed_step(
             "tauri_command",
@@ -750,13 +817,18 @@ async fn clear_active_workspace_context(
         );
     }
 
-    if let Some(previous_workspace_path) = previous_workspace_path {
+    if let Some(previous_workspace_id) = previous_workspace_id {
         let step_started = Instant::now();
-        let root_str = previous_workspace_path.to_string_lossy().to_string();
-        if !is_remote_path(root_str.trim()).await {
-            state
-                .workspace_search_service
-                .schedule_repo_release(previous_workspace_path);
+        if let Some(previous) = state
+            .workspace_service
+            .get_workspace(&previous_workspace_id)
+            .await
+        {
+            if previous.workspace_kind != WorkspaceKind::Remote {
+                state
+                    .workspace_search_service
+                    .schedule_repo_release(previous.root_path);
+            }
         }
         if let Some(trace) = startup_trace {
             trace.record_elapsed_step(
@@ -834,7 +906,7 @@ async fn apply_active_workspace_context(
     }
 
     let step_started = Instant::now();
-    *state.workspace_path.write().await = Some(workspace_info.root_path.clone());
+    *state.workspace_id.write().await = Some(workspace_info.id.clone());
     if let Some(trace) = startup_trace {
         trace.record_elapsed_step(
             "tauri_command",
@@ -1217,19 +1289,25 @@ pub async fn open_workspace(
     app: tauri::AppHandle,
     request: OpenWorkspaceRequest,
 ) -> Result<WorkspaceInfoDto, String> {
-    // A remote root does not exist on the controller filesystem, so a plain local open would either
-    // fail with a misleading "path does not exist" or, on a same-shaped controller path, silently
-    // open the wrong directory. `open_workspace_resolving_known` restores the SSH scope first and
-    // falls back to the local open only when no remote workspace owns this path.
-    match state
-        .workspace_service
-        .open_workspace_resolving_known(
-            request.path.clone().into(),
-            request.remote_connection_id.as_deref(),
-            None,
-        )
-        .await
-    {
+    let result = if let Some(id) = request.workspace_id.as_deref() {
+        state.workspace_service.open_workspace_by_id(id).await
+    } else if request.create_local {
+        state
+            .workspace_service
+            .open_workspace(request.path.into())
+            .await
+    } else {
+        // Upgrade-only request adapter; normal selection always supplies ID.
+        state
+            .workspace_service
+            .upgrade_legacy_workspace_open(
+                request.path.into(),
+                request.remote_connection_id.as_deref(),
+                None,
+            )
+            .await
+    };
+    match result {
         Ok(workspace_info) => {
             apply_active_workspace_context(&state, &app, &workspace_info, None).await;
 
@@ -1267,6 +1345,35 @@ pub async fn open_remote_workspace(
     use openbitfun_core::service::remote_ssh::normalize_remote_workspace_path;
     use openbitfun_core::service::remote_ssh::workspace_state::remote_workspace_stable_id;
     use openbitfun_core::service::workspace::WorkspaceCreateOptions;
+
+    let ssh = state.get_ssh_manager_async().await?;
+    let saved = ssh
+        .get_saved_connections()
+        .await
+        .into_iter()
+        .find(|profile| profile.id == request.connection_id)
+        .ok_or("Remote workspace requires a connection saved on this host")?;
+    if request
+        .ssh_host
+        .as_deref()
+        .is_some_and(|host| !host.trim().is_empty() && host.trim() != saved.host)
+    {
+        return Err("SSH host identity does not match the saved connection".into());
+    }
+    if !request.remote_path.starts_with('/') || request.remote_path.contains('\0') {
+        return Err("Remote workspace path must be an absolute POSIX path".into());
+    }
+    ssh.ensure_connected(&request.connection_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let files = state.get_remote_file_service_async().await?;
+    if !files
+        .is_dir(&request.connection_id, &request.remote_path)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        return Err("Remote workspace path is not a directory".into());
+    }
 
     let remote_path = normalize_remote_workspace_path(&request.remote_path);
 
@@ -2074,14 +2181,9 @@ async fn cleanup_invalid_workspaces_impl(
                 format!("{trace_step_prefix}.local_workspace_cleanup"),
                 cleanup_started,
             );
-            let prune_remote_started = Instant::now();
-            let remote_removed_count = prune_unrecoverable_remote_workspaces(state).await;
-            startup_trace.record_elapsed_step(
-                "tauri_command",
-                format!("{trace_step_prefix}.remote_workspace_prune"),
-                prune_remote_started,
-            );
-            let removed_count = local_removed_count + remote_removed_count;
+            // Missing SSH profiles are recoverable upgrade/offline states.
+            // Preserve workspace IDs and sessions until explicit user removal.
+            let removed_count = local_removed_count;
 
             let apply_context_started = Instant::now();
             if let Some(workspace_info) = state.workspace_service.get_current_workspace().await {
@@ -2131,81 +2233,6 @@ async fn cleanup_invalid_workspaces_impl(
     }
 }
 
-async fn prune_unrecoverable_remote_workspaces(state: &State<'_, AppState>) -> usize {
-    let saved_connection_ids: std::collections::HashSet<String> =
-        match state.get_ssh_manager_async().await {
-            Ok(manager) => manager
-                .get_saved_connections()
-                .await
-                .into_iter()
-                .map(|connection| connection.id)
-                .collect(),
-            Err(error) => {
-                warn!(
-                    "Skipping remote workspace cleanup because SSH manager is unavailable: {}",
-                    error
-                );
-                return 0;
-            }
-        };
-
-    let workspaces = state.workspace_service.list_workspace_infos().await;
-    let mut removed = 0usize;
-
-    for workspace in workspaces {
-        if workspace.workspace_kind != WorkspaceKind::Remote {
-            continue;
-        }
-
-        let connection_id = workspace
-            .metadata
-            .get("connectionId")
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string);
-
-        let should_remove = connection_id
-            .as_deref()
-            .map(|id| !saved_connection_ids.contains(id))
-            .unwrap_or(true);
-
-        if !should_remove {
-            continue;
-        }
-
-        if let Some(id) = connection_id.as_deref() {
-            state
-                .unregister_remote_workspace_entry(id, &workspace.root_path.to_string_lossy())
-                .await;
-        }
-
-        match state
-            .workspace_service
-            .remove_workspace(&workspace.id)
-            .await
-        {
-            Ok(()) => {
-                removed += 1;
-                info!(
-                    "Removed unrecoverable remote workspace: workspace_id={}, connection_id={:?}, path={}",
-                    workspace.id,
-                    connection_id,
-                    workspace.root_path.display()
-                );
-            }
-            Err(error) => {
-                warn!(
-                    "Failed to remove unrecoverable remote workspace: workspace_id={}, error={}",
-                    workspace.id, error
-                );
-            }
-        }
-    }
-
-    removed
-}
-
 #[tauri::command]
 pub async fn get_opened_workspaces(
     state: State<'_, AppState>,
@@ -2228,54 +2255,41 @@ pub async fn scan_workspace_info(
     state: State<'_, AppState>,
     request: ScanWorkspaceInfoRequest,
 ) -> Result<Option<WorkspaceInfoDto>, String> {
-    let workspace_path = std::path::PathBuf::from(&request.workspace_path);
-
-    if let Some(existing_workspace) = state
-        .workspace_service
-        .get_workspace_by_path(&workspace_path)
-        .await
-    {
-        return state
-            .workspace_service
-            .rescan_workspace(&existing_workspace.id)
+    let service = &state.workspace_service;
+    let record = if let Some(id) = request.workspace_id.as_deref() {
+        service.require_workspace(id).await
+    } else {
+        service
+            .resolve_legacy_workspace_reference(None, &request.workspace_path, None, None)
             .await
-            .map(|workspace| Some(WorkspaceInfoDto::from_workspace_info(&workspace)))
-            .map_err(|e| format!("Failed to rescan workspace: {}", e));
+            .and_then(|record| {
+                record.ok_or_else(|| {
+                    openbitfun_core::OpenBitFunError::service(
+                        "Workspace ID is required for scanning",
+                    )
+                })
+            })
     }
-
-    // An unknown remote path cannot be scanned as a normal workspace: that would canonicalize and
-    // stat the controller filesystem and report a local directory under the remote root's name.
-    if is_remote_path(request.workspace_path.trim()).await {
-        return Err(format!(
-            "scan_workspace_info cannot scan remote workspace path '{}' because it is not an opened workspace; open it through open_remote_workspace first. Local filesystem fallback was not attempted",
-            request.workspace_path
-        ));
-    }
-
-    WorkspaceInfo::new(
-        workspace_path,
-        WorkspaceOpenOptions {
-            scan_options: ScanOptions::default(),
-            auto_set_current: false,
-            add_to_recent: false,
-            workspace_kind: WorkspaceKind::Normal,
-            assistant_id: None,
-            display_name: None,
-            remote_connection_id: None,
-            remote_ssh_host: None,
-            stable_workspace_id: None,
-        },
-    )
-    .await
-    .map(|workspace| Some(WorkspaceInfoDto::from_workspace_info(&workspace)))
-    .map_err(|e| format!("Failed to scan workspace info: {}", e))
+    .map_err(|error| error.to_string())?;
+    service
+        .rescan_workspace(&record.id)
+        .await
+        .map(|workspace| Some(WorkspaceInfoDto::from_workspace_info(&workspace)))
+        .map_err(|error| error.to_string())
 }
 
-async fn ensure_directory_request_path(path: &str) -> Result<(), String> {
-    use openbitfun_core::service::remote_ssh::workspace_state::is_remote_path;
+async fn ensure_directory_request_path(
+    path: &str,
+    remote_connection_id: Option<&str>,
+) -> Result<(), String> {
     use std::path::Path;
 
-    if is_remote_path(path).await {
+    if let Some(id) = remote_connection_id.filter(|id| !id.trim().is_empty()) {
+        openbitfun_core::service::filesystem::path_operations::resolve_explicit_path_connection(
+            path,
+            id.trim(),
+        )
+        .await?;
         return Ok(());
     }
 
@@ -2324,18 +2338,47 @@ fn directory_nodes_to_json(nodes: Vec<FileTreeNode>) -> Vec<serde_json::Value> {
         .collect()
 }
 
+async fn directory_connection(
+    state: &State<'_, AppState>,
+    workspace_id: Option<&str>,
+    path: &str,
+    legacy_connection: Option<&str>,
+) -> Result<Option<String>, String> {
+    if let Some(id) = workspace_id {
+        let record = state
+            .workspace_service
+            .require_workspace(id)
+            .await
+            .map_err(|e| e.to_string())?;
+        return record
+            .filesystem_connection_id()
+            .map(|id| id.map(str::to_owned));
+    }
+    state
+        .workspace_service
+        .upgrade_legacy_file_connection(path, None, legacy_connection)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 async fn get_file_tree_response(
     state: &State<'_, AppState>,
     request: &GetFileTreeRequest,
 ) -> Result<serde_json::Value, String> {
     use std::path::Path;
 
-    ensure_directory_request_path(&request.path).await?;
-
-    let preferred = request.remote_connection_id.as_deref();
+    let connection = directory_connection(
+        state,
+        request.workspace_id.as_deref(),
+        &request.path,
+        request.remote_connection_id.as_deref(),
+    )
+    .await?;
+    let preferred = connection.as_deref();
+    ensure_directory_request_path(&request.path, preferred).await?;
     let filesystem_service = &state.filesystem_service;
     match filesystem_service
-        .build_file_tree_with_remote_hint(&request.path, preferred)
+        .build_file_tree_on_connection(&request.path, preferred)
         .await
     {
         Ok(nodes) => {
@@ -2367,12 +2410,18 @@ async fn get_directory_children_response(
     state: &State<'_, AppState>,
     request: &GetDirectoryChildrenRequest,
 ) -> Result<serde_json::Value, String> {
-    ensure_directory_request_path(&request.path).await?;
-
-    let preferred = request.remote_connection_id.as_deref();
+    let connection = directory_connection(
+        state,
+        request.workspace_id.as_deref(),
+        &request.path,
+        request.remote_connection_id.as_deref(),
+    )
+    .await?;
+    let preferred = connection.as_deref();
+    ensure_directory_request_path(&request.path, preferred).await?;
     let filesystem_service = &state.filesystem_service;
     match filesystem_service
-        .get_directory_contents_with_remote_hint(&request.path, preferred)
+        .get_directory_contents_on_connection(&request.path, preferred)
         .await
     {
         Ok(nodes) => Ok(serde_json::json!(directory_nodes_to_json(nodes))),
@@ -2390,17 +2439,36 @@ async fn get_directory_children_paginated_response(
     let offset = request.offset.unwrap_or(0);
     let limit = request.limit.unwrap_or(100);
 
-    ensure_directory_request_path(&request.path).await?;
-
-    let preferred = request.remote_connection_id.as_deref();
+    let connection = directory_connection(
+        state,
+        request.workspace_id.as_deref(),
+        &request.path,
+        request.remote_connection_id.as_deref(),
+    )
+    .await?;
+    let preferred = connection.as_deref();
+    ensure_directory_request_path(&request.path, preferred).await?;
     let filesystem_service = &state.filesystem_service;
     match filesystem_service
-        .get_directory_contents_with_remote_hint(&request.path, preferred)
+        .get_directory_contents_on_connection(&request.path, preferred)
         .await
     {
-        Ok(nodes) => {
+        Ok(mut nodes) => {
+            openbitfun_core::service::filesystem::sort_directory_nodes(
+                &mut nodes,
+                request.sort_by.as_deref(),
+                request.sort_order.as_deref(),
+            )?;
             let total = nodes.len();
-            let has_more = total > offset + limit;
+            debug!(
+                "Directory page read: explicit_local={}, remote_scope={}, offset={}, limit={}, total={}",
+                preferred == Some(""),
+                preferred.is_some_and(|value| !value.is_empty()),
+                offset,
+                limit,
+                total
+            );
+            let has_more = total > offset.saturating_add(limit);
             let page_nodes: Vec<_> = nodes.into_iter().skip(offset).take(limit).collect();
 
             Ok(serde_json::json!({
@@ -2476,14 +2544,9 @@ pub async fn read_file_content(
         &request.file_path,
         request.encoding.as_deref(),
         request.remote_connection_id.as_deref(),
+        request.workspace_id.as_deref(),
     )
     .await
-}
-
-struct PetPackageSource {
-    pet_json: Vec<u8>,
-    spritesheet_name: PathBuf,
-    spritesheet: Vec<u8>,
 }
 
 fn sanitize_pet_id(id: &str) -> String {
@@ -2523,6 +2586,7 @@ fn spritesheet_mime_type(file_name: &str) -> &'static str {
 fn load_pet_manifest_from_bytes(bytes: &[u8]) -> Result<(serde_json::Value, PathBuf), String> {
     let manifest: serde_json::Value =
         serde_json::from_slice(bytes).map_err(|e| format!("Failed to parse pet.json: {}", e))?;
+    pet_sprite_version(&manifest)?;
     let spritesheet_path = manifest
         .get("spritesheetPath")
         .and_then(|value| value.as_str())
@@ -2532,69 +2596,110 @@ fn load_pet_manifest_from_bytes(bytes: &[u8]) -> Result<(serde_json::Value, Path
     Ok((manifest, PathBuf::from(spritesheet_path)))
 }
 
-fn load_pet_package_source(source_path: &Path) -> Result<PetPackageSource, String> {
-    if source_path.is_dir() {
-        let pet_json_path = source_path.join("pet.json");
-        let pet_json =
-            std::fs::read(&pet_json_path).map_err(|e| format!("Failed to read pet.json: {}", e))?;
-        let (_, spritesheet_name) = load_pet_manifest_from_bytes(&pet_json)?;
-        let spritesheet_path = source_path.join(&spritesheet_name);
-        let spritesheet = std::fs::read(&spritesheet_path)
-            .map_err(|e| format!("Failed to read spritesheet: {}", e))?;
-        return Ok(PetPackageSource {
-            pet_json,
-            spritesheet_name,
-            spritesheet,
-        });
+fn pet_sprite_version(manifest: &serde_json::Value) -> Result<u32, String> {
+    match manifest.get("spriteVersionNumber") {
+        None => Ok(1),
+        Some(value) => match value.as_u64() {
+            Some(1) => Ok(1),
+            Some(2) => Ok(2),
+            _ => Err(format!("Unsupported pet spriteVersionNumber: {value}")),
+        },
+    }
+}
+
+#[cfg(test)]
+mod pet_package_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_pet_requests_keep_optional_review_fields() {
+        let old: ImportAgentCompanionPetPackageRequest =
+            serde_json::from_value(serde_json::json!({"path": "legacy-pet"})).unwrap();
+        assert!(old.expected_fingerprint.is_none());
+        assert!(old.builtin_id.is_none());
+        let request: ListAgentCompanionPetsRequest =
+            serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(!request.include_external);
+        assert!(request.builtin_import_version.is_none());
     }
 
-    let file = std::fs::File::open(source_path)
-        .map_err(|e| format!("Failed to open pet zip package: {}", e))?;
-    let mut archive =
-        zip::ZipArchive::new(file).map_err(|e| format!("Failed to read pet zip package: {}", e))?;
+    #[test]
+    fn bundled_pet_request_requires_review() {
+        let temp = tempfile::tempdir().unwrap();
+        let request =
+            serde_json::from_value(serde_json::json!({"path":"app.asar", "builtinId":"codex"}))
+                .unwrap();
+        assert!(import_pet_request(temp.path(), request)
+            .unwrap_err()
+            .contains("reviewed fingerprint"));
+    }
 
-    let mut manifest_index = None;
-    for index in 0..archive.len() {
-        let entry = archive
-            .by_index(index)
-            .map_err(|e| format!("Failed to inspect pet zip package: {}", e))?;
-        if Path::new(entry.name()).file_name().and_then(|n| n.to_str()) == Some("pet.json") {
-            manifest_index = Some(index);
-            break;
+    #[test]
+    #[ignore = "Imports installed Codex pets into an isolated temporary directory"]
+    fn installed_builtin_pets_can_be_previewed_and_imported() {
+        let temp = tempfile::tempdir().unwrap();
+        let sources =
+            openbitfun_core::external_sources::external_builtin_pet_sources("codex", None);
+        assert!(sources.diagnostics.is_empty(), "{:?}", sources.diagnostics);
+        assert!(!sources.pets.is_empty());
+        for source in sources.pets {
+            let identity = format!("codex:builtin:{}", source.id);
+            let candidate = openbitfun_services_core::pet_packages::candidate_from_bytes(
+                temp.path(),
+                &identity,
+                &source.archive_path,
+                &source.manifest,
+                source.image,
+            )
+            .unwrap();
+            assert!(candidate
+                .preview_data_url
+                .starts_with("data:image/png;base64,"));
+            let request = serde_json::from_value(serde_json::json!({
+                "path": source.archive_path, "builtinId":source.id, "expectedFingerprint":candidate.fingerprint,
+            })).unwrap();
+            let imported = import_pet_request(temp.path(), request).unwrap();
+            assert!(Path::new(&imported.spritesheet_path).is_file());
+            assert_eq!(
+                imported.sprite_version_number,
+                candidate.pet.sprite_version_number
+            );
+            println!("Validated bundled pet: {}", imported.display_name);
         }
     }
-    let manifest_index =
-        manifest_index.ok_or_else(|| "Pet package must contain pet.json".to_string())?;
-
-    let mut pet_json = Vec::new();
-    let manifest_name = {
-        let mut manifest_file = archive
-            .by_index(manifest_index)
-            .map_err(|e| format!("Failed to open pet.json in zip package: {}", e))?;
-        std::io::copy(&mut manifest_file, &mut pet_json)
-            .map_err(|e| format!("Failed to read pet.json from zip package: {}", e))?;
-        PathBuf::from(manifest_file.name())
-    };
-    let (_, spritesheet_name) = load_pet_manifest_from_bytes(&pet_json)?;
-    let spritesheet_zip_path = manifest_name
-        .parent()
-        .unwrap_or_else(|| Path::new(""))
-        .join(&spritesheet_name)
-        .to_string_lossy()
-        .replace('\\', "/");
-
-    let mut spritesheet = Vec::new();
-    let mut spritesheet_file = archive
-        .by_name(&spritesheet_zip_path)
-        .map_err(|e| format!("Failed to open spritesheet in zip package: {}", e))?;
-    std::io::copy(&mut spritesheet_file, &mut spritesheet)
-        .map_err(|e| format!("Failed to read spritesheet from zip package: {}", e))?;
-
-    Ok(PetPackageSource {
-        pet_json,
-        spritesheet_name,
-        spritesheet,
-    })
+    #[test]
+    fn pet_manifest_versions_are_validated_and_exported() {
+        for version in [None, Some(1), Some(2)] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut manifest = serde_json::json!({
+                "id": "sample", "displayName": "Sample", "spritesheetPath": "spritesheet.webp"
+            });
+            if let Some(version) = version {
+                manifest["spriteVersionNumber"] = serde_json::json!(version);
+            }
+            std::fs::write(
+                dir.path().join("pet.json"),
+                serde_json::to_vec(&manifest).unwrap(),
+            )
+            .unwrap();
+            std::fs::write(dir.path().join("spritesheet.webp"), []).unwrap();
+            let dto = pet_package_dto_from_dir(dir.path(), "user").unwrap();
+            assert_eq!(dto.sprite_version_number, version.unwrap_or(1));
+            assert_eq!(
+                serde_json::to_value(dto).unwrap()["spriteVersionNumber"],
+                version.unwrap_or(1)
+            );
+        }
+        for version in [
+            serde_json::json!(0),
+            serde_json::json!(3),
+            serde_json::json!("2"),
+            serde_json::Value::Null,
+        ] {
+            let manifest = serde_json::json!({"spritesheetPath": "spritesheet.webp", "spriteVersionNumber": version});
+            assert!(load_pet_manifest_from_bytes(&serde_json::to_vec(&manifest).unwrap()).is_err());
+        }
+    }
 }
 
 fn companion_user_packages_dir(state: &AppState) -> PathBuf {
@@ -2653,6 +2758,7 @@ fn pet_package_dto_from_dir(
         package_path: dir.to_string_lossy().to_string(),
         spritesheet_path: spritesheet_path.to_string_lossy().to_string(),
         spritesheet_mime_type: spritesheet_mime_type(spritesheet_file_name).to_string(),
+        sprite_version_number: pet_sprite_version(&manifest)?,
     })
 }
 
@@ -2663,7 +2769,10 @@ fn scan_pet_package_dirs(root: &Path, source: &str) -> Vec<AgentCompanionPetPack
     let mut pets = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.is_dir() || !path.join("pet.json").is_file() {
+        if entry.file_name().to_string_lossy().starts_with('.')
+            || !entry.file_type().is_ok_and(|kind| kind.is_dir())
+            || !path.join("pet.json").is_file()
+        {
             continue;
         }
         match pet_package_dto_from_dir(&path, source) {
@@ -2682,15 +2791,63 @@ fn scan_pet_package_dirs(root: &Path, source: &str) -> Vec<AgentCompanionPetPack
 #[tauri::command]
 pub async fn list_agent_companion_pets(
     state: State<'_, AppState>,
+    request: Option<ListAgentCompanionPetsRequest>,
 ) -> Result<ListAgentCompanionPetsResponse, String> {
-    list_agent_companion_pets_impl(&state).await
+    let include_builtins = request
+        .as_ref()
+        .is_some_and(|r| r.builtin_import_version == Some(1));
+    let mut response = list_agent_companion_pets_impl(&state).await?;
+    if request.is_some_and(|r| r.include_external) {
+        let source_root = openbitfun_core::external_sources::external_pet_source_root("codex")
+            .ok_or("Pet source is unavailable")?;
+        let installed_root = companion_user_packages_dir(&state);
+        response.external = Some(
+            tokio::task::spawn_blocking(move || {
+                let mut catalog =
+                    openbitfun_services_core::pet_packages::catalog(&source_root, &installed_root);
+                if !include_builtins {
+                    return catalog;
+                }
+                let bundled =
+                    openbitfun_core::external_sources::external_builtin_pet_sources("codex", None);
+                catalog.diagnostics.extend(bundled.diagnostics);
+                for source in bundled.pets {
+                    let identity = format!("codex:builtin:{}", source.id);
+                    match openbitfun_services_core::pet_packages::candidate_from_bytes(
+                        &installed_root,
+                        &identity,
+                        &source.archive_path,
+                        &source.manifest,
+                        source.image,
+                    ) {
+                        Ok(mut candidate) => {
+                            candidate.builtin_id = Some(source.id);
+                            catalog.candidates.push(candidate);
+                        }
+                        Err(error) => catalog
+                            .diagnostics
+                            .push(format!("Codex built-in pet {}: {error}", source.id)),
+                    }
+                }
+                catalog
+            })
+            .await
+            .map_err(|e| e.to_string())?,
+        );
+    }
+    Ok(response)
 }
 
 pub(crate) async fn list_agent_companion_pets_impl(
     state: &AppState,
 ) -> Result<ListAgentCompanionPetsResponse, String> {
     let pets = scan_pet_package_dirs(&companion_user_packages_dir(&state), "user");
-    Ok(ListAgentCompanionPetsResponse { pets })
+    Ok(ListAgentCompanionPetsResponse {
+        pets,
+        import_operations_version: 1,
+        builtin_import_version: 1,
+        external: None,
+    })
 }
 
 #[tauri::command]
@@ -2698,83 +2855,56 @@ pub async fn import_agent_companion_pet_package(
     state: State<'_, AppState>,
     request: ImportAgentCompanionPetPackageRequest,
 ) -> Result<AgentCompanionPetPackageDto, String> {
-    import_agent_companion_pet_package_impl(&state, &request.path).await
+    let root = companion_user_packages_dir(&state);
+    tokio::task::spawn_blocking(move || import_pet_request(&root, request))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn import_pet_request(
+    root: &Path,
+    request: ImportAgentCompanionPetPackageRequest,
+) -> Result<AgentCompanionPetPackageDto, String> {
+    if let Some(id) = request.builtin_id {
+        let expected = request
+            .expected_fingerprint
+            .as_deref()
+            .ok_or("Built-in pet import requires a reviewed fingerprint")?;
+        let mut catalog =
+            openbitfun_core::external_sources::external_builtin_pet_sources("codex", Some(&id));
+        let source = catalog.pets.pop().ok_or_else(|| {
+            if catalog.diagnostics.is_empty() {
+                "Built-in pet is unavailable".to_string()
+            } else {
+                catalog.diagnostics.join("; ")
+            }
+        })?;
+        return openbitfun_services_core::pet_packages::import_bytes(
+            &root,
+            &format!("codex:builtin:{id}"),
+            &source.manifest,
+            source.image,
+            expected,
+        );
+    }
+    openbitfun_services_core::pet_packages::import(
+        &root,
+        Path::new(&request.path),
+        request.expected_fingerprint.as_deref(),
+    )
 }
 
 pub(crate) async fn import_agent_companion_pet_package_impl(
     state: &AppState,
     source_path: &str,
 ) -> Result<AgentCompanionPetPackageDto, String> {
-    let source_path = PathBuf::from(source_path);
-    let source = load_pet_package_source(&source_path)?;
-    let (pet_json, _) = load_pet_manifest_from_bytes(&source.pet_json)?;
-
-    let raw_id = pet_json
-        .get("id")
-        .and_then(|value| value.as_str())
-        .unwrap_or("custom-pet");
-    let id = sanitize_pet_id(raw_id);
-    let display_name = pet_json
-        .get("displayName")
-        .and_then(|value| value.as_str())
-        .filter(|value| !value.trim().is_empty())
-        .unwrap_or(raw_id)
-        .trim()
-        .to_string();
-    let description = pet_json
-        .get("description")
-        .and_then(|value| value.as_str())
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-
-    let package_dir = state
-        .workspace_service
-        .path_manager()
-        .user_data_dir()
-        .join("agent-companions")
-        .join(format!("{}-{}", id, uuid::Uuid::new_v4().simple()));
-
-    std::fs::create_dir_all(&package_dir)
-        .map_err(|e| format!("Failed to create pet package directory: {}", e))?;
-
-    let spritesheet_file_name = source
-        .spritesheet_name
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("spritesheet.webp")
-        .to_string();
-    let spritesheet_path = package_dir.join(&spritesheet_file_name);
-
-    let mut normalized_manifest = pet_json;
-    if let Some(obj) = normalized_manifest.as_object_mut() {
-        obj.insert(
-            "spritesheetPath".to_string(),
-            serde_json::Value::String(spritesheet_file_name.clone()),
-        );
-    }
-
-    let manifest_bytes = serde_json::to_vec_pretty(&normalized_manifest)
-        .map_err(|e| format!("Failed to serialize pet.json: {}", e))?;
-    std::fs::write(package_dir.join("pet.json"), manifest_bytes)
-        .map_err(|e| format!("Failed to write pet.json: {}", e))?;
-    std::fs::write(&spritesheet_path, source.spritesheet)
-        .map_err(|e| format!("Failed to write spritesheet: {}", e))?;
-
-    info!(
-        "Imported Agent companion pet package '{}' into {}",
-        id,
-        package_dir.display()
-    );
-
-    Ok(AgentCompanionPetPackageDto {
-        id,
-        display_name,
-        description,
-        source: "user".to_string(),
-        package_path: package_dir.to_string_lossy().to_string(),
-        spritesheet_path: spritesheet_path.to_string_lossy().to_string(),
-        spritesheet_mime_type: spritesheet_mime_type(&spritesheet_file_name).to_string(),
+    let root = companion_user_packages_dir(state);
+    let source_path = source_path.to_string();
+    tokio::task::spawn_blocking(move || {
+        openbitfun_services_core::pet_packages::import(&root, Path::new(&source_path), None)
     })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -2802,7 +2932,7 @@ pub(crate) async fn delete_agent_companion_pet_package_impl(
         .canonicalize()
         .map_err(|e| format!("Pet package path not found: {}", e))?;
 
-    if !resolved.starts_with(&root) {
+    if resolved.parent() != Some(root.as_path()) {
         return Err(
             "Refusing to delete path outside imported Agent companion packages".to_string(),
         );
@@ -2826,13 +2956,40 @@ pub async fn write_file_content(
     state: State<'_, AppState>,
     request: WriteFileContentRequest,
 ) -> Result<(), String> {
-    write_text_file(
+    let target = resolve_desktop_path_target(
         &state,
         &request.file_path,
-        &request.content,
         request.remote_connection_id.as_deref(),
+        request.workspace_id.as_deref(),
     )
-    .await
+    .await?;
+    use openbitfun_core::service::filesystem::path_operations::{
+        write_local_text_checked, write_text_checked,
+    };
+    match target {
+        DesktopPathTarget::Local { resolved_path, .. } => {
+            write_local_text_checked(
+                &state.filesystem_service,
+                &resolved_path.to_string_lossy(),
+                &request.content,
+                request.expected_hash.as_deref(),
+            )
+            .await
+        }
+        DesktopPathTarget::Remote {
+            requested_path,
+            entry,
+        } => {
+            write_text_checked(
+                &state.filesystem_service,
+                &requested_path,
+                &request.content,
+                Some(&entry.connection_id),
+                request.expected_hash.as_deref(),
+            )
+            .await
+        }
+    }
 }
 
 #[tauri::command]
@@ -2840,31 +2997,59 @@ pub async fn reset_workspace_persona_files(
     state: State<'_, AppState>,
     request: ResetWorkspacePersonaFilesRequest,
 ) -> Result<(), String> {
-    let workspace_path = std::path::PathBuf::from(&request.workspace_path);
+    let service = &state.workspace_service;
+    let workspace_id = request
+        .workspace_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty());
+    let legacy_path = request
+        .workspace_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty());
+    let workspace = match (workspace_id, legacy_path) {
+        (Some(id), _) => service
+            .require_workspace(id)
+            .await
+            .map_err(|error| error.to_string())?,
+        (None, Some(path)) => service
+            .resolve_legacy_workspace_reference(None, path, None, None)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| {
+                format!(
+                    "Workspace path {} is not an open workspace; select the assistant by its ID",
+                    path
+                )
+            })?,
+        (None, None) => {
+            return Err("A workspace ID is required to reset persona files".to_string());
+        }
+    };
 
-    if !state
-        .workspace_service
-        .is_assistant_workspace_path(&workspace_path)
+    if workspace.workspace_kind != WorkspaceKind::Assistant
+        || !service.is_assistant_workspace_path(&workspace.root_path)
     {
         return Err(format!(
-            "Workspace is not a managed assistant workspace: {}",
-            request.workspace_path
+            "Workspace {} is not a managed assistant workspace",
+            workspace.id
         ));
     }
 
-    openbitfun_core::service::reset_workspace_persona_files_to_default(&workspace_path)
+    openbitfun_core::service::reset_workspace_persona_files_to_default(&workspace.root_path)
         .await
         .map_err(|e| {
             error!(
-                "Failed to reset workspace persona files: path={} error={}",
-                request.workspace_path, e
+                "Failed to reset workspace persona files: workspace_id={} error={}",
+                workspace.id, e
             );
             format!("Failed to reset workspace persona files: {}", e)
         })?;
 
     info!(
-        "Workspace persona files reset to defaults: path={}",
-        request.workspace_path
+        "Workspace persona files reset to defaults: workspace_id={}",
+        workspace.id
     );
 
     Ok(())
@@ -2879,6 +3064,7 @@ pub async fn check_path_exists(
         &state,
         &request.path,
         request.remote_connection_id.as_deref(),
+        request.workspace_id.as_deref(),
     )
     .await
 }
@@ -2892,6 +3078,7 @@ pub async fn get_file_metadata(
         &state,
         &request.path,
         request.remote_connection_id.as_deref(),
+        request.workspace_id.as_deref(),
     )
     .await
 }
@@ -2907,6 +3094,7 @@ pub async fn get_file_editor_sync_hash(
         &state,
         &request.path,
         request.remote_connection_id.as_deref(),
+        request.workspace_id.as_deref(),
     )
     .await?
     {
@@ -2956,6 +3144,7 @@ pub async fn rename_file(
         &request.old_path,
         &request.new_path,
         request.remote_connection_id.as_deref(),
+        request.workspace_id.as_deref(),
     )
     .await
 }
@@ -2970,7 +3159,14 @@ pub async fn export_local_file_to_path(request: ExportLocalFileRequest) -> Resul
         ("source", request.source_path.as_str()),
         ("destination", request.destination_path.as_str()),
     ] {
-        if is_remote_path(path.trim()).await {
+        if openbitfun_core::service::workspace::remote_io_for_legacy_or_id(
+            request.workspace_id.as_deref(),
+            request.controller_local,
+            path.trim(),
+        )
+        .await
+        .map_err(|e| e.to_string())?
+        {
             return Err(format!(
                 "export_local_file_to_path cannot use remote workspace path '{}' as {}: this command only copies between controller-local paths; local filesystem fallback was not attempted",
                 path, role
@@ -3050,6 +3246,7 @@ pub async fn delete_file(
         &state,
         &request.path,
         request.remote_connection_id.as_deref(),
+        request.workspace_id.as_deref(),
     )
     .await
 }
@@ -3065,6 +3262,7 @@ pub async fn delete_directory(
         &request.path,
         recursive,
         request.remote_connection_id.as_deref(),
+        request.workspace_id.as_deref(),
     )
     .await
 }
@@ -3078,6 +3276,7 @@ pub async fn create_file(
         &state,
         &request.path,
         request.remote_connection_id.as_deref(),
+        request.workspace_id.as_deref(),
     )
     .await
 }
@@ -3091,6 +3290,7 @@ pub async fn create_directory(
         &state,
         &request.path,
         request.remote_connection_id.as_deref(),
+        request.workspace_id.as_deref(),
     )
     .await
 }
@@ -4297,6 +4497,8 @@ mod archive_tests {
 
 #[derive(Debug, Deserialize)]
 pub struct ListDirectoryFilesRequest {
+    #[serde(default, rename = "workspaceId", alias = "workspace_id")]
+    pub workspace_id: Option<String>,
     pub path: String,
     pub extensions: Option<Vec<String>>,
 }
@@ -4308,7 +4510,9 @@ pub async fn list_directory_files(
 ) -> Result<Vec<String>, String> {
     use std::path::Path;
 
-    match resolve_desktop_path_target(&state, &request.path, None).await? {
+    match resolve_desktop_path_target(&state, &request.path, None, request.workspace_id.as_deref())
+        .await?
+    {
         DesktopPathTarget::Remote {
             requested_path,
             entry,
@@ -4384,7 +4588,9 @@ pub async fn reveal_in_explorer(
     state: State<'_, AppState>,
     request: RevealInExplorerRequest,
 ) -> Result<(), String> {
-    let target = resolve_desktop_path_target(&state, &request.path, None).await?;
+    let target =
+        resolve_desktop_path_target(&state, &request.path, None, request.workspace_id.as_deref())
+            .await?;
     let path = match target.as_local_path() {
         Some(path) => path,
         None => {
@@ -4495,9 +4701,23 @@ pub(crate) fn reveal_local_path_in_explorer(
 #[tauri::command]
 pub async fn search_files(
     state: State<'_, AppState>,
-    request: SearchFilesRequest,
+    mut request: SearchFilesRequest,
 ) -> Result<serde_json::Value, String> {
     use openbitfun_core::service::filesystem::FileSearchOptions;
+    let workspace = crate::api::search_api::resolve_search_workspace(
+        &state,
+        request.workspace_id.as_deref(),
+        &request.root_path,
+        request.remote_connection_id.as_deref(),
+    )
+    .await?;
+    request.root_path = workspace.root_path.to_string_lossy().into_owned();
+    request.remote_connection_id = Some(
+        workspace
+            .filesystem_connection_id()?
+            .unwrap_or("")
+            .to_owned(),
+    );
 
     let search_id = request.search_id.clone();
     let cancel_flag = register_search(&state, search_id.as_deref());
@@ -4520,12 +4740,12 @@ pub async fn search_files(
     };
 
     let use_workspace_search =
-        request.search_content && should_use_workspace_search(&state, &request.root_path).await;
+        request.search_content && should_use_workspace_search(&state, &workspace).await;
     let result = if request.search_content {
-        if is_remote_path(request.root_path.trim()).await {
+        if workspace.workspace_kind == WorkspaceKind::Remote {
             if !use_workspace_search {
                 Err(
-                    remote_content_search_refusal(&state, "search_files", &request.root_path)
+                    remote_content_search_refusal(&state, "search_files", &workspace)
                         .await
                         .unwrap_or_else(|| {
                             remote_content_search_refusal_message(
@@ -4538,7 +4758,7 @@ pub async fn search_files(
             } else {
                 search_file_contents_via_workspace_search(
                     &state,
-                    &request.root_path,
+                    &workspace,
                     &request.pattern,
                     request.case_sensitive,
                     request.use_regex,
@@ -4571,7 +4791,7 @@ pub async fn search_files(
                 let mut content_outcome = if use_workspace_search {
                     search_file_contents_via_workspace_search(
                         &state,
-                        &request.root_path,
+                        &workspace,
                         &request.pattern,
                         request.case_sensitive,
                         request.use_regex,
@@ -4610,11 +4830,7 @@ pub async fn search_files(
             }
         }
     } else {
-        match resolve_desktop_path_target(
-            &state,
-            &request.root_path,
-            request.remote_connection_id.as_deref(),
-        )
+        match crate::api::path_target::resolve_desktop_workspace_target(&state, &workspace.id)
         .await
         {
             Ok(DesktopPathTarget::Remote {
@@ -4676,9 +4892,23 @@ pub async fn search_files(
 #[tauri::command]
 pub async fn search_filenames(
     state: State<'_, AppState>,
-    request: SearchFilenamesRequest,
+    mut request: SearchFilenamesRequest,
 ) -> Result<serde_json::Value, String> {
     use openbitfun_core::service::filesystem::FileSearchOptions;
+    let workspace = crate::api::search_api::resolve_search_workspace(
+        &state,
+        request.workspace_id.as_deref(),
+        &request.root_path,
+        request.remote_connection_id.as_deref(),
+    )
+    .await?;
+    request.root_path = workspace.root_path.to_string_lossy().into_owned();
+    request.remote_connection_id = Some(
+        workspace
+            .filesystem_connection_id()?
+            .unwrap_or("")
+            .to_owned(),
+    );
 
     let search_id = request.search_id.clone();
     let cancel_flag = register_search(&state, search_id.as_deref());
@@ -4693,10 +4923,9 @@ pub async fn search_filenames(
         include_directories: request.include_directories,
     };
 
-    let result = match resolve_desktop_path_target(
+    let result = match crate::api::path_target::resolve_desktop_workspace_target(
         &state,
-        &request.root_path,
-        request.remote_connection_id.as_deref(),
+        &workspace.id,
     )
     .await
     {
@@ -4760,12 +4989,20 @@ pub async fn search_filenames(
 #[tauri::command]
 pub async fn search_file_contents(
     state: State<'_, AppState>,
-    request: SearchFileContentsRequest,
+    mut request: SearchFileContentsRequest,
 ) -> Result<serde_json::Value, String> {
     use openbitfun_core::service::filesystem::FileSearchOptions;
+    let workspace = crate::api::search_api::resolve_search_workspace(
+        &state,
+        request.workspace_id.as_deref(),
+        &request.root_path,
+        None,
+    )
+    .await?;
+    request.root_path = workspace.root_path.to_string_lossy().into_owned();
 
     if let Some(message) =
-        remote_content_search_refusal(&state, "search_file_contents", &request.root_path).await
+        remote_content_search_refusal(&state, "search_file_contents", &workspace).await
     {
         error!("Content search refused: {}", message);
         return Err(message);
@@ -4784,10 +5021,10 @@ pub async fn search_file_contents(
         include_directories: false,
     };
 
-    let result = if should_use_workspace_search(&state, &request.root_path).await {
+    let result = if should_use_workspace_search(&state, &workspace).await {
         search_file_contents_via_workspace_search(
             &state,
-            &request.root_path,
+            &workspace,
             &request.pattern,
             request.case_sensitive,
             request.use_regex,
@@ -4835,9 +5072,23 @@ pub async fn search_file_contents(
 pub async fn start_search_filenames_stream(
     app_handle: AppHandle,
     state: State<'_, AppState>,
-    request: SearchFilenamesRequest,
+    mut request: SearchFilenamesRequest,
 ) -> Result<serde_json::Value, String> {
     use openbitfun_core::service::filesystem::FileSearchOptions;
+    let workspace = crate::api::search_api::resolve_search_workspace(
+        &state,
+        request.workspace_id.as_deref(),
+        &request.root_path,
+        request.remote_connection_id.as_deref(),
+    )
+    .await?;
+    request.root_path = workspace.root_path.to_string_lossy().into_owned();
+    request.remote_connection_id = Some(
+        workspace
+            .filesystem_connection_id()?
+            .unwrap_or("")
+            .to_owned(),
+    );
 
     let search_id = ensure_search_id(request.search_id.clone(), "filenames-stream");
     let cancel_flag = register_search(&state, Some(&search_id));
@@ -4852,10 +5103,9 @@ pub async fn start_search_filenames_stream(
         include_directories: request.include_directories,
     };
 
-    let remote_search_target = match resolve_desktop_path_target(
+    let remote_search_target = match crate::api::path_target::resolve_desktop_workspace_target(
         &state,
-        &request.root_path,
-        request.remote_connection_id.as_deref(),
+        &workspace.id,
     )
     .await
     {
@@ -4981,16 +5231,20 @@ pub async fn start_search_filenames_stream(
 pub async fn start_search_file_contents_stream(
     app_handle: AppHandle,
     state: State<'_, AppState>,
-    request: SearchFileContentsRequest,
+    mut request: SearchFileContentsRequest,
 ) -> Result<serde_json::Value, String> {
     use openbitfun_core::service::filesystem::FileSearchOptions;
-
-    if let Some(message) = remote_content_search_refusal(
+    let workspace = crate::api::search_api::resolve_search_workspace(
         &state,
-        "start_search_file_contents_stream",
+        request.workspace_id.as_deref(),
         &request.root_path,
+        None,
     )
-    .await
+    .await?;
+    request.root_path = workspace.root_path.to_string_lossy().into_owned();
+
+    if let Some(message) =
+        remote_content_search_refusal(&state, "start_search_file_contents_stream", &workspace).await
     {
         error!("Content search stream refused: {}", message);
         return Err(message);
@@ -5016,10 +5270,10 @@ pub async fn start_search_file_contents_stream(
     let case_sensitive = request.case_sensitive;
     let use_regex = request.use_regex;
     let whole_word = request.whole_word;
-    let use_workspace_search = should_use_workspace_search(&state, &root_path).await;
+    let use_workspace_search = should_use_workspace_search(&state, &workspace).await;
     let workspace_search_runner = if use_workspace_search {
         Some(
-            prepare_content_search_runner(&state, &root_path)
+            prepare_content_search_runner(&state, &workspace)
                 .await
                 .map_err(|error| format!("Failed to prepare workspace search: {}", error))?,
         )
@@ -5183,9 +5437,23 @@ pub async fn get_model_configs(
     }
 }
 
+/// Model catalog of the host that renders the current surface.
+///
+/// The models.dev bodies never travel: they describe the public models.dev
+/// catalog, which every host refreshes for itself, and only Model Settings reads
+/// them — through `get_local_models_dev_catalogs`, which stays on this machine.
 #[tauri::command]
 pub async fn get_ai_model_catalog() -> Result<openbitfun_core::AIModelCatalog, String> {
-    openbitfun_core::get_ai_model_catalog().await
+    openbitfun_core::get_remote_model_catalog().await
+}
+
+/// This machine's own models.dev projections, for a controller rendering the
+/// Model Settings surface while a peer is selected. Declared controller-local in
+/// the Product Operation Registry, so it never reaches a peer host.
+#[tauri::command]
+pub async fn get_local_models_dev_catalogs(
+) -> Result<openbitfun_core::LocalModelsDevCatalogs, String> {
+    openbitfun_core::get_local_models_dev_catalogs().await
 }
 
 #[tauri::command]
@@ -5241,22 +5509,67 @@ pub async fn report_ide_control_result(request: IdeControlResultRequest) -> Resu
     Ok(())
 }
 
-/// The file watcher is a controller-side notify backend; it cannot observe an SSH host. A remote
-/// workspace path is refused so callers see the gap instead of a watch on a same-named local path.
-#[tauri::command]
-pub async fn start_file_watch(path: String, recursive: Option<bool>) -> Result<(), String> {
-    if is_remote_path(path.trim()).await {
-        return Err(format!(
-            "start_file_watch cannot watch remote workspace path '{}': filesystem watching is not available over SSH; local filesystem fallback was not attempted",
-            path
-        ));
-    }
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceFileWatchRequest {
+    pub workspace_id: String,
+    pub path: String,
+    pub recursive: Option<bool>,
+}
 
-    file_watch::start_file_watch(path, recursive).await
+fn ensure_workspace_watch_supported(kind: WorkspaceKind) -> Result<(), String> {
+    if kind == WorkspaceKind::Remote {
+        return Err("Filesystem watching is not available for remote workspaces".into());
+    }
+    Ok(())
+}
+
+async fn file_watch_target(
+    state: &State<'_, AppState>,
+    request: Option<WorkspaceFileWatchRequest>,
+    legacy_path: Option<String>,
+) -> Result<(String, Option<bool>), String> {
+    if let Some(request) = request {
+        let record = state
+            .workspace_service
+            .require_workspace(&request.workspace_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        ensure_workspace_watch_supported(record.workspace_kind)?;
+        return Ok((request.path, request.recursive));
+    }
+    // Temporary 1.0.0 wire ingress; current callers must send the structured ID request.
+    let path = legacy_path.ok_or("Workspace ID is required for filesystem watching")?;
+    if state
+        .workspace_service
+        .upgrade_legacy_file_connection(&path, None, None)
+        .await
+        .map_err(|e| e.to_string())?
+        .is_some()
+    {
+        return Err("Filesystem watching is not available for remote workspaces".into());
+    }
+    Ok((path, None))
 }
 
 #[tauri::command]
-pub async fn stop_file_watch(path: String) -> Result<(), String> {
+pub async fn start_file_watch(
+    state: State<'_, AppState>,
+    request: Option<WorkspaceFileWatchRequest>,
+    path: Option<String>,
+    recursive: Option<bool>,
+) -> Result<(), String> {
+    let (path, scoped_recursive) = file_watch_target(&state, request, path).await?;
+    file_watch::start_file_watch(path, scoped_recursive.or(recursive)).await
+}
+
+#[tauri::command]
+pub async fn stop_file_watch(
+    state: State<'_, AppState>,
+    request: Option<WorkspaceFileWatchRequest>,
+    path: Option<String>,
+) -> Result<(), String> {
+    let (path, _) = file_watch_target(&state, request, path).await?;
     file_watch::stop_file_watch(path).await
 }
 
@@ -5374,7 +5687,7 @@ pub async fn refresh_subscription_account(
 #[cfg(test)]
 mod remote_guard_tests {
     use super::{
-        export_local_file_to_path, start_file_watch, CheckPathExistsRequest,
+        ensure_workspace_watch_supported, export_local_file_to_path, CheckPathExistsRequest,
         ExportLocalFileRequest, GetFileMetadataRequest, OpenWorkspaceRequest, SearchFilesRequest,
     };
     use openbitfun_core::service::remote_ssh::workspace_state::init_remote_workspace_manager;
@@ -5428,6 +5741,8 @@ mod remote_guard_tests {
         let destination = controller_sentinel("export-source-destination.txt");
 
         let error = export_local_file_to_path(ExportLocalFileRequest {
+            controller_local: false,
+            workspace_id: None,
             source_path: fixture.child("main.rs"),
             destination_path: destination.to_string_lossy().to_string(),
         })
@@ -5451,6 +5766,8 @@ mod remote_guard_tests {
         std::fs::write(&source, b"local bytes").expect("write controller source");
 
         let error = export_local_file_to_path(ExportLocalFileRequest {
+            controller_local: false,
+            workspace_id: None,
             source_path: source.to_string_lossy().to_string(),
             destination_path: fixture.child("copy.txt"),
         })
@@ -5464,18 +5781,11 @@ mod remote_guard_tests {
         fixture.unregister().await;
     }
 
-    #[tokio::test]
-    async fn start_file_watch_refuses_remote_path() {
-        let fixture = RemoteRootFixture::register("file-watch").await;
-
-        let error = start_file_watch(fixture.child("src"), Some(true))
-            .await
-            .expect_err("remote watch target must be refused");
-
-        assert!(error.starts_with("start_file_watch cannot watch remote workspace path"));
-        assert!(error.contains("local filesystem fallback was not attempted"));
-
-        fixture.unregister().await;
+    #[test]
+    fn file_watch_routing_uses_record_kind() {
+        ensure_workspace_watch_supported(super::WorkspaceKind::Normal).unwrap();
+        let error = ensure_workspace_watch_supported(super::WorkspaceKind::Remote).unwrap_err();
+        assert!(error.contains("not available for remote workspaces"));
     }
 
     #[test]
@@ -5537,5 +5847,43 @@ mod remote_guard_tests {
         }))
         .expect("deserialize legacy metadata request");
         assert!(legacy.remote_connection_id.is_none());
+    }
+}
+
+#[tauri::command]
+pub async fn workspace_file_upload(
+    request: openbitfun_core::service::filesystem::upload::WorkspaceUploadRequest,
+) -> Result<serde_json::Value, String> {
+    let account = crate::api::remote_connect_api::account_status()
+        .await?
+        .user_id
+        .ok_or("Sign in to use workspace transfers")?;
+    let status =
+        openbitfun_core::service::filesystem::upload::workspace_file_upload(account, request)
+            .await?;
+    serde_json::to_value(status).map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod file_workspace_id_contract_tests {
+    #[test]
+    fn file_requests_accept_ids_and_preserve_pre_id_wire_inputs() {
+        let write: super::WriteFileContentRequest = serde_json::from_value(serde_json::json!({
+            "workspaceId":"workspace-1", "filePath":"/srv/file.txt", "content":"text"
+        }))
+        .unwrap();
+        assert_eq!(write.workspace_id.as_deref(), Some("workspace-1"));
+        assert!(write.workspace_path.is_empty());
+        let read: super::ReadFileContentRequest = serde_json::from_value(serde_json::json!({
+            "workspaceId":"workspace-1", "filePath":"openbitfun-runtime://current/plans/plan.md"
+        }))
+        .unwrap();
+        assert_eq!(read.workspace_id.as_deref(), Some("workspace-1"));
+        let legacy: super::WriteFileContentRequest = serde_json::from_value(serde_json::json!({
+            "workspacePath":"/legacy/project", "filePath":"/legacy/project/file.txt", "content":"old", "remoteConnectionId":"ssh-old"
+        })).unwrap();
+        assert!(legacy.workspace_id.is_none());
+        assert_eq!(legacy.workspace_path, "/legacy/project");
+        assert_eq!(legacy.remote_connection_id.as_deref(), Some("ssh-old"));
     }
 }

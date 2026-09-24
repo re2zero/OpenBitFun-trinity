@@ -1,3 +1,4 @@
+import { hostQueueSupported, hostDialogQueue } from './hostDialogQueue';
 import { agentAPI } from '@/infrastructure/api';
 import { globalEventBus } from '@/infrastructure/event-bus';
 import { createLogger } from '@/shared/utils/logger';
@@ -16,7 +17,6 @@ import {
   resolveMaterializedSessionTurnIdentity,
   resolveStorageTurnIndex,
 } from '../utils/flowChatTurnIdentity';
-import { requireSessionProjectWorkspacePath } from '../utils/sessionWorkspace';
 import type { Session } from '../types/flow-chat';
 import type { SessionTurnCatalog } from '@/shared/types/session-history';
 import { pendingQueueManager } from './flow-chat-manager/PendingQueueModule';
@@ -38,8 +38,8 @@ export interface RollbackSessionToTurnResult {
   composerText?: string;
 }
 
-async function reloadAuthoritativeSession(sessionId: string, workspacePath: string): Promise<void> {
-  await flowChatStore.loadSessionHistory(sessionId, workspacePath, undefined, undefined, undefined, {
+async function reloadAuthoritativeSession(sessionId: string): Promise<void> {
+  await flowChatStore.loadSessionHistory(sessionId, {
     deferFullHistoryUntilActive: true,
   });
   completeSessionMutationReconciliation(sessionId);
@@ -81,6 +81,10 @@ export async function rollbackSessionToTurn(
   if (resolveSessionDriverId(request.sessionId, flowChatStore.getState().sessions.get(request.sessionId)) === 'dispatch') {
     throw new Error('History rollback is unavailable for a detached remote session.');
   }
+  if (hostQueueSupported(request.sessionId)) {
+    const queue = await hostDialogQueue(request.sessionId).refresh();
+    if (queue.items.length) throw new Error('Clear the host message queue before changing Session history');
+  }
   const lease = request.lease
     ?? tryBeginSessionMutation(request.sessionId, request.kind, request.targetTurnId);
   if (!lease) {
@@ -112,16 +116,15 @@ export async function rollbackSessionToTurn(
     if (!target) {
       throw new Error('Rollback target is no longer available');
     }
-    const workspacePath = requireSessionProjectWorkspacePath(session, request.sessionId);
     const expectedStorageTurnIndex = target.storageTurnIndex;
     const expectedCatalogRevision = validProjectedCatalogRevision(session, target.catalog);
     const fromTurnIndex = target.ordinal
       ?? session.dialogTurns.findIndex(turn => turn.id === request.targetTurnId);
 
+    const workspaceId = session.workspaceId ?? session.config.workspaceId;
+    if (!workspaceId) throw new Error('Session workspace ID is unavailable; reload the workspace catalog');
     const outcome = await agentAPI.rollbackSessionToTurn({
-      workspacePath,
-      workspaceId: session.workspaceId ?? session.config.workspaceId,
-      workspaceHostname: session.workspaceHostname,
+      workspaceId,
       sessionId: request.sessionId,
       targetTurnId: request.targetTurnId,
       expectedStorageTurnIndex,
@@ -130,14 +133,14 @@ export async function rollbackSessionToTurn(
     if (outcome.status === 'recovery_required') {
       refreshFiles(outcome.affectedFiles);
       requireSessionMutationReconciliation(lease, outcome.reason);
-      await reloadAuthoritativeSession(request.sessionId, workspacePath);
+      await reloadAuthoritativeSession(request.sessionId);
       throw new Error(`Rollback requires recovery: ${outcome.reason}`);
     }
 
     markSessionTurnsRetired(request.sessionId, outcome.retiredTurnIds);
     refreshFiles(outcome.restoredFiles);
     try {
-      await reloadAuthoritativeSession(request.sessionId, workspacePath);
+      await reloadAuthoritativeSession(request.sessionId);
     } catch (error) {
       requireSessionMutationReconciliation(
         lease,

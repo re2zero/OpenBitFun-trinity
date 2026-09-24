@@ -1,7 +1,33 @@
 import React from 'react';
+import { Plug } from 'lucide-react';
 import type { ComposerPresentation } from '../../utils/composerPresentation';
+import { getMcpPromptReferenceMatches } from '../../utils/mcpPromptReference';
 import { MessageReferenceCapsule } from './MessageReferenceCapsule';
 import { messageInlineTokenIcon } from './messageReferenceIcons';
+import { ConversationExcerptPreview } from '../../selection/ConversationExcerptAttachments';
+
+/** Render the persisted prompt format without requiring newer message metadata. */
+export const UserMessageTextContent: React.FC<{ text: string }> = ({ text }) => {
+  const matches = getMcpPromptReferenceMatches(text);
+  if (matches.length === 0) return <>{text}</>;
+
+  const content: React.ReactNode[] = [];
+  let cursor = 0;
+  for (const match of matches) {
+    content.push(text.slice(cursor, match.start));
+    content.push(
+      <MessageReferenceCapsule
+        key={`mcp-${match.start}`}
+        type="mcp"
+        label={match.payload.serverName}
+        title={`MCP: ${match.payload.serverName}`}
+      ><Plug size={13} aria-hidden /></MessageReferenceCapsule>,
+    );
+    cursor = match.end;
+  }
+  content.push(text.slice(cursor));
+  return <>{content}</>;
+};
 
 export const UserMessagePresentationContent: React.FC<{
   presentation: ComposerPresentation;
@@ -9,7 +35,7 @@ export const UserMessagePresentationContent: React.FC<{
   <>
     {presentation.segments.map((segment, index) => {
       if (segment.kind === 'text') {
-        return <React.Fragment key={`text-${index}`}>{segment.text}</React.Fragment>;
+        return <UserMessageTextContent key={`text-${index}`} text={segment.text} />;
       }
 
       if (segment.kind === 'inline-token') {
@@ -23,6 +49,9 @@ export const UserMessagePresentationContent: React.FC<{
         );
       }
 
+      if (segment.context.type === 'conversation-excerpt') {
+        return <ConversationExcerptPreview key={segment.context.id} excerpt={segment.context} origin="sent" />;
+      }
       return (
         <MessageReferenceCapsule
           key={`context-${index}`}

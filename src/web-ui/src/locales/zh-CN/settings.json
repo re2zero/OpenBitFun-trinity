@@ -34,7 +34,7 @@
       },
       "terminal": {
         "label": "终端",
-        "description": "默认 Shell 与终端面板显示位置。"
+        "description": "默认 Shell。"
       },
       "editor": {
         "label": "编辑器",
@@ -51,7 +51,7 @@
       "trinity": { "label": "认知引擎", "description": "认知引擎 LLM 端点、模型与连接。" },
       "sessionWorkspace": {
         "label": "会话与工作区",
-        "description": "默认 Harness、会话标题与当前工作区搜索。"
+        "description": "默认执行框架、会话标题与当前工作区搜索。"
       },
       "worktrees": {
         "label": "Worktrees",
@@ -67,7 +67,7 @@
       },
       "automation": {
         "label": "自动化",
-        "description": "快捷动作与 Agent 生命周期 Hooks。"
+        "description": "快捷动作与智能体生命周期 Hooks。"
       },
       "webSearch": {
         "label": "网页搜索",
@@ -78,8 +78,8 @@
         "description": "管理 MCP 服务器、连接与对外提供的工具。"
       },
       "acp": {
-        "label": "ACP Agent",
-        "description": "配置通过 Agent Client Protocol 接入的外部 Agent。"
+        "label": "ACP 智能体",
+        "description": "配置通过 Agent Client Protocol 接入的外部智能体。"
       },
       "usage": {
         "label": "调用统计",
@@ -263,7 +263,7 @@
       "app": "全局",
       "canvas": "编辑器画布",
       "editor": "代码编辑器（文本焦点）",
-      "chat": "Agent 会话",
+      "chat": "智能体会话",
       "terminal": "终端",
       "filetree": "文件树",
       "git": "Git"
@@ -279,7 +279,7 @@
       "scene": {
         "focusMerged": "切换场景",
         "focusMergedHint": "录制一次修饰键 + 任意数字 1–3；数字 1–3 对应从左到右的场景。",
-        "openSession": "打开 Agent 会话",
+        "openSession": "打开智能体会话",
         "openGit": "打开 Git",
         "openSettings": "打开设置",
         "openTerminal": "打开终端"
@@ -463,7 +463,7 @@
     }
   },
   "superAgent": {
-    "title": "Super Agent",
+    "title": "超级智能体",
     "subtitle": "配置主智能体的模型分配",
     "textChat": "文本对话",
     "textChatDesc": "处理日常对话和问答",
@@ -507,7 +507,7 @@
   "modes": {
     "title": "模式",
     "subtitle": "配置不同的工作模式",
-    "agentMode": "Agent 模式",
+    "agentMode": "智能体模式",
     "agentModeDesc": "AI 可以执行代码和使用工具",
     "chatMode": "对话模式",
     "chatModeDesc": "纯对话，不执行任何操作",
@@ -516,7 +516,7 @@
   },
   "agenticTools": {
     "title": "工具设置",
-    "subtitle": "配置 Agent 工具权限和行为",
+    "subtitle": "配置智能体工具权限和行为",
     "fileOperations": "文件操作",
     "fileOperationsDesc": "允许 AI 读写文件",
     "terminalAccess": "终端访问",

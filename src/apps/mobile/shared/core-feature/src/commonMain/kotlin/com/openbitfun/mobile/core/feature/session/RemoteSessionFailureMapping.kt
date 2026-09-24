@@ -22,10 +22,18 @@ internal fun remoteSessionFailure(error: Throwable): RemoteSessionUiState.Failed
             RemoteSessionFailureReason.REMOTE_REJECTED,
             failure.message?.trim()?.takeIf { it.isNotEmpty() },
         )
+        // The relay refused before the desktop saw the call; its sentence is
+        // the only thing that says the two builds do not match, so it is shown
+        // the same way a desktop refusal is.
+        is RelayFailure.ClientOutdated -> RemoteSessionUiState.Failed(
+            RemoteSessionFailureReason.REMOTE_REJECTED,
+            failure.message?.trim()?.takeIf { it.isNotEmpty() },
+        )
         RelayFailure.Timeout -> RemoteSessionUiState.Failed(RemoteSessionFailureReason.TIMEOUT)
         RelayFailure.NetworkUnreachable -> RemoteSessionUiState.Failed(RemoteSessionFailureReason.NETWORK)
         RelayFailure.RateLimited -> RemoteSessionUiState.Failed(RemoteSessionFailureReason.RATE_LIMITED)
         RelayFailure.MalformedResponse -> RemoteSessionUiState.Failed(RemoteSessionFailureReason.PROTOCOL_MISMATCH)
+        RelayFailure.HostStreamUnsupported -> RemoteSessionUiState.Failed(RemoteSessionFailureReason.HOST_STREAM_UNSUPPORTED)
         RelayFailure.AuthenticationRequired,
         RelayFailure.DeviceNotFound,
         is RelayFailure.RelayUnavailable,

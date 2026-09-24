@@ -117,7 +117,7 @@ fn plugin_after_presentation(
 #[cfg(feature = "opencode-plugin-host")]
 fn local_plugin_workspace_scope(workspace: &WorkspaceBinding) -> Option<String> {
     (!workspace.is_remote())
-        .then(|| crate::plugin_host::canonical_plugin_workspace_scope(workspace.root_path()))
+        .then(|| workspace.workspace_id.clone())
         .flatten()
 }
 
@@ -300,12 +300,15 @@ fn build_error_execution_result(
                 None,
             )
         };
-    let presentation = build_tool_execution_error_presentation(
+    let mut presentation = build_tool_execution_error_presentation(
         &effective_tool_name,
         category,
         &error_message,
         provided_arguments,
     );
+    if let Some(detail) = error.tool_error_detail() {
+        presentation.result_json["error_detail"] = serde_json::json!(detail);
+    }
     let persisted_effective_tool_name =
         persisted_effective_tool_name(&wire_tool_name, &effective_tool_name);
 
@@ -499,6 +502,7 @@ fn recovered_write_has_potentially_truncated_marked_path(
 
 enum PermissionAuthorization {
     Allowed,
+    AllowedWithInput { updated_input: serde_json::Value },
     UserRejected { feedback: Option<String> },
     PolicyDenied { reason: String },
 }
@@ -629,6 +633,10 @@ fn native_hook_session_facts<'a>(
     options: &ToolExecutionOptions,
 ) -> NativeHookSessionFacts<'a> {
     NativeHookSessionFacts {
+        workspace_id: context
+            .workspace
+            .as_ref()
+            .and_then(|workspace| workspace.workspace_id.as_deref()),
         session_id: &context.session_id,
         turn_id: Some(&context.dialog_turn_id),
         workspace_root: context
@@ -1312,6 +1320,7 @@ impl ToolPipeline {
             PermissionExecutionPlan::Awaiting(receivers) => receivers,
         };
 
+        let mut updated_input = serde_json::Map::new();
         let mut receivers = receivers.into_iter();
         while let Some(pending) = receivers.next() {
             let request_id = pending.request_id().to_string();
@@ -1333,6 +1342,16 @@ impl ToolPipeline {
 
             match outcome {
                 PermissionWaitOutcome::Replied(PermissionReply::Once | PermissionReply::Always) => {
+                }
+                PermissionWaitOutcome::Replied(PermissionReply::OnceWithInput {
+                    updated_input: patch,
+                }) => {
+                    let patch = patch.as_object().ok_or_else(|| {
+                        OpenBitFunError::Validation(
+                            "Edited approval input must be an object".to_string(),
+                        )
+                    })?;
+                    updated_input.extend(patch.clone());
                 }
                 PermissionWaitOutcome::Replied(PermissionReply::Reject { feedback }) => {
                     self.cancel_permission_request_ids(
@@ -1373,7 +1392,13 @@ impl ToolPipeline {
             }
         }
 
-        Ok(PermissionAuthorization::Allowed)
+        Ok(if updated_input.is_empty() {
+            PermissionAuthorization::Allowed
+        } else {
+            PermissionAuthorization::AllowedWithInput {
+                updated_input: serde_json::Value::Object(updated_input),
+            }
+        })
     }
 
     async fn cancel_permission_request_ids(&self, request_ids: Vec<String>, reason: String) {
@@ -1802,7 +1827,7 @@ impl ToolPipeline {
         debug!("Starting tool execution: tool_id={}", tool_id);
 
         // Get task
-        let task = self.state_manager.get_task(&tool_id).ok_or_else(|| {
+        let mut task = self.state_manager.get_task(&tool_id).ok_or_else(|| {
             OpenBitFunError::NotFound(format!("Tool task not found: {}", tool_id))
         })?;
 
@@ -1849,6 +1874,7 @@ impl ToolPipeline {
                 .update_state(
                     &tool_id,
                     ToolExecutionState::Failed {
+                        error_detail: None,
                         error: error_msg.clone(),
                         is_retryable: false,
                         duration_ms: None,
@@ -1874,6 +1900,7 @@ impl ToolPipeline {
                 .update_state(
                     &tool_id,
                     ToolExecutionState::Failed {
+                        error_detail: None,
                         error: error_msg.clone(),
                         is_retryable: false,
                         duration_ms: None,
@@ -1932,6 +1959,7 @@ impl ToolPipeline {
                 .update_state(
                     &tool_id,
                     ToolExecutionState::Failed {
+                        error_detail: None,
                         error: error_msg,
                         is_retryable: false,
                         duration_ms: None,
@@ -1986,10 +2014,16 @@ impl ToolPipeline {
             let error_msg = validation
                 .message
                 .unwrap_or_else(|| format!("Invalid input for tool '{}'", tool_name));
+            let error_detail = validation
+                .meta
+                .as_ref()
+                .and_then(|meta| meta.get("error_detail"))
+                .and_then(|detail| serde_json::from_value(detail.clone()).ok());
             self.state_manager
                 .update_state(
                     &tool_id,
                     ToolExecutionState::Failed {
+                        error_detail: error_detail.clone(),
                         error: error_msg.clone(),
                         is_retryable: false,
                         duration_ms: None,
@@ -2000,7 +2034,13 @@ impl ToolPipeline {
                     },
                 )
                 .await;
-            return Err(OpenBitFunError::Validation(error_msg));
+            return Err(match error_detail {
+                Some(detail) => OpenBitFunError::ClassifiedTool {
+                    message: error_msg,
+                    detail,
+                },
+                None => OpenBitFunError::Validation(error_msg),
+            });
         }
         if let Some(message) = validation
             .message
@@ -2054,6 +2094,19 @@ impl ToolPipeline {
 
         let rejected = match permission_authorization {
             Ok(PermissionAuthorization::Allowed) => None,
+            Ok(PermissionAuthorization::AllowedWithInput { updated_input }) => {
+                let arguments = match self.validate_approval_input(&task, updated_input).await {
+                    Ok(arguments) => arguments,
+                    Err(error) => {
+                        self.cancellation_tokens.remove(&tool_id);
+                        return Err(error);
+                    }
+                };
+                task.invocation.effective_arguments = arguments.clone();
+                self.state_manager
+                    .apply_hook_input_rewrite(&tool_id, arguments, None);
+                None
+            }
             Ok(PermissionAuthorization::UserRejected { feedback }) => {
                 let reason = user_rejection_audit_reason(&tool_name, feedback.as_deref());
                 let result = build_user_rejected_tool_result(
@@ -2325,6 +2378,7 @@ impl ToolPipeline {
                     .update_state(
                         &tool_id,
                         ToolExecutionState::Failed {
+                            error_detail: e.tool_error_detail().cloned(),
                             error: error_msg.clone(),
                             is_retryable,
                             duration_ms: Some(elapsed_ms_u64(start_time)),
@@ -2571,6 +2625,74 @@ impl ToolPipeline {
         Ok(())
     }
 
+    /// User approval edits reuse the tool's validation and policy owner before execution.
+    async fn validate_approval_input(
+        &self,
+        task: &ToolTask,
+        patch: serde_json::Value,
+    ) -> OpenBitFunResult<serde_json::Value> {
+        let mut arguments = task
+            .invocation
+            .effective_arguments
+            .as_object()
+            .cloned()
+            .ok_or_else(|| {
+                OpenBitFunError::Validation(
+                    "This tool does not support object input edits".to_string(),
+                )
+            })?;
+        arguments.extend(patch.as_object().cloned().ok_or_else(|| {
+            OpenBitFunError::Validation("Edited approval input must be an object".to_string())
+        })?);
+        let arguments = serde_json::Value::Object(arguments);
+        if let Some(rejection) = self
+            .non_relaxable_original_input_rejection(task, &arguments)
+            .await
+        {
+            return Err(OpenBitFunError::Validation(
+                rejection
+                    .message
+                    .unwrap_or_else(|| "This tool input is immutable".to_string()),
+            ));
+        }
+        let context = self.build_tool_use_context(task, CancellationToken::new());
+        let tool = self
+            .tool_registry
+            .read()
+            .await
+            .get_tool(task.effective_tool_name())
+            .ok_or_else(|| OpenBitFunError::NotFound("Approval tool is unavailable".to_string()))?;
+        if tool.is_concurrency_safe(Some(task.effective_arguments()))
+            && !tool.is_concurrency_safe(Some(&arguments))
+        {
+            return Err(OpenBitFunError::Validation(
+                "Edited input changes the admitted concurrency class; submit it as a new tool call"
+                    .to_string(),
+            ));
+        }
+        let validation = tool.validate_input(&arguments, Some(&context)).await;
+        if !validation.result {
+            return Err(OpenBitFunError::Validation(
+                validation
+                    .message
+                    .unwrap_or_else(|| "Invalid edited tool input".to_string()),
+            ));
+        }
+        let intents = tool.permission_intents(&arguments, &context)?;
+        if let PermissionPlanDraft::Rejected { reason } = self
+            .draft_permission_plan(
+                task.clone(),
+                task.effective_tool_name().to_string(),
+                intents,
+                context,
+            )
+            .await?
+        {
+            return Err(OpenBitFunError::Validation(reason));
+        }
+        Ok(arguments)
+    }
+
     pub async fn reply_to_tool(
         &self,
         tool_id: &str,
@@ -2590,6 +2712,19 @@ impl ToolPipeline {
                     "Permission request not found for tool: {tool_id}"
                 ))
             })?;
+        if let PermissionReply::OnceWithInput { updated_input } = &reply {
+            let task = request
+                .tool_call_id
+                .as_deref()
+                .and_then(|id| self.state_manager.get_task(id))
+                .ok_or_else(|| {
+                    OpenBitFunError::Validation(
+                        "This permission request does not own editable tool input".to_string(),
+                    )
+                })?;
+            self.validate_approval_input(&task, updated_input.clone())
+                .await?;
+        }
         manager
             .reply(&request.request_id, reply, PermissionReplySource::User)
             .await
@@ -2811,15 +2946,24 @@ mod tests {
     #[test]
     fn remote_workspace_never_resolves_a_local_plugin_hook_scope() {
         let workspace = tempfile::tempdir().expect("workspace");
-        let local = WorkspaceBinding::new(None, workspace.path().to_path_buf());
+        // The plugin scope is the workspace record ID, never the root path.
+        let local = WorkspaceBinding::new(
+            Some("workspace-local".to_string()),
+            workspace.path().to_path_buf(),
+        );
         let mut remote = local.clone();
         remote.backend = crate::agentic::workspace::WorkspaceBackend::Remote {
             connection_id: "remote-a".to_string(),
             connection_name: "Remote A".to_string(),
         };
+        let unregistered = WorkspaceBinding::new(None, workspace.path().to_path_buf());
 
-        assert!(local_plugin_workspace_scope(&local).is_some());
+        assert_eq!(
+            local_plugin_workspace_scope(&local).as_deref(),
+            Some("workspace-local")
+        );
         assert!(local_plugin_workspace_scope(&remote).is_none());
+        assert!(local_plugin_workspace_scope(&unregistered).is_none());
     }
 
     #[test]
@@ -2946,12 +3090,12 @@ mod tests {
 
         async fn call_impl(
             &self,
-            _input: &serde_json::Value,
+            input: &serde_json::Value,
             _context: &ToolUseContext,
         ) -> OpenBitFunResult<Vec<ToolResult>> {
             self.call_count.fetch_add(1, Ordering::SeqCst);
             Ok(vec![ToolResult::Result {
-                data: json!({ "written": true }),
+                data: json!({ "written": true, "input": input }),
                 result_for_assistant: None,
                 image_attachments: None,
             }])
@@ -3310,7 +3454,10 @@ mod tests {
         let root = std::env::current_dir().expect("absolute test workspace root");
 
         let mut local_task = test_tool_task("local-route", "Read");
-        local_task.context.workspace = Some(WorkspaceBinding::new(None, root.clone()));
+        local_task.context.workspace = Some(WorkspaceBinding::new(
+            Some("local-workspace".into()),
+            root.clone(),
+        ));
         let local = pipeline.build_tool_use_context(&local_task, CancellationToken::new());
 
         let session_identity =
@@ -3332,17 +3479,17 @@ mod tests {
 
         assert_eq!(
             crate::external_tools::external_tool_route_root(
-                local.workspace_root(),
+                local.workspace_id(),
                 local.is_remote(),
             ),
-            Some(root.as_path())
+            Some("local-workspace")
         );
         let remote_route_root = crate::external_tools::external_tool_route_root(
-            remote.workspace_root(),
+            remote.workspace_id(),
             remote.is_remote(),
         );
-        assert_eq!(remote_route_root, Some(std::path::Path::new("\0")));
-        assert!(dunce::canonicalize(remote_route_root.expect("remote sentinel")).is_err());
+        assert_eq!(remote_route_root, Some("<unsupported-remote>"));
+        assert_ne!(remote_route_root, local.workspace_id());
     }
 
     async fn register_static_test_tool(
@@ -4054,6 +4201,103 @@ mod tests {
 
         assert!(!results[0].result.is_error);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn edited_approval_executes_merged_input_and_rejection_never_executes() {
+        let store = Arc::new(MemoryPermissionStore::default());
+        let manager = permission_test_manager(store);
+        let pipeline = test_tool_pipeline().with_permission_request_manager(Arc::clone(&manager));
+        let calls = Arc::new(AtomicUsize::new(0));
+        register_v2_file_test_tool(
+            &pipeline,
+            vec![PermissionIntent::new(
+                "edit",
+                vec!["src/main.rs".to_string()],
+            )],
+            Arc::clone(&calls),
+        )
+        .await;
+        let running = pipeline.clone();
+        let execution = tokio::spawn(async move {
+            running
+                .execute_tools(
+                    vec![
+                        test_tool_call("edited", "Write"),
+                        test_tool_call("denied", "Write"),
+                    ],
+                    permission_test_context(),
+                    ToolExecutionOptions::default(),
+                )
+                .await
+        });
+        wait_for_permission_request_count(&manager, 2).await;
+        pipeline
+            .reply_to_tool(
+                "edited",
+                PermissionReply::OnceWithInput {
+                    updated_input: json!({"content":"approved replacement"}),
+                },
+            )
+            .await
+            .expect("edited approval");
+        pipeline
+            .reply_to_tool("denied", PermissionReply::Reject { feedback: None })
+            .await
+            .expect("reject");
+        let results = execution.await.unwrap().unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            results[0].result.result["input"]["content"],
+            "approved replacement"
+        );
+        assert_eq!(results[1].result.result["category"], "user_rejected");
+        assert_eq!(
+            pipeline
+                .state_manager
+                .get_task("edited")
+                .unwrap()
+                .effective_arguments()["content"],
+            "approved replacement"
+        );
+    }
+
+    #[tokio::test]
+    async fn edited_approval_rejects_immutable_invalid_and_changed_concurrency_inputs() {
+        let pipeline = test_tool_pipeline();
+        let received = Arc::new(Mutex::new(None));
+        pipeline
+            .tool_registry
+            .write()
+            .await
+            .register_tool(Arc::new(CapturingTestTool {
+                name: "Capture".to_string(),
+                received_arguments: received.clone(),
+            }));
+        let protected =
+            test_tool_task_with_arguments("protected", "Capture", json!({"city":"protected"}));
+        assert!(pipeline
+            .validate_approval_input(&protected, json!({"city":"safe"}))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("protected"));
+        let ordinary = test_tool_task_with_arguments("ordinary", "Capture", json!({"city":"safe"}));
+        assert!(pipeline
+            .validate_approval_input(&ordinary, json!({"city":42}))
+            .await
+            .is_err());
+        assert!(pipeline
+            .validate_approval_input(&ordinary, json!({"city":"unsafe"}))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("concurrency"));
+        assert!(pipeline
+            .validate_approval_input(&ordinary, json!([]))
+            .await
+            .is_err());
+        assert!(received.lock().unwrap().is_none());
     }
 
     #[tokio::test]
@@ -4890,6 +5134,29 @@ mod tests {
     }
 
     #[test]
+    fn classified_edit_failure_preserves_model_error_and_persisted_detail() {
+        let error = OpenBitFunError::ClassifiedTool {
+            message: "[guidance] new_string must be different from old_string".into(),
+            detail: openbitfun_core_types::errors::ToolErrorDetail {
+                code: "edit_no_change".into(),
+                kind: "guidance".into(),
+            },
+        };
+        let result = build_error_execution_result("edit-1", None, &error);
+        assert!(result.result.is_error);
+        assert_eq!(
+            result.result.result["error_detail"]["code"],
+            "edit_no_change"
+        );
+        assert!(result
+            .result
+            .result_for_assistant
+            .unwrap()
+            .contains("new_string must be different"));
+        assert!(!should_retry_tool_error(&error));
+    }
+
+    #[test]
     fn error_result_preserves_full_raw_arguments_for_unparseable_calls() {
         let mut task = test_tool_task("tool_1", "Worktree");
         task.tool_call.arguments = json!({});
@@ -5259,6 +5526,70 @@ mod tests {
         assert!(assistant_text.contains("\"exit_code\": 1"));
         assert!(assistant_text.contains("\"working_directory\": \"/private/tmp\""));
         assert!(!assistant_text.contains("completed with error"));
+    }
+
+    #[cfg(feature = "tools-computer-use")]
+    #[test]
+    fn computer_use_observations_reach_provider_messages_with_images_and_references() {
+        use crate::agentic::core::message::Message;
+        use crate::agentic::tools::implementations::computer_use_presentation::complete_model_results;
+        use crate::util::types::Message as AIMessage;
+        use openbitfun_agent_tools::ToolImageAttachment;
+
+        // These deliberately have the brief summaries that previously hid the
+        // entire app list and AX tree from the model. Check the final provider
+        // message, not merely ToolResult::content() (the UI-only data path).
+        let cases = [
+            (
+                json!({"action":"list_apps", "apps":[{"pid":421,"name":"WeChat","bundle_id":"com.tencent.xinWeChat"}]}),
+                "1 app(s) listed",
+                vec!["WeChat", "com.tencent.xinWeChat", "421"],
+            ),
+            (
+                json!({"action":"get_app_state", "tree_text":"[7] AXTextField Search", "nodes":[{"idx":7,"role":"AXTextField","title":"Search"}], "screenshot_id":"capture-2", "image_width":800, "image_height":600}),
+                "34 nodes",
+                vec!["[7] AXTextField Search", "capture-2", "image_width"],
+            ),
+            (
+                json!({"action":"describe_screen", "ax_tree_text":"[9] AXButton Confirm", "truncation_note":"tree limited to visible nodes"}),
+                "Screen described",
+                vec!["[9] AXButton Confirm", "tree limited to visible nodes"],
+            ),
+            (
+                json!({"action":"move_to_text", "disambiguation_required":true, "candidates":[{"match_index":2,"ocr_text":"Search","preview_image_attachment_index":0}], "instruction":"Choose a match_index; pointer was not moved."}),
+                "Several OCR matches",
+                vec![
+                    "match_index",
+                    "preview_image_attachment_index",
+                    "pointer was not moved",
+                ],
+            ),
+        ];
+        for (data, summary, expected) in cases {
+            let mut results = vec![FrameworkToolResult::ok_with_images(
+                data.clone(),
+                Some(summary.into()),
+                vec![ToolImageAttachment {
+                    mime_type: "image/jpeg".into(),
+                    data_base64: "image-bytes-stay-out-of-text".into(),
+                }],
+            )];
+            complete_model_results(&mut results);
+            let converted =
+                convert_tool_result(results.remove(0), "call-1", "ComputerUse", "ComputerUse");
+            assert_eq!(converted.result, data, "stored/UI result must be unchanged");
+            let message = AIMessage::from(Message::tool_result(converted));
+            let content = message.content.unwrap();
+            assert!(content.contains(summary));
+            for field in expected {
+                assert!(content.contains(field), "missing {field} in {content}");
+            }
+            assert!(!content.contains("image-bytes-stay-out-of-text"));
+            assert_eq!(message.tool_call_id.as_deref(), Some("call-1"));
+            let images = message.tool_image_attachments.unwrap();
+            assert_eq!(images.len(), 1);
+            assert_eq!(images[0].data_base64, "image-bytes-stay-out-of-text");
+        }
     }
 
     #[test]

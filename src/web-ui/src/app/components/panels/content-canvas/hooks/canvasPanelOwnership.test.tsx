@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CanvasStoreModeContext,
   clearAgentCanvasForPeerSwitch,
-  switchAgentCanvasWorkspace,
+  switchAgentCanvasScope,
   useAgentCanvasStore,
   useBottomTerminalCanvasStore,
   useCanvasStore,
@@ -28,6 +28,21 @@ import { resolveSessionSceneTarget } from '@/app/services/sessionSceneTarget';
 import { workspaceManager } from '@/infrastructure/services/business/workspaceManager';
 import { getActiveSurfaceId } from '@/infrastructure/peer-device/deviceSurface';
 import { drainPendingTabs } from '@/shared/services/pendingTabQueue';
+
+// Content scopes are owned by workspace ID. Provide the records that the
+// file opens below name so that the ID-first scope capture can resolve them.
+vi.mock('@/infrastructure/services/business/workspaceManager', () => {
+  const sshWorkspace = {
+    id: 'ssh-workspace-record', rootPath: '/workspace', workspaceKind: 'remote', connectionId: 'ssh-workspace',
+  };
+  const workspace = { id: 'workspace', rootPath: '/workspace', workspaceKind: 'normal' };
+  return {
+    workspaceManager: { getState: () => ({
+      currentWorkspace: workspace, recentWorkspaces: [],
+      openedWorkspaces: new Map([[workspace.id, workspace], [sshWorkspace.id, sshWorkspace]]),
+    }) },
+  };
+});
 import { usePanelTabCoordinator } from './usePanelTabCoordinator';
 import { useTabLifecycle } from './useTabLifecycle';
 
@@ -41,7 +56,7 @@ function CanvasProbe({ mode, onReveal }: { mode: CanvasStoreMode; onReveal?: () 
 const expandBottom = () => expandSessionBottomTerminalPane(240);
 
 function PanelProbe({ bottom = false }: { bottom?: boolean }) {
-  const scopeKey = useCanvasStore(state => state.workspaceKey);
+  const scopeKey = useCanvasStore(state => state.scopeKey);
   const visibleTabCount = useCanvasStore(state => (
     [state.primaryGroup, state.secondaryGroup, state.tertiaryGroup]
       .reduce((count, group) => count + group.tabs.filter(tab => !tab.isHidden).length, 0)
@@ -115,7 +130,7 @@ describe('canvas host panel ownership', () => {
     window.addEventListener(TAB_EVENTS.EXPAND_RIGHT_PANEL, onRightPanelRequest);
     try {
       await act(async () => {
-        const options = { filePath: '/workspace/example.ts', workspacePath: '/workspace',
+        const options = { filePath: '/workspace/example.ts', workspaceId: 'ssh-workspace-record', workspacePath: '/workspace',
           remoteConnectionId: 'ssh-workspace', mode: 'project' as const };
         fileTabManager.openFile(options);
         fileTabManager.openFile({ ...options, jumpToLine: 12 });
@@ -150,13 +165,13 @@ describe('canvas host panel ownership', () => {
   it('opens session file links in the right panel and reveals an existing file again', async () => {
     flowChatStore.setState(state => ({ ...state, activeSessionId: 'session-a', sessions: new Map([['session-a', {
       sessionId: 'session-a', title: 'Session', status: 'idle', config: {}, dialogTurns: [],
-      createdAt: 1, lastActiveAt: 1, error: null, workspacePath: '/workspace', sessionKind: 'normal',
+      createdAt: 1, lastActiveAt: 1, error: null, workspacePath: '/workspace', workspaceId: 'workspace', sessionKind: 'normal',
     }]]) }));
     useSceneStore.getState().openSessionScene(resolveSessionSceneTarget(
       flowChatStore.getActiveSession()!, workspaceManager.getState().openedWorkspaces.values(), getActiveSurfaceId(),
     ));
     await act(async () => root.render(<Hosts />));
-    const options = { filePath: '/workspace/session.ts', workspacePath: '/workspace', mode: 'agent' as const };
+    const options = { filePath: '/workspace/session.ts', workspaceId: 'workspace', workspacePath: '/workspace', mode: 'agent' as const };
     await act(async () => {
       fileTabManager.openFile(options);
       collapseSessionAuxPane();
@@ -175,12 +190,13 @@ describe('canvas host panel ownership', () => {
   it('routes legacy content events to the top when the selected session has no open tab', async () => {
     flowChatStore.setState(state => ({ ...state, activeSessionId: 'cached-session', sessions: new Map([['cached-session', {
       sessionId: 'cached-session', title: 'Session', status: 'idle', config: {}, dialogTurns: [],
-      createdAt: 1, lastActiveAt: 1, error: null, workspacePath: '/workspace', sessionKind: 'normal',
+      createdAt: 1, lastActiveAt: 1, error: null, workspacePath: '/workspace', workspaceId: 'workspace', sessionKind: 'normal',
     }]]) }));
     await act(async () => root.render(<Hosts />));
     await act(async () => {
       window.dispatchEvent(new CustomEvent(TAB_EVENTS.AGENT_CREATE_TAB, { detail: {
-        type: 'code-editor', title: 'session.ts', data: { filePath: '/workspace/session.ts', workspacePath: '/workspace' },
+        type: 'code-editor', title: 'session.ts',
+        data: { filePath: '/workspace/session.ts', workspaceId: 'workspace', workspacePath: '/workspace' },
       } }));
     });
     expect(useSceneStore.getState().activeTabId).toMatch(/^content:/);
@@ -190,21 +206,23 @@ describe('canvas host panel ownership', () => {
     expect(appManager.getState().layout.rightPanelCollapsed).toBe(true);
   });
 
-  it('preserves manual collapse across content changes, workspace restore and host remount', async () => {
-    switchAgentCanvasWorkspace(null, 'workspace-a');
+  it('restores a scope snapshot without opening the panel for the host', async () => {
+    switchAgentCanvasScope('session-a');
     useAgentCanvasStore.getState().addTab(content('session'), 'active');
     await act(async () => root.render(<Hosts />));
     const tab = useAgentCanvasStore.getState().primaryGroup.tabs[0];
     await act(async () => useAgentCanvasStore.getState().updateTabContent(tab.id, 'primary', content('updated')));
     expect(appManager.getState().layout.rightPanelCollapsed).toBe(true);
     await act(async () => {
-      switchAgentCanvasWorkspace('workspace-a', 'workspace-b');
+      switchAgentCanvasScope('session-b');
       root.render(<Hosts />);
     });
     await act(async () => {
-      switchAgentCanvasWorkspace('workspace-b', 'workspace-a');
+      switchAgentCanvasScope('session-a');
       root.render(<Hosts />);
     });
+    // The entered scope owns its own open state; content returning with a scope
+    // swap must not reopen a panel the host restored as collapsed.
     expect(useAgentCanvasStore.getState().primaryGroup.tabs).toHaveLength(1);
     expect(appManager.getState().layout.rightPanelCollapsed).toBe(true);
     await act(async () => root.render(null));
@@ -229,18 +247,19 @@ describe('canvas host panel ownership', () => {
     expect(appManager.getState().layout.rightPanelCollapsed).toBe(true);
   });
 
-  it('preserves an open panel when workspace snapshots change before the shell rerenders', async () => {
-    switchAgentCanvasWorkspace(null, 'workspace-a');
-    useAgentCanvasStore.getState().addTab(content('workspace-a'), 'active');
+  it('keeps canvas content per scope instead of sharing it between scopes', async () => {
+    switchAgentCanvasScope('session-a');
+    useAgentCanvasStore.getState().addTab(content('session-a'), 'active');
     appManager.updateLayout({ rightPanelCollapsed: false });
     await act(async () => root.render(<Hosts />));
-    await act(async () => switchAgentCanvasWorkspace('workspace-a', 'workspace-b'));
-    expect(useAgentCanvasStore.getState().workspaceKey).toBe('workspace-b');
+    await act(async () => switchAgentCanvasScope('session-b'));
+    expect(useAgentCanvasStore.getState().scopeKey).toBe('session-b');
     expect(useAgentCanvasStore.getState().primaryGroup.tabs).toHaveLength(0);
-    expect(appManager.getState().layout.rightPanelCollapsed).toBe(false);
-    await act(async () => switchAgentCanvasWorkspace('workspace-b', 'workspace-a'));
-    expect(useAgentCanvasStore.getState().primaryGroup.tabs).toHaveLength(1);
-    expect(appManager.getState().layout.rightPanelCollapsed).toBe(false);
+    await act(async () => useAgentCanvasStore.getState().addTab(content('session-b'), 'active'));
+    await act(async () => switchAgentCanvasScope('session-a'));
+    expect(useAgentCanvasStore.getState().primaryGroup.tabs.map(tab => tab.content.title)).toEqual(['session-a']);
+    await act(async () => switchAgentCanvasScope('session-b'));
+    expect(useAgentCanvasStore.getState().primaryGroup.tabs.map(tab => tab.content.title)).toEqual(['session-b']);
   });
 
   it('keeps Git and bottom terminal operations scoped to their hosts', async () => {

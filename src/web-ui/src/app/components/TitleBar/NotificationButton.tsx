@@ -1,3 +1,4 @@
+import { LoaderCircle as LucideLoaderCircle } from 'lucide-react';
 /**
  * NotificationButton — global notification indicator for TitleBar.
  *
@@ -68,20 +69,9 @@ const NotificationButton: React.FC<NotificationButtonProps> = ({
       <MenuItem
         className={className || undefined}
         leading={activeNotification?.variant === 'loading' ? (
-          <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2.5"
-            className="openbitfun-notification-btn__spinner"
-            aria-hidden="true"
-          >
-            <path d="M12 2 A 10 10 0 0 1 22 12" strokeLinecap="round" />
-          </svg>
+          <Icon glyph={LucideLoaderCircle} size="sm" className="openbitfun-notification-btn__spinner" aria-hidden="true" />
         ) : unreadCount > 0 ? (
-          <BellDot size={14} className="openbitfun-notification-btn__icon--has-message" aria-hidden="true" />
+          <Icon glyph={BellDot} size="sm" className="openbitfun-notification-btn__icon--has-message" aria-hidden="true" />
         ) : (
           <Icon name="bell" size="sm" aria-hidden="true" />
         )}
@@ -120,11 +110,7 @@ const NotificationButton: React.FC<NotificationButtonProps> = ({
           <div className="openbitfun-notification-btn__progress" data-openbitfun-component="notification-button" data-openbitfun-part="progress">
             {activeNotification.variant === 'loading' ? (
               <div className="openbitfun-notification-btn__loading-icon" data-openbitfun-component="notification-button" data-openbitfun-part="loadingIcon">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
-                  stroke="currentColor" strokeWidth="2.5"
-                  className="openbitfun-notification-btn__spinner">
-                  <path d="M12 2 A 10 10 0 0 1 22 12" strokeLinecap="round" />
-                </svg>
+                <LucideLoaderCircle width="12" height="12" stroke="currentColor" className="openbitfun-notification-btn__spinner" aria-hidden="true" />
               </div>
             ) : (
               <div className="openbitfun-notification-btn__progress-icon" data-openbitfun-component="notification-button" data-openbitfun-part="progressIcon">
@@ -175,21 +161,22 @@ const NotificationButton: React.FC<NotificationButtonProps> = ({
       ) : navFooterHoverIconSwap ? (
         unreadCount > 0 ? (
           <span className="openbitfun-nav-panel__footer-btn-icon-swap" aria-hidden="true">
-            <BellDot
-              size={15}
+            <Icon
+              glyph={BellDot}
+              size="sm"
               className="openbitfun-notification-btn__icon--has-message openbitfun-nav-panel__footer-btn-icon-swap-default"
             />
-            <BellRing size={15} className="openbitfun-nav-panel__footer-btn-icon-swap-hover" />
+            <Icon glyph={BellRing} size="sm" className="openbitfun-nav-panel__footer-btn-icon-swap-hover" />
           </span>
         ) : (
           <span className="openbitfun-nav-panel__footer-btn-icon-swap" aria-hidden="true">
             <Icon name="bell" size="sm" className="openbitfun-nav-panel__footer-btn-icon-swap-default" />
-            <BellRing size={15} className="openbitfun-nav-panel__footer-btn-icon-swap-hover" />
+            <Icon glyph={BellRing} size="sm" className="openbitfun-nav-panel__footer-btn-icon-swap-hover" />
           </span>
         )
       ) : (
         unreadCount > 0
-          ? <BellDot size={14} className="openbitfun-notification-btn__icon--has-message" />
+          ? <Icon glyph={BellDot} size="sm" className="openbitfun-notification-btn__icon--has-message" />
           : <Icon name="bell" size="sm" />
       )}
     </button>

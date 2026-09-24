@@ -169,6 +169,7 @@ product-full = [
     "tools-computer-use",
     "tools-image-analysis",
     "tools-miniapp",
+    "tools-pages",
     "tools-creation",
     "tools-canvas",
     "tools-agent-control",
@@ -194,6 +195,11 @@ product-full = [
     "runtime-services",
     "tool-packs",
 ]
+# Test-only constructors for downstream in-process tests, such as
+# `WorkspaceService::new_isolated_for_tests`, which keep fixture workspace
+# records out of the developer's real user data directory. Enable only from
+# `[dev-dependencies]`; it is not part of any product assembly.
+test-support = []
 # Core compatibility facade and concrete product Agent Runtime assembly. This
 # owns the existing agent/session/tool lifecycle, not app presentation or
 # external ecosystem discovery.
@@ -296,6 +302,7 @@ mcp-runtime = [
     "tokio/rt-multi-thread",
 ]
 remote-connect = [
+    "openbitfun-services-core/workspace-transfer",
     "agent-runtime",
     "git",
     "model-catalog",
@@ -371,6 +378,9 @@ tools-miniapp = [
     "runtime-services",
     "dep:reqwest",
     "dep:semver",
+]
+tools-pages = [
+    "openbitfun-tool-packs/pages",
 ]
 tools-creation = [
     "openbitfun-tool-packs/creation",
@@ -459,9 +469,11 @@ ssh-remote = [
 ]
 
 [dev-dependencies]
+# Loopback Socket.IO fixture for remote controller interaction tests.
+tokio-tungstenite = { workspace = true }
 openbitfun-runtime-services = { path = "../../execution/runtime-services", features = ["test-support"] }
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 
 [[test]]
 name = "git_contracts"

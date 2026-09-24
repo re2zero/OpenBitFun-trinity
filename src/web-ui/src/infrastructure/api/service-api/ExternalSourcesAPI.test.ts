@@ -4,6 +4,7 @@ import { webSocketResponseError } from '../adapters/websocket-adapter';
 import { PeerProductCommandError } from '../adapters/peer-device-adapter';
 import { ApiClient } from './ApiClient';
 import { globalEventBus } from '@/infrastructure/event-bus';
+import { MCP_CONFIG_CHANGED } from '@/infrastructure/mcp/configEvents';
 
 const invokeMock = vi.hoisted(() => vi.fn());
 const adapterMocks = vi.hoisted(() => ({
@@ -62,39 +63,92 @@ vi.mock('./ApiClient', async importOriginal => {
 describe('ExternalSourcesAPI', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    invokeMock.mockReset();
     invokeMock.mockResolvedValue(surface({}));
     adapterMocks.isConnected.mockReturnValue(true);
   });
+
+  const discovery = () => ({
+    schemaVersion: 1, automaticDiscovery: true, canChangeAutomaticDiscovery: true,
+    hasScanned: true, preferenceRevision: 9, discoverableCapabilities: { codex: ['mcp'] },
+    catalog: { ...surface({}).catalog, generation: 2, discoveryPending: false, sources: [], commands: [],
+      integrationPolicy: { status: 'compatible', effective: { enabled: false, ecosystems: {} }, registeredEcosystems: [] } },
+  });
+
+  it('negotiates independent catalog discovery while keeping runtime authorization off', async () => {
+    invokeMock.mockResolvedValue(discovery());
+    const result = await externalSourcesAPI.getDiscoverySnapshot(' /project ', true);
+    expect(invokeMock).toHaveBeenCalledExactlyOnceWith('get_external_source_discovery_snapshot', {
+      request: { workspaceId: '/project', forceRefresh: true },
+    });
+    expect(result.discovery).toEqual({ enabled: true, canChange: true, hasScanned: true,
+      preferenceRevision: 9, discoverableCapabilities: { codex: ['mcp'] } });
+    expect(result.integrationPolicy.effective.enabled).toBe(false);
+  });
+
+  it('keeps old hosts viewable without exposing the new mutation', async () => {
+    invokeMock.mockRejectedValueOnce(new ExternalSourceApiError('incompatible_version', 'Unknown command', false))
+      .mockResolvedValueOnce(surface({ generation: 1 }));
+    const result = await externalSourcesAPI.getDiscoverySnapshot('/project');
+    expect(result.discovery).toBeUndefined();
+    expect(invokeMock.mock.calls.map(([command]) => command)).toEqual([
+      'get_external_source_discovery_snapshot', 'get_external_source_control_snapshot',
+    ]);
+  });
+
+  it.each([null, { ...discovery(), automaticDiscovery: 'true' }, { ...discovery(), discoverableCapabilities: [] }])(
+    'reports malformed discovery responses without masking them with a legacy read', async (value) => {
+      invokeMock.mockResolvedValue(value);
+      await expect(externalSourcesAPI.getDiscoverySnapshot('/project')).rejects.toMatchObject({ code: 'invalid_response' });
+      expect(invokeMock).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([[' /project ', 'workspace', '/project'], [undefined, 'user', undefined]])(
+    'updates only discovery with normalized scope %s', async (workspace, scope, path) => {
+      invokeMock.mockResolvedValueOnce({}).mockResolvedValueOnce(discovery());
+      const runtimeChanged = vi.fn();
+      const unsubscribe = globalEventBus.on('mode:config:updated', runtimeChanged);
+      try {
+        await externalSourcesAPI.setAutomaticDiscovery(workspace, false, 8);
+        expect(runtimeChanged).not.toHaveBeenCalled();
+      } finally { unsubscribe(); }
+      expect(invokeMock).toHaveBeenNthCalledWith(1, 'update_external_integration_policy_command', {
+        request: { workspaceId: path, mutation: { expectedPreferenceRevision: 8, scope,
+          change: { operation: 'set_automatic_discovery', enabled: false } } },
+      });
+    },
+  );
 
   it('reads and acknowledges backend-owned ecosystem awareness', async () => {
     invokeMock
       .mockResolvedValueOnce({ unacknowledgedEcosystemIds: ['opencode', 'codex'] })
       .mockResolvedValueOnce(undefined);
 
-    await expect(externalSourcesAPI.getEcosystemAwareness('D:/workspace/project'))
+    await expect(externalSourcesAPI.getEcosystemAwareness('workspace-1'))
       .resolves.toEqual(['opencode', 'codex']);
     await externalSourcesAPI.acknowledgeEcosystems(
-      'D:/workspace/project',
+      'workspace-1',
       ['opencode', 'codex'],
     );
 
     expect(invokeMock).toHaveBeenNthCalledWith(1, 'get_external_ecosystem_awareness_command', {
-      request: { workspacePath: 'D:/workspace/project' },
+      request: { workspaceId: 'workspace-1' },
     });
     expect(invokeMock).toHaveBeenNthCalledWith(2, 'acknowledge_external_ecosystems_command', {
       request: {
-        workspacePath: 'D:/workspace/project',
+        workspaceId: 'workspace-1',
         ecosystemIds: ['opencode', 'codex'],
       },
     });
   });
 
   it('keeps workspace ownership and refresh intent in the public snapshot request', async () => {
-    await externalSourcesAPI.getSnapshot('D:/workspace/project', true);
+    await externalSourcesAPI.getSnapshot('workspace-1', true);
 
     expect(invokeMock).toHaveBeenCalledWith('get_external_source_control_snapshot', {
       request: {
-        workspacePath: 'D:/workspace/project',
+        workspaceId: 'workspace-1',
         forceRefresh: true,
       },
     });
@@ -108,44 +162,37 @@ describe('ExternalSourcesAPI', () => {
     });
 
     await externalSourcesAPI.getWorkspaceReferences(
-      'D:/workspace/project/.openbitfun/worktrees/task',
       'workspace-1',
       true,
     );
 
     expect(invokeMock).toHaveBeenCalledWith('get_workspace_reference_snapshot', {
       request: {
-        workspacePath: 'D:/workspace/project/.openbitfun/worktrees/task',
         workspaceId: 'workspace-1',
         forceRefresh: true,
       },
     });
   });
 
-  it('treats an empty workspace path as the global scope', async () => {
-    await externalSourcesAPI.getSnapshot('', false);
-
-    expect(invokeMock).toHaveBeenCalledWith('get_external_source_control_snapshot', {
-      request: {
-        workspacePath: undefined,
-        forceRefresh: false,
-      },
-    });
+  it('rejects an unresolved workspace instead of selecting global scope', async () => {
+    await expect(externalSourcesAPI.getSnapshot('', false)).rejects.toThrow('Workspace identity is unresolved');
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 
   it('sends only typed selection intent when applying an MCP import plan', async () => {
+    invokeMock.mockResolvedValueOnce({ schemaVersion: 1, outcome: { status: 'applied', imported: [] } });
     const plan = {
       schemaVersion: 1 as const,
       planFingerprint: 'sha256:plan-v1',
       items: [],
     };
-    await externalSourcesAPI.applyMcpImport('D:/workspace/project', plan, [{
+    await externalSourcesAPI.applyMcpImport('workspace-1', plan, [{
       candidateId: 'opencode:mcp:docs',
     }]);
 
     expect(invokeMock).toHaveBeenCalledWith('apply_external_mcp_import_command', {
       request: {
-        workspacePath: 'D:/workspace/project',
+        workspaceId: 'workspace-1',
         importRequest: {
           schemaVersion: 1,
           planFingerprint: 'sha256:plan-v1',
@@ -155,15 +202,29 @@ describe('ExternalSourcesAPI', () => {
     });
   });
 
+  it('invalidates native MCP lists on applied import, but not on a stale plan', async () => {
+    const changed = vi.fn();
+    const unsubscribe = globalEventBus.on(MCP_CONFIG_CHANGED, changed);
+    const plan = { schemaVersion: 1 as const, planFingerprint: 'plan', items: [] };
+    try {
+      invokeMock.mockResolvedValueOnce({ schemaVersion: 1, outcome: { status: 'stale', refreshedPlan: plan } });
+      await externalSourcesAPI.applyMcpImport(undefined, plan, []);
+      expect(changed).not.toHaveBeenCalled();
+      invokeMock.mockResolvedValueOnce({ schemaVersion: 1, outcome: { status: 'applied', imported: [] } });
+      await externalSourcesAPI.applyMcpImport(undefined, plan, []);
+      expect(changed).toHaveBeenCalledWith({ surfaceId: 'local' });
+    } finally { unsubscribe(); }
+  });
+
   it('reveals a source by stable identity without sending its display location', async () => {
     await externalSourcesAPI.revealSourceLocation(
-      'D:/workspace/project',
+      'workspace-1',
       'opencode.commands:project',
     );
 
     expect(invokeMock).toHaveBeenCalledWith('reveal_external_source_location', {
       request: {
-        workspacePath: 'D:/workspace/project',
+        workspaceId: 'workspace-1',
         sourceKey: 'opencode.commands:project',
       },
     });
@@ -181,7 +242,7 @@ describe('ExternalSourcesAPI', () => {
     });
 
     const outcome = await externalSourcesAPI.expandPromptCommand(
-      'D:/workspace/project',
+      'workspace-1',
       'review',
       'focus on auth',
       'claude-code.commands:project:review',
@@ -213,7 +274,7 @@ describe('ExternalSourcesAPI', () => {
 
     expect(invokeMock).toHaveBeenCalledWith('expand_external_prompt_command_command', {
       request: {
-        workspacePath: 'D:/workspace/project',
+        workspaceId: 'workspace-1',
         name: 'review',
         arguments: 'focus on auth',
         nativeCommands: [{
@@ -245,7 +306,7 @@ describe('ExternalSourcesAPI', () => {
     invokeMock.mockResolvedValueOnce(response);
 
     await expect(externalSourcesAPI.expandPromptCommand(
-      'D:/workspace/project',
+      'workspace-1',
       'review',
       '',
       'opencode.commands:project:review',
@@ -266,13 +327,13 @@ describe('ExternalSourcesAPI', () => {
     }];
 
     await externalSourcesAPI.getNativePromptCommandConflicts(
-      'D:/workspace/project',
+      'workspace-1',
       nativeCommands,
     );
 
     expect(invokeMock).toHaveBeenCalledWith('get_native_prompt_command_conflicts_command', {
       request: {
-        workspacePath: 'D:/workspace/project',
+        workspaceId: 'workspace-1',
         nativeCommands,
       },
     });
@@ -287,7 +348,7 @@ describe('ExternalSourcesAPI', () => {
     }];
 
     await externalSourcesAPI.setNativePromptCommandConflictChoice(
-      'D:/workspace/project',
+      'workspace-1',
       nativeCommands,
       'openbitfun.desktop:action:review',
       3,
@@ -297,7 +358,7 @@ describe('ExternalSourcesAPI', () => {
       'set_native_prompt_command_conflict_choice_command',
       {
         request: {
-          workspacePath: 'D:/workspace/project',
+          workspaceId: 'workspace-1',
           nativeCommands,
           selectedCandidateId: 'openbitfun.desktop:action:review',
           expectedPreferenceRevision: 3,
@@ -327,11 +388,11 @@ describe('ExternalSourcesAPI', () => {
         commands: [],
       });
 
-    const result = await externalSourcesAPI.getSnapshot('D:/workspace/project');
+    const result = await externalSourcesAPI.getSnapshot('workspace-1');
 
     expect(invokeMock).toHaveBeenNthCalledWith(2, 'get_external_source_snapshot', {
       request: {
-        workspacePath: 'D:/workspace/project',
+        workspaceId: 'workspace-1',
         forceRefresh: false,
       },
     });
@@ -409,7 +470,7 @@ describe('ExternalSourcesAPI', () => {
         commands: [],
       });
 
-    const result = await externalSourcesAPI.getSnapshot('D:/workspace/project');
+    const result = await externalSourcesAPI.getSnapshot('workspace-1');
 
     expect(result.control.hostCapabilities).toEqual({
       canRefresh: false,
@@ -441,7 +502,7 @@ describe('ExternalSourcesAPI', () => {
       });
 
     await externalSourcesAPI.setSourceEnabled(
-      'D:/workspace/project',
+      'workspace-1',
       'opencode.commands:project',
       false,
       2,
@@ -449,7 +510,7 @@ describe('ExternalSourcesAPI', () => {
 
     expect(invokeMock).toHaveBeenNthCalledWith(2, 'set_external_source_enabled_command', {
       request: {
-        workspacePath: 'D:/workspace/project',
+        workspaceId: 'workspace-1',
         sourceKey: 'opencode.commands:project',
         enabled: false,
         expectedPreferenceRevision: 2,
@@ -463,18 +524,18 @@ describe('ExternalSourcesAPI', () => {
     const mcpDecisions = [{ candidateId: 'mcp-docs', decisionKey: 'mcp-v1' }];
 
     await externalSourcesAPI.setToolTargetsEnabled(
-      'D:/workspace/project', toolDecisions, true, 11, 7,
+      'workspace-1', toolDecisions, true, 11, 7,
     );
     await externalSourcesAPI.setSubagentsEnabled(
-      'D:/workspace/project', subagentDecisions, false, 12, 8,
+      'workspace-1', subagentDecisions, false, 12, 8,
     );
     await externalSourcesAPI.setMcpServersEnabled(
-      'D:/workspace/project', mcpDecisions, true, 13, 9,
+      'workspace-1', mcpDecisions, true, 13, 9,
     );
 
     expect(invokeMock).toHaveBeenCalledWith('set_external_tool_targets_enabled_command', {
       request: {
-        workspacePath: 'D:/workspace/project',
+        workspaceId: 'workspace-1',
         decisions: toolDecisions,
         enabled: true,
         expectedCatalogGeneration: 11,
@@ -483,7 +544,7 @@ describe('ExternalSourcesAPI', () => {
     });
     expect(invokeMock).toHaveBeenCalledWith('set_external_subagents_enabled_command', {
       request: {
-        workspacePath: 'D:/workspace/project',
+        workspaceId: 'workspace-1',
         decisions: subagentDecisions,
         enabled: false,
         expectedSubagentGeneration: 12,
@@ -492,7 +553,7 @@ describe('ExternalSourcesAPI', () => {
     });
     expect(invokeMock).toHaveBeenCalledWith('set_external_mcp_servers_enabled_command', {
       request: {
-        workspacePath: 'D:/workspace/project',
+        workspaceId: 'workspace-1',
         decisions: mcpDecisions,
         enabled: true,
         expectedMcpGeneration: 13,
@@ -505,7 +566,7 @@ describe('ExternalSourcesAPI', () => {
     const catalogUpdated = vi.fn();
     const unsubscribe = globalEventBus.on('mode:config:updated', catalogUpdated);
 
-    await externalSourcesAPI.updateIntegrationPolicy('D:/workspace/project', {
+    await externalSourcesAPI.updateIntegrationPolicy('workspace-1', {
       expectedPreferenceRevision: 8,
       scope: 'workspace',
       change: {
@@ -518,7 +579,7 @@ describe('ExternalSourcesAPI', () => {
 
     expect(invokeMock).toHaveBeenCalledWith('update_external_integration_policy_command', {
       request: {
-        workspacePath: 'D:/workspace/project',
+        workspaceId: 'workspace-1',
         mutation: {
           expectedPreferenceRevision: 8,
           scope: 'workspace',
@@ -533,7 +594,7 @@ describe('ExternalSourcesAPI', () => {
     });
     expect(catalogUpdated).toHaveBeenCalledWith({
       reason: 'external-agent-catalog-updated',
-      workspacePath: 'D:/workspace/project',
+      workspaceId: 'workspace-1',
     });
     unsubscribe();
   });
@@ -618,7 +679,7 @@ describe('ExternalSourcesAPI', () => {
     }));
 
     const result = await externalSourcesAPI.setSourceEnabled(
-      'D:/workspace/project',
+      'workspace-1',
       'opencode:project',
       false,
       4,
@@ -631,7 +692,7 @@ describe('ExternalSourcesAPI', () => {
       'apply_external_source_control_action_command',
       {
         request: {
-          workspacePath: 'D:/workspace/project',
+          workspaceId: 'workspace-1',
           control: {
             schemaVersion: 1,
             operationId: expect.any(String),
@@ -686,7 +747,7 @@ describe('ExternalSourcesAPI', () => {
 
   it('sends typed subagent model bindings and clears them through the same command', async () => {
     await externalSourcesAPI.setSubagentModelBinding(
-      'D:/workspace/project',
+      'workspace-1',
       'external_subagent_model_binding:review',
       { kind: 'model', modelId: 'anthropic/claude-sonnet-4' },
       5,
@@ -698,7 +759,7 @@ describe('ExternalSourcesAPI', () => {
       'set_external_subagent_model_binding_command',
       {
         request: {
-          workspacePath: 'D:/workspace/project',
+          workspaceId: 'workspace-1',
           bindingKey: 'external_subagent_model_binding:review',
           target: { kind: 'model', modelId: 'anthropic/claude-sonnet-4' },
           expectedSubagentGeneration: 5,
@@ -709,7 +770,7 @@ describe('ExternalSourcesAPI', () => {
 
     invokeMock.mockClear();
     await externalSourcesAPI.setSubagentModelBinding(
-      'D:/workspace/project',
+      'workspace-1',
       'external_subagent_model_binding:review',
       undefined,
       6,
@@ -721,7 +782,7 @@ describe('ExternalSourcesAPI', () => {
       'set_external_subagent_model_binding_command',
       {
         request: {
-          workspacePath: 'D:/workspace/project',
+          workspaceId: 'workspace-1',
           bindingKey: 'external_subagent_model_binding:review',
           target: undefined,
           expectedSubagentGeneration: 6,
@@ -941,7 +1002,7 @@ describe('ExternalSourcesAPI', () => {
     invokeMock.mockImplementationOnce((command, args) => client.invoke(command, args));
 
     await expect(externalSourcesAPI.setSafeMode(
-      'D:/workspace/project',
+      'workspace-1',
       true,
       8,
     )).rejects.toMatchObject({

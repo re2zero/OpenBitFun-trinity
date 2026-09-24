@@ -2,15 +2,26 @@ import OpenBitFunMobileCore
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// The measured height of the conversation's floating bottom layer. Only the
+/// jump-to-bottom button needs it: `safeAreaInset` already pads the transcript.
+private struct BottomOverlayHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 struct MobileShellView: View {
     @ObservedObject var model: MobileAppModel
     @State private var wideSidebarCollapsed = false
     @State private var sessionActionsOpen = false
     @State private var sidebarActionSession: ChatSession?
+    @State private var bottomOverlayHeight: CGFloat = 0
 
     var body: some View {
         GeometryReader { proxy in
             adaptiveSurface(viewportWidth: proxy.size.width, viewportHeight: proxy.size.height)
+                .environment(\.permissionMailboxMaxHeight, proxy.size.height * 0.4)
         }
         .overlayPreferenceValue(SessionActionsAnchorKey.self) { anchor in
             GeometryReader { proxy in
@@ -92,18 +103,12 @@ struct MobileShellView: View {
             }
         }
         .animation(.easeOut(duration: 0.18), value: model.toastMessage)
-        .fileExporter(
-            isPresented: $model.downloadExporterOpen,
-            document: MobileDownloadDocument(data: model.pendingDownload?.data ?? Data()),
-            contentType: model.pendingDownload.flatMap { UTType(mimeType: $0.mimeType) } ?? .data,
-            defaultFilename: model.pendingDownload?.name ?? "download"
-        ) { result in
-            switch result {
-            case .success: model.finishDownloadExport(success: true)
-            case .failure: model.finishDownloadExport(success: false)
-            }
-        }
+        .modifier(RuntimeDownloadPresentation(model: model, enabled: model.runtimeDeviceTools?.visible != true && model.filePreview == nil))
 
+    }
+
+    private var showsWelcomeHome: Bool {
+        model.surface == .remote && model.accountUser == nil && !model.remoteConnected && model.remoteExpectedDeviceKey == nil
     }
 
     @ViewBuilder
@@ -171,7 +176,25 @@ struct MobileShellView: View {
         let compactSidebarWidth = min(280, max(220, viewportWidth * 0.68))
 
         ZStack(alignment: .leading) {
+            // The open drawer's fill is a floor under the whole shell, not a
+            // panel the width of the sidebar. The content card's rounded
+            // corners have to curve onto something: a fill that stopped at the
+            // card's left edge left them curving onto the page white, so a
+            // square-cornered grey block sat against a rounded card with a
+            // white wedge between them.
             if !sidebarVisible {
+                OpenBitFunTheme.sidebarBg
+                    .ignoresSafeArea()
+                    .opacity(model.drawerOpen ? 1 : 0)
+                    .allowsHitTesting(false)
+                    // Matched to the content card rather than to the sidebar
+                    // panel: the card must never finish moving before the floor
+                    // it curves onto has finished fading, in either direction.
+                    .animation(
+                        .easeOut(duration: model.drawerOpen ? 0.32 : 0.25),
+                        value: model.drawerOpen
+                    )
+
                 SidebarView(model: model)
                     .frame(width: compactSidebarWidth)
                     .opacity(model.drawerOpen ? 1 : 0)
@@ -231,7 +254,7 @@ struct MobileShellView: View {
             .scaleEffect(
                 x: !sidebarVisible && model.drawerOpen ? 0.985 : 1,
                 y: !sidebarVisible && model.drawerOpen ? 0.992 : 1,
-                anchor: .leading
+                anchor: UnitPoint(x: 0, y: MobileDesignGeometry.conversationHeaderHeight / 2 / max(1, viewportHeight))
             )
             .offset(x: !sidebarVisible && model.drawerOpen ? compactSidebarWidth : 0)
             .animation(
@@ -321,39 +344,110 @@ struct MobileShellView: View {
         sidebarAction: (() -> Void)?,
         sidebarActionLabel: String
     ) -> some View {
-        VStack(spacing: 0) {
-            ConversationHeader(
-                model: model,
-                actionsOpen: $sessionActionsOpen,
-                sidebarAction: sidebarAction,
-                sidebarActionLabel: sidebarActionLabel
-            )
-            if model.surface == .remote,
-               model.remoteSessionSelected,
-               model.connectionPhase != .connected {
-                ConnectionStatusBar(
-                    phase: model.connectionPhase,
-                    detail: model.coreErrorMessage,
-                    onRetry: model.verifyRemoteConnection
-                )
-            }
-            if model.surface == .remote && !model.remoteConnected {
-                RemoteHomeView(model: model)
+        Group {
+            if showsWelcomeHome {
+                WelcomeHomeView(model: model)
             } else if model.surface == .remote && !model.remoteSessionSelected {
-                RemoteConnectedHomeView(model: model)
-                ComposerBar(model: model)
-            } else {
-                ZStack {
-                    ChatTimelineView(model: model)
-                    if model.surface == .remote && model.remoteConversationLoading {
-                        ConversationLoadingState()
-                    }
+                VStack(spacing: 0) {
+                    ConversationHeader(
+                        model: model,
+                        actionsOpen: $sessionActionsOpen,
+                        sidebarAction: sidebarAction,
+                        sidebarActionLabel: sidebarActionLabel
+                    )
+                    RemoteConnectedHomeView(model: model, onBrowse: sidebarAction)
                 }
-                ComposerBar(model: model)
+            } else {
+                floatingConversation(
+                    sidebarAction: sidebarAction,
+                    sidebarActionLabel: sidebarActionLabel
+                )
             }
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(conversationAccessibilityIdentifier)
+    }
+
+    /**
+     The transcript owns the whole pane; the header and the composer float over
+     it and the transcript scrolls underneath both, fading out as it reaches
+     either edge. `safeAreaInset` is exactly that arrangement: it reserves the
+     room at rest so nothing starts out hidden, and lets the scroll view pass
+     beneath once it moves — which is why this needs no height measurement,
+     unlike the same layout on Android and HarmonyOS.
+     */
+    private func floatingConversation(
+        sidebarAction: (() -> Void)?,
+        sidebarActionLabel: String
+    ) -> some View {
+        ZStack {
+            ChatTimelineView(model: model, bottomOverlayInset: bottomOverlayHeight)
+            if model.surface == .remote && model.remoteConversationLoading {
+                ConversationLoadingState()
+            }
+        }
+        .onPreferenceChange(BottomOverlayHeightKey.self) { bottomOverlayHeight = $0 }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            VStack(spacing: 0) {
+                VStack(spacing: 0) {
+                    ConversationHeader(
+                        model: model,
+                        actionsOpen: $sessionActionsOpen,
+                        sidebarAction: sidebarAction,
+                        sidebarActionLabel: sidebarActionLabel
+                    )
+                    PermissionMailboxPanel(model: model)
+                }
+                .background(MobileDesignColors.pageBgOverlay)
+                .background(.ultraThinMaterial)
+                conversationTopEdgeFade
+            }
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            VStack(spacing: 0) {
+                ComposerBar(model: model)
+            }
+            // The fade covers the whole layer, not just a strip above it: the
+            // transcript runs behind the composer, so anything short of that
+            // leaves a line of text sitting crisp and legible beside the pill
+            // after it has already faded out higher up. It stops short of the
+            // page colour so the pill's material still has something to blur.
+            .background(
+                LinearGradient(
+                    stops: [
+                        .init(color: MobileDesignColors.pageBgFade, location: 0),
+                        .init(color: MobileDesignColors.pageBgOverlay, location: 0.45),
+                        .init(color: MobileDesignColors.pageBgOverlay, location: 1),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+            .background(
+                GeometryReader { proxy in
+                    Color.clear.preference(
+                        key: BottomOverlayHeightKey.self,
+                        value: proxy.size.height
+                    )
+                }
+            )
+        }
+    }
+
+    /**
+     Carries the header's opaque band down into the transcript, so a line of
+     text is not cut in half at its edge. Never takes a touch: the transcript
+     below it is still the thing being pointed at. The bottom layer needs no
+     strip of its own — its whole background is the gradient.
+     */
+    private var conversationTopEdgeFade: some View {
+        LinearGradient(
+            colors: [OpenBitFunTheme.page, OpenBitFunTheme.page.opacity(0)],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+        .frame(height: MobileDesignGeometry.conversationEdgeFadeHeight)
+        .allowsHitTesting(false)
     }
 
     private var conversationAccessibilityIdentifier: String {
@@ -371,5 +465,43 @@ struct MobileShellView: View {
         if width > 0 {
             Rectangle().fill(OpenBitFunTheme.line).frame(width: width)
         }
+    }
+}
+
+
+struct RuntimeDownloadPresentation: ViewModifier {
+    @ObservedObject var model: MobileAppModel
+    let enabled: Bool
+    func body(content: Content) -> some View {
+        content.sheet(isPresented: Binding(
+            get: { enabled && model.downloadExporterOpen },
+            set: { if enabled { model.downloadExporterOpen = $0 } }
+        )) {
+            if let download = model.pendingDownload {
+                RuntimeDownloadExporter(url: download.localURL, name: download.name) { saved in
+                    guard model.pendingDownload?.localURL == download.localURL else { return }
+                    model.finishDownloadExport(success: saved)
+                }
+            }
+        }
+    }
+}
+
+private struct RuntimeDownloadExporter: UIViewControllerRepresentable {
+    let url: URL
+    let name: String
+    let finished: (Bool) -> Void
+    func makeCoordinator() -> Coordinator { Coordinator(finished) }
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forExporting: [url], asCopy: true)
+        picker.delegate = context.coordinator
+        return picker
+    }
+    func updateUIViewController(_ controller: UIDocumentPickerViewController, context: Context) {}
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let finished: (Bool) -> Void
+        init(_ finished: @escaping (Bool) -> Void) { self.finished = finished }
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) { finished(!urls.isEmpty) }
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) { finished(false) }
     }
 }

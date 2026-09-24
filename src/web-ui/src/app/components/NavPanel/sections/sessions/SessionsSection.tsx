@@ -1,3 +1,5 @@
+import { useDeviceDirectory, resolveDeviceName } from '@/infrastructure/account/deviceDirectory';
+import { requireSessionOwningWorkspaceId } from '@/flow_chat/utils/sessionOrdering';
 /**
  * SessionsSection — inline accordion content for the "Sessions" nav item.
  *
@@ -6,9 +8,8 @@
  */
 
 import React, { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import { Button, Icon, IconButton, Input, Menu, MenuItem, OverflowText, Tooltip } from '@openbitfun/ui';
-import { createPortal } from 'react-dom';
-import { Bot, Loader2, Archive, ListChecks } from 'lucide-react';
+import { subscribeOverlayInteraction, createOverlayPortal, Button, Icon, IconButton, Input, Menu, MenuItem, OverflowText, Tooltip } from '@openbitfun/ui';
+import { Loader2, Archive, FolderGit2, ListChecks } from 'lucide-react';
 import { RetainedMountBoundary } from '@/shared/presence';
 import { useI18n } from '@/infrastructure/i18n';
 import { flowChatStore } from '../../../../../flow_chat/store/FlowChatStore';
@@ -17,6 +18,8 @@ import type { FlowChatState, Session } from '../../../../../flow_chat/types/flow
 import { useSceneStore } from '../../../../stores/sceneStore';
 import { useWorkspaceContext } from '@/infrastructure/contexts/WorkspaceContext';
 import { createLogger } from '@/shared/utils/logger';
+import { isSamePath } from '@/shared/utils/pathUtils';
+import { isLinkedWorktreeWorkspace } from '@/shared/types/global-state';
 import { getAppearanceOverlayHost } from '@/infrastructure/appearance/runtime/AppearanceOverlayHost';
 import { useAgentCanvasStore } from '@/app/components/panels/content-canvas/stores';
 import {
@@ -31,8 +34,10 @@ import {
 import { recordHistorySessionDiagnosticEvent } from '@/flow_chat/services/historySessionDiagnostics';
 import { resolveSessionRelationship } from '@/flow_chat/utils/sessionMetadata';
 import {
+  isWorktreeIsolatedSession,
   sessionBelongsToWorkspaceNavRow,
 } from '@/flow_chat/utils/sessionOrdering';
+import { sessionWorktreeRootPath } from '@/flow_chat/utils/sessionWorktree';
 import {
   compareWorkspaceNavSessions,
   DEFAULT_WORKSPACE_SESSION_FILTERS,
@@ -77,6 +82,11 @@ import {
 } from '@/features/dispatch/types';
 import { useDispatchJobStore } from '@/features/dispatch/dispatchJobStore';
 import { resolveDispatchNavPresentation } from '@/features/dispatch/dispatchNavPresentation';
+import {
+  ensureCronJobCountsListener,
+  getCronJobCountsSnapshot,
+  subscribeCronJobCounts,
+} from '@/app/components/scheduled-jobs/cronJobCountsStore';
 import {
   SESSION_METADATA_DEFERRED_FALLBACK_MS,
   SESSION_METADATA_DEFERRED_FRAME_COUNT,
@@ -128,19 +138,11 @@ function DefaultSessionTitlePreview({ sessionId, createdAt }: Pick<Session, 'ses
 }
 
 const countTopLevelSessionsInScope = (
-  sessions: Iterable<Session>,
-  workspacePath?: string,
-  remoteConnectionId?: string | null,
-  remoteSshHost?: string | null,
+  sessions: Iterable<Session>, workspaceId?: string,
 ): number => {
   const scopedSessions = Array.from(sessions).filter((session: Session) => {
-    if (session.isTransient || session.sessionKind === 'subagent') {
-      return false;
-    }
-    if (workspacePath) {
-      return sessionBelongsToWorkspaceNavRow(session, workspacePath, remoteConnectionId, remoteSshHost);
-    }
-    return !session.workspacePath;
+    if (session.isTransient || session.sessionKind === 'subagent') return false;
+    return workspaceId ? sessionBelongsToWorkspaceNavRow(session, workspaceId) : !session.workspaceId;
   });
 
   const knownIds = new Set(scopedSessions.map(session => session.sessionId));
@@ -191,12 +193,10 @@ export interface AssistantSessionPresentation {
 }
 
 interface SessionsSectionProps {
+  /** Authoritative scope: every load, reset, and dedup key is `workspaceId`. */
   workspaceId?: string;
+  /** IO/display projection of the scoped workspace root; never a scope key. */
   workspacePath?: string;
-  /** Remote SSH: same `workspacePath` on different hosts must filter by this (see Session.remoteConnectionId). */
-  remoteConnectionId?: string | null;
-  /** Remote SSH: disambiguates same path on different hosts; when set with matching session host, connectionId may differ. */
-  remoteSshHost?: string | null;
   isActiveWorkspace?: boolean;
   showCreateActions?: boolean;
   /** Product presentation for assistant-owned sessions. Project sessions use the compact row. */
@@ -212,18 +212,14 @@ interface SessionsSectionProps {
 }
 
 export interface WorkspaceSessionScope {
+  /** Authoritative scope key; loads and dedup use only this. */
   workspaceId: string;
   workspaceName: string;
-  workspacePath: string;
-  remoteConnectionId?: string | null;
-  remoteSshHost?: string | null;
 }
 
 const SessionsSection: React.FC<SessionsSectionProps> = ({
   workspaceId,
   workspacePath,
-  remoteConnectionId = null,
-  remoteSshHost = null,
   isActiveWorkspace = true,
   presentation,
   isVisible = true,
@@ -231,7 +227,9 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
   workspaceScopes,
   layout = 'nested',
 }) => {
+  useDeviceDirectory();
   const { t } = useI18n('common');
+  useEffect(() => { ensureCronJobCountsListener(); }, []);
   const storedSessionOrdering = useWorkspaceSessionViewStore(state => state.ordering);
   const storedSessionShow = useWorkspaceSessionViewStore(state => state.show);
   const storedSessionFilters = useWorkspaceSessionViewStore(state => state.filters);
@@ -243,7 +241,7 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
   const hasActiveSessionFilter = sessionShow !== 'all' || hasWorkspaceSessionFilters(sessionFilters);
   const showAllWithoutLimit = layout === 'flat' && Boolean(workspaceScopes?.length);
   const sessionListClassName = `openbitfun-nav-panel__inline-list${layout === 'flat' ? ' is-flat-workspace-view' : ''}`;
-  const { setActiveWorkspace, currentWorkspace } = useWorkspaceContext();
+  const { setActiveWorkspace, openWorkspace, openedWorkspacesList, currentWorkspace } = useWorkspaceContext();
   const activeTabId = useSceneStore(s => s.activeTabId);
   const activeBtwSessionTab = useAgentCanvasStore(state => selectActiveBtwSessionTab(state as any));
   const activeBtwSessionData = activeBtwSessionTab?.content.data as
@@ -304,6 +302,12 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
     return new Set([...flowChatState.sessions.keys()].filter(sessionNavStatusService.isRunning));
   }, [flowChatState.sessions, orderingRevision]);
   const [scheduledJobsSessionId, setScheduledJobsSessionId] = useState<string | null>(null);
+  const cronJobCountsRevision = useSyncExternalStore(
+    subscribeCronJobCounts,
+    () => getCronJobCountsSnapshot(),
+    () => getCronJobCountsSnapshot(),
+  );
+  const cronJobCountsBySession = cronJobCountsRevision.bySessionId;
   const [batchWorkspace, setBatchWorkspace] = useState<WorkspaceSessionScope | null>(null);
   const editInputRef = useRef<HTMLInputElement>(null);
   const sessionMenuPopoverRef = useRef<HTMLDivElement>(null);
@@ -405,15 +409,10 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
       isLoading: false,
       loadError: false,
     });
-  }, [workspaceId, workspacePath, remoteConnectionId, remoteSshHost]);
+  }, [workspaceId]);
 
   const workspaceScopesKey = useMemo(
-    () => workspaceScopes?.map(scope => [
-      scope.workspaceId,
-      scope.workspacePath,
-      scope.remoteConnectionId ?? '',
-      scope.remoteSshHost ?? '',
-    ].join(':')).join('|') ?? '',
+    () => workspaceScopes?.map(scope => scope.workspaceId).join('|') ?? '',
     [workspaceScopes],
   );
 
@@ -431,11 +430,7 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
         let cursor: string | undefined;
         do {
           const page = await flowChatStore.loadSessionMetadataPage(
-            scope.workspacePath,
-            SESSIONS_LEVEL_2_PAGE,
-            cursor,
-            scope.remoteConnectionId || undefined,
-            scope.remoteSshHost || undefined,
+            scope.workspaceId, SESSIONS_LEVEL_2_PAGE, cursor,
             'sessions_nav_all_grouping',
           );
           if (cancelled) return;
@@ -444,9 +439,7 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
 
         if (!sessionFilters.hideArchived && !cancelled) {
           await flowChatStore.loadArchivedSessionMetadata(
-            scope.workspacePath,
-            scope.remoteConnectionId || undefined,
-            scope.remoteSshHost || undefined,
+            scope.workspaceId,
           );
         }
       }));
@@ -460,8 +453,7 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
         const scope = workspaceScopes[index];
         log.warn('Failed to load all-session workspace projection', {
           error: result.reason,
-          workspacePath: scope?.workspacePath,
-          remote: Boolean(scope?.remoteConnectionId || scope?.remoteSshHost),
+          workspaceId: scope?.workspaceId,
         });
       });
       setAggregateLoadState({ isLoading: false, failedScopeCount });
@@ -486,20 +478,16 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
   ]);
 
   useEffect(() => {
-    if (!isVisible || sessionFilters.hideArchived || workspaceScopes?.length || !workspacePath) return;
+    if (!isVisible || sessionFilters.hideArchived || workspaceScopes?.length || !workspaceId) return;
     void flowChatStore.loadArchivedSessionMetadata(
-      workspacePath,
-      remoteConnectionId || undefined,
-      remoteSshHost || undefined,
+      workspaceId!,
     ).catch(error => {
       log.warn('Failed to load archived session projection', { error });
     });
   }, [
     isVisible,
-    remoteConnectionId,
-    remoteSshHost,
     sessionFilters.hideArchived,
-    workspacePath,
+    workspaceId,
     workspaceScopes,
   ]);
 
@@ -510,7 +498,7 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
       source: string,
       options?: { background?: boolean },
     ) => {
-      if (!workspacePath || limit <= 0) {
+      if (!workspaceId || limit <= 0) {
         return null;
       }
 
@@ -540,19 +528,13 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
 
       try {
         const page = await flowChatStore.loadSessionMetadataPage(
-          workspacePath,
-          limit,
-          cursor,
-          remoteConnectionId || undefined,
-          remoteSshHost || undefined,
+          workspaceId, limit, cursor,
           source
         );
         if (metadataLoadRequestIdRef.current === requestId) {
           const syncedTopLevelCount = countTopLevelSessionsInScope(
             flowChatStore.getState().sessions.values(),
-            workspacePath,
-            remoteConnectionId,
-            remoteSshHost,
+            workspaceId,
           );
           setMetadataPageState({
             totalTopLevelCount: page.totalTopLevelCount,
@@ -572,7 +554,7 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
             loadError: true,
           }));
         }
-        log.warn('Failed to load visible session metadata page', { error, workspacePath, cursor, limit });
+        log.warn('Failed to load visible session metadata page', { error, workspaceId, cursor, limit });
         return null;
       } finally {
         if (!isBackgroundLoad) {
@@ -580,21 +562,14 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
         }
       }
     },
-    [workspacePath, remoteConnectionId, remoteSshHost]
+    [workspaceId]
   );
 
-  const initialMetadataKey = useMemo(
-    () => [
-      workspacePath ?? '',
-      remoteConnectionId ?? '',
-      remoteSshHost ?? '',
-    ].join('\n'),
-    [workspacePath, remoteConnectionId, remoteSshHost],
-  );
+  const initialMetadataKey = workspaceId ?? '';
 
   const loadInitialMetadataPage = useCallback(
     async (source: string) => {
-      if (!workspacePath) {
+      if (!workspaceId) {
         return;
       }
       if (initialMetadataLoadKeyRef.current === initialMetadataKey) {
@@ -607,16 +582,16 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
         initialMetadataLoadKeyRef.current = null;
       }
     },
-    [initialMetadataKey, loadMetadataPage, workspacePath],
+    [initialMetadataKey, loadMetadataPage, workspaceId],
   );
 
   useEffect(() => {
-    if (!isVisible || !workspacePath) {
+    if (!isVisible || !workspaceId) {
       return;
     }
 
     const loadMode = getInitialSessionMetadataLoadMode({
-      hasWorkspacePath: Boolean(workspacePath),
+      hasWorkspace: Boolean(workspaceId),
       isActiveWorkspace,
       isVisible,
       startupOverlayHandedOff: hasStartupOverlayHandedOff(),
@@ -637,7 +612,7 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
       if (cancelled) {
         return;
       }
-      const delayMs = getDeferredSessionMetadataDelayMs(workspaceId ?? workspacePath);
+      const delayMs = getDeferredSessionMetadataDelayMs(workspaceId);
       const runDeferredLoad = () => {
         delayTimer = null;
         if (!cancelled) {
@@ -673,12 +648,11 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
     isVisible,
     loadInitialMetadataPage,
     workspaceId,
-    workspacePath,
   ]);
 
   useEffect(() => {
     const needsExpandedDataset = sessionOrdering !== 'updated' || hasActiveSessionFilter;
-    if (!needsExpandedDataset || !isVisible || !workspacePath) {
+    if (!needsExpandedDataset || !isVisible || !workspaceId) {
       return;
     }
 
@@ -694,7 +668,7 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
     loadMetadataPage,
     sessionOrdering,
     hasActiveSessionFilter,
-    workspacePath,
+    workspaceId,
   ]);
 
   // When sessions are archived, reset stale metadata so the expand toggle
@@ -713,13 +687,13 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
         isLoading: false,
         loadError: false,
       });
-      if (isVisible && workspacePath) {
+      if (isVisible && workspaceId) {
         void loadMetadataPage(SESSIONS_LEVEL_0, undefined, 'sessions_nav_post_archive');
       }
     };
     window.addEventListener('openbitfun:session-archived', handler);
     return () => window.removeEventListener('openbitfun:session-archived', handler);
-  }, [isVisible, workspacePath, loadMetadataPage]);
+  }, [isVisible, workspaceId, loadMetadataPage]);
 
   const closeSessionMenu = useCallback(() => {
     setOpenMenuSessionId(null);
@@ -737,8 +711,8 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
         closeSessionMenu();
       }
     };
-    document.addEventListener('mousedown', handleOutside);
-    return () => document.removeEventListener('mousedown', handleOutside);
+    const removeOverlayMousedown0 = subscribeOverlayInteraction(sessionMenuPopoverRef, 'mousedown', handleOutside);
+    return () => removeOverlayMousedown0?.();
   }, [closeSessionMenu, openMenuSessionId]);
 
   const updateContextSessionMenuPosition = useCallback(() => {
@@ -789,19 +763,14 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
             return false;
           }
           if (workspaceScopes?.length) {
-            return workspaceScopes.some(scope => sessionBelongsToWorkspaceNavRow(
-              s,
-              scope.workspacePath,
-              scope.remoteConnectionId,
-              scope.remoteSshHost,
-            ));
+            return workspaceScopes.some(scope => sessionBelongsToWorkspaceNavRow(s, scope.workspaceId));
           }
-          if (workspacePath) {
-            return sessionBelongsToWorkspaceNavRow(s, workspacePath, remoteConnectionId, remoteSshHost);
+          if (workspaceId) {
+            return sessionBelongsToWorkspaceNavRow(s, workspaceId);
           }
-          return !s.workspacePath;
+          return !s.workspaceId;
         }),
-    [flowChatState.sessions, workspacePath, remoteConnectionId, remoteSshHost, workspaceScopes]
+    [flowChatState.sessions, workspaceId, workspaceScopes]
   );
 
   const { topLevelSessions: allTopLevelSessions, childrenByParent } = useMemo(() => {
@@ -877,16 +846,32 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
     });
   }, [topLevelSessions.length, expandLevel, level2DisplayCount, showAllWithoutLimit]);
 
-  const totalTopLevelSessionCount = !hasActiveSessionFilter && !workspaceScopes?.length
-    ? getEffectiveTopLevelSessionCount(
-        metadataPageState.totalTopLevelCount,
-        metadataPageState.syncedTopLevelCount,
-        allTopLevelSessions.length,
-        metadataPageState.isLoading,
-      )
-    : topLevelSessions.length;
+  // A linked worktree stores its sessions in its main workspace's session root,
+  // so a metadata page loaded for that directory counts the project's sessions
+  // as well. That total cannot describe this row: the extra rows it counts belong
+  // to the project, and a "show more" affordance built on it promises rows this
+  // list can never reveal. Only the rows this workspace owns are counted here.
+  // Resolve the row's own workspace, not the active one, because a nested row
+  // renders while another workspace is active.
+  const sectionWorkspace = workspaceId
+    ? openedWorkspacesList.find(workspace => workspace.id === workspaceId) ?? null
+    : null;
+  const countOnlyOwnedTopLevelSessions = isLinkedWorktreeWorkspace(sectionWorkspace);
+
+  const totalTopLevelSessionCount =
+    !hasActiveSessionFilter && !workspaceScopes?.length && !countOnlyOwnedTopLevelSessions
+      ? getEffectiveTopLevelSessionCount(
+          metadataPageState.totalTopLevelCount,
+          metadataPageState.syncedTopLevelCount,
+          allTopLevelSessions.length,
+          metadataPageState.isLoading,
+        )
+      : topLevelSessions.length;
   const hasMoreUnloadedSessions =
-    !hasActiveSessionFilter && !workspaceScopes?.length && allTopLevelSessions.length < totalTopLevelSessionCount;
+    !hasActiveSessionFilter
+    && !workspaceScopes?.length
+    && !countOnlyOwnedTopLevelSessions
+    && allTopLevelSessions.length < totalTopLevelSessionCount;
   const expandToggleState = getSessionExpandToggleState(totalTopLevelSessionCount, expandLevel);
   // The visible label stays short ("Show more") and the remaining count rides in
   // a trailing `+N` chip; screen readers get the full sentence via aria-label.
@@ -928,7 +913,7 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
   useEffect(() => {
     if (
       !isVisible ||
-      !workspacePath ||
+      !workspaceId ||
       metadataPageState.isLoading ||
       metadataPageState.totalTopLevelCount === null ||
       metadataPageState.syncedTopLevelCount === null ||
@@ -960,7 +945,7 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
     metadataPageState.syncedTopLevelCount,
     metadataPageState.totalTopLevelCount,
     allTopLevelSessions.length,
-    workspacePath,
+    workspaceId,
   ]);
 
   // Keep a few rows loaded past the visible slice. Deleting a session then
@@ -969,7 +954,7 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
   useEffect(() => {
     if (
       !isVisible ||
-      !workspacePath ||
+      !workspaceId ||
       metadataPageState.isLoading ||
       metadataPageState.loadError ||
       metadataPageState.totalTopLevelCount === null ||
@@ -1014,7 +999,7 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
     metadataPageState.nextCursor,
     metadataPageState.totalTopLevelCount,
     totalTopLevelSessionCount,
-    workspacePath,
+    workspaceId,
   ]);
 
   const visibleItems = useMemo(() => {
@@ -1090,6 +1075,9 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
     async (sessionId: string) => {
       if (editingSessionId) return;
       try {
+        // Opening a row explicitly acknowledges its current unread result,
+        // including an already-active session or an unopened history record.
+        flowChatStore.clearSessionUnreadCompletion(sessionId);
         const session = flowChatStore.getState().sessions.get(sessionId);
         const historyOpenIntentDispatch = session
           ? dispatchHistoryOpenIntentForSession(session, 'switch')
@@ -1099,12 +1087,7 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
         }
         const relationship = resolveSessionRelationship(session);
         const parentSessionId = relationship.parentSessionId;
-        const matchingScope = session && workspaceScopes?.find(scope => sessionBelongsToWorkspaceNavRow(
-          session,
-          scope.workspacePath,
-          scope.remoteConnectionId,
-          scope.remoteSshHost,
-        ));
+        const matchingScope = session && workspaceScopes?.find(scope => sessionBelongsToWorkspaceNavRow(session, scope.workspaceId));
         const targetWorkspaceId = matchingScope?.workspaceId ?? workspaceId;
         const mustActivateWorkspace =
           Boolean(targetWorkspaceId) && targetWorkspaceId !== currentWorkspace?.id;
@@ -1125,6 +1108,7 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
           openBtwSessionInAuxPane({
             childSessionId: sessionId,
             parentSessionId,
+            workspaceId: targetWorkspaceId,
             workspacePath: session.workspacePath,
           });
           return;
@@ -1244,15 +1228,7 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
           {
             sessionId: session.sessionId,
             title: resolveSessionTitle(session),
-            workspacePath:
-              session.projectWorkspacePath
-              || session.config.projectWorkspacePath
-              || session.workspacePath
-              || workspacePath,
-            // The nav row carries the workspace's current connection; a session's
-            // stored ids can be stale (e.g. after an SSH port change).
-            remoteConnectionId: remoteConnectionId ?? session.remoteConnectionId,
-            remoteSshHost: remoteSshHost ?? session.remoteSshHost,
+            workspaceId: requireSessionOwningWorkspaceId(session),
           },
           scope
         );
@@ -1260,14 +1236,7 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
         setExportingSessionId(null);
       }
     },
-    [
-      closeSessionMenu,
-      exportingSessionId,
-      remoteConnectionId,
-      remoteSshHost,
-      resolveSessionTitle,
-      workspacePath,
-    ]
+    [closeSessionMenu, exportingSessionId, resolveSessionTitle]
   );
 
   const handleDelete = useCallback(
@@ -1317,6 +1286,36 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
       }
     },
     [t]
+  );
+
+  /**
+   * A worktree directory is registered for execution but not opened, so the
+   * session row is the only place it can be reached from. Opening it as a
+   * workspace is an explicit user action; if the worktree happens to be open
+   * already, activating it is the whole effect.
+   */
+  const handleOpenWorktreeWorkspace = useCallback(
+    async (e: React.MouseEvent, worktreePath: string) => {
+      e.stopPropagation();
+      closeSessionMenu();
+      const opened = openedWorkspacesList.find(workspace =>
+        isSamePath(workspace.rootPath ?? '', worktreePath)
+      );
+      try {
+        if (opened) {
+          await setActiveWorkspace(opened.id);
+          return;
+        }
+        await openWorkspace(worktreePath);
+      } catch (err) {
+        log.error('Failed to open the worktree directory as a workspace', {
+          worktreePath,
+          error: err,
+        });
+        notificationService.error(t('nav.sessions.openWorktreeWorkspaceFailed'), { duration: 3000 });
+      }
+    },
+    [closeSessionMenu, openWorkspace, openedWorkspacesList, setActiveWorkspace, t]
   );
 
   const handleStartEdit = useCallback(
@@ -1435,7 +1434,7 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
             role="status"
             aria-live="polite"
           >
-            <Loader2 size={12} />
+            <Loader2 className="openbitfun-nav-panel__inline-loading-icon" aria-hidden="true" />
             <OverflowText>{t('nav.sessions.loading')}</OverflowText>
           </div>
         )
@@ -1467,7 +1466,7 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
       return (
         <div data-openbitfun-component="sessions-section" data-openbitfun-part="root" className={sessionListClassName}>
           <div className="openbitfun-nav-panel__inline-loading" data-openbitfun-component="sessions-section" data-openbitfun-part="loading" data-openbitfun-state="loading">
-            <Loader2 size={12} />
+            <Loader2 className="openbitfun-nav-panel__inline-loading-icon" aria-hidden="true" />
             <OverflowText>{t('nav.sessions.loading')}</OverflowText>
           </div>
         </div>
@@ -1557,17 +1556,24 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
           const titleNumber = titleNumbers.get(session.sessionId);
           const displayTitle = titleNumber ? `${sessionTitle} ${titleNumber}` : sessionTitle;
           const isDefaultTitle = isDefaultSessionTitle(session);
-          const sessionWorkspaceScope = workspaceScopes?.find(scope => sessionBelongsToWorkspaceNavRow(
-            session,
-            scope.workspacePath,
-            scope.remoteConnectionId,
-            scope.remoteSshHost,
-          ));
+          const sessionWorkspaceScope = workspaceScopes?.find(scope => sessionBelongsToWorkspaceNavRow(session, scope.workspaceId));
           const backgroundSubagentActivity = !isChildSession
             ? backgroundSubagentActivityByParent.get(session.sessionId)
             : undefined;
           const backgroundSubagentActivityCount = backgroundSubagentActivity?.totalCount ?? 0;
           const showBackgroundSubagentActivity = !isChildSession && backgroundSubagentActivityCount > 0;
+          const scheduledJobCount = cronJobCountsBySession.get(session.sessionId) ?? 0;
+          // Same mark the session status indicator draws, in the same trailing
+          // cell: one 12px secondary clock on the row's right edge, no count.
+          // Sessions with a status to report keep that status instead.
+          const scheduledJobMark = scheduledJobCount > 0 ? (
+            <Icon
+              name="clock"
+              size="xs"
+              tone="secondary"
+              label={t('nav.scheduledJobs.badgeTooltip', { count: scheduledJobCount })}
+            />
+          ) : undefined;
           const parentSessionId = relationship.parentSessionId;
           const parentSession = parentSessionId ? flowChatState.sessions.get(parentSessionId) : undefined;
           const parentTitle = parentSession ? resolveSessionTitle(parentSession) : '';
@@ -1579,9 +1585,11 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
           const showAssistantInTooltip = trimmedAssistant.length > 0;
           const dispatchTarget = session.config.dispatchTarget;
           const isDispatched = isNonLocalDispatchTarget(dispatchTarget);
+          const worktreeIsolated = isWorktreeIsolatedSession(session);
+          const worktreeRootPath = sessionWorktreeRootPath(session) ?? '';
           const dispatchTargetLabel =
             dispatchTarget?.kind === 'ssh' || dispatchTarget?.kind === 'device'
-              ? dispatchTarget.displayName
+              ? (dispatchTarget.kind === 'device' ? resolveDeviceName(dispatchTarget.deviceId, dispatchTarget.displayName) : dispatchTarget.displayName)
               : '';
           const dispatchState = session.config.dispatchJobState ?? 'submitting';
           const dispatchStateLabel = {
@@ -1617,6 +1625,7 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
             showAssistantInTooltip ||
             isChildSession ||
             showBackgroundSubagentActivity ||
+            worktreeIsolated ||
             isDispatched;
           const tooltipContent = showRichTooltip ? (
             <div className="openbitfun-nav-panel__inline-item-tooltip">
@@ -1644,6 +1653,11 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
                     : t('nav.sessions.childSourceWithoutTurn', {
                         parentTitle: parentTitle || t('nav.sessions.parentSession'),
                   })}
+                </div>
+              ) : null}
+              {worktreeIsolated ? (
+                <div className="openbitfun-nav-panel__inline-item-tooltip-meta">
+                  {t('nav.sessions.worktreeTooltip', { path: worktreeRootPath })}
                 </div>
               ) : null}
               {isDispatched ? (
@@ -1741,7 +1755,7 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
                   <Tooltip content={t('nav.sessions.confirmEdit')} placement="top">
                     <IconButton
                       aria-label={t('nav.sessions.confirmEdit')}
-                      variant="primary"
+                      variant="quiet"
                       size="sm"
                       className="openbitfun-nav-panel__inline-item-edit-btn confirm"
                       onClick={e => { e.stopPropagation(); handleConfirmEdit(); }}
@@ -1779,9 +1793,20 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
                         {dispatchPresentation?.badgeLabel}
                       </OverflowText></span>
                     ) : null}
+                    {worktreeIsolated ? (
+                      // Icon-only marker: the badge sits next to the title, where a
+                      // label competes with it. The tooltip carries the worktree path.
+                      <span
+                        className="openbitfun-nav-panel__inline-item-worktree-badge"
+                        title={t('nav.sessions.worktreeTooltip', { path: worktreeRootPath })}
+                        aria-label={t('nav.sessions.worktreeTooltip', { path: worktreeRootPath })}
+                      >
+                        <FolderGit2 className="openbitfun-nav-panel__inline-item-worktree-icon" aria-hidden />
+                      </span>
+                    ) : null}
                     {reviewActivityKind ? (
                       <span className="openbitfun-nav-panel__inline-item-review-badge">
-                        <Loader2 size={9} aria-hidden />
+                        <Loader2 className="openbitfun-nav-panel__inline-item-review-icon" aria-hidden />
                         {getReviewActivityBadge(reviewActivityKind)}
                       </span>
                     ) : null}
@@ -1792,14 +1817,14 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
                           count: backgroundSubagentActivityCount,
                         })}
                       >
-                        <Bot
-                          className="openbitfun-nav-panel__inline-item-background-subagent-icon is-bot"
-                          size={10}
+                        <Icon
+                          name="user"
+                          className="openbitfun-nav-panel__inline-item-background-subagent-icon is-agent"
+                          size="2xs"
                           aria-hidden
                         />
                         <Loader2
                           className="openbitfun-nav-panel__inline-item-background-subagent-icon is-loader"
-                          size={10}
                           aria-hidden
                         />
                       </span>
@@ -1816,7 +1841,10 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
                     </span>
                   </span>
                   <div className="openbitfun-nav-panel__inline-item-trailing">
-                    <SessionStatusIndicator sessionId={session.sessionId} />
+                    <SessionStatusIndicator
+                      sessionId={session.sessionId}
+                      idleFallback={scheduledJobMark}
+                    />
                     <div
                       className={`openbitfun-nav-panel__inline-item-actions${openMenuSessionId === session.sessionId ? ' is-open' : ''}`}
                       data-openbitfun-component="sessions-section"
@@ -1838,10 +1866,11 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
                       </button>
                     </div>
                   </div>
-                  {openMenuSessionId === session.sessionId && createPortal(
+                  {openMenuSessionId === session.sessionId && createOverlayPortal(
                     <Menu
                       ref={sessionMenuPopoverRef}
                       className="openbitfun-nav-panel__inline-item-menu-popover"
+                      inlineSize="content"
                       data-openbitfun-component="sessions-section"
                       data-openbitfun-part="menu"
                       data-openbitfun-state="menuOpen"
@@ -1857,7 +1886,7 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
                         <>
                           <MenuItem
                             type="button"
-                            leading={<Icon name="chevron-left" />}
+                            leading={<Icon name="chevron-left" size="sm" />}
                             onClick={e => {
                               e.stopPropagation();
                               setIsExportScopeMenu(false);
@@ -1869,7 +1898,7 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
                           </MenuItem>
                           <MenuItem
                             type="button"
-                            leading={<Icon name="arrow-down" size="lg" style={{ width: 13, height: 13 }} />}
+                            leading={<Icon name="arrow-down" size="sm" />}
                             onClick={e => { void handleExportMarkdown(e, session, 'full'); }}
                             data-testid="nav-session-menu-export-full"
                             data-session-id={session.sessionId}
@@ -1878,7 +1907,7 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
                           </MenuItem>
                           <MenuItem
                             type="button"
-                            leading={<Icon name="arrow-down" size="lg" style={{ width: 13, height: 13 }} />}
+                            leading={<Icon name="arrow-down" size="sm" />}
                             onClick={e => { void handleExportMarkdown(e, session, 'result'); }}
                             data-testid="nav-session-menu-export-result"
                             data-session-id={session.sessionId}
@@ -1890,7 +1919,7 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
                         <>
                           <MenuItem
                             type="button"
-                            leading={<Icon name="edit" size="xs" />}
+                            leading={<Icon name="edit" size="sm" />}
                             onClick={e => { closeSessionMenu(); handleStartEdit(e, session); }}
                             data-testid="nav-session-menu-rename"
                             data-session-id={session.sessionId}
@@ -1899,7 +1928,7 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
                           </MenuItem>
                           <MenuItem
                             type="button"
-                            leading={<Icon name="duplicate" size="xs" />}
+                            leading={<Icon name="duplicate" size="sm" />}
                             onClick={e => { closeSessionMenu(); void handleCopySessionId(e, session.sessionId); }}
                             data-testid="nav-session-menu-copy-id"
                             data-session-id={session.sessionId}
@@ -1916,14 +1945,14 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
                             data-testid="nav-session-menu-export-markdown"
                             data-session-id={session.sessionId}
                             leading={exportingSessionId === session.sessionId
-                              ? <Loader2 size={13} className="openbitfun-nav-panel__inline-toggle-spinner" />
-                              : <Icon name="arrow-down" size="lg" style={{ width: 13, height: 13 }} />}
+                              ? <Loader2 className="openbitfun-nav-panel__inline-toggle-spinner" aria-hidden />
+                              : <Icon name="arrow-down" size="sm" />}
                           >
                             <span>{t('nav.sessions.exportMarkdown')}</span>
                           </MenuItem>
                           <MenuItem
                             type="button"
-                            leading={<Icon name="clock" size="xs" />}
+                            leading={<Icon name="clock" size="sm" />}
                             onClick={e => {
                               e.stopPropagation();
                               closeSessionMenu();
@@ -1937,7 +1966,7 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
                           </MenuItem>
                           <MenuItem
                             type="button"
-                            leading={<Icon glyph={Archive} />}
+                            leading={<Icon glyph={Archive} size="sm" />}
                             onClick={e => { closeSessionMenu(); void handleArchive(e, session.sessionId); }}
                             data-testid="nav-session-menu-archive"
                             data-session-id={session.sessionId}
@@ -1946,31 +1975,41 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
                           </MenuItem>
                           <MenuItem
                             type="button"
-                            leading={<Icon glyph={ListChecks} />}
-                            disabled={!workspacePath && !session.workspacePath}
+                            leading={<Icon glyph={ListChecks} size="sm" />}
+                            disabled={!workspaceId && !session.projectWorkspaceId && !session.workspaceId}
                             onClick={e => {
                               e.stopPropagation();
                               closeSessionMenu();
-                              const path = workspacePath || session.projectWorkspacePath || session.workspacePath;
-                              if (!path) return;
+                              const batchWorkspaceId = workspaceId || session.projectWorkspaceId || session.workspaceId;
+                              if (!batchWorkspaceId) return;
+                              const path = workspacePath || session.projectWorkspacePath || session.workspacePath || '';
                               setBatchWorkspace({
-                                workspaceId: workspaceId || session.workspaceId || '',
+                                workspaceId: batchWorkspaceId,
                                 workspaceName: presentation?.assistant.name
-                                  || (currentWorkspace?.rootPath === path && currentWorkspace.name)
-                                  || path,
-                                workspacePath: path,
-                                remoteConnectionId: remoteConnectionId ?? session.remoteConnectionId,
-                                remoteSshHost: remoteSshHost ?? session.remoteSshHost,
+                                  || (currentWorkspace?.id === batchWorkspaceId && currentWorkspace.name)
+                                  || path
+                                  || batchWorkspaceId,
                               });
                             }}
                             data-testid="nav-session-menu-manage-sessions"
                           >
                             <span>{t('nav.sessions.manage')}</span>
                           </MenuItem>
+                          {worktreeIsolated && worktreeRootPath ? (
+                            <MenuItem
+                              type="button"
+                              leading={<Icon glyph={FolderGit2} size="sm" />}
+                              onClick={e => { void handleOpenWorktreeWorkspace(e, worktreeRootPath); }}
+                              data-testid="nav-session-menu-open-worktree-workspace"
+                              data-session-id={session.sessionId}
+                            >
+                              <span>{t('nav.sessions.openWorktreeWorkspace')}</span>
+                            </MenuItem>
+                          ) : null}
                           <MenuItem
                             type="button"
                             tone="danger"
-                            leading={<Icon name="delete" size="lg" style={{ width: 13, height: 13 }} />}
+                            leading={<Icon name="delete" size="sm" />}
                             onClick={e => { closeSessionMenu(); void handleDelete(e, session.sessionId); }}
                             data-testid="nav-session-menu-delete"
                             data-session-id={session.sessionId}
@@ -2019,7 +2058,9 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
           <span className="openbitfun-nav-panel__inline-toggle-count" aria-hidden>
             +{topLevelSessions.length - sessionDisplayLimit}
           </span>
-          <Icon name="chevron-down" size="xs" className="openbitfun-nav-panel__inline-toggle-chevron" aria-hidden />
+          <span className="openbitfun-nav-panel__inline-toggle-trailing">
+            <Icon name="chevron-down" size="xs" className="openbitfun-nav-panel__inline-toggle-chevron" aria-hidden />
+          </span>
         </button>
       )}
 
@@ -2044,13 +2085,15 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
               +{expandToggleLabels.remainingCount}
             </span>
           )}
-          {metadataPageState.isLoading ? (
-            <Loader2 size={12} className="openbitfun-nav-panel__inline-toggle-spinner" aria-hidden />
-          ) : expandToggleLabels.remainingCount === null ? (
-            <Icon name="chevron-up" size="xs" className="openbitfun-nav-panel__inline-toggle-chevron" aria-hidden />
-          ) : (
-            <Icon name="chevron-down" size="xs" className="openbitfun-nav-panel__inline-toggle-chevron" aria-hidden />
-          )}
+          <span className="openbitfun-nav-panel__inline-toggle-trailing">
+            {metadataPageState.isLoading ? (
+              <Loader2 className="openbitfun-nav-panel__inline-toggle-spinner" aria-hidden />
+            ) : expandToggleLabels.remainingCount === null ? (
+              <Icon name="chevron-up" size="xs" className="openbitfun-nav-panel__inline-toggle-chevron" aria-hidden />
+            ) : (
+              <Icon name="chevron-down" size="xs" className="openbitfun-nav-panel__inline-toggle-chevron" aria-hidden />
+            )}
+          </span>
         </button>
       )}
 
@@ -2060,10 +2103,7 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
             <ScheduledJobsModal
               isOpen={scheduledJobsSession != null}
               onClose={() => setScheduledJobsSessionId(null)}
-              workspacePath={retainedScheduledJobsSession.workspacePath || workspacePath}
               workspaceId={retainedScheduledJobsSession.workspaceId || workspaceId}
-              remoteConnectionId={retainedScheduledJobsSession.remoteConnectionId || remoteConnectionId}
-              remoteSshHost={retainedScheduledJobsSession.remoteSshHost || remoteSshHost}
               sessionId={retainedScheduledJobsSession.sessionId}
               targetKind="session"
               lockSessionId
@@ -2079,10 +2119,8 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
           <WorkspaceSessionBatchModal
             isOpen
             onClose={() => setBatchWorkspace(null)}
-            workspacePath={batchWorkspace.workspacePath}
+            workspaceId={batchWorkspace.workspaceId}
             workspaceLabel={batchWorkspace.workspaceName}
-            remoteConnectionId={batchWorkspace.remoteConnectionId}
-            remoteSshHost={batchWorkspace.remoteSshHost}
           />
         </Suspense>
       )}

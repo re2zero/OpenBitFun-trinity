@@ -4,11 +4,9 @@
  */
 
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
-import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { FolderOpen, FolderPlus } from 'lucide-react';
-import { Menu, MenuItem, MenuSeparator, Icon, PageHeader } from '@openbitfun/ui';
-import { gitAPI } from '../../infrastructure/api';
+import { subscribeOverlayInteraction, createOverlayPortal, Button, Menu, MenuItem, MenuSeparator, Icon, PageHeader } from '@openbitfun/ui';
 import { useApp } from '../../app/hooks/useApp';
 import { createLogger } from '@/shared/utils/logger';
 import { useWorkspaceContext } from '@/infrastructure/contexts/WorkspaceContext';
@@ -17,22 +15,18 @@ import CoworkExampleCards from './CoworkExampleCards';
 import { useAgentIdentityDocument } from '@/app/scenes/my-agent/useAgentIdentityDocument';
 import { getAppearanceOverlayHost } from '@/infrastructure/appearance/runtime/AppearanceOverlayHost';
 import { useAnchoredPopoverPosition } from '@/shared/utils/useAnchoredPopoverPosition';
+import { useGitState } from '@/tools/git/hooks/useGitState';
 import './WelcomePanel.css';
 import './WelcomePanelSurface.scss';
 
 const log = createLogger('WelcomePanel');
 
-interface GitWorkState {
-  currentBranch: string;
-  unstagedFiles: number;
-  stagedFiles: number;
-  unpushedCommits: number;
-}
-
 interface WelcomePanelProps {
   onQuickAction?: (command: string) => void;
   className?: string;
   sessionMode?: string;
+  /** Owning workspace ID of the session being welcomed; selects the assistant identity document. */
+  workspaceId?: string;
   workspacePath?: string;
 }
 
@@ -40,11 +34,11 @@ export const WelcomePanel: React.FC<WelcomePanelProps> = ({
   onQuickAction,
   className = '',
   sessionMode,
+  workspaceId,
   workspacePath = '',
 }) => {
   const { t } = useTranslation('flow-chat');
   const { t: tCommon } = useTranslation('common');
-  const [gitState, setGitState] = useState<GitWorkState | null>(null);
   const [workspaceDropdownOpen, setWorkspaceDropdownOpen] = useState(false);
   const [isSelectingWorkspace, setIsSelectingWorkspace] = useState(false);
   const workspaceDropdownRef = useRef<HTMLDivElement>(null);
@@ -63,7 +57,46 @@ export const WelcomePanel: React.FC<WelcomePanelProps> = ({
   const isCoworkSession = sessionModeLower === 'cowork';
   const isClawSession = sessionModeLower === 'claw';
 
-  const { document: identityDoc } = useAgentIdentityDocument(isClawSession ? workspacePath : '');
+  // Subscribe to shared Git state so the welcome panel stays in sync with
+  // branch / worktree changes (including external ones picked up by the
+  // GitStateManager poll). When there is no workspace or we are in a
+  // cowork/claw session we pass a blank scope so the hook stays idle.
+  const activeWsId = !isCoworkSession && !isClawSession ? currentWorkspace?.id : undefined;
+  const gitScope = activeWsId ? { workspaceId: activeWsId } : { workspaceId: '' };
+  const {
+    isRepository,
+    currentBranch,
+    ahead,
+    staged,
+    unstaged,
+    untracked,
+  } = useGitState({
+    repositoryPath: gitScope,
+    layers: ['basic', 'status'],
+    isActive: !!activeWsId,
+    refreshOnMount: !!activeWsId,
+    refreshOnActive: true,
+    participateInWindowFocusRefresh: true,
+    debugSource: 'welcome_panel',
+  });
+
+  // Derive the same shape the old loadGitState produced so the render and
+  // narrative helpers below do not have to change.
+  const gitState = useMemo(() => {
+    if (!isRepository || !currentBranch) return null;
+    return {
+      currentBranch,
+      unstagedFiles: (unstaged?.length || 0) + (untracked?.length || 0),
+      stagedFiles: staged?.length || 0,
+      unpushedCommits: ahead || 0,
+    };
+  }, [isRepository, currentBranch, ahead, staged, unstaged, untracked]);
+
+  const identityWorkspace = useMemo(
+    () => (isClawSession && workspaceId ? { id: workspaceId, rootPath: workspacePath } : null),
+    [isClawSession, workspaceId, workspacePath],
+  );
+  const { document: identityDoc } = useAgentIdentityDocument(identityWorkspace);
   const assistantName = isClawSession ? (identityDoc.name || '') : '';
 
   const greeting = useMemo(() => {
@@ -128,15 +161,15 @@ export const WelcomePanel: React.FC<WelcomePanelProps> = ({
         {parts.map(({ key, label, suffix }, i) => (
           <React.Fragment key={key}>
             {i > 0 && t('welcome.commaSeparator')}
-            <button
+            <Button labelBehavior="static" variant="text"
               type="button"
-              data-openbitfun-component="welcome-panel"
-              data-openbitfun-part="gitAction"
+              data-openbitfun-product-component="welcome-panel"
+              data-openbitfun-product-part="gitAction"
               className="welcome-panel__inline-btn"
               onClick={handleGitClick}
             >
               {label}
-            </button>
+            </Button>
             {' '}{suffix}
           </React.Fragment>
         ))}
@@ -144,37 +177,6 @@ export const WelcomePanel: React.FC<WelcomePanelProps> = ({
       </>
     );
   }, [gitState, handleGitClick, t]);
-
-  const loadGitState = useCallback(async (
-    workspacePath: string,
-    shouldCancel: () => boolean = () => false,
-  ) => {
-    try {
-      const isGitRepo = await gitAPI.isGitRepository(workspacePath);
-      if (shouldCancel()) return;
-      if (!isGitRepo) { setGitState(null); return; }
-      const s = await gitAPI.getStatus(workspacePath, 'welcome_panel');
-      if (shouldCancel()) return;
-      setGitState({
-        currentBranch: s.current_branch,
-        unstagedFiles: s.unstaged.length + s.untracked.length,
-        stagedFiles: s.staged.length,
-        unpushedCommits: s.ahead,
-      });
-    } catch (err) {
-      log.warn('Failed to load git state', err);
-      setGitState(null);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (isCoworkSession || isClawSession || !currentWorkspace?.rootPath) { setGitState(null); return; }
-    let cancelled = false;
-    void loadGitState(currentWorkspace.rootPath, () => cancelled);
-    return () => {
-      cancelled = true;
-    };
-  }, [currentWorkspace?.rootPath, isCoworkSession, isClawSession, loadGitState]);
 
   useEffect(() => {
     if (!workspaceDropdownOpen) return;
@@ -194,11 +196,11 @@ export const WelcomePanel: React.FC<WelcomePanelProps> = ({
       setWorkspaceDropdownOpen(false);
       workspaceTriggerRef.current?.focus();
     };
-    document.addEventListener('mousedown', handlePointerDown);
-    document.addEventListener('keydown', handleKeyDown);
+    const removeOverlayMousedown0 = subscribeOverlayInteraction(workspaceMenuRef, 'mousedown', handlePointerDown);
+    const removeOverlayKeydown1 = subscribeOverlayInteraction(workspaceMenuRef, 'keydown', handleKeyDown);
     return () => {
-      document.removeEventListener('mousedown', handlePointerDown);
-      document.removeEventListener('keydown', handleKeyDown);
+      removeOverlayMousedown0?.();
+      removeOverlayKeydown1?.();
     };
   }, [workspaceDropdownOpen]);
 
@@ -235,42 +237,42 @@ export const WelcomePanel: React.FC<WelcomePanelProps> = ({
   }, [onQuickAction]);
 
   return (
-    <div data-openbitfun-component="welcome-panel" data-openbitfun-part="root" className={`welcome-panel ${className}`}>
-      <div data-openbitfun-component="welcome-panel" data-openbitfun-part="content" className="welcome-panel__content">
+    <div data-openbitfun-product-component="welcome-panel" data-openbitfun-product-part="root" className={`welcome-panel ${className}`}>
+      <div data-openbitfun-product-component="welcome-panel" data-openbitfun-product-part="content" className="welcome-panel__content">
         {/* Greeting */}
-        <div data-openbitfun-component="welcome-panel" data-openbitfun-part="greeting" className="welcome-panel__greeting">
+        <div data-openbitfun-product-component="welcome-panel" data-openbitfun-product-part="greeting" className="welcome-panel__greeting">
           <PageHeader
             size="display"
-            title={<span data-openbitfun-component="welcome-panel" data-openbitfun-part="heading">
+            title={<span data-openbitfun-product-component="welcome-panel" data-openbitfun-product-part="heading">
               {greeting.title}
               {aiPartnerKey && <>，{t(aiPartnerKey)}{isClawSession && assistantName ? `，${assistantName}` : ''}</>}
             </span>}
             description={greeting.subtitle ? (
-              <span data-openbitfun-component="welcome-panel" data-openbitfun-part="tagline">{greeting.subtitle}</span>
+              <span data-openbitfun-product-component="welcome-panel" data-openbitfun-product-part="tagline">{greeting.subtitle}</span>
             ) : undefined}
           />
         </div>
 
-        <div data-openbitfun-component="welcome-panel" data-openbitfun-part="divider" className="welcome-panel__divider" />
+        <div data-openbitfun-product-component="welcome-panel" data-openbitfun-product-part="divider" className="welcome-panel__divider" />
 
         {/* Narrative: workspace + git in natural language */}
-        <div data-openbitfun-component="welcome-panel" data-openbitfun-part="narrative" className="welcome-panel__narrative">
+        <div data-openbitfun-product-component="welcome-panel" data-openbitfun-product-part="narrative" className="welcome-panel__narrative">
           <p className="welcome-panel__narrative-text">
             {isClawSession ? (
               t('welcome.narrativeClaw')
             ) : !hasWorkspace ? (
               <>
                 {t('welcome.noWorkspaceHint')}
-                <button
+                <Button labelBehavior="static" variant="text"
                   type="button"
-                  data-openbitfun-component="welcome-panel"
-                  data-openbitfun-part="openWorkspaceAction"
+                  data-openbitfun-product-component="welcome-panel"
+                  data-openbitfun-product-part="openWorkspaceAction"
                   className="welcome-panel__inline-btn welcome-panel__inline-btn--interactive"
                   onClick={() => { void handleOpenOtherFolder(); }}
                   disabled={isSelectingWorkspace}
                 >
                   {t('welcome.openOne')}
-                </button>
+                </Button>
                 {' '}{t('welcome.toStart')}
               </>
             ) : (
@@ -281,11 +283,22 @@ export const WelcomePanel: React.FC<WelcomePanelProps> = ({
                   </span>
                   <span className="welcome-panel__context-row">
                     <span className="welcome-panel__workspace-anchor" ref={workspaceDropdownRef}>
-                      <button
+                      <Button
+                        labelBehavior="static"
+                        variant="text"
+                        leadingIcon={<FolderOpen size={13} className="welcome-panel__inline-icon" />}
+                        trailingIcon={
+                          <Icon
+                            name="chevron-down"
+                            size="lg"
+                            style={{ width: 11, height: 11 }}
+                            className={`welcome-panel__inline-chevron${workspaceDropdownOpen ? ' welcome-panel__inline-chevron--open' : ''}`}
+                          />
+                        }
                         ref={workspaceTriggerRef}
                         type="button"
-                        data-openbitfun-component="welcome-panel"
-                        data-openbitfun-part="workspaceAction"
+                        data-openbitfun-product-component="welcome-panel"
+                        data-openbitfun-product-part="workspaceAction"
                         data-openbitfun-state={workspaceDropdownOpen ? 'open' : undefined}
                         className={`welcome-panel__inline-btn welcome-panel__inline-btn--interactive${workspaceDropdownOpen ? ' welcome-panel__inline-btn--active' : ''}`}
                         onClick={() => setWorkspaceDropdownOpen(v => !v)}
@@ -294,15 +307,13 @@ export const WelcomePanel: React.FC<WelcomePanelProps> = ({
                         aria-haspopup="menu"
                         aria-expanded={workspaceDropdownOpen}
                       >
-                        <FolderOpen size={13} className="welcome-panel__inline-icon" />
                         {currentWorkspace?.name || t('shared:features.workspace')}
-                        <Icon name="chevron-down" size="lg" style={{ width: 11, height: 11 }} className={`welcome-panel__inline-chevron${workspaceDropdownOpen ? ' welcome-panel__inline-chevron--open' : ''}`} />
-                      </button>
-                      {workspaceDropdownOpen && createPortal(
+                      </Button>
+                      {workspaceDropdownOpen && createOverlayPortal(
                         <Menu
                           ref={workspaceMenuRef}
-                          data-openbitfun-component="welcome-panel"
-                          data-openbitfun-part="workspaceMenu"
+                          data-openbitfun-product-component="welcome-panel"
+                          data-openbitfun-product-part="workspaceMenu"
                           data-openbitfun-placement={workspaceMenuLayout?.placement ?? 'bottom'}
                           className="welcome-panel__dropdown"
                           style={{
@@ -314,8 +325,8 @@ export const WelcomePanel: React.FC<WelcomePanelProps> = ({
                           aria-label={t('shared:features.workspace')}
                         >
                           <MenuItem
-                            data-openbitfun-component="welcome-panel"
-                            data-openbitfun-part="workspaceItem"
+                            data-openbitfun-product-component="welcome-panel"
+                            data-openbitfun-product-part="workspaceItem"
                             leading={<FolderPlus size={12} />}
                             onClick={() => { void handleCreateWorkspace(); }}
                           >
@@ -339,8 +350,8 @@ export const WelcomePanel: React.FC<WelcomePanelProps> = ({
                               {otherWorkspaces.map(ws => (
                                 <MenuItem
                                   key={ws.id}
-                                  data-openbitfun-component="welcome-panel"
-                                  data-openbitfun-part="workspaceItem"
+                                  data-openbitfun-product-component="welcome-panel"
+                                  data-openbitfun-product-part="workspaceItem"
                                   leading={<FolderOpen size={12} />}
                                   onClick={() => { void handleSwitchWorkspace(ws); }}
                                   title={ws.rootPath}
@@ -357,16 +368,18 @@ export const WelcomePanel: React.FC<WelcomePanelProps> = ({
                     {!isCoworkSession && gitState && (
                       <>
                         <span className="welcome-panel__context-sep">/</span>
-                        <button
+                        <Button
+                          labelBehavior="static"
+                          variant="text"
+                          leadingIcon={<Icon name="git" size="lg" style={{ width: 13, height: 13 }} className="welcome-panel__inline-icon" />}
                           type="button"
-                          data-openbitfun-component="welcome-panel"
-                          data-openbitfun-part="gitAction"
+                          data-openbitfun-product-component="welcome-panel"
+                          data-openbitfun-product-part="gitAction"
                           className="welcome-panel__inline-btn"
                           onClick={handleGitClick}
                         >
-                          <Icon name="git" size="lg" style={{ width: 13, height: 13 }} className="welcome-panel__inline-icon" />
                           {gitState.currentBranch}
-                        </button>
+                        </Button>
                       </>
                     )}
                   </span>
@@ -388,7 +401,7 @@ export const WelcomePanel: React.FC<WelcomePanelProps> = ({
 
         {/* Cowork examples */}
         {isCoworkSession && (
-          <div data-openbitfun-component="welcome-panel" data-openbitfun-part="cowork" className="welcome-panel__cowork">
+          <div data-openbitfun-product-component="welcome-panel" data-openbitfun-product-part="cowork" className="welcome-panel__cowork">
             <CoworkExampleCards resetKey={0} onSelectPrompt={p => handleQuickActionClick(p)} />
           </div>
         )}

@@ -185,8 +185,8 @@ impl std::error::Error for PermissionRuntimeCeilingValidationError {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionPolicyPreset {
-    #[default]
     Ask,
+    #[default]
     FullAccess,
 }
 
@@ -590,6 +590,10 @@ pub struct PermissionRequest {
 #[serde(tag = "reply", rename_all = "snake_case")]
 pub enum PermissionReply {
     Once,
+    /// Approve this invocation once with a shallow object patch to its input.
+    OnceWithInput {
+        updated_input: Value,
+    },
     Always,
     Reject {
         #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -17,6 +17,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -39,6 +42,19 @@ import com.openbitfun.mobile.core.feature.session.collapseToolRows
 import com.openbitfun.mobile.app.ui.theme.openBitFunColors
 
 /** Anything the desktop must be told about a rejection needs a reason; this is ours. */
+internal data class PlanActions(
+    val supported: Boolean = false,
+    val enabled: Boolean = false,
+    val build: (com.openbitfun.mobile.core.feature.session.PlanToolDescriptor) -> Unit = {},
+)
+internal val LocalPlanActions = androidx.compose.runtime.staticCompositionLocalOf { PlanActions() }
+
+internal class ToolDisclosure(selectedState: MutableState<String?>) {
+    var selected by selectedState
+}
+internal val LocalToolDisclosure = staticCompositionLocalOf<ToolDisclosure?> { null }
+internal val LocalPermissionMailbox = staticCompositionLocalOf<com.openbitfun.mobile.core.feature.session.PermissionMailboxUiState?> { null }
+
 private const val REJECT_REASON = "Rejected from the Android client"
 private const val CANCEL_REASON = "Cancelled from the Android client"
 
@@ -62,7 +78,7 @@ private val DETAIL_INDENT = 28.dp
 internal fun ToolStatusList(
     tools: List<ToolCard>,
     enabled: Boolean,
-    onApprove: (String) -> Unit,
+    onApprove: (String, String?) -> Unit,
     onReject: (String, String) -> Unit,
     onCancel: (String, String) -> Unit,
     onAnswer: (String, String) -> Unit,
@@ -80,7 +96,7 @@ internal fun ToolStatusList(
                 is ToolRow.Single -> ToolStatusRow(
                     tool = row.tool,
                     enabled = enabled,
-                    onApprove = { onApprove(row.tool.id) },
+                    onApprove = { input -> onApprove(row.tool.id, input) },
                     onReject = { reason -> onReject(row.tool.id, reason) },
                     onCancel = { reason -> onCancel(row.tool.id, reason) },
                     onAnswer = { answer -> onAnswer(row.tool.id, answer) },
@@ -171,7 +187,7 @@ private fun CollapsedToolGroup(
 internal fun ToolStatusRow(
     tool: ToolCard,
     enabled: Boolean,
-    onApprove: () -> Unit,
+    onApprove: (String?) -> Unit,
     onReject: (String) -> Unit,
     onCancel: (String) -> Unit,
     onAnswer: (String) -> Unit,
@@ -179,8 +195,35 @@ internal fun ToolStatusRow(
     onOpenFile: (String, String) -> Unit,
     modifier: Modifier,
 ) {
-    var expanded by remember(tool.id) { mutableStateOf(false) }
-    val blocking = tool.actions.isNotEmpty()
+    val plan = tool.plan
+    if (plan != null) {
+        val actions = LocalPlanActions.current
+        Column(modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(14.dp)).padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(plan.name.ifBlank { stringResource(R.string.plan_title) }, style = MaterialTheme.typography.titleSmall)
+            if (plan.overview.isNotBlank()) Text(plan.overview, style = MaterialTheme.typography.bodySmall)
+            androidx.compose.material3.TextButton(onClick = { onOpenFile(plan.path, plan.name) }, enabled = enabled && plan.path.isNotBlank()) {
+                Text(stringResource(R.string.plan_view))
+            }
+            androidx.compose.material3.Button(onClick = { actions.build(plan) }, enabled = actions.supported && actions.enabled && tool.phase == ToolPhase.COMPLETED && plan.path.isNotBlank()) {
+                Text(stringResource(R.string.plan_build))
+            }
+            if (!actions.supported) Text(stringResource(R.string.plan_unsupported), style = MaterialTheme.typography.bodySmall)
+            else if (!actions.enabled) Text(stringResource(R.string.plan_wait), style = MaterialTheme.typography.bodySmall)
+        }
+        return
+    }
+    var localExpanded by rememberSaveable(tool.id) { mutableStateOf(false) }
+    val disclosure = LocalToolDisclosure.current
+    val expanded = disclosure?.let { it.selected == tool.id } ?: localExpanded
+    val toggle = {
+        if (disclosure == null) localExpanded = !localExpanded
+        else disclosure.selected = if (expanded) null else tool.id
+    }
+    val transcriptActions = if (LocalPermissionMailbox.current?.ownsToolInteraction(tool.id) == true) {
+        tool.actions - setOf(ToolAction.ANSWER, ToolAction.APPROVE, ToolAction.REJECT) -
+            (if (ToolAction.ANSWER in tool.actions) setOf(ToolAction.CANCEL) else emptySet())
+    } else tool.actions
+    val blocking = transcriptActions.isNotEmpty()
     val emphasized = expanded || blocking || tool.phase == ToolPhase.FAILED
     val canExpand = tool.expandable
     val openable = tool.filePath.isNotEmpty()
@@ -230,7 +273,7 @@ internal fun ToolStatusRow(
                         if (openable) {
                             onOpenFile(tool.filePath, tool.fileLabel)
                         } else {
-                            expanded = !expanded
+                            toggle()
                         }
                     },
             )
@@ -239,7 +282,7 @@ internal fun ToolStatusRow(
                     modifier = Modifier
                         .size(width = 32.dp, height = 28.dp)
                         .testTag(TOOL_EXPAND_TEST_TAG)
-                        .clickable { expanded = !expanded },
+                        .clickable { toggle() },
                     contentAlignment = Alignment.Center,
                 ) {
                     Chevron(
@@ -267,17 +310,18 @@ internal fun ToolStatusRow(
             }
         }
 
-        if (ToolAction.APPROVE in tool.actions || ToolAction.REJECT in tool.actions) {
+        if (ToolAction.APPROVE in transcriptActions || ToolAction.REJECT in transcriptActions) {
             ToolConfirmationPanel(
-                canApprove = ToolAction.APPROVE in tool.actions,
-                canReject = ToolAction.REJECT in tool.actions,
+                input = tool.input,
+                canApprove = ToolAction.APPROVE in transcriptActions,
+                canReject = ToolAction.REJECT in transcriptActions,
                 enabled = enabled,
                 onApprove = onApprove,
                 onReject = { onReject(REJECT_REASON) },
             )
         }
 
-        if (ToolAction.ANSWER in tool.actions) {
+        if (ToolAction.ANSWER in transcriptActions) {
             if (tool.questions.isNotEmpty()) {
                 ToolStructuredQuestionPanel(
                     toolId = tool.id,
@@ -296,7 +340,7 @@ internal fun ToolStatusRow(
             }
         }
 
-        if (ToolAction.CANCEL in tool.actions) {
+        if (ToolAction.CANCEL in transcriptActions) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(start = DETAIL_INDENT),
                 horizontalArrangement = Arrangement.End,

@@ -84,11 +84,11 @@
   &__card-preview {
     position: relative;
     display: flex;
-    flex: 0 0 104px;
+    flex: 0 0 160px;
     align-items: center;
     justify-content: center;
-    width: 104px;
-    height: 72px;
+    width: 160px;
+    aspect-ratio: 8 / 5;
     border-radius: var(--openbitfun-radius-sm);
     overflow: hidden;
     background: var(--openbitfun-color-surface-workbench);
@@ -184,7 +184,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    aspect-ratio: 16 / 9;
+    aspect-ratio: 8 / 5;
     overflow: hidden;
     border: 1px solid var(--openbitfun-color-border-default);
     border-radius: var(--openbitfun-radius-sm);
@@ -338,6 +338,10 @@
 
 }
 
+.appearance-market__dialog-header {
+  align-items: center;
+}
+
 /* Fixed height: every view scrolls internally so the dialog never resizes while loading. */
 .appearance-market__modal {
   min-height: min(720px, 78vh);
@@ -359,7 +363,20 @@
     padding-bottom: var(--openbitfun-space-2);
     border-bottom: 1px solid var(--openbitfun-color-border-default);
 
-    button {
+    .appearance-market__nav-item {
+      inline-size: auto;
+      min-inline-size: min-content;
+      min-block-size: 0;
+      align-items: stretch;
+      padding: 0;
+      gap: 0;
+      border-radius: var(--openbitfun-radius-sm);
+      background: transparent;
+      box-shadow: none;
+      transition: none;
+    }
+
+    .appearance-market__nav-item > [data-openbitfun-part='trigger'] {
       padding: var(--openbitfun-space-2) var(--openbitfun-space-3);
       border: 0;
       border-radius: var(--openbitfun-radius-sm);
@@ -367,7 +384,18 @@
       color: var(--openbitfun-color-content-secondary);
       font: inherit;
       font-size: var(--openbitfun-type-label-md-font-size);
+      text-align: center;
+      white-space: normal;
       cursor: pointer;
+
+      @layer openbitfun.components {
+        outline: revert-layer;
+      }
+
+      > [data-openbitfun-part='label'] {
+        font: inherit;
+        letter-spacing: inherit;
+      }
 
       &:hover {
         background: var(--openbitfun-color-surface-subtle);
@@ -756,13 +784,6 @@
     flex: 1;
     min-height: 0;
     padding: 1px var(--openbitfun-space-1) var(--openbitfun-space-2) 1px;
-    transition: opacity var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard);
-
-    /* A refresh keeps the current cards in place and dims them — no reflow. */
-    &--dimmed {
-      opacity: 0.55;
-      pointer-events: none;
-    }
   }
 
   &__grid {
@@ -945,6 +966,24 @@
 
   &__empty p {
     margin: 0;
+  }
+
+  &__empty[data-openbitfun-component='empty'] {
+    padding: 0;
+    text-align: inherit;
+
+    > [data-openbitfun-part='media'] {
+      inline-size: 28px;
+      block-size: 28px;
+      color: inherit;
+    }
+
+    > [data-openbitfun-part='description'] {
+      max-inline-size: none;
+      color: inherit;
+      font: inherit;
+      letter-spacing: inherit;
+    }
   }
 
   &__error,
@@ -1773,9 +1812,8 @@
     }
 
     &__card-preview {
-      flex-basis: 72px;
-      width: 72px;
-      height: 56px;
+      flex-basis: min(160px, 32cqi);
+      width: min(160px, 32cqi);
     }
 
     &__card-body--inline {
@@ -1788,5 +1826,20 @@
       flex: 0 1 auto;
       width: 100%;
     }
+  }
+}
+
+// The existing card owns feedback and geometry; the shared trigger owns activation.
+.appearance-package-config__card-action[data-openbitfun-component='action-card'] {
+  min-block-size: 0;
+  border-radius: inherit;
+  background: transparent;
+  color: inherit;
+  outline: none;
+  box-shadow: none;
+  opacity: 1;
+
+  > [data-openbitfun-part='trigger'] {
+    min-block-size: 72px;
   }
 }

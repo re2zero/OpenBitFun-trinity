@@ -20,6 +20,13 @@ final class MobileAppModel: ObservableObject {
     @Published var remoteViewSettingsOpen = false
     @Published var remoteHasMore = false
     @Published var remoteHasMoreMessages = false
+    @Published var remoteHistoryLoading = false
+    @Published var remoteHistoryFailed = false
+    /// The rows on screen are this device's stored copy, not the host's
+    /// transcript: a reopened session shows them at once, and the host has not
+    /// answered for it yet. See `ChatTranscriptOrigin`.
+    @Published var remoteTranscriptUnconfirmed = false
+    @Published var permissionMailbox: PermissionMailboxUiState?
     @Published var remoteConversationLoading = false
     @Published var remotePermissionMode = "ASK"
     @Published var remotePermissionFailure: String?
@@ -30,11 +37,26 @@ final class MobileAppModel: ObservableObject {
     @Published var remoteCreateSubmitting = false
     @Published var remoteCreateError: String?
     @Published var remoteCreateDeviceError: String?
-    @Published var selectedSessionID: String
+    @Published var selectedSessionID: String {
+        didSet { if selectedSessionID != oldValue { composerDraftRevision &+= 1 } }
+    }
     @Published var messages: [ChatMessage]
-    @Published var timelineRows: [MobileConversationRow] = []
-    @Published var draft = ""
+    @Published private var renderedTimelineRows: [MobileConversationRow] = []
+    var timelineRows: [MobileConversationRow] {
+        get { renderedTimelineRows }
+        set {
+            let next = MobileConversationRow.reconcile(newValue, with: renderedTimelineRows)
+            if next != renderedTimelineRows { renderedTimelineRows = next }
+        }
+    }
+    @Published var draft = "" {
+        didSet { if draft != oldValue { composerDraftRevision &+= 1 } }
+    }
+    // Includes edits later erased and session round trips, not just current contents.
+    var composerDraftRevision: UInt64 = 0
     var lastAppliedRemoteSendID: String?
+    var pendingComposerSend: PendingComposerSend?
+    @Published var composerSendGeneration: UInt64 = 0
     @Published var drawerOpen = false
     @Published var settingsOpen = false
     @Published var remoteControlSettingsOpen = false
@@ -43,7 +65,9 @@ final class MobileAppModel: ObservableObject {
     @Published var connectionPhase: ConnectionPhase = .connected
     @Published var isSending = false
     @Published var busy = false
-    @Published var composerImages: [ComposerAttachment] = []
+    @Published var composerImages: [ComposerAttachment] = [] {
+        didSet { if composerImages != oldValue { composerDraftRevision &+= 1 } }
+    }
     @Published var modelOptions: [ComposerModelOption] = []
     @Published var toastMessage: String?
     @Published var remoteConnected = false
@@ -67,8 +91,16 @@ final class MobileAppModel: ObservableObject {
     @Published var accountDeviceCount = 0
     @Published var accountDevices: [MobileAccountDevice] = []
     @Published var accountSelectedDeviceID: String?
+    @Published var accountDirectoryError: String?
     @Published var accountRefreshing = false
     @Published var deviceDirectory: [MobileDeviceDirectoryEntry] = []
+    @Published var runtimeFiles: RuntimeFilesUiState?
+    let runtimeFileDraft = RuntimeFileDraftState()
+    @Published var runtimeDirectoryPicker: RuntimeFilesUiState?
+    @Published var runtimeDeviceTools: DeviceToolsUiState?
+    @Published var runtimeTerminal: RuntimeTerminalUiState?
+    @Published var savedRuntimeConnections: [SavedRuntimeConnectionUiState] = []
+    @Published var savedRuntimeConnectionsFailed = false
     @Published var remoteWorkspaces: [MobileWorkspaceGroup] = []
     @Published var workspaceLoading = false
     @Published var workspaceLoadFailed = false
@@ -92,23 +124,25 @@ final class MobileAppModel: ObservableObject {
     var pairingGeneration: UInt64 = 0
     var accountGeneration: UInt64 = 0
     var remoteTargetEpoch: UInt64 = 0
-    var remoteExpectedDeviceKey: String?
+    @Published var remoteExpectedDeviceKey: String?
     var remoteBoundTargetKey: String?
     var remoteBoundTargetEpoch: UInt64?
     var pairingRetainedAccountAuthority: RetainedAccountAuthority?
     var accountDirectoryGeneration: UInt64 = 0
     var pendingDirectorySession: (deviceKey: String, sessionID: String, epoch: UInt64)?
-    var remoteInitialSessionReady = false
+    @Published var remoteInitialSessionReady = false
     var remoteInitialWorkspaceReady = false
     var remoteCreateRequestID: String?
     var remoteCreateRequestEpoch: UInt64 = 0
     var remoteCreateRequestDeviceKey: String?
     var committedRemoteCreate: CommittedRemoteCreate?
     var remoteLastAppliedAuthority: RemoteAuthorityScope?
-    var workspaceCatalog: [(path: String, name: String, selected: Bool)] = []
+    var remoteSidebarWorkspaceState: RemoteWorkspaceUiStateReady?
+    typealias WorkspaceCatalogEntry = (path: String, name: String, selected: Bool, remoteConnectionId: String?, remoteSshHost: String?, workspaceId: String?)
+    var workspaceCatalog: [WorkspaceCatalogEntry] = []
     var pendingRemoteWorkspaceCreate: (path: String, agentType: String)?
-    var pendingRemoteSessionRefreshWorkspacePath: String?
-    var pendingDirectoryWorkspace: (deviceKey: String, path: String, epoch: UInt64)?
+    var pendingRemoteSessionRefreshWorkspace: MobileWorkspaceScope?
+    var pendingDirectoryWorkspace: (deviceKey: String, path: String, epoch: UInt64, remoteConnectionId: String?, remoteSshHost: String?, workspaceId: String?)?
     var pendingDirectoryRemoteDraft: PendingDirectoryRemoteDraft?
     var pendingRemoteAssistantCreate = false
     var selectedRemoteWorkspaceKind = ""
@@ -235,8 +269,11 @@ final class MobileAppModel: ObservableObject {
     }
 
     func handleScenePhase(_ phase: ScenePhase) {
-        if phase != .inactive { completionNotifier.setBackground(phase == .background) }
-        if phase == .active, accountUser != nil { refreshRemoteDevices() }
+        if phase != .inactive {
+            completionNotifier.setBackground(phase == .background)
+            coreAdapter?.setForeground(phase == .active)
+        }
+        if phase == .active, accountUser != nil { coreAdapter?.resumeSessionStreams(); refreshRemoteDevices() }
     }
 
     func verifyRemoteConnection() {
@@ -255,6 +292,7 @@ final class MobileAppModel: ObservableObject {
         remoteSessions = []
         remoteWorkspaces = []
         workspaceCatalog = []
+        remoteSidebarWorkspaceState = nil
         remoteInitialSessionReady = false
         remoteInitialWorkspaceReady = false
         workspaceLoading = false
@@ -262,7 +300,7 @@ final class MobileAppModel: ObservableObject {
         workspaceSelectionBusy = false
         remoteCreateWorkspacePhase = .unavailable
         pendingRemoteWorkspaceCreate = nil
-        pendingRemoteSessionRefreshWorkspacePath = nil
+        pendingRemoteSessionRefreshWorkspace = nil
         pendingDirectoryRemoteDraft = nil
         pendingRemoteAssistantCreate = false
         selectedRemoteWorkspaceKind = ""
@@ -303,7 +341,7 @@ final class MobileAppModel: ObservableObject {
             pendingDeviceLink = nil
             pairingError = result.status == .invalid
                 ? localized("请使用当前版本的 OpenBitFun 设备二维码。")
-                : localized("该设备已离线，或不属于当前 GitHub 账户。")
+                : localized("该设备已离线，或不属于当前 OpenBitFun 账户。")
         }
     }
 
@@ -349,6 +387,7 @@ final class MobileAppModel: ObservableObject {
         remotePermissionFailure = nil
         sessionDetails = nil
         workspaceCatalog = []
+        remoteSidebarWorkspaceState = nil
         workspaceLoading = false
         workspaceLoadFailed = false
         workspaceSelectionBusy = false
@@ -357,7 +396,7 @@ final class MobileAppModel: ObservableObject {
         pendingDirectoryWorkspace = nil
         pendingDirectoryRemoteDraft = nil
         pendingRemoteWorkspaceCreate = nil
-        pendingRemoteSessionRefreshWorkspacePath = nil
+        pendingRemoteSessionRefreshWorkspace = nil
         pendingRemoteAssistantCreate = false
         selectedRemoteWorkspaceKind = ""
         selectedSessionID = ""
@@ -378,7 +417,7 @@ final class MobileAppModel: ObservableObject {
     }
 
     func stopSending() {
-        guard remoteSessionSelected else { return }
+        guard remoteSessionSelected, remoteConnected, connectionPhase == .connected else { return }
         coreAdapter?.cancelRemoteTurn(sessionID: selectedSessionID, turnID: activeTurnID)
     }
 
@@ -396,10 +435,11 @@ final class MobileAppModel: ObservableObject {
             showToast(localized("无法读取所选图片"))
             return
         }
-        guard remoteSessionSelected, connectionPhase != .disconnected, let coreAdapter else { return }
+        guard let sessionID = remoteSendSessionID, let coreAdapter else { return }
+        composerSendGeneration &+= 1
         isSending = true
         busy = true
-        coreAdapter.sendRemote(sessionID: selectedSessionID, content: normalized, images: attachments)
+        coreAdapter.sendRemote(sessionID: sessionID, content: normalized, images: attachments)
     }
 
     func renameSelectedSession(_ title: String) {
@@ -428,4 +468,25 @@ final class MobileAppModel: ObservableObject {
         }
     }
 
+}
+
+/// Presentation draft outlives temporary sheet reconstruction and scene transitions.
+@MainActor
+final class RuntimeFileDraftState: ObservableObject {
+    @Published var content = ""
+    private var identity: [String]?
+    private var savedContent: String?
+
+    func synchronize(identity: [String], savedContent: String) {
+        guard self.identity != identity || self.savedContent != savedContent else { return }
+        self.identity = identity
+        self.savedContent = savedContent
+        content = savedContent
+    }
+
+    func reset() {
+        identity = nil
+        savedContent = nil
+        content = ""
+    }
 }

@@ -1,5 +1,9 @@
+import type { GitWorkspaceScope } from '@/infrastructure/api/service-api/GitAPI';
 import { gitAPI, systemAPI, workspaceAPI } from '@/infrastructure/api';
-import { isGitRepositoryUntrustedError } from '@/infrastructure/api/errors/TauriCommandError';
+import {
+  isGitRepositoryNotFoundError,
+  isGitRepositoryUntrustedError,
+} from '@/infrastructure/api/errors/TauriCommandError';
 import type {
   GitChangedFile,
   GitDiffParams,
@@ -41,29 +45,27 @@ export interface ResolvedDeepReviewTarget {
 }
 
 /**
- * Lets an ownership rejection out of an evidence-gathering catch.
- *
- * Every other Git failure here degrades into "evidence unavailable", which is
- * the right answer for a repository we genuinely cannot read. An untrusted
- * repository is different: it is readable the moment the user says so, and
- * collapsing it into "unknown" would hide both the reason and the remedy.
+ * Preserves actionable Git failures through evidence-gathering catches.
+ * Repository discovery and ownership errors have specific launch messages;
+ * collapsing them into "unknown" would hide both the reason and the remedy.
+ * Other failures still degrade to unavailable evidence.
  */
-function rethrowIfRepositoryUntrusted(error: unknown): void {
-  if (isGitRepositoryUntrustedError(error)) {
+function rethrowActionableGitError(error: unknown): void {
+  if (isGitRepositoryUntrustedError(error) || isGitRepositoryNotFoundError(error)) {
     throw error;
   }
 }
 
 async function resolveRevision(
-  workspacePath: string,
+  workspace: GitWorkspaceScope,
   revision: string,
 ): Promise<string | undefined> {
   try {
-    return await gitAPI.resolveRevision(workspacePath, revision);
+    return await gitAPI.resolveRevision(workspace, revision);
   } catch (error) {
-    rethrowIfRepositoryUntrusted(error);
+    rethrowActionableGitError(error);
     log.warn('Failed to resolve Git revision for Review target evidence', {
-      workspacePath,
+      workspace,
       revision,
       error,
     });
@@ -72,15 +74,15 @@ async function resolveRevision(
 }
 
 async function resolveDiff(
-  workspacePath: string,
+  workspace: GitWorkspaceScope,
   params: GitDiffParams,
 ): Promise<string | undefined> {
   try {
-    return await gitAPI.getDiff(workspacePath, { ...params, reviewSafe: true });
+    return await gitAPI.getDiff(workspace, { ...params, reviewSafe: true });
   } catch (error) {
-    rethrowIfRepositoryUntrusted(error);
+    rethrowActionableGitError(error);
     log.warn('Failed to resolve Git diff for Review target evidence', {
-      workspacePath,
+      workspace,
       params,
       error,
     });
@@ -325,13 +327,16 @@ function countTextFileLines(content: string): number {
 }
 
 async function resolveUntrackedContentFacts(
-  workspacePath: string,
+  workspace: GitWorkspaceScope,
   untrackedPaths: string[],
   remoteConnectionId?: string,
 ): Promise<{
   fingerprints: Record<string, string>;
   lineCounts: Record<string, number>;
 }> {
+  // File IO is routed by the owning workspace ID; the repository path is the IO root.
+  const workspacePath = workspace.repositoryPath ?? '';
+  const workspaceId = workspace.workspaceId?.trim() || undefined;
   const boundedPaths = untrackedPaths.slice(0, REVIEW_UNTRACKED_FILE_LIMIT);
   const entries: Array<readonly [string, string, number | undefined]> =
     untrackedPaths.map((path) => [
@@ -350,7 +355,9 @@ async function resolveUntrackedContentFacts(
     const filePath = boundedPaths[index];
     try {
       const absolutePath = workspaceFilePath(workspacePath, filePath);
-      const metadata = await workspaceAPI.getFileMetadata(absolutePath);
+      const metadata = workspaceId
+        ? await workspaceAPI.getWorkspaceFileMetadata(workspaceId, absolutePath)
+        : await workspaceAPI.getFileMetadata(absolutePath);
       if (
         metadata.isSymlink ||
         !metadata.isFile ||
@@ -362,13 +369,15 @@ async function resolveUntrackedContentFacts(
         return;
       }
       reservedBytes += metadata.size;
-      const content = remoteConnectionId
-        ? await workspaceAPI.readFileContent(
-            absolutePath,
-            undefined,
-            remoteConnectionId,
-          )
-        : await workspaceAPI.readFileContent(absolutePath);
+      const content = workspaceId
+        ? await workspaceAPI.readWorkspaceFile(workspaceId, absolutePath)
+        : remoteConnectionId
+          ? await workspaceAPI.readFileContent(
+              absolutePath,
+              undefined,
+              remoteConnectionId,
+            )
+          : await workspaceAPI.readFileContent(absolutePath);
       entries[index] = [
         normalizePath(filePath, workspacePath),
         stableReviewFingerprint(content),
@@ -405,11 +414,12 @@ export interface ResolvedCurrentFileReviewSnapshot {
 }
 
 export async function resolveCurrentFileReviewSnapshot(
-  workspacePath: string | undefined,
+  workspace: GitWorkspaceScope | undefined,
   target: ReviewTargetClassification,
   remoteConnectionId?: string,
   knownStatus?: GitStatus,
 ): Promise<ResolvedCurrentFileReviewSnapshot> {
+  const workspacePath = workspace?.repositoryPath;
   if (!workspacePath) {
     return {
       target,
@@ -449,8 +459,8 @@ export async function resolveCurrentFileReviewSnapshot(
     const [status, changedFiles] = await Promise.all([
       knownStatus
         ? Promise.resolve(knownStatus)
-        : gitAPI.getStatus(workspacePath, 'review_file_scope_snapshot'),
-      gitAPI.getChangedFiles(workspacePath, {
+        : gitAPI.getStatus(workspace!, 'review_file_scope_snapshot'),
+      gitAPI.getChangedFiles(workspace!, {
         source: 'HEAD',
         reviewSafe: true,
       }),
@@ -475,13 +485,13 @@ export async function resolveCurrentFileReviewSnapshot(
       targetPathSet.has(normalizePath(path, workspacePath))
     );
     const [baseRevision, diff, untrackedFacts] = await Promise.all([
-      resolveRevision(workspacePath, 'HEAD'),
-      resolveDiff(workspacePath, {
+      resolveRevision(workspace!, 'HEAD'),
+      resolveDiff(workspace!, {
         source: 'HEAD',
         files: targetDiffPaths,
       }),
       resolveUntrackedContentFacts(
-        workspacePath,
+        workspace!,
         targetUntracked,
         remoteConnectionId,
       ),
@@ -554,7 +564,7 @@ export async function resolveCurrentFileReviewSnapshot(
       targetEvidence,
     };
   } catch (error) {
-    rethrowIfRepositoryUntrusted(error);
+    rethrowActionableGitError(error);
     log.warn('Failed to resolve file-scoped Review snapshot', {
       workspacePath,
       targetFiles,
@@ -572,13 +582,13 @@ export async function resolveCurrentFileReviewSnapshot(
 }
 
 export async function resolveCurrentFileReviewChangeStats(
-  workspacePath: string,
+  workspace: GitWorkspaceScope,
   target: ReviewTargetClassification,
   knownStatus?: GitStatus,
   remoteConnectionId?: string,
 ): Promise<ReviewTeamChangeStats> {
   return (await resolveCurrentFileReviewSnapshot(
-    workspacePath,
+    workspace,
     target,
     remoteConnectionId,
     knownStatus,
@@ -587,9 +597,10 @@ export async function resolveCurrentFileReviewChangeStats(
 
 export async function resolveSlashCommandReviewTarget(
   commandFocus: string,
-  workspacePath?: string,
+  workspace?: GitWorkspaceScope,
   remoteConnectionId?: string,
 ): Promise<ResolvedDeepReviewTarget> {
+  const workspacePath = workspace?.repositoryPath;
   if (/(?:^|\s)\S+\.\.\.\S+(?:\s|$)/.test(commandFocus)) {
     const target = createUnknownReviewTargetClassification('slash_command_git_ref');
     return {
@@ -645,15 +656,15 @@ export async function resolveSlashCommandReviewTarget(
     try {
       if (remoteConnectionId) {
         return resolveCurrentFileReviewSnapshot(
-          workspacePath,
+          workspace,
           workspaceTarget,
           remoteConnectionId,
         );
       }
 
       const [status, changedFiles] = await Promise.all([
-        gitAPI.getStatus(workspacePath, 'review_explicit_scope_snapshot'),
-        gitAPI.getChangedFiles(workspacePath, {
+        gitAPI.getStatus(workspace!, 'review_explicit_scope_snapshot'),
+        gitAPI.getChangedFiles(workspace!, {
           source: 'HEAD',
           reviewSafe: true,
         }),
@@ -744,13 +755,13 @@ export async function resolveSlashCommandReviewTarget(
         'slash_command_explicit_files',
       );
       return resolveCurrentFileReviewSnapshot(
-        workspacePath,
+        workspace,
         scopedTarget,
         remoteConnectionId,
         status,
       );
     } catch (error) {
-      rethrowIfRepositoryUntrusted(error);
+      rethrowActionableGitError(error);
       log.warn('Failed to resolve explicit Review file scope', {
         workspacePath,
         explicitFilePaths,
@@ -805,8 +816,8 @@ export async function resolveSlashCommandReviewTarget(
 
     try {
       const [baseRevision, headRevision] = await Promise.all([
-        resolveRevision(workspacePath, gitTarget.source ?? 'HEAD'),
-        resolveRevision(workspacePath, gitTarget.target ?? 'HEAD'),
+        resolveRevision(workspace!, gitTarget.source ?? 'HEAD'),
+        resolveRevision(workspace!, gitTarget.target ?? 'HEAD'),
       ]);
       if (!baseRevision || !headRevision) {
         throw new Error('Git range revisions could not be resolved to immutable commit ids');
@@ -814,14 +825,14 @@ export async function resolveSlashCommandReviewTarget(
       const immutableTarget = { source: baseRevision, target: headRevision };
       const [changedFiles, diff, workspaceHeadRevision, status] =
         await Promise.all([
-          gitAPI.getChangedFiles(workspacePath, {
+          gitAPI.getChangedFiles(workspace!, {
             ...immutableTarget,
             reviewSafe: true,
           }),
-          resolveDiff(workspacePath, immutableTarget),
-          resolveRevision(workspacePath, 'HEAD'),
-          gitAPI.getStatus(workspacePath, 'deep_review_git_range_binding').catch((error) => {
-            rethrowIfRepositoryUntrusted(error);
+          resolveDiff(workspace!, immutableTarget),
+          resolveRevision(workspace!, 'HEAD'),
+          gitAPI.getStatus(workspace!, 'deep_review_git_range_binding').catch((error) => {
+            rethrowActionableGitError(error);
             log.warn('Failed to resolve workspace binding for Git range Review', {
               workspacePath,
               error,
@@ -855,7 +866,7 @@ export async function resolveSlashCommandReviewTarget(
         }),
       };
     } catch (error) {
-      rethrowIfRepositoryUntrusted(error);
+      rethrowActionableGitError(error);
       log.warn('Failed to resolve Git target for Deep Review target', {
         workspacePath,
         gitTarget,
@@ -887,13 +898,13 @@ export async function resolveSlashCommandReviewTarget(
 
   if (workspacePath) {
     try {
-      const status = await gitAPI.getStatus(workspacePath, 'deep_review_target_resolver');
+      const status = await gitAPI.getStatus(workspace!, 'deep_review_target_resolver');
       const target = classifyReviewTargetFromFiles(
         collectWorkspaceDiffFilePaths(status),
         'workspace_diff',
       );
       const snapshot = await resolveCurrentFileReviewSnapshot(
-        workspacePath,
+        workspace,
         target,
         remoteConnectionId,
         status,
@@ -904,7 +915,7 @@ export async function resolveSlashCommandReviewTarget(
         targetEvidence: snapshot.targetEvidence,
       };
     } catch (error) {
-      rethrowIfRepositoryUntrusted(error);
+      rethrowActionableGitError(error);
       log.warn('Failed to resolve workspace diff for Deep Review target', {
         workspacePath,
         error,

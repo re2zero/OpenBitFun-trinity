@@ -40,16 +40,19 @@ struct RemoteViewSettingsView: View {
                         action: { model.remoteWorkspaceFilter = "" }
                     )
                     ForEach(workspaces) { workspace in
+                        // The filter is the option key (`workspaceId ?: legacy triple`); a filter
+                        // persisted as a bare path before IDs existed still matches by path.
                         filterRow(
                             workspace.name,
-                            selected: normalizedPath(model.remoteWorkspaceFilter) == normalizedPath(workspace.path),
-                            action: { model.remoteWorkspaceFilter = workspace.path }
+                            selected: model.remoteWorkspaceFilter == workspace.key ||
+                                normalizedPath(model.remoteWorkspaceFilter) == normalizedPath(workspace.path),
+                            action: { model.remoteWorkspaceFilter = workspace.key }
                         )
                     }
 
-                    filterLabel("Agent 类型")
+                    filterLabel("智能体类型")
                     filterRow(
-                        "所有 Agent 类型",
+                        "所有智能体类型",
                         selected: model.remoteViewAgentFilter.isEmpty,
                         action: { model.remoteViewAgentFilter = "" }
                     )
@@ -222,7 +225,7 @@ struct RemoteControlSettingsView: View {
                                     .font(.system(size: 28, weight: .regular))
                                     .foregroundStyle(OpenBitFunTheme.muted)
                                     .frame(width: 34, height: 34)
-                                Text(model.localized(model.accountUser == nil ? "使用 GitHub 登录" : "个人资料"))
+                                Text(model.localized(model.accountUser == nil ? "使用邮箱或 GitHub 登录" : "个人资料"))
                                     .font(.system(size: 18, weight: .medium))
                                     .foregroundStyle(OpenBitFunTheme.ink)
                                 Spacer()

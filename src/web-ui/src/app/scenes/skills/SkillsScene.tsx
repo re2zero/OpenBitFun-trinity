@@ -20,19 +20,20 @@ import {
   Select,
   StatusPill,
   Switch,
+  Tooltip,
   Dialog,
   DialogBody,
   DialogClose,
+  DialogFooter,
   DialogHeader,
   DialogHeading,
   DialogTitle,
   type IconSource,
 } from '@openbitfun/ui';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { FolderOpen, Layers, Package, ShieldAlert, ShieldCheck, TrendingUp } from 'lucide-react';
+import { Copy, FolderOpen, Layers, Package, ShieldAlert, ShieldCheck } from 'lucide-react';
 import { useI18n } from '@/infrastructure/i18n/hooks/useI18n';
 
-import { GalleryDetailModal } from '@/app/components';
 import type { SkillInfo, SkillLevel, SkillMarketItem } from '@/infrastructure/config/types';
 import { installedSkillMarketIds, isSkillMarketItemInstalled } from '@/infrastructure/config/skillMarketInstallation';
 import {
@@ -41,22 +42,23 @@ import {
   findSkillByKey,
   getSkillSourceLabel,
 } from '@/infrastructure/config/skillSourcePresentation';
-import { workspaceAPI } from '@/infrastructure/api';
+import { systemAPI, workspaceAPI } from '@/infrastructure/api';
 import { usePeerDeviceModeOptional } from '@/infrastructure/peer-device/peerDeviceContextState';
 import { isTauriRuntime } from '@/infrastructure/runtime';
 import { workspaceManager } from '@/infrastructure/services/business/workspaceManager';
 import { useNotification } from '@/shared/notification-system';
 import { isRemoteWorkspace } from '@/shared/types';
 import { createLogger } from '@/shared/utils/logger';
-import { getCardGradient } from '@/shared/utils/cardGradients';
 import { useInstalledSkills } from './hooks/useInstalledSkills';
 import { useSkillMarket } from './hooks/useSkillMarket';
+import { SkillMarketSettings } from '@/infrastructure/config/components/SkillMarketSettings';
 import SkillCard from './components/SkillCard';
 import SkillGroupsView from './components/SkillGroupsView';
 import { useUserSkillGroups } from '@/features/skill-groups/useUserSkillGroups';
 import { resolveSkillGroups } from '@/features/skill-groups/skillGroups';
 import './SkillsScene.scss';
 import { useSkillsSceneStore, type SkillsView } from './skillsSceneStore';
+import { formatSkillDetailPath } from './skillDetailPath';
 import { useGallerySceneAutoRefresh } from '@/app/hooks/useGallerySceneAutoRefresh';
 
 const log = createLogger('SkillsScene');
@@ -113,11 +115,14 @@ const CATEGORIES: CategoryInfo[] = [
 const SkillsScene: React.FC = () => {
   const { t, formatNumber } = useI18n('scenes/skills');
   const { t: tComponents } = useI18n('components');
+  const { t: tSettings } = useI18n('settings/skills');
+  const { t: tCommon } = useI18n('common');
   const notification = useNotification();
   const peerDevice = usePeerDeviceModeOptional();
   const remoteConnectionActive = peerDevice?.peerMode.active === true;
   const desktopConfigAvailable = isTauriRuntime() && !remoteConnectionActive;
   const {
+    nativeNavigationRequest,
     searchDraft,
     marketQuery,
     installedView,
@@ -131,20 +136,34 @@ const SkillsScene: React.FC = () => {
     toggleAddForm,
   } = useSkillsSceneStore();
 
+  const [marketSettingsOpen, setMarketSettingsOpen] = useState(false);
+  useEffect(() => { if (!desktopConfigAvailable) setMarketSettingsOpen(false); }, [desktopConfigAvailable]);
   const [activeTab, setActiveTab] = useState<SkillTab>('installed');
   const [deleteTarget, setDeleteTarget] = useState<SkillInfo | null>(null);
   const [installedSearch, setInstalledSearch] = useState('');
+  const [groupSearch, setGroupSearch] = useState('');
   const [selectedDetail, setSelectedDetail] = useState<
     | { type: 'installed'; skillKey: string }
     | { type: 'market'; skill: SkillMarketItem }
     | null
   >(null);
 
+  useEffect(() => {
+    if (!nativeNavigationRequest) return;
+    setActiveTab('installed');
+    setInstalledSearch('');
+    setSelectedDetail(null);
+  }, [nativeNavigationRequest]);
+
   const installed = useInstalledSkills({
     searchQuery: installedSearch,
     activeFilter: installedView === 'groups' ? 'all' : installedView,
     enabled: desktopConfigAvailable,
   });
+
+  useEffect(() => {
+    setGroupSearch('');
+  }, [activeTab, installedView, installed.catalogContextKey]);
 
   const skillGroups = useUserSkillGroups(desktopConfigAvailable);
   const groupSkills = useMemo(() => installed.catalogReady ? installed.skills.map(skill => ({
@@ -174,6 +193,12 @@ const SkillsScene: React.FC = () => {
     [installed.skills, selectedDetail],
   );
   const selectedMarketSkill = selectedDetail?.type === 'market' ? selectedDetail.skill : null;
+  const detailDescription = (selectedInstalledSkill?.description ?? selectedMarketSkill?.description)?.trim();
+  const isSelectedMarketSkillInstalled = selectedMarketSkill
+    ? isSkillMarketItemInstalled(selectedMarketSkill, installedMarketIds)
+    : false;
+  const selectedSkillPathSegments = formatSkillDetailPath(selectedInstalledSkill?.path ?? '')
+    .split(/(?<=[\\/])/);
 
   useEffect(() => {
     if (selectedDetail?.type === 'installed' && !installed.loading && !selectedInstalledSkill) {
@@ -213,7 +238,7 @@ const SkillsScene: React.FC = () => {
       skill.name,
       source,
       scope,
-      skill.level === 'user'
+      installed.canToggleSkill(skill)
         ? installed.globallyDisabledSkillKeys.has(skill.key)
           ? t('list.item.globalDisabled')
           : t('list.item.globalEnabled')
@@ -224,7 +249,7 @@ const SkillsScene: React.FC = () => {
           })
         : null,
     ].filter(Boolean).join('. ');
-  }, [coverageSourceBySkillKey, installed.globallyDisabledSkillKeys, market.isRemoteWorkspace, t]);
+  }, [coverageSourceBySkillKey, installed, market.isRemoteWorkspace, t]);
 
   const refetchSkillsScene = useCallback(async () => {
     await Promise.all([installed.loadSkills(true), market.refresh(), skillGroups.reload()]);
@@ -251,6 +276,16 @@ const SkillsScene: React.FC = () => {
     },
     [canRevealSkillPath, notification, t],
   );
+
+  const handleCopySkillPath = useCallback(async (path: string) => {
+    try {
+      await systemAPI.setClipboard(path);
+      notification.success(tCommon('contextMenu.status.copyPathSuccess'));
+    } catch (error) {
+      log.error('Failed to copy skill path', { path, error });
+      notification.error(t('messages.copyPathFailed', { error: String(error) }));
+    }
+  }, [notification, t, tCommon]);
 
   const handleAddSkill = async () => {
     const added = await installed.handleAdd();
@@ -285,6 +320,15 @@ const SkillsScene: React.FC = () => {
   ];
   const activeInstalledCategory = installedCategories.find((category) => category.id === installedView)
     ?? CATEGORIES[0];
+  const searchValue = activeTab === 'discover'
+    ? searchDraft
+    : installedView === 'groups' ? groupSearch : installedSearch;
+  const handleSearchChange = activeTab === 'discover'
+    ? setSearchDraft
+    : installedView === 'groups' ? setGroupSearch : setInstalledSearch;
+  const searchPlaceholder = t(activeTab === 'discover'
+    ? 'market.searchPlaceholder'
+    : installedView === 'groups' ? 'groups.search' : 'toolbar.searchPlaceholder');
 
   useEffect(() => {
     if (!installed.loading && !installed.error && installedView.startsWith('source:')
@@ -348,6 +392,24 @@ const SkillsScene: React.FC = () => {
               }}
             />
           </div>
+          {desktopConfigAvailable && (
+            <div className="skills-sidebar__search" data-openbitfun-scene="skills" data-openbitfun-part="sidebarSearch">
+              <SearchField
+                value={searchValue}
+                onValueChange={handleSearchChange}
+                onSearch={activeTab === 'discover' ? submitMarketQuery : undefined}
+                leadingIcon={<Icon name="search" size="sm" aria-hidden />}
+                placeholder={searchPlaceholder}
+                aria-label={searchPlaceholder}
+                size="sm"
+                clearLabel={searchValue ? tComponents('search.clear') : undefined}
+                onClear={searchValue ? () => {
+                  handleSearchChange('');
+                  if (activeTab === 'discover') submitMarketQuery();
+                } : undefined}
+              />
+            </div>
+          )}
         </NavigationPanelHeader>
         <NavigationPanelBody>
           <div data-openbitfun-scene="skills" data-openbitfun-part="sidebarNav">
@@ -427,7 +489,7 @@ const SkillsScene: React.FC = () => {
                   {desktopConfigAvailable && (
                     <Button
                       className="skills-content-header__action"
-                      variant="outline"
+                      variant="primary"
                       size="sm"
                       leadingIcon={<Icon name="plus" size="sm" />}
                       onClick={toggleAddForm}
@@ -446,6 +508,7 @@ const SkillsScene: React.FC = () => {
               ) : installedView === 'groups' ? (
                 <SkillGroupsView
                   key={installed.catalogContextKey}
+                  searchQuery={groupSearch}
                   skills={groupSkills}
                   collection={skillGroups}
                   catalogReady={installed.catalogReady}
@@ -456,17 +519,6 @@ const SkillsScene: React.FC = () => {
               ) : (
                 <>
                   <div className="skills-main__toolbar" data-openbitfun-scene="skills" data-openbitfun-part="toolbar">
-                    <SearchField
-                      className="skills-main__toolbar-search"
-                      value={installedSearch}
-                      onValueChange={setInstalledSearch}
-                      leadingIcon={<Icon name="search" size="sm" aria-hidden />}
-                      placeholder={t('toolbar.searchPlaceholder')}
-                      aria-label={t('toolbar.searchPlaceholder')}
-                      size="sm"
-                      clearLabel={installedSearch ? tComponents('search.clear') : undefined}
-                      onClear={installedSearch ? () => setInstalledSearch('') : undefined}
-                    />
                     <div
                       className="skills-main__filter"
                       data-openbitfun-scene="skills"
@@ -563,8 +615,7 @@ const SkillsScene: React.FC = () => {
                               className={[
                                 'skills-card',
                                 skill.isShadowed && 'is-shadowed',
-                                skill.level === 'user'
-                                  && installed.globallyDisabledSkillKeys.has(skill.key)
+                                installed.globallyDisabledSkillKeys.has(skill.key)
                                   && 'is-globally-disabled',
                               ].filter(Boolean).join(' ')}
                               role="row"
@@ -653,7 +704,7 @@ const SkillsScene: React.FC = () => {
                                 data-openbitfun-scene="skills"
                                 data-openbitfun-part="installedCardStatus"
                               >
-                                {skill.level === 'user' ? (
+                                {installed.canToggleSkill(skill) ? (
                                   <div className="skills-card__availability" title={t(installed.globallyDisabledSkillKeys.has(skill.key) ? 'list.item.globalDisabled' : 'list.item.globalEnabled')}>
                                     <Switch
                                       checked={!installed.globallyDisabledSkillKeys.has(skill.key)}
@@ -664,9 +715,6 @@ const SkillsScene: React.FC = () => {
                                         void installed.handleGlobalSkillToggle(skill, event.target.checked);
                                       }}
                                     />
-                                    <span className="skills-card__availability-label">
-                                      {t(installed.globallyDisabledSkillKeys.has(skill.key) ? 'messages.disabled' : 'messages.enabled')}
-                                    </span>
                                   </div>
                                 ) : !skill.isShadowed && (
                                   <span className="skills-card__status-unavailable" aria-hidden="true">—</span>
@@ -735,31 +783,22 @@ const SkillsScene: React.FC = () => {
                   </p>
                 </div>
               </div>
+              <Button size="sm" variant="outline" onClick={() => setMarketSettingsOpen(true)}>
+                {tSettings('market.settings.title')}
+              </Button>
             </header>
-            <div className="skills-discover__toolbar" data-openbitfun-scene="skills" data-openbitfun-part="discoverSearch">
-              <SearchField
-                className="skills-discover__search"
-                value={searchDraft}
-                onValueChange={setSearchDraft}
-                onSearch={submitMarketQuery}
-                leadingIcon={<Icon name="search" size="sm" aria-hidden />}
-                placeholder={t('market.searchPlaceholder')}
-                aria-label={t('market.searchPlaceholder')}
-                size="sm"
-                clearLabel={searchDraft ? tComponents('search.clear') : undefined}
-                onClear={searchDraft ? () => {
-                  setSearchDraft('');
-                  submitMarketQuery();
-                } : undefined}
-              />
+
+            <ScrollArea className="skills-discover__content">
+              {!market.marketLoading && market.sourceErrors.length > 0 && (
+                <div className="skills-discover__state" role="alert">
+                  {market.sourceErrors.map(error => <p key={error}>{error}</p>)}
+                </div>
+              )}
               {!market.marketLoading && !market.marketError && marketQuery && market.totalLoaded > 0 && (
                 <div className="skills-discover__results-info" data-openbitfun-scene="skills" data-openbitfun-part="resultsInfo" role="status">
                   <OverflowText>{t('market.resultsInfo', { query: marketQuery, count: market.totalLoaded })}</OverflowText>
                 </div>
               )}
-            </div>
-
-            <ScrollArea className="skills-discover__content">
               {(market.marketLoading || (!market.marketError && market.loadingMore)) && (
                 <LoadingState className="skills-discover__state" role="status" size="sm" data-openbitfun-scene="skills" data-openbitfun-part="loading">
                   {t('market.loading')}
@@ -770,7 +809,7 @@ const SkillsScene: React.FC = () => {
                 <Empty
                   className="skills-discover__state"
                   role="alert"
-                  icon={<Icon glyph={Package} size="lg" />}
+                  icon={<Icon glyph={Package} />}
                   description={market.marketError}
                   actions={<Button variant="outline" size="sm" onClick={() => void market.refresh()}>{t('list.retry')}</Button>}
                   data-openbitfun-scene="skills"
@@ -781,7 +820,7 @@ const SkillsScene: React.FC = () => {
               {!market.marketLoading && !market.marketError && !market.loadingMore && market.marketSkills.length === 0 && (
                 <Empty
                   className="skills-discover__state"
-                  icon={<Icon glyph={Package} size="lg" />}
+                  icon={<Icon glyph={Package} />}
                   description={marketQuery ? t('market.empty.noMatch') : t('market.empty.noSkills')}
                   data-testid="skill-list-empty"
                   data-openbitfun-scene="skills"
@@ -804,7 +843,7 @@ const SkillsScene: React.FC = () => {
                           data-skill-installed={isInstalled ? 'true' : 'false'}
                           name={skill.name}
                           description={skill.description || t('market.item.noDescription')}
-                          source={skill.source}
+                          source={skill.marketName ? `${skill.marketName} · ${skill.source}` : skill.source}
                           index={index}
                           accentSeed={skill.installId}
                           iconKind="market"
@@ -878,173 +917,209 @@ const SkillsScene: React.FC = () => {
         )}
       </main>
 
-      <GalleryDetailModal
-        isOpen={desktopConfigAvailable && Boolean(selectedDetail)}
-        onClose={() => setSelectedDetail(null)}
-        icon={selectedMarketSkill ? <Icon glyph={Package} size="lg" /> : <Icon name="extension" size="lg" />}
-        iconGradient={getCardGradient(
-          selectedInstalledSkill?.name
-          ?? selectedMarketSkill?.installId
-          ?? selectedMarketSkill?.name
-          ?? 'skill'
-        )}
-        title={selectedInstalledSkill?.name ?? selectedMarketSkill?.name ?? ''}
-        badges={selectedInstalledSkill ? (
-          <>
-            {selectedInstalledSkill.isShadowed && (
-              <span title={t('list.item.shadowedTooltip', {
-                source: coverageSourceBySkillKey.get(selectedInstalledSkill.key)
-                  ?? t('list.item.unknownSource'),
-              })}>
-                <StatusPill tone="warning" leading={<Icon glyph={ShieldAlert} />}>
-                  {t('list.item.shadowed')}
-                </StatusPill>
-              </span>
-            )}
-            <StatusPill tone="neutral">
-              {getSkillSourceLabel(selectedInstalledSkill, t('list.item.unknownSource'))}
-            </StatusPill>
-            <StatusPill tone={selectedInstalledSkill.isBuiltin ? 'accent' : 'success'}>
-              {selectedInstalledSkill.isBuiltin ? t('list.item.builtin') : t('list.item.userInstalled')}
-            </StatusPill>
-            <StatusPill tone={selectedInstalledSkill.level === 'user' ? 'info' : 'accent'}>
-              {market.isRemoteWorkspace
-                ? selectedInstalledSkill.level === 'user'
-                  ? t('list.item.localUser')
-                  : t('list.item.remoteProject')
-                : selectedInstalledSkill.level === 'user'
-                  ? t('list.item.user')
-                  : t('list.item.project')}
-            </StatusPill>
-          </>
-        ) : selectedMarketSkill && isSkillMarketItemInstalled(selectedMarketSkill, installedMarketIds) ? (
-          <StatusPill tone="success" leading={<Icon name="check-circle" size="2xs" />}>
-            {t('market.item.installed')}
-          </StatusPill>
-        ) : null}
-        description={selectedInstalledSkill?.description ?? selectedMarketSkill?.description}
-        testId="skill-detail-panel"
-        titleTestId="skill-detail-title"
-        descriptionTestId="skill-detail-description"
-        closeButtonTestId="skill-detail-close"
-        meta={selectedMarketSkill ? (
-          <span className="openbitfun-skills-scene__market-meta">
-            <Icon glyph={TrendingUp} size="xs" />
-            {formatNumber(selectedMarketSkill.installs ?? 0)}
-          </span>
-        ) : null}
-        actions={selectedInstalledSkill && canDeleteSkill(selectedInstalledSkill) ? (
-          <Button
-            variant="fill"
-            tone="danger"
-            size="sm"
-            onClick={() => {
-              setDeleteTarget(selectedInstalledSkill);
-              setSelectedDetail(null);
-            }}
-            leadingIcon={<Icon name="delete" size="sm" />}
-          >
+      <Dialog open={marketSettingsOpen && desktopConfigAvailable} onOpenChange={setMarketSettingsOpen} size="md">
+        <DialogHeader>
+          <DialogHeading><DialogTitle>{tSettings('market.settings.title')}</DialogTitle></DialogHeading>
+          <DialogClose />
+        </DialogHeader>
+        <DialogBody>
+          {marketSettingsOpen && desktopConfigAvailable && <SkillMarketSettings onSaved={() => setMarketSettingsOpen(false)} />}
+        </DialogBody>
+      </Dialog>
 
-            {t('deleteModal.delete')}
-          </Button>
-        ) : selectedMarketSkill ? (
-          <>
-            {isSkillMarketItemInstalled(selectedMarketSkill, installedMarketIds) ? (
-              <Button variant="outline" size="sm" disabled>
-                {t('market.item.installed')}
-              </Button>
-            ) : (
-              <>
-                {!market.isRemoteWorkspace && (
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    onClick={() => void market.handleDownload(selectedMarketSkill, 'project')}
-                    disabled={market.downloadingPackage === selectedMarketSkill.installId || !market.hasWorkspace}
-                  >
-                    {t('market.item.downloadProject')}
-                  </Button>
-                )}
-                <Button
-                  variant={market.isRemoteWorkspace ? 'primary' : 'outline'}
-                  size="sm"
-                  onClick={() => void market.handleDownload(selectedMarketSkill, 'user')}
-                  disabled={market.downloadingPackage === selectedMarketSkill.installId}
-                >
-                  {t('market.item.downloadUser')}
-                </Button>
-              </>
-            )}
-          </>
-        ) : null}
+      <Dialog
+        open={desktopConfigAvailable && Boolean(selectedDetail)}
+        onOpenChange={(nextOpen) => { if (!nextOpen) setSelectedDetail(null); }}
+        size="md"
+        data-testid="skill-detail-panel"
       >
-        {selectedInstalledSkill ? (
-          <>
-            <div className="openbitfun-skills-scene__detail-row">
-              <span className="openbitfun-skills-scene__detail-label">{t('list.item.sourceLabel')}</span>
-              <span className="openbitfun-skills-scene__detail-value">
-                {getSkillSourceLabel(selectedInstalledSkill, t('list.item.unknownSource'))}
-              </span>
-            </div>
-            {selectedInstalledSkill.isShadowed && (
-              <div className="openbitfun-skills-scene__detail-row">
-                <span className="openbitfun-skills-scene__detail-label">{t('list.item.shadowedLabel')}</span>
-                <span className="openbitfun-skills-scene__detail-value">
-                  {t('list.item.shadowedDetail', {
-                    source: coverageSourceBySkillKey.get(selectedInstalledSkill.key)
-                      ?? t('list.item.unknownSource'),
-                  })}
-                </span>
+        <DialogHeader>
+          <DialogHeading>
+            <DialogTitle data-testid="skill-detail-title">
+              {selectedInstalledSkill?.name ?? selectedMarketSkill?.name ?? ''}
+            </DialogTitle>
+            {selectedInstalledSkill || isSelectedMarketSkillInstalled ? (
+              <div
+                className="skills-detail__badges"
+                data-openbitfun-scene="skills"
+                data-openbitfun-part="detailBadges"
+              >
+                {selectedInstalledSkill ? (
+                  <>
+                    <StatusPill tone="neutral">
+                      {selectedInstalledSkill.isBuiltin ? t('list.item.builtin') : t('list.item.userInstalled')}
+                    </StatusPill>
+                    <StatusPill tone="neutral">
+                      {market.isRemoteWorkspace
+                        ? selectedInstalledSkill.level === 'user'
+                          ? t('list.item.localUser')
+                          : t('list.item.remoteProject')
+                        : selectedInstalledSkill.level === 'user'
+                          ? t('list.item.user')
+                          : t('list.item.project')}
+                    </StatusPill>
+                    {selectedInstalledSkill.isShadowed && (
+                      <StatusPill tone="warning" leading={<Icon glyph={ShieldAlert} />}>
+                        {t('list.item.shadowed')}
+                      </StatusPill>
+                    )}
+                  </>
+                ) : (
+                  <StatusPill tone="success" leading={<Icon name="check-circle" size="2xs" />}>
+                    {t('market.item.installed')}
+                  </StatusPill>
+                )}
               </div>
-            )}
-            <div className="openbitfun-skills-scene__detail-row" data-testid="skill-detail-capabilities-section">
-              <span className="openbitfun-skills-scene__detail-label">{t('list.item.pathLabel')}</span>
-              {canRevealSkillPath ? (
-                <button
-                  type="button"
-                  className="openbitfun-skills-scene__detail-path-btn"
-                  title={t('list.item.openPathInExplorer')}
-                  onClick={() => void handleRevealSkillPath(selectedInstalledSkill.path)}
-                  data-testid="skills-detail-path-btn"
+            ) : null}
+          </DialogHeading>
+          <DialogClose data-testid="skill-detail-close" />
+        </DialogHeader>
+        <DialogBody>
+          <div className="skills-detail" data-openbitfun-scene="skills" data-openbitfun-part="detail">
+            {detailDescription ? (
+              <ScrollArea
+                className="skills-detail__description-scroll"
+                tabIndex={0}
+                data-openbitfun-scene="skills"
+                data-openbitfun-part="detailDescriptionViewport"
+              >
+                <p
+                  className="skills-detail__description"
+                  data-openbitfun-scene="skills"
+                  data-openbitfun-part="detailDescription"
+                  data-testid="skill-detail-description"
                 >
-                  {selectedInstalledSkill.path}
-                </button>
-              ) : (
-                <code className="openbitfun-skills-scene__detail-value">{selectedInstalledSkill.path}</code>
-              )}
-            </div>
-          </>
-        ) : null}
-
-        {selectedMarketSkill?.source ? (
-          <div className="openbitfun-skills-scene__detail-row" data-testid="skill-detail-capabilities-section">
-            <span className="openbitfun-skills-scene__detail-label">{t('market.item.sourceLabel')}</span>
-            <span className="openbitfun-skills-scene__detail-value">{selectedMarketSkill.source}</span>
+                  {detailDescription}
+                </p>
+              </ScrollArea>
+            ) : null}
+            <dl className="skills-detail__fields" data-openbitfun-scene="skills" data-openbitfun-part="detailMetadata">
+              {selectedInstalledSkill ? (
+                <>
+                  <div className="skills-detail__field">
+                    <dt>{t('list.columns.source')}</dt>
+                    <dd>{getSkillSourceLabel(selectedInstalledSkill, t('list.item.unknownSource'))}</dd>
+                  </div>
+                  {selectedInstalledSkill.isShadowed && (
+                    <div className="skills-detail__field">
+                      <dt>{t('list.item.shadowedLabel')}</dt>
+                      <dd>
+                        {t('list.item.shadowedDetail', {
+                          source: coverageSourceBySkillKey.get(selectedInstalledSkill.key)
+                            ?? t('list.item.unknownSource'),
+                        })}
+                      </dd>
+                    </div>
+                  )}
+                  <div className="skills-detail__field" data-testid="skill-detail-capabilities-section">
+                    <dt>{t('list.item.pathLabel')}</dt>
+                    <dd className="skills-detail__location">
+                      <Tooltip content={selectedInstalledSkill.path} trigger="hover-focus" interactive>
+                        <span className="skills-detail__path" tabIndex={0}>
+                          {selectedSkillPathSegments.map((segment, index) => (
+                            <React.Fragment key={`${index}-${segment}`}>
+                              {segment}<wbr />
+                            </React.Fragment>
+                          ))}
+                        </span>
+                      </Tooltip>
+                      <Tooltip content={tCommon('file.copyPath')} trigger="hover-focus">
+                        <IconButton
+                          variant="quiet"
+                          size="sm"
+                          icon={<Icon glyph={Copy} size="sm" />}
+                          aria-label={tCommon('file.copyPath')}
+                          onClick={() => void handleCopySkillPath(selectedInstalledSkill.path)}
+                          data-testid="skills-detail-copy-path-btn"
+                        />
+                      </Tooltip>
+                      {canRevealSkillPath ? (
+                        <Tooltip content={t('list.item.openPathInExplorer')} trigger="hover-focus">
+                          <IconButton
+                            variant="quiet"
+                            size="sm"
+                            icon={<Icon glyph={FolderOpen} size="sm" />}
+                            aria-label={t('list.item.openPathInExplorer')}
+                            onClick={() => void handleRevealSkillPath(selectedInstalledSkill.path)}
+                            data-testid="skills-detail-path-btn"
+                          />
+                        </Tooltip>
+                      ) : null}
+                    </dd>
+                  </div>
+                </>
+              ) : null}
+              {selectedMarketSkill?.source ? (
+                <div className="skills-detail__field" data-testid="skill-detail-capabilities-section">
+                  <dt>{t('list.columns.source')}</dt>
+                  <dd>{selectedMarketSkill.source}</dd>
+                </div>
+              ) : null}
+              {selectedMarketSkill ? (
+                <div className="skills-detail__field">
+                  <dt>{t('market.detail.installsLabel')}</dt>
+                  <dd>{formatNumber(selectedMarketSkill.installs ?? 0)}</dd>
+                </div>
+              ) : null}
+              {selectedMarketSkill?.url ? (
+                <div className="skills-detail__field">
+                  <dt>{t('market.detail.linkLabel')}</dt>
+                  <dd>
+                    <a
+                      href={selectedMarketSkill.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="skills-detail__link"
+                      data-testid="skills-detail-external-link"
+                    >
+                      {selectedMarketSkill.url}
+                    </a>
+                  </dd>
+                </div>
+              ) : null}
+            </dl>
           </div>
-        ) : null}
-
-        {selectedMarketSkill ? (
-          <div className="openbitfun-skills-scene__detail-row">
-            <span className="openbitfun-skills-scene__detail-label">{t('market.detail.installsLabel')}</span>
-            <span className="openbitfun-skills-scene__detail-value">{selectedMarketSkill.installs ?? 0}</span>
-          </div>
-        ) : null}
-
-        {selectedMarketSkill?.url ? (
-          <div className="openbitfun-skills-scene__detail-row">
-            <span className="openbitfun-skills-scene__detail-label">{t('market.detail.linkLabel')}</span>
-            <a
-              href={selectedMarketSkill.url}
-              target="_blank"
-              rel="noreferrer"
-              className="openbitfun-skills-scene__detail-link"
-              data-testid="skills-detail-external-link"
+        </DialogBody>
+        {selectedInstalledSkill && canDeleteSkill(selectedInstalledSkill) ? (
+          <DialogFooter separator>
+            <Button
+              variant="text"
+              tone="danger"
+              size="sm"
+              onClick={() => {
+                setDeleteTarget(selectedInstalledSkill);
+                setSelectedDetail(null);
+              }}
+              leadingIcon={<Icon name="delete" size="sm" />}
             >
-              {selectedMarketSkill.url}
-            </a>
-          </div>
+              {t('deleteModal.delete')}
+            </Button>
+          </DialogFooter>
+        ) : selectedMarketSkill && !isSelectedMarketSkillInstalled ? (
+          <DialogFooter separator>
+            <div className="skills-detail__actions">
+              {!market.isRemoteWorkspace && (
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() => void market.handleDownload(selectedMarketSkill, 'project')}
+                  disabled={market.downloadingPackage === selectedMarketSkill.installId || !market.hasWorkspace}
+                >
+                  {t('market.item.downloadProject')}
+                </Button>
+              )}
+              <Button
+                variant={market.isRemoteWorkspace ? 'primary' : 'outline'}
+                size="sm"
+                onClick={() => void market.handleDownload(selectedMarketSkill, 'user')}
+                disabled={market.downloadingPackage === selectedMarketSkill.installId}
+              >
+                {t('market.item.downloadUser')}
+              </Button>
+            </div>
+          </DialogFooter>
         ) : null}
-      </GalleryDetailModal>
+      </Dialog>
 
       <Dialog
         open={desktopConfigAvailable && isAddFormOpen}
@@ -1062,7 +1137,7 @@ const SkillsScene: React.FC = () => {
           </DialogHeading>
           <DialogClose />
         </DialogHeader>
-        <DialogBody inset="none">
+        <DialogBody>
         <div className="openbitfun-skills-scene__modal-form">
           <Field label={t('form.level.label')} controlWidth="fill">
             <Select
@@ -1134,7 +1209,9 @@ const SkillsScene: React.FC = () => {
             </div>
           ) : null}
 
-          <div className="openbitfun-skills-scene__modal-form-actions">
+        </div>
+        </DialogBody>
+        <DialogFooter separator className="openbitfun-skills-scene__modal-form-actions">
             <Button
               variant="fill"
               size="sm"
@@ -1153,9 +1230,7 @@ const SkillsScene: React.FC = () => {
             >
               {installed.isAdding ? t('form.actions.adding') : t('form.actions.add')}
             </Button>
-          </div>
-        </div>
-              </DialogBody>
+        </DialogFooter>
       </Dialog>
 
       <ConfirmDialog

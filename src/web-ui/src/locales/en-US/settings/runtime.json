@@ -27,6 +27,7 @@
       "importing": "Importing",
       "importHint": "Download an appearance zip from https://petdex.dev/, then import it here.",
       "importDialogTitle": "Choose Petdex appearance zip",
+      "loadFailed": "This pet could not be loaded. Check its package and sprite version in Pet settings.",
       "importFailed": "Failed to import pet appearance",
       "delete": "Remove imported appearance",
       "deleteConfirmTitle": "Remove appearance",
@@ -47,7 +48,7 @@
   },
   "toolExecution": {
     "sectionTitle": "Tool execution",
-    "sectionDescription": "Set tool timeouts and concurrent task limits."
+    "sectionDescription": "Set timeouts for tool execution and user questions."
   },
   "permissionPolicy": {
     "sectionTitle": "Tool permissions",

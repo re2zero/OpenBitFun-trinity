@@ -1,12 +1,15 @@
+import { HostDialogQueue, type QueueSnapshot } from '../../../shared/dialog-queue/HostDialogQueue';
+import { normalizeWorkspaceRouting } from './workspaceIdentity';
+import {
+  REMOTE_CAPABILITY_HOST_STREAM_V1, UNSUPPORTED_HOST_MESSAGE,
+  type HostStreamOptions, type SessionStreamHandle,
+} from '../../../shared/relay-transport/HostStream';
 import { translateAgentIdentityFields } from '../../../shared/agent-harness/wire';
 /**
  * Manages remote sessions by sending commands to the desktop via the relay.
- * All communication is request-response via RelayHttpClient (HTTP).
+ * Commands use the shared authenticated realtime RPC connection.
  *
- * Includes SessionPoller for incremental state synchronization:
- *   - Active tab: poll every 1 second
- *   - Inactive tab: poll every 5 seconds
- *   - On tab activation: immediate poll to catch up on missed changes
+ * Durable session events drive presentation synchronization.
  */
 
 import {
@@ -27,6 +30,27 @@ export function isRemoteControlTargetChangedError(
   value: unknown,
 ): value is RemoteControlTargetChangedError {
   return value instanceof RemoteControlTargetChangedError;
+}
+
+/**
+ * The client holds a workspace ID but the connected host predates
+ * `workspace_id_references_v1`. The command is not sent: downgrading an ID to
+ * its path projection could silently select another workspace on that host.
+ */
+export class WorkspaceIdReferencesUnsupportedError extends Error {
+  /** Mobile-web i18n message key for the user-facing unsupported state. */
+  readonly messageKey = 'workspace.idReferencesUnsupported' as const;
+
+  constructor(readonly workspaceId: string) {
+    super('Connected host does not support workspace ID references; update OpenBitFun on that device');
+    this.name = 'WorkspaceIdReferencesUnsupportedError';
+  }
+}
+
+export function isWorkspaceIdReferencesUnsupportedError(
+  value: unknown,
+): value is WorkspaceIdReferencesUnsupportedError {
+  return value instanceof WorkspaceIdReferencesUnsupportedError;
 }
 
 const RETRYABLE_REMOTE_READ_COMMANDS = new Set([
@@ -51,7 +75,17 @@ interface RemoteRequestOptions {
   timeoutMs?: number;
 }
 
+/** A runtime workspace or device location that scopes a file command. */
+export interface RuntimeFileWorkspace {
+  /** Runtime workspace ID; authoritative when present. */
+  workspaceId?: string;
+  /** Root or browsed directory used as the legacy projection / IO operand. */
+  path: string;
+  remoteConnectionId?: string;
+}
+
 export interface WorkspaceInfo {
+  workspace_id?: string;
   has_workspace: boolean;
   path?: string;
   project_name?: string;
@@ -66,11 +100,13 @@ export interface WorkspaceInfo {
 }
 
 export interface RemoteWorkspaceIdentity {
+  workspaceId?: string;
   remoteConnectionId?: string;
   remoteSshHost?: string;
 }
 
 export interface RecentWorkspaceEntry {
+  workspace_id?: string;
   path: string;
   name: string;
   last_opened: string;
@@ -80,12 +116,14 @@ export interface RecentWorkspaceEntry {
 }
 
 export interface AssistantEntry {
+  workspace_id?: string;
   path: string;
   name: string;
   assistant_id?: string;
 }
 
 export interface SessionInfo {
+  workspace_id?: string;
   session_id: string;
   name: string;
   agent_type: string;
@@ -94,8 +132,26 @@ export interface SessionInfo {
   message_count: number;
   workspace_path?: string;
   workspace_name?: string;
-  /** Client-side provenance of a scoped listing; older cache records omit it. */
-  workspace_identity?: Pick<RecentWorkspaceEntry, 'path' | 'remote_connection_id' | 'remote_ssh_host'>;
+  /**
+   * Client-side provenance of a scoped listing. Older cache records omit it
+   * entirely or omit `workspace_id`; both shapes stay readable and are
+   * attributed through the legacy compatibility helper.
+   */
+  workspace_identity?: {
+    workspace_id?: string;
+    path?: string;
+    remote_connection_id?: string;
+    remote_ssh_host?: string;
+  };
+}
+
+/** `session_created` facts. Pre-ID hosts only return `session_id`. */
+export interface CreatedSession {
+  session_id: string;
+  workspace_id?: string;
+  workspace_path?: string;
+  remote_connection_id?: string;
+  remote_ssh_host?: string;
 }
 
 export interface RemoteModelConfig {
@@ -158,6 +214,11 @@ export interface ChatImageAttachment {
 }
 
 export interface ChatMessage {
+  turn_id?: string;
+  /** Storage turn index for `turn_id`, used as the rollback staleness guard. */
+  turn_index?: number;
+  status?: string;
+  error?: string;
   id: string;
   role: string;
   content: string;
@@ -167,6 +228,13 @@ export interface ChatMessage {
   thinking?: string;
   items?: ChatMessageItem[];
   images?: ChatImageAttachment[];
+}
+
+export interface SessionRollbackResult {
+  retired_turn_ids: string[];
+  restored_files: string[];
+  composer_text?: string;
+  changed: boolean;
 }
 
 export interface ActiveTurnSnapshot {
@@ -187,6 +255,8 @@ export interface RemoteToolStatus {
   start_ms?: number;
   input_preview?: string;
   tool_input?: any;
+  tool_output?: unknown;
+  error_preview?: string;
 }
 
 export interface PollResponse {
@@ -204,6 +274,7 @@ export interface PollResponse {
 }
 
 export interface InitialSyncData {
+  workspace_id?: string;
   has_workspace: boolean;
   path?: string;
   project_name?: string;
@@ -219,14 +290,65 @@ export interface InitialSyncData {
 }
 
 export const REMOTE_CAPABILITY_HARNESS_PROFILES_V1 = 'harness_profiles_v1';
+/** The host resolves `workspace_id` on workspace-scoped commands and events. */
+export const REMOTE_CAPABILITY_WORKSPACE_ID_REFERENCES_V1 = 'workspace_id_references_v1';
+export type SessionStreamCallbacks = Pick<HostStreamOptions, 'onEvent' | 'onError' | 'onCaughtUp' | 'onHistoryState' | 'onResumed' | 'onGap'>;
+
+/**
+ * A workspace reference as the UI knows it. `workspaceId` is authoritative;
+ * the path and SSH selectors are only the legacy projection for pre-ID hosts.
+ */
+export interface WorkspaceCommandReference {
+  workspaceId?: string;
+  path?: string;
+  remoteConnectionId?: string;
+  remoteSshHost?: string;
+}
+
+/**
+ * Pure projection used by every workspace-scoped RemoteCommand. ID and legacy
+ * fields never mix: with an ID the
+ * payload carries only `workspace_id`, so an ID-aware host can never silently
+ * fall back to the path. Without an ID the legacy triple is sent under the
+ * command-specific path field name.
+ */
+export function projectWorkspaceWireReference(
+  reference: WorkspaceCommandReference | undefined,
+  pathField: 'path' | 'workspace_path',
+  options: { nullablePath?: boolean } = {},
+): Record<string, unknown> {
+  const workspaceId = reference?.workspaceId?.trim();
+  if (workspaceId) return { workspace_id: workspaceId };
+  const legacy: Record<string, unknown> = {
+    [pathField]: reference?.path ?? (options.nullablePath ? null : undefined),
+  };
+  if (reference?.remoteConnectionId !== undefined) {
+    legacy.remote_connection_id = reference.remoteConnectionId;
+  }
+  if (reference?.remoteSshHost !== undefined) legacy.remote_ssh_host = reference.remoteSshHost;
+  return legacy;
+}
+
+interface HostCapabilitySnapshot {
+  /** Control target epoch the capabilities were read under. */
+  epoch: number;
+  /** False until a response from this target has advertised its capabilities. */
+  known: boolean;
+  capabilities: Set<string>;
+}
 
 export class RemoteSessionManager {
   private client: RelayHttpClient;
-  private hostCapabilities = new Set<string>();
+  private hostCapabilities: HostCapabilitySnapshot;
+  private hostCapabilityProbe: Promise<void> | null = null;
 
-  constructor(client: RelayHttpClient, capabilities: string[] = []) {
+  constructor(client: RelayHttpClient, capabilities?: string[]) {
     this.client = client;
-    this.replaceHostCapabilities(capabilities);
+    this.hostCapabilities = {
+      epoch: client.controlTargetEpoch,
+      known: capabilities !== undefined,
+      capabilities: RemoteSessionManager.capabilitySet(capabilities),
+    };
   }
 
   get controlTargetEpoch(): number {
@@ -237,14 +359,99 @@ export class RemoteSessionManager {
     return this.client.targetDeviceId;
   }
 
-  supportsHostCapability(capability: string): boolean {
-    return this.hostCapabilities.has(capability);
-  }
-
-  private replaceHostCapabilities(capabilities: string[] | undefined): void {
-    this.hostCapabilities = new Set(
+  private static capabilitySet(capabilities: string[] | undefined): Set<string> {
+    return new Set(
       (capabilities ?? []).filter((capability) => typeof capability === 'string'),
     );
+  }
+
+  /** Capabilities belong to one control target; a switched target is unknown again. */
+  private currentHostCapabilities(): HostCapabilitySnapshot | null {
+    return this.hostCapabilities.epoch === this.client.controlTargetEpoch
+      ? this.hostCapabilities
+      : null;
+  }
+
+  supportsHostCapability(capability: string): boolean {
+    return this.currentHostCapabilities()?.capabilities.has(capability) ?? false;
+  }
+
+  /** True when the connected host resolves workspace IDs on scoped commands. */
+  supportsWorkspaceIdReferences(): boolean {
+    return this.supportsHostCapability(REMOTE_CAPABILITY_WORKSPACE_ID_REFERENCES_V1);
+  }
+
+  /** True once this control target has answered with its capability list. */
+  get hostCapabilitiesKnown(): boolean {
+    return this.currentHostCapabilities()?.known ?? false;
+  }
+
+  private replaceHostCapabilities(capabilities: string[] | undefined, epoch: number): void {
+    if (epoch !== this.client.controlTargetEpoch) return;
+    this.hostCapabilities = {
+      epoch,
+      known: true,
+      capabilities: RemoteSessionManager.capabilitySet(capabilities),
+    };
+  }
+
+  /**
+   * Learn the target's capabilities before the first ID-bearing command. The
+   * host advertises them on `get_workspace_info`; hosts that predate the
+   * capability list answer without one, which records an empty set.
+   */
+  private async ensureHostCapabilitiesKnown(target: ControlTargetSnapshot): Promise<void> {
+    this.ensureControlTargetCurrent(target);
+    if (this.hostCapabilitiesKnown) return;
+    if (!this.hostCapabilityProbe) {
+      this.hostCapabilityProbe = this.request<{ capabilities?: string[] }>(
+        { cmd: 'get_workspace_info' },
+        target,
+      ).then((resp) => {
+        this.replaceHostCapabilities(resp.capabilities, target.epoch);
+      }).finally(() => {
+        this.hostCapabilityProbe = null;
+      });
+    }
+    await this.hostCapabilityProbe;
+    this.ensureControlTargetCurrent(target);
+  }
+
+  /**
+   * Project a workspace reference for a RemoteCommand. An ID is only sent to
+   * a host that advertises `workspace_id_references_v1`; otherwise the caller
+   * receives an explicit unsupported error instead of a path downgrade.
+   */
+  private async workspaceWireReference(
+    reference: WorkspaceCommandReference | undefined,
+    pathField: 'path' | 'workspace_path',
+    target: ControlTargetSnapshot,
+    options: { nullablePath?: boolean } = {},
+  ): Promise<Record<string, unknown>> {
+    const workspaceId = reference?.workspaceId?.trim();
+    if (workspaceId) {
+      await this.ensureHostCapabilitiesKnown(target);
+      if (!this.supportsWorkspaceIdReferences()) {
+        throw new WorkspaceIdReferencesUnsupportedError(workspaceId);
+      }
+    }
+    return projectWorkspaceWireReference(reference, pathField, options);
+  }
+
+  /**
+   * File commands address a runtime workspace by ID, or a bare device location
+   * by its browsed directory and captured connection. The file `path` itself
+   * stays a separate IO operand on the command.
+   */
+  private async runtimeFileWorkspaceReference(
+    workspace: RuntimeFileWorkspace | undefined,
+    target: ControlTargetSnapshot,
+  ): Promise<Record<string, unknown>> {
+    return this.workspaceWireReference({
+      workspaceId: workspace?.workspaceId,
+      path: workspace?.path,
+      remoteConnectionId: workspace?.remoteConnectionId,
+    }, 'workspace_path', target);
   }
 
   onControlTargetChange(listener: () => void): () => void {
@@ -298,19 +505,21 @@ export class RemoteSessionManager {
   }
 
   async getWorkspaceInfo(): Promise<WorkspaceInfo> {
+    const target = this.client.getControlTargetSnapshot();
     const resp = await this.request<{ resp: string } & WorkspaceInfo>({
       cmd: 'get_workspace_info',
-    });
-    this.replaceHostCapabilities(resp.capabilities);
+    }, target);
+    this.replaceHostCapabilities(resp.capabilities, target.epoch);
     return {
+      workspace_id: resp.workspace_id,
       has_workspace: resp.has_workspace,
       path: resp.path,
       project_name: resp.project_name,
       git_branch: resp.git_branch,
       workspace_kind: resp.workspace_kind,
       assistant_id: resp.assistant_id,
-      remote_connection_id: resp.remote_connection_id,
-      remote_ssh_host: resp.remote_ssh_host,
+      remote_connection_id: normalizeWorkspaceRouting(resp).remote_connection_id,
+      remote_ssh_host: normalizeWorkspaceRouting(resp).remote_ssh_host,
       capabilities: resp.capabilities,
     };
   }
@@ -320,7 +529,7 @@ export class RemoteSessionManager {
       resp: string;
       workspaces: RecentWorkspaceEntry[];
     }>({ cmd: 'list_recent_workspaces' });
-    return resp.workspaces || [];
+    return (resp.workspaces || []).map(normalizeWorkspaceRouting);
   }
 
   async listWorkspaceCatalog(): Promise<WorkspaceCatalog> {
@@ -329,35 +538,52 @@ export class RemoteSessionManager {
       workspaces: RecentWorkspaceEntry[];
       opened_workspaces?: RecentWorkspaceEntry[] | null;
     }>({ cmd: 'list_recent_workspaces' }, target);
-    if (Array.isArray(resp.opened_workspaces)) return projectWorkspaceCatalog(resp);
-    // Older hosts only offer recent history. Preserve that fallback explicitly,
-    // and resolve assistant names through their existing supported command.
+    // Workspace catalogs carry directory labels; assistant identities own their display names.
     const { assistants } = await this.request<{ assistants: AssistantEntry[] }>(
       { cmd: 'list_assistants' }, target,
     );
     return projectWorkspaceCatalog(resp, assistants);
   }
 
-  async setWorkspace(
-    path: string,
-    options?: {
-      remoteConnectionId?: string;
-      remoteSshHost?: string;
-    },
-  ): Promise<{
-    success: boolean;
-    path?: string;
-    project_name?: string;
-    remote_connection_id?: string;
-    remote_ssh_host?: string;
-    error?: string;
+  async setWorkspace(workspace: RecentWorkspaceEntry): Promise<{
+    success: boolean; workspace_id?: string; path?: string; project_name?: string;
+    remote_connection_id?: string; remote_ssh_host?: string; error?: string;
   }> {
-    return this.request({
-      cmd: 'set_workspace',
-      path,
-      remote_connection_id: options?.remoteConnectionId,
-      remote_ssh_host: options?.remoteSshHost,
+    const target = this.client.getControlTargetSnapshot();
+    // Without an ID this is the upgrade-only protocol adapter for 1.0.0 hosts.
+    const reference = await this.workspaceWireReference({
+      workspaceId: workspace.workspace_id,
+      path: workspace.path,
+      remoteConnectionId: workspace.remote_connection_id,
+      remoteSshHost: workspace.remote_ssh_host,
+    }, 'path', target);
+    return this.request({ cmd: 'set_workspace', ...reference }, target);
+  }
+
+  /** True when the connected host serves session, terminal and catalog
+   * streams on demand. Older hosts kept them on the Relay, which no longer
+   * stores them, so they cannot be read from this client at all. */
+  supportsHostStreams(): boolean {
+    return this.supportsHostCapability(REMOTE_CAPABILITY_HOST_STREAM_V1);
+  }
+
+  /** Open one host-owned stream. Content is read from the online controlled
+   * device over encrypted RPC and never cached by the Relay or this client. */
+  async subscribeSessionStream(streamId: string, callbacks: SessionStreamCallbacks): Promise<SessionStreamHandle> {
+    const target = this.client.getControlTargetSnapshot();
+    await this.ensureHostCapabilitiesKnown(target);
+    this.ensureControlTargetCurrent(target);
+    if (!this.supportsHostStreams()) throw new Error(UNSUPPORTED_HOST_MESSAGE);
+    return this.client.subscribeHostStream(streamId, callbacks);
+  }
+
+  /** Product operations execute on the controlled host, including its SSH adapter. */
+  async invokeHost<T>(command: string, request: Record<string, unknown>, structured = true): Promise<T> {
+    const response = await this.request<{ ok: boolean; value?: T; error?: string }>({
+      cmd: 'host_invoke', command, args: structured ? { request } : request,
     });
+    if (!response.ok) throw new Error(response.error || `Host operation failed: ${command}`);
+    return response.value as T;
   }
 
   async listAssistants(): Promise<AssistantEntry[]> {
@@ -369,14 +595,21 @@ export class RemoteSessionManager {
   }
 
   async setAssistant(
-    path: string,
+    assistant: AssistantEntry,
   ): Promise<{
     success: boolean;
+    workspace_id?: string;
     path?: string;
     name?: string;
     error?: string;
   }> {
-    return this.request({ cmd: 'set_assistant', path });
+    const target = this.client.getControlTargetSnapshot();
+    // Assistant roots are local to the host; the legacy projection is path-only.
+    const reference = await this.workspaceWireReference({
+      workspaceId: assistant.workspace_id,
+      path: assistant.path,
+    }, 'path', target);
+    return this.request({ cmd: 'set_assistant', ...reference }, target);
   }
 
   async listSessions(
@@ -386,25 +619,35 @@ export class RemoteSessionManager {
     query?: string,
     identity?: RemoteWorkspaceIdentity,
   ): Promise<{ sessions: SessionInfo[]; has_more: boolean }> {
+    const target = this.client.getControlTargetSnapshot();
+    const scoped = Boolean(identity?.workspaceId || workspacePath);
+    // An unscoped listing keeps `workspace_path: null` so old hosts list the
+    // current workspace; a scoped one sends the ID alone or the legacy triple.
+    const reference = await this.workspaceWireReference({
+      workspaceId: identity?.workspaceId,
+      path: workspacePath,
+      remoteConnectionId: identity?.remoteConnectionId,
+      remoteSshHost: identity?.remoteSshHost,
+    }, 'workspace_path', target, { nullablePath: true });
     const resp = await this.request<{
       resp: string;
       sessions: SessionInfo[];
       has_more: boolean;
     }>({
       cmd: 'list_sessions',
-      workspace_path: workspacePath ?? null,
-      remote_connection_id: identity?.remoteConnectionId,
-      remote_ssh_host: identity?.remoteSshHost,
+      ...reference,
       limit,
       offset,
       query: query?.trim() || null,
-    });
+    }, target);
     return {
-      sessions: (resp.sessions || []).map((session) => workspacePath ? {
+      sessions: (resp.sessions || []).map((session) => scoped ? {
         ...session,
+        workspace_id: session.workspace_id ?? identity?.workspaceId,
         workspace_path: session.workspace_path || workspacePath,
         workspace_identity: {
-          path: workspacePath,
+          workspace_id: session.workspace_id ?? identity?.workspaceId,
+          path: session.workspace_path || workspacePath || '',
           remote_connection_id: identity?.remoteConnectionId,
           remote_ssh_host: identity?.remoteSshHost,
         },
@@ -418,16 +661,30 @@ export class RemoteSessionManager {
     sessionName?: string,
     workspacePath?: string,
     identity?: RemoteWorkspaceIdentity,
-  ): Promise<string> {
-    const resp = await this.request<{ resp: string; session_id: string }>({
+  ): Promise<CreatedSession> {
+    if (!identity?.workspaceId && !workspacePath?.trim()) throw new Error('Workspace path is required to create a session');
+    const target = this.client.getControlTargetSnapshot();
+    const reference = await this.workspaceWireReference({
+      workspaceId: identity?.workspaceId,
+      path: workspacePath,
+      remoteConnectionId: identity?.remoteConnectionId,
+      remoteSshHost: identity?.remoteSshHost,
+    }, 'workspace_path', target, { nullablePath: true });
+    const resp = await this.request<{ resp: string } & CreatedSession>({
       cmd: 'create_session',
+      ...reference,
       agent_type: agentType || undefined,
       session_name: sessionName || undefined,
-      workspace_path: workspacePath ?? null,
-      remote_connection_id: identity?.remoteConnectionId,
-      remote_ssh_host: identity?.remoteSshHost,
-    });
-    return resp.session_id;
+    }, target);
+    return {
+      session_id: resp.session_id,
+      // Pre-ID hosts answer with the session ID only; the caller keeps its own
+      // reference. New hosts pin the session to its workspace record.
+      workspace_id: resp.workspace_id ?? identity?.workspaceId,
+      workspace_path: resp.workspace_path ?? workspacePath,
+      remote_connection_id: resp.remote_connection_id ?? identity?.remoteConnectionId,
+      remote_ssh_host: resp.remote_ssh_host ?? identity?.remoteSshHost,
+    };
   }
 
   async getSessionMessages(
@@ -497,6 +754,28 @@ export class RemoteSessionManager {
     };
   }
 
+  private queueClients = new Map<string, HostDialogQueue>();
+
+  dialogQueue(sessionId: string): HostDialogQueue {
+    const target = this.client.getControlTargetSnapshot();
+    const account = this.client.accountUserId;
+    const epoch = this.controlTargetEpoch;
+    const scope = JSON.stringify([account, target.deviceId, sessionId]);
+    const key = JSON.stringify([scope, this.controlTargetEpoch]);
+    let queue = this.queueClients.get(key);
+    if (!queue) {
+      queue = new HostDialogQueue(scope, sessionId, async request => {
+        if (this.client.accountUserId !== account || this.controlTargetEpoch !== epoch) throw new Error('Queue target changed');
+        if (!this.supportsHostCapability('dialog_queue_v1')) throw new Error('Host message queue is unsupported');
+        const response = await this.request<{ snapshot: QueueSnapshot }>({ cmd: 'dialog_queue', request }, target);
+        if (this.client.accountUserId !== account || this.controlTargetEpoch !== epoch) throw new Error('Queue target changed');
+        return response.snapshot;
+      });
+      this.queueClients.set(key, queue);
+    }
+    return queue;
+  }
+
   async sendMessage(
     sessionId: string,
     content: string,
@@ -509,6 +788,15 @@ export class RemoteSessionManager {
       metadata?: Record<string, unknown>;
     }>,
   ): Promise<string> {
+    if (this.supportsHostCapability('dialog_queue_v1')) {
+      const result = await this.dialogQueue(sessionId).submit({ content, agentType: agentType || 'Standard',
+        attachments: (imageContexts ?? []).map(image => ({ kind: 'remote_image', id: image.id,
+          metadata: { ...(image.data_url ? { dataUrl: image.data_url } : {}),
+            ...(image.image_path ? { imagePath: image.image_path } : {}), mimeType: image.mime_type,
+            metadata: image.metadata } })), metadata: {} });
+      if (!result.receipt) throw new Error('Host did not acknowledge the submitted message');
+      return result.receipt.turnId;
+    }
     const resp = await this.request<{ resp: string; turn_id: string }>({
       cmd: 'send_message',
       session_id: sessionId,
@@ -535,8 +823,8 @@ export class RemoteSessionManager {
     });
   }
 
-  async confirmTool(toolId: string): Promise<void> {
-    await this.request({ cmd: 'confirm_tool', tool_id: toolId });
+  async confirmTool(toolId: string, updatedInput?: Record<string, unknown>): Promise<void> {
+    await this.request({ cmd: 'confirm_tool', tool_id: toolId, updated_input: updatedInput });
   }
 
   async rejectTool(toolId: string, reason?: string): Promise<void> {
@@ -551,12 +839,62 @@ export class RemoteSessionManager {
     await this.request({ cmd: 'delete_session', session_id: sessionId });
   }
 
+  /**
+   * Retire `targetTurnId` and every turn after it on the host and restore the files
+   * those turns wrote. `expectedStorageTurnIndex` comes from the same message
+   * the user targeted, so a transcript that moved since it was loaded fails
+   * instead of rolling back a different turn.
+   */
+  async rollbackSessionToTurn(
+    sessionId: string,
+    targetTurnId: string,
+    expectedStorageTurnIndex?: number,
+  ): Promise<SessionRollbackResult> {
+    if (!this.supportsHostCapability('session_rollback_v1')) {
+      throw new Error('This host does not support session rollback. Update the host to use this action.');
+    }
+    const resp = await this.request<{
+      resp: string;
+      session_id: string;
+      retired_turn_ids?: string[];
+      restored_files?: string[];
+      composer_text?: string;
+      changed?: boolean;
+    }>({
+      cmd: 'rollback_session_to_turn',
+      session_id: sessionId,
+      target_turn_id: targetTurnId,
+      expected_storage_turn_index: expectedStorageTurnIndex,
+    });
+    if (resp.resp !== 'session_rolled_back' || resp.session_id !== sessionId
+      || !Array.isArray(resp.retired_turn_ids) || !Array.isArray(resp.restored_files)
+      || !resp.retired_turn_ids.every(id => typeof id === 'string')
+      || !resp.restored_files.every(path => typeof path === 'string')
+      || (resp.composer_text !== undefined && typeof resp.composer_text !== 'string')
+      || typeof resp.changed !== 'boolean') {
+      throw new Error('Invalid session rollback response');
+    }
+    return {
+      retired_turn_ids: resp.retired_turn_ids,
+      restored_files: resp.restored_files,
+      composer_text: resp.composer_text,
+      changed: resp.changed ?? false,
+    };
+  }
+
   async renameSession(sessionId: string, title: string): Promise<void> {
     await this.request({
       cmd: 'update_session_title',
       session_id: sessionId,
       title,
     });
+  }
+
+  async startQuestionInteraction(sessionId: string, toolId: string): Promise<void> {
+    if (!this.supportsHostCapability('user_question_interaction_v1')) {
+      throw new Error('Execution host does not support stopping the question timeout');
+    }
+    await this.request({ cmd: 'start_question_interaction', session_id: sessionId, tool_id: toolId });
   }
 
   async answerQuestion(toolId: string, answers: any): Promise<void> {
@@ -580,7 +918,7 @@ export class RemoteSessionManager {
 
   async ping(): Promise<void> {
     const controllerDeviceId = this.client.controllerDeviceId;
-    if (!controllerDeviceId) throw new Error('Sign in with GitHub to continue');
+    if (!controllerDeviceId) throw new Error('Sign in to continue');
     await this.request({ cmd: 'ping', client: getControlClientIdentity(controllerDeviceId) });
   }
 
@@ -589,17 +927,21 @@ export class RemoteSessionManager {
    * transferring its content.  Used to render file cards before the user
    * confirms a download.
    */
-  async getFileInfo(path: string, sessionId?: string): Promise<{
+  async getFileInfo(path: string, sessionId?: string, workspace?: RuntimeFileWorkspace): Promise<{
     name: string;
     size: number;
     mimeType: string;
   }> {
+    const target = this.client.getControlTargetSnapshot();
+    const workspaceIdentity = sessionId
+      ? {}
+      : await this.runtimeFileWorkspaceReference(workspace, target);
     const resp = await this.request<{
       resp: string;
       name: string;
       size: number;
       mime_type: string;
-    }>({ cmd: 'get_file_info', path, session_id: sessionId ?? undefined });
+    }>({ cmd: 'get_file_info', path, session_id: sessionId ?? undefined, ...workspaceIdentity }, target);
     return {
       name: resp.name,
       size: resp.size,
@@ -610,29 +952,36 @@ export class RemoteSessionManager {
   /**
    * Read a workspace file using chunked transfer.
    *
-   * Downloads the file in bounded chunks, verifies and reassembles bytes, and
+   * Reads revision-checked bounded chunks into an awaited sink, and
    * calls `onProgress(downloaded, total)` after each chunk so the UI can
    * display a progress bar.
    */
-  async readFile(
+  async streamFile(
     path: string,
+    onChunk: (bytes: Uint8Array) => Promise<void>,
     sessionId?: string,
     onProgress?: (downloaded: number, total: number) => void,
     maxBytes?: number,
+    workspace?: RuntimeFileWorkspace,
   ): Promise<{
     name: string;
-    contentBase64: string;
     mimeType: string;
     size: number;
   }> {
+    if (!sessionId && !workspace?.path && !workspace?.workspaceId) {
+      throw new Error('A fixed runtime workspace is required for download');
+    }
+    const target = this.client.getControlTargetSnapshot();
+    const workspaceIdentity = sessionId
+      ? {}
+      : await this.runtimeFileWorkspaceReference(workspace, target);
     const CHUNK_SIZE = 3 * 1024 * 1024; // 3 MB per request
     let offset = 0;
-    const chunks: string[] = [];
+    let receivedFirstChunk = false;
     let fileName = '';
     let mimeType = '';
     let totalSize = 0;
     let revision: string | undefined;
-    const target = this.client.getControlTargetSnapshot();
 
     // eslint-disable-next-line no-constant-condition
     while (true) {
@@ -647,6 +996,7 @@ export class RemoteSessionManager {
         mime_type: string;
       }>({
         cmd: 'read_file_chunk',
+        ...workspaceIdentity,
         path,
         session_id: sessionId ?? undefined,
         offset,
@@ -664,12 +1014,14 @@ export class RemoteSessionManager {
       if (maxBytes !== undefined && resp.total_size > maxBytes) {
         throw new Error('File is too large for an inline preview. Download it to view.');
       }
-      if (chunks.length > 0 && (resp.total_size !== totalSize || resp.name !== fileName || resp.mime_type !== mimeType || resp.revision !== revision)) {
+      if (receivedFirstChunk && (resp.total_size !== totalSize || resp.name !== fileName || resp.mime_type !== mimeType || resp.revision !== revision)) {
         throw new Error('File changed during transfer. Please retry.');
       }
       const bytes = atob(resp.chunk_base64);
       if (bytes.length !== resp.chunk_size) throw new Error('File transfer byte count mismatch. Please retry.');
-      chunks.push(bytes);
+      await onChunk(Uint8Array.from(bytes, character => character.charCodeAt(0)));
+      this.ensureControlTargetCurrent(target);
+      receivedFirstChunk = true;
       fileName = resp.name;
       mimeType = resp.mime_type;
       totalSize = resp.total_size;
@@ -685,149 +1037,27 @@ export class RemoteSessionManager {
 
     return {
       name: fileName,
-      contentBase64: btoa(chunks.join('')),
       mimeType,
       size: totalSize,
     };
   }
+
+  /** Inline previews only. Downloads should consume streamFile directly. */
+  async readFile(
+    path: string,
+    sessionId?: string,
+    onProgress?: (downloaded: number, total: number) => void,
+    maxBytes?: number,
+  ): Promise<{ name: string; contentBase64: string; mimeType: string; size: number }> {
+    const parts: string[] = [];
+    const metadata = await this.streamFile(path, async bytes => {
+      let part = '';
+      for (const byte of bytes) part += String.fromCharCode(byte);
+      parts.push(part);
+    }, sessionId, onProgress, maxBytes);
+    return { ...metadata, contentBase64: btoa(parts.join('')) };
+  }
+
 }
 
-// ── SessionPoller ─────────────────────────────────────────────────
-
-export class SessionPoller {
-  private intervalId: ReturnType<typeof setTimeout> | null = null;
-  private sinceVersion = 0;
-  private knownMsgCount = 0;
-  private sessionId: string;
-  private sessionMgr: RemoteSessionManager;
-  private onUpdate: (state: PollResponse) => void;
-  private polling = false;
-  private stopped = false;
-  private hasActiveTurn = false;
-  private knownModelCatalogVersion = 0;
-  private turnJustEndedAt: number | null = null;
-  private readonly TURN_JUST_ENDED_GRACE_PERIOD_MS = 5000;
-
-  constructor(
-    sessionMgr: RemoteSessionManager,
-    sessionId: string,
-    onUpdate: (state: PollResponse) => void,
-    initialModelCatalogVersion = 0,
-  ) {
-    this.sessionMgr = sessionMgr;
-    this.sessionId = sessionId;
-    this.onUpdate = onUpdate;
-    this.knownModelCatalogVersion = initialModelCatalogVersion;
-  }
-
-  start(initialMsgCount = 0) {
-    this.stopped = false;
-    this.knownMsgCount = initialMsgCount;
-    this.tick();
-    document.addEventListener('visibilitychange', this.onVisibilityChange);
-  }
-
-  stop() {
-    this.stopped = true;
-    if (this.intervalId !== null) {
-      clearTimeout(this.intervalId);
-      this.intervalId = null;
-    }
-    document.removeEventListener('visibilitychange', this.onVisibilityChange);
-  }
-
-  resetCursors() {
-    this.sinceVersion = 0;
-    this.knownMsgCount = 0;
-  }
-
-  setKnownModelCatalogVersion(version: number) {
-    this.knownModelCatalogVersion = version;
-  }
-
-  /** Call after sending a message to immediately switch to fast polling. */
-  nudge() {
-    this.hasActiveTurn = true;
-    if (this.intervalId !== null) clearTimeout(this.intervalId);
-    this.tick();
-  }
-
-  private getInterval(): number {
-    if (document.visibilityState !== 'visible') return 5000;
-    
-    // Keep fast polling during the short grace period after a turn ends.
-    const now = Date.now();
-    if (this.turnJustEndedAt != null && (now - this.turnJustEndedAt) < this.TURN_JUST_ENDED_GRACE_PERIOD_MS) {
-      return 1000;
-    }
-    
-    return this.hasActiveTurn ? 1000 : 10000;
-  }
-
-  private scheduleNext() {
-    if (this.stopped) return;
-    if (this.intervalId !== null) clearTimeout(this.intervalId);
-    this.intervalId = setTimeout(() => this.tick(), this.getInterval());
-  }
-
-  private onVisibilityChange = () => {
-    if (this.stopped) return;
-    if (document.visibilityState === 'visible') {
-      if (this.intervalId !== null) clearTimeout(this.intervalId);
-      this.tick();
-    } else {
-      this.scheduleNext();
-    }
-  };
-
-  private async tick() {
-    if (this.stopped || this.polling) {
-      this.scheduleNext();
-      return;
-    }
-    this.polling = true;
-    try {
-      const resp = await this.sessionMgr.pollSession(
-        this.sessionId,
-        this.sinceVersion,
-        this.knownMsgCount,
-        this.knownModelCatalogVersion,
-      );
-      // Only update hasActiveTurn from responses that carry actual data.
-      // When changed=false the backend omits active_turn, so we must
-      // preserve the previous value to keep 1-second fast polling alive.
-      if (resp.changed) {
-        const wasActive = this.hasActiveTurn;
-        const isActiveNow = resp.active_turn != null && resp.active_turn.status === 'active';
-        this.hasActiveTurn = isActiveNow;
-        
-        // Start the grace period when active_turn just ended.
-        if (wasActive && !isActiveNow) {
-          this.turnJustEndedAt = Date.now();
-        }
-        
-        // Clear the grace period once new messages arrive.
-        if (
-          (resp.new_messages && resp.new_messages.length > 0)
-          || resp.message_snapshot
-        ) {
-          this.turnJustEndedAt = null;
-        }
-        
-        this.sinceVersion = resp.version;
-        if (resp.total_msg_count != null) {
-          this.knownMsgCount = resp.total_msg_count;
-        }
-        if (resp.model_catalog?.version != null) {
-          this.knownModelCatalogVersion = resp.model_catalog.version;
-        }
-        this.onUpdate(resp);
-      }
-    } catch (e) {
-      console.error('[Poller] poll error', e);
-    } finally {
-      this.polling = false;
-      this.scheduleNext();
-    }
-  }
-}
+export { SessionSynchronizer } from './SessionSynchronizer';

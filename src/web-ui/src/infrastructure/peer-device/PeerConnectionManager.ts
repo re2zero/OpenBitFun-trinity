@@ -42,6 +42,9 @@ export interface PeerHostCapabilities {
   readonly idempotentDialogSubmit: boolean;
   /** Only true after explicit negotiation; older hosts need the upload API. */
   readonly inlineImageAttachmentsV1?: boolean;
+  readonly btwInitialModelSelectionV1?: boolean;
+  readonly controlConversationV1?: boolean;
+  readonly controlConversationResetV1?: boolean;
   readonly targetedSessionRollback: boolean;
   readonly tokenUsageStatistics: boolean;
   /** MiniApp Agent runs accept immutable virtual context-file snapshots. */
@@ -74,12 +77,17 @@ export interface PeerHostCapabilities {
    * (older host); resolve via `hostKind` the same way as `cancelTool`.
    */
   readonly toolCatalog: boolean | null;
+  /** Scoped MCP choices must be explicitly advertised by the host. */
+  readonly chatMcpCatalogV1?: boolean;
+  readonly workspaceIdReferencesV1?: boolean;
   /**
    * Host implements `submit_user_answers` for Runtime-owned
    * AskUserQuestion interactions. Older Desktop hosts already implemented the
    * command; older CLI hosts did not.
    */
   readonly userQuestionResponse: boolean | null;
+  readonly userQuestionInteraction?: boolean;
+  readonly dialogQueueV1?: boolean;
   /**
    * Which kind of host answered `peer_mode_ping` (`"desktop"` | `"cli"`).
    * `null` = the host did not advertise `host_type` (even older host, or the
@@ -159,6 +167,9 @@ interface PeerModePingResult {
 const NO_CAPABILITIES: PeerHostCapabilities = {
   idempotentDialogSubmit: false,
   inlineImageAttachmentsV1: false,
+  btwInitialModelSelectionV1: false,
+  controlConversationV1: false,
+  controlConversationResetV1: false,
   targetedSessionRollback: false,
   tokenUsageStatistics: false,
   miniAppAgentContextFilesV1: false,
@@ -170,6 +181,8 @@ const NO_CAPABILITIES: PeerHostCapabilities = {
   // Consumers treat `null` optimistically so an unprobed host is not gated off.
   cancelTool: null,
   toolCatalog: null,
+  chatMcpCatalogV1: false,
+  workspaceIdReferencesV1: false,
   userQuestionResponse: null,
   // Host kind is unknown until the first `peer_mode_ping` resolves. Consumers
   // treat `null` optimistically. See PR #2428 round 5 #1.
@@ -192,6 +205,8 @@ interface ConnectionEntry {
   timer: ReturnType<typeof setTimeout> | null;
   disposed: boolean;
   presenceOnline: boolean | null;
+  probeRequested: boolean;
+  needsReattach: boolean;
   healthCheckInFlight: Promise<void> | null;
   reattachInFlight: Promise<void> | null;
   handle: PeerConnection;
@@ -343,7 +358,7 @@ export class PeerConnectionManager {
       entry.presenceOnline = online.has(entry.deviceId);
       if (!entry.presenceOnline && wasOnline !== false) {
         this.requestRecovery(entry, 'presence');
-      } else if (entry.presenceOnline && wasOnline === false && entry.health === 'degraded') {
+      } else if (entry.presenceOnline && wasOnline === false && (entry.health === 'degraded' || entry.probeRequested)) {
         this.cancelTimer(entry);
         void this.runHealthCheck(entry);
       }
@@ -375,6 +390,8 @@ export class PeerConnectionManager {
       timer: null,
       disposed: false,
       presenceOnline: null,
+      probeRequested: false,
+      needsReattach: false,
       healthCheckInFlight: null,
       reattachInFlight: null,
       handle: {
@@ -488,6 +505,9 @@ export class PeerConnectionManager {
     return {
       idempotentDialogSubmit: caps?.idempotent_dialog_submit === true,
       inlineImageAttachmentsV1: caps?.inline_image_attachments_v1 === true,
+      btwInitialModelSelectionV1: caps?.btw_initial_model_selection_v1 === true,
+      controlConversationV1: caps?.control_conversation_v1 === true,
+      controlConversationResetV1: caps?.control_conversation_reset_v1 === true,
       targetedSessionRollback: caps?.targeted_session_rollback === true,
       tokenUsageStatistics: caps?.token_usage_statistics === true,
       miniAppAgentContextFilesV1: caps?.miniapp_agent_context_files_v1 === true,
@@ -498,7 +518,11 @@ export class PeerConnectionManager {
         caps?.product_control_presentation_v1 === true,
       cancelTool,
       toolCatalog,
+      chatMcpCatalogV1: caps?.chat_mcp_catalog_v1 === true,
+      workspaceIdReferencesV1: caps?.workspace_id_references_v1 === true,
       userQuestionResponse,
+      userQuestionInteraction: caps?.user_question_interaction_v1 === true,
+      dialogQueueV1: caps?.dialog_queue_v1 === true,
       hostKind,
     };
   }
@@ -550,8 +574,9 @@ export class PeerConnectionManager {
     const check = this.checkHealth(entry).finally(() => {
       if (entry.healthCheckInFlight !== check) return;
       entry.healthCheckInFlight = null;
+      entry.probeRequested = false;
       if (this.entries.get(entry.deviceId) !== entry || entry.disposed) return;
-      if (entry.health === 'ready') this.scheduleKeepalive(entry);
+      if (entry.health === 'ready' && !entry.needsReattach) this.scheduleKeepalive(entry);
       else this.scheduleReconnect(entry);
     });
     entry.healthCheckInFlight = check;
@@ -563,7 +588,8 @@ export class PeerConnectionManager {
       const capabilities = await this.probeCapabilities(entry);
       // A request/presence failure may have arrived while the ping was in
       // flight. Check the current state, not the state at probe start.
-      if (entry.health === 'degraded') {
+      if (entry.health === 'degraded' || entry.needsReattach) {
+        entry.needsReattach = false;
         const reattach = this.sendAttach(entry.deviceId);
         entry.reattachInFlight = reattach;
         try {
@@ -621,16 +647,15 @@ export class PeerConnectionManager {
     if (this.entries.get(entry.deviceId) !== entry || entry.disposed || entry.health !== 'ready') {
       return;
     }
-    entry.health = 'degraded';
-    log.warn('Peer connection degraded; checking control link', {
-      deviceId: entry.deviceId,
-      reason,
-      action,
+    // Roster omissions and product timeouts are hints, not proof of a broken
+    // control link. Verify silently; only a failed dedicated probe degrades UI.
+    if (reason === 'presence') entry.needsReattach = true;
+    if (entry.probeRequested) return;
+    entry.probeRequested = true;
+    log.debug('Checking peer control link after a transport hint', {
+      deviceId: entry.deviceId, reason, action,
     });
-    // One timer/probe owns recovery. A burst of failed product requests must
-    // neither start overlapping handshakes nor push the retry further away.
     if (!entry.healthCheckInFlight) this.scheduleReconnect(entry);
-    this.publish();
   }
 
   private cancelTimer(entry: ConnectionEntry): void {
@@ -718,13 +743,20 @@ function capabilitiesEqual(
 ): boolean {
   return a.idempotentDialogSubmit === b.idempotentDialogSubmit &&
     a.inlineImageAttachmentsV1 === b.inlineImageAttachmentsV1 &&
+    a.btwInitialModelSelectionV1 === b.btwInitialModelSelectionV1 &&
+    a.controlConversationV1 === b.controlConversationV1 &&
+    a.controlConversationResetV1 === b.controlConversationResetV1 &&
     a.targetedSessionRollback === b.targetedSessionRollback &&
     a.tokenUsageStatistics === b.tokenUsageStatistics &&
     a.miniAppAgentContextFilesV1 === b.miniAppAgentContextFilesV1 &&
     a.wslWorkspacesV1 === b.wslWorkspacesV1 &&
     a.cancelTool === b.cancelTool &&
     a.toolCatalog === b.toolCatalog &&
+    a.chatMcpCatalogV1 === b.chatMcpCatalogV1 &&
+    a.workspaceIdReferencesV1 === b.workspaceIdReferencesV1 &&
     a.userQuestionResponse === b.userQuestionResponse &&
+    a.userQuestionInteraction === b.userQuestionInteraction &&
+    a.dialogQueueV1 === b.dialogQueueV1 &&
     a.hostKind === b.hostKind;
 }
 

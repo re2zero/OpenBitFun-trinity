@@ -1,5 +1,13 @@
+fn is_runtime_goal_prompt(input: &str) -> bool {
+    openbitfun_core::agentic::goal_mode::goal_objective_from_prompt(input).is_some()
+}
+
+fn is_local_slash_command(input: &str) -> bool {
+    input.trim().starts_with('/') && !is_runtime_goal_prompt(input)
+}
+
 fn session_update_blocks_typed_submission(pending_for_current_session: bool, input: &str) -> bool {
-    pending_for_current_session && !input.trim().starts_with('/')
+    pending_for_current_session && !is_local_slash_command(input)
 }
 
 fn steering_unsupported_reason(draft: &crate::ui::composer::ComposerDraft) -> Option<&'static str> {
@@ -155,6 +163,7 @@ fn builtin_arguments_error(
 fn selected_command_prefill(handler: ActionHandler) -> Option<&'static str> {
     match handler {
         ActionHandler::RenameSession => Some("/rename "),
+        ActionHandler::GoalPrompt => Some("/goal "),
         _ => None,
     }
 }
@@ -712,10 +721,10 @@ impl ChatMode {
             .unwrap_or(0);
         let persisted = tokio::task::block_in_place(|| {
             rt_handle.block_on(async {
-                let workspace = std::path::PathBuf::from(self.agent.workspace_path_string());
+                let workspace = self.agent.workspace_id();
                 let conflicts =
                     openbitfun_core::external_sources::set_native_prompt_command_conflict_choice(
-                        Some(&workspace),
+                        workspace.as_deref(),
                         native_commands,
                         candidate_id,
                         expected_preference_revision,
@@ -779,9 +788,9 @@ impl ChatMode {
                 .unwrap_or(0);
             let snapshot = tokio::task::block_in_place(|| {
                 rt_handle.block_on(async {
-                    let workspace = std::path::PathBuf::from(self.agent.workspace_path_string());
+                    let workspace = self.agent.workspace_id();
                     openbitfun_core::external_sources::set_external_prompt_command_conflict_choice(
-                        Some(&workspace),
+                        workspace.as_deref(),
                         provider_conflict_key,
                         &projection.candidate_id,
                         expected_preference_revision,
@@ -900,9 +909,9 @@ impl ChatMode {
     ) -> Result<Option<ChatExitReason>> {
         let expanded = tokio::task::block_in_place(|| {
             rt_handle.block_on(async {
-                let workspace = std::path::PathBuf::from(self.agent.workspace_path_string());
+                let workspace = self.agent.workspace_id();
                 openbitfun_core::external_sources::expand_external_prompt_command(
-                    Some(&workspace),
+                    workspace.as_deref(),
                     &invocation.command_name,
                     &invocation.arguments,
                     invocation.native_commands.clone(),
@@ -1158,6 +1167,10 @@ impl ChatMode {
                         .map_err(|error| error.to_string())
                 });
                 self.pending_workspace_diff = Some(PendingWorkspaceDiff { handle });
+            }
+            ActionHandler::GoalPrompt => {
+                chat_view.set_input("/goal ");
+                chat_view.set_status(Some("Usage: /goal <objective>. Goal controls are available in the desktop goal menu.".to_string()));
             }
             ActionHandler::CompactSession => {
                 self.start_session_compaction(chat_view, chat_state, rt_handle);
@@ -1611,11 +1624,11 @@ impl ChatMode {
             chat_view.set_status(Some("Images are unavailable in Shell mode".to_string()));
             return Ok(None);
         }
-        if !shell_mode && draft_has_images && trimmed.starts_with('/') {
+        if !shell_mode && draft_has_images && is_local_slash_command(trimmed) {
             chat_view.set_status(Some(IMAGE_ATTACHMENTS_REQUIRE_MESSAGE.to_string()));
             return Ok(None);
         }
-        if shell_mode || !trimmed.starts_with('/') {
+        if shell_mode || !is_local_slash_command(trimmed) {
             self.selected_native_command_once = None;
         }
         let pending_for_current_session = self
@@ -1632,7 +1645,7 @@ impl ChatMode {
         }
 
         if chat_state.is_processing {
-            if !shell_mode && trimmed.starts_with('/') {
+            if !shell_mode && is_local_slash_command(trimmed) {
                 if let Some(input) = chat_view.send_input() {
                     return self.handle_command(&input.text, chat_view, chat_state, rt_handle);
                 }
@@ -1658,7 +1671,7 @@ impl ChatMode {
                 return Ok(None);
             }
             tracing::info!("User input: {}", input.text);
-            if input.text.starts_with('/') {
+            if is_local_slash_command(&input.text) {
                 return self.handle_command(&input.text, chat_view, chat_state, rt_handle);
             }
             self.send_draft_to_agent(input, chat_view, chat_state, rt_handle);

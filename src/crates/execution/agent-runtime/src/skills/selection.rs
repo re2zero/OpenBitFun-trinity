@@ -41,6 +41,7 @@ impl SkillCandidate {
                 source_id: source_id.to_string(),
                 source_label: source_label.to_string(),
                 installation_source: None,
+                import_origin: None,
                 entry_file: data.entry_file,
                 dir_name: data.dir_name,
                 is_builtin,
@@ -164,7 +165,7 @@ pub fn is_skill_globally_enabled(
     skill: &SkillInfo,
     globally_disabled_user_skills: &HashSet<String>,
 ) -> bool {
-    skill.level != SkillLocation::User || !globally_disabled_user_skills.contains(&skill.key)
+    !globally_disabled_user_skills.contains(&skill.key)
 }
 
 pub fn filter_candidates_for_mode(
@@ -335,6 +336,7 @@ mod tests {
                 source_id: String::new(),
                 source_label: String::new(),
                 installation_source: None,
+                import_origin: None,
                 entry_file: None,
                 dir_name: name.to_string(),
                 is_builtin: false,

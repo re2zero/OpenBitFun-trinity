@@ -28,10 +28,10 @@ import {
 import { SidebarToggleButton } from './SidebarToggleButton';
 import { SidebarWorkspaceSection } from './SidebarWorkspaceSection';
 import {
-  CARD,
   LINE,
   PAGE_BG,
   SHADOW_SUBTLE,
+  SIDEBAR_BG,
 } from './Theme';
 
 const WIDE_DETAIL_CONTENT_MAX_WIDTH: number = 920;
@@ -130,6 +130,9 @@ export struct WideConversationHost {
     Column() {
       Column() {
         AppSidebar({
+      toolLocations: this.remotePageState.savedConnectionsTargetId === this.remotePageState.controlTargetDeviceId ? this.remotePageState.savedConnections : [],
+      onWorkspaceTools: this.actions.onWorkspaceTools,
+      controlTargetDeviceId: this.remotePageState.controlTargetDeviceId,
           connectionState: this.remotePageState.connectionState,
           accountUserId: this.remotePageState.accountUserId,
           showCollapseButton: true,
@@ -141,6 +144,7 @@ export struct WideConversationHost {
           onClose: this.actions.onSidebar.close,
           onNewChat: this.actions.onSidebar.newChat,
           onEnterCode: this.actions.onSidebar.enterCode,
+          onOpenMiniApps: this.actions.onRemoteHome.openMiniApps,
           onScanDesktop: this.actions.onSidebar.scanDesktop,
           onCollapse: this.onCollapseMasterPane,
           onOpenViewSettings: this.onOpenRemoteViewSettings,
@@ -151,7 +155,7 @@ export struct WideConversationHost {
           onOpenAccount: this.actions.onSidebar.openAccount,
         })
       }
-      .width('100%').height('100%').backgroundColor(CARD)
+      .width('100%').height('100%').backgroundColor(SIDEBAR_BG)
       .borderRadius(18).clip(true)
       .shadow({ radius: 24, color: SHADOW_SUBTLE, offsetX: 4, offsetY: 8 })
     }
@@ -165,11 +169,18 @@ export struct WideConversationHost {
   @Builder
   private WorkspaceMasterContent() {
     SidebarWorkspaceSection({
+      workspaceTools: this.remotePageState.workspaceTools,
+      onWorkspaceTools: this.actions.onWorkspaceTools,
       directoryState: this.deviceDirectoryState,
       sessions: this.remotePageState.visibleSessions(),
       recentWorkspaces: this.remotePageState.recentWorkspaces,
+      savedConnections: this.remotePageState.savedConnections,
+      savedConnectionsTargetId: this.remotePageState.savedConnectionsTargetId,
       workspaceName: this.remotePageState.workspaceName,
       workspacePath: this.remotePageState.workspacePath,
+      workspaceConnectionId: this.remotePageState.workspaceConnectionId,
+      workspaceSshHost: this.remotePageState.workspaceSshHost,
+      workspaceId: this.remotePageState.workspaceId,
       workspaceKind: this.remotePageState.workspaceKind,
       connectionState: this.remotePageState.connectionState,
       controlTargetType: this.remotePageState.controlTargetType,
@@ -183,17 +194,20 @@ export struct WideConversationHost {
         REMOTE_CAPABILITY_HARNESS_PROFILES_V1),
       workspacePickerPlacement: this.sessionDetailsPlacement,
       onOpenSession: this.actions.onRemoteHome.openSessionInPlace,
-      onCreateInWorkspace: (deviceId: string, path: string, agentType: string) => {
-        this.actions.onRemoteHome.createInWorkspaceInPlace(path, agentType, deviceId);
+      onCreateInWorkspace: (deviceId: string, path: string, agentType: string, connectionId?: string, sshHost?: string,
+        workspaceId?: string) => {
+        this.actions.onRemoteHome.createInWorkspaceInPlace(path, agentType, deviceId, connectionId, sshHost, workspaceId);
       },
-      onOpenWorkspace: (deviceId: string, path: string) => {
-        this.actions.onRemoteHome.selectWorkspace(path, deviceId);
+      onOpenWorkspace: (deviceId: string, path: string, connectionId?: string, sshHost?: string, workspaceId?: string) => {
+        this.actions.onRemoteHome.selectWorkspace(path, deviceId, connectionId, sshHost, workspaceId);
       },
-      onExpandWorkspace: async (deviceId: string, path: string): Promise<void> => {
-        await this.actions.onRemoteHome.loadWorkspaceSessions(deviceId, path);
+      onExpandWorkspace: async (deviceId: string, path: string, remoteConnectionId?: string, remoteSshHost?: string,
+        workspaceId?: string): Promise<void> => {
+        await this.actions.onRemoteHome.loadWorkspaceSessions(deviceId, path, remoteConnectionId, remoteSshHost, workspaceId);
       },
       onSelectDevice: this.actions.onRemoteHome.selectDirectoryDevice,
       onRetryDevice: this.actions.onRemoteHome.retryDirectoryDevice,
+      onReconnect: this.actions.onRemoteHome.reconnect,
       onAddWorkspace: this.actions.onRemoteHome.addDirectoryWorkspace,
       onRefreshDevices: this.actions.onSidebar.refreshDevices,
       onAddDevice: this.actions.onSidebar.addDesktop

@@ -56,16 +56,24 @@ public object RemotePermissionModeSerializer : KSerializer<RemotePermissionMode>
 @Serializable
 public data class RemoteCommand(
     @SerialName("cmd") val cmd: String,
+    @SerialName("command") val command: String? = null,
+    @SerialName("args") val args: JsonElement? = null,
     @SerialName("_request_id") val requestId: String? = null,
     @SerialName("session_id") val sessionId: String? = null,
     @SerialName("content") val content: String? = null,
+    @SerialName("display_content") val displayContent: String? = null,
+    @SerialName("plan_file_path") val planFilePath: String? = null,
+    @SerialName("plan_name") val planName: String? = null,
+    @SerialName("workspace_id") val workspaceId: String? = null,
     @SerialName("workspace_path") val workspacePath: String? = null,
     @SerialName("path") val path: String? = null,
+    @SerialName("remote_connection_id") val remoteConnectionId: String? = null,
+    @SerialName("remote_ssh_host") val remoteSshHost: String? = null,
     @SerialName("agent_type") val agentType: String? = null,
     @SerialName("session_name") val sessionName: String? = null,
     @SerialName("title") val title: String? = null,
     @SerialName("limit") val limit: Int? = null,
-    @SerialName("offset") val offset: Int? = null,
+    @SerialName("offset") val offset: Long? = null,
     @SerialName("query") val query: String? = null,
     @SerialName("before_message_id") val beforeMessageId: String? = null,
     @SerialName("since_version") val sinceVersion: Int? = null,
@@ -89,4 +97,12 @@ public data class RemoteCommand(
     @SerialName("answers") val answers: JsonElement? = null,
     @SerialName("image_contexts") val imageContexts: List<RemoteImageContext>? = null,
     @SerialName("images") val images: List<ImageAttachment>? = null,
+    // `read_stream` / `unsubscribe_stream`: host-owned streams read directly
+    // from the online desktop. Mirrors `StreamReadRequest` in
+    // `remote_connect/host_stream.rs`.
+    @SerialName("stream_id") val streamId: String? = null,
+    @SerialName("after") val after: Long? = null,
+    @SerialName("before") val before: Long? = null,
+    @SerialName("epoch") val epoch: Long? = null,
+    @SerialName("subscribe") val subscribe: Boolean? = null,
 )

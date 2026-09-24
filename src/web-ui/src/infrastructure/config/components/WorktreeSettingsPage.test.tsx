@@ -117,6 +117,12 @@ vi.mock('@openbitfun/ui', () => ({
     </button>
   ),
   Input: (props: React.InputHTMLAttributes<HTMLInputElement>) => <input {...props} />,
+  StatusPill: ({ children, tone, ...props }: {
+    children: React.ReactNode;
+    tone?: string;
+  } & React.HTMLAttributes<HTMLSpanElement>) => (
+    <span data-tone={tone} {...props}>{children}</span>
+  ),
   NumberInput: ({ disabled, label, onValueChange, value }: {
     disabled?: boolean;
     label?: string;
@@ -295,6 +301,7 @@ describe('WorktreeSettingsPage', () => {
     });
     setConfigMock.mockResolvedValue(undefined);
     listProjectsMock.mockResolvedValue([{
+      projectWorkspaceId: 'workspace-repo',
       projectWorkspacePath: '/repo',
       worktrees: [worktree()],
     }]);
@@ -428,6 +435,7 @@ describe('WorktreeSettingsPage', () => {
 
   it('opens an associated conversation from the worktree row', async () => {
     listProjectsMock.mockResolvedValueOnce([{
+      projectWorkspaceId: 'workspace-repo',
       projectWorkspacePath: '/repo',
       worktrees: [worktree({
         sessions: [{
@@ -456,11 +464,45 @@ describe('WorktreeSettingsPage', () => {
     expect(refreshWorkspaceSessionsMock).not.toHaveBeenCalled();
   });
 
+  it('prefers the session workspace ID over the owning project when restoring', async () => {
+    listProjectsMock.mockResolvedValueOnce([{
+      projectWorkspaceId: 'workspace-repo',
+      projectWorkspacePath: '/repo',
+      worktrees: [worktree({
+        sessions: [{
+          workspaceId: 'workspace-worktree',
+          sessionId: 'session-1',
+          sessionName: 'Ship worktree management',
+          status: 'archived',
+          archived: true,
+        }],
+      })],
+    }]);
+
+    await act(async () => {
+      root.render(<WorktreeSettingsPage />);
+    });
+    await flushPromises();
+
+    const sessionButton = Array.from(container.querySelectorAll('button'))
+      .find(button => button.textContent?.includes('Ship worktree management'));
+    await act(async () => {
+      sessionButton?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(unarchiveSessionMock).toHaveBeenCalledWith('session-1', 'workspace-worktree');
+    expect(refreshWorkspaceSessionsMock).toHaveBeenCalledWith({ id: 'workspace-worktree' });
+  });
+
   it('refreshes session metadata before retrying a conversation that is not loaded', async () => {
     openAgentCompanionSessionMock
       .mockResolvedValueOnce(false)
       .mockResolvedValueOnce(true);
     listProjectsMock.mockResolvedValueOnce([{
+      projectWorkspaceId: 'workspace-repo',
       projectWorkspacePath: '/repo',
       worktrees: [worktree({
         sessions: [{
@@ -486,7 +528,7 @@ describe('WorktreeSettingsPage', () => {
       await Promise.resolve();
     });
 
-    expect(refreshWorkspaceSessionsMock).toHaveBeenCalledWith({ rootPath: '/repo' });
+    expect(refreshWorkspaceSessionsMock).toHaveBeenCalledWith({ id: 'workspace-repo' });
     expect(openAgentCompanionSessionMock).toHaveBeenCalledTimes(2);
   });
 
@@ -506,8 +548,8 @@ describe('WorktreeSettingsPage', () => {
     });
 
     expect(confirmWarningMock).toHaveBeenCalled();
-    expect(unarchiveSessionMock).toHaveBeenCalledWith('session-1', '/repo');
-    expect(refreshWorkspaceSessionsMock).toHaveBeenCalledWith({ rootPath: '/repo' });
+    expect(unarchiveSessionMock).toHaveBeenCalledWith('session-1', 'workspace-repo');
+    expect(refreshWorkspaceSessionsMock).toHaveBeenCalledWith({ id: 'workspace-repo' });
     expect(openAgentCompanionSessionMock).toHaveBeenCalledWith('session-1');
   });
 
@@ -592,6 +634,7 @@ describe('WorktreeSettingsPage', () => {
 
   it('requires confirmation and uses force only when local work would be discarded', async () => {
     listProjectsMock.mockResolvedValueOnce([{
+      projectWorkspaceId: 'workspace-repo',
       projectWorkspacePath: '/repo',
       worktrees: [worktree({
         associatedSessionCount: 0,
@@ -621,7 +664,7 @@ describe('WorktreeSettingsPage', () => {
     });
 
     expect(removeMock).toHaveBeenCalledWith(
-      '/repo',
+      { projectWorkspaceId: 'workspace-repo', projectWorkspacePath: '/repo' },
       'wt-1',
       expect.any(String),
       true,
@@ -630,6 +673,7 @@ describe('WorktreeSettingsPage', () => {
 
   it('allows manual deletion while preserving associated archived sessions', async () => {
     listProjectsMock.mockResolvedValueOnce([{
+      projectWorkspaceId: 'workspace-repo',
       projectWorkspacePath: '/repo',
       worktrees: [worktree()],
     }]);
@@ -656,7 +700,7 @@ describe('WorktreeSettingsPage', () => {
     });
 
     expect(removeMock).toHaveBeenCalledWith(
-      '/repo',
+      { projectWorkspaceId: 'workspace-repo', projectWorkspacePath: '/repo' },
       'wt-1',
       expect.any(String),
       false,

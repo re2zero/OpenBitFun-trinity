@@ -1,6 +1,14 @@
 package com.openbitfun.mobile.app.ui.remote
 
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material3.HorizontalDivider
+import com.openbitfun.mobile.app.ui.shell.WelcomeBrandFlow
+import com.openbitfun.mobile.app.ui.theme.generated.MobileDesignGeometry
+import com.openbitfun.mobile.core.feature.session.RecentSessionsPresentation
+import com.openbitfun.mobile.core.feature.session.RecentSessionUiState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -13,13 +21,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
-import androidx.compose.material3.Icon
-import androidx.compose.material3.Surface
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -28,15 +36,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.compose.LifecycleResumeEffect
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.lifecycle.viewmodel.compose.viewModel
 import com.openbitfun.mobile.app.R
 import com.openbitfun.mobile.app.ui.chat.ConversationView
 import com.openbitfun.mobile.app.ui.common.CircleControl
@@ -48,44 +52,6 @@ import com.openbitfun.mobile.core.feature.session.RemoteSessionUiState
 import com.openbitfun.mobile.core.feature.workspace.RemoteWorkspaceIntent
 import com.openbitfun.mobile.core.feature.workspace.RemoteWorkspaceUiState
 
-/**
- * The remote surface: pair, then either the session list or one open session.
- *
- * Everything below the seam is a [PairingUiState]; this file decides layout and
- * wording and nothing else. The list and the conversation replace each other
- * rather than stacking, matching `pages/RemoteSurfaceHost.ets` — a transcript
- * needs the whole height and its own scroll.
- */
-@Composable
-internal fun PairingScreen(
-    modifier: Modifier,
-    settingsPlacement: SettingsPlacement,
-    sessionDetailsPlacement: SettingsPlacement,
-    viewSettingsPlacement: SettingsPlacement,
-    onOpenRemoteSettings: () -> Unit,
-    onOpenSidebar: (() -> Unit)? = null,
-    onBack: () -> Unit = {},
-    onOpenAccount: () -> Unit = {},
-    onDeviceLink: (String) -> Unit = {},
-    compact: Boolean = true,
-    requestedSessionId: String? = null,
-    creatingSession: Boolean = false,
-    onOpenSession: (String) -> Unit = {},
-    onCreateSession: () -> Unit = {},
-    onRemoteHome: () -> Unit = {},
-    startScanning: Boolean = false,
-    onScanStarted: () -> Unit = {},
-) {
-    ConnectView(
-        onSubmit = onDeviceLink,
-        onBack = onBack,
-        onOpenAccount = onOpenAccount,
-        startScanning = startScanning,
-        onScanStarted = onScanStarted,
-        modifier = modifier,
-    )
-}
-
 /** The account-device route, which bypasses the QR pairing form entirely. */
 @Composable
 internal fun AccountRemoteScreen(
@@ -95,6 +61,7 @@ internal fun AccountRemoteScreen(
     deviceName: String,
     createDevices: List<CreateDeviceChoice>,
     accountUsername: String,
+    attachmentOwner: String = deviceId,
     phase: ConnectionPhase,
     settingsPlacement: SettingsPlacement,
     sessionDetailsPlacement: SettingsPlacement,
@@ -121,6 +88,7 @@ internal fun AccountRemoteScreen(
         viewSettingsPlacement = viewSettingsPlacement,
         onOpenRemoteSettings = onOpenRemoteSettings,
         deviceId = deviceId,
+        attachmentOwner = attachmentOwner,
         createDevices = createDevices,
         desktopName = deviceName,
         onCreateDevicePick = onCreateDevicePick,
@@ -150,6 +118,7 @@ private fun RemoteConnectedScreen(
     viewSettingsPlacement: SettingsPlacement,
     onOpenRemoteSettings: () -> Unit,
     deviceId: String,
+    attachmentOwner: String,
     createDevices: List<CreateDeviceChoice>,
     desktopName: String,
     onCreateDevicePick: (String) -> Unit,
@@ -165,13 +134,22 @@ private fun RemoteConnectedScreen(
     connectionDetails: @Composable () -> Unit,
     modifier: Modifier,
 ) {
-    RemoteDownloadSaver(workspaceState, onWorkspaceIntent)
-    val conversation = (remoteState as? RemoteSessionUiState.Ready)?.takeIf {
-        requestedSessionId != null && it.selectedSessionId == requestedSessionId && it.timeline != null
+    val ready = remoteState as? RemoteSessionUiState.Ready
+    // Route immediately. A previous session snapshot must never stand in for the requested one.
+    val conversation = requestedSessionId?.takeIf { remoteState !is RemoteSessionUiState.Failed }?.let { requested ->
+        val matches = ready?.selectedSessionId == requested && ready.timeline?.sessionId == requested
+        if (matches) ready else RemoteSessionUiState.Ready(
+            sessions = ready?.sessions.orEmpty(), selectedSessionId = requested,
+            timeline = null, busy = true, permissionMode = null, permissionModeFailure = null,
+            query = "", agentFilter = com.openbitfun.mobile.core.feature.session.SessionAgentFilter.ALL,
+            hasMore = false, hasMoreMessages = false, modelCatalog = null,
+        )
     }
     if (conversation != null) {
         ConversationView(
             state = conversation,
+            attachmentOwner = attachmentOwner,
+            hostCapabilities = (workspaceState as? RemoteWorkspaceUiState.Ready)?.hostCapabilities.orEmpty(),
             phase = phase,
             settingsPlacement = settingsPlacement,
             onBack = onRemoteHome,
@@ -206,6 +184,19 @@ private fun RemoteConnectedScreen(
             },
             modifier = modifier,
         )
+    } else if (requestedSessionId != null && remoteState is RemoteSessionUiState.Failed) {
+        Column(modifier.fillMaxSize()) {
+            RemoteShellHeader(onOpenSidebar, desktopName, onOpenRemoteSettings)
+            Column(Modifier.weight(1f).fillMaxWidth().padding(24.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(stringResource(R.string.sessions_failed), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                TextButton(onClick = {
+                    onSessionIntent(com.openbitfun.mobile.core.feature.session.RemoteSessionIntent.Open(requestedSessionId))
+                }) { Text(stringResource(R.string.sessions_retry)) }
+                TextButton(onClick = onRemoteHome) { Text(stringResource(R.string.conversation_back)) }
+            }
+        }
     } else if (creatingSession) {
         CreateSessionRoute(
             sessionState = remoteState,
@@ -221,135 +212,75 @@ private fun RemoteConnectedScreen(
             onIntent = onSessionIntent,
             modifier = modifier,
         )
-    } else if (compact) {
+    } else {
         RemoteCompactHome(
             remoteState = remoteState,
             desktopName = desktopName,
             onOpenSidebar = onOpenSidebar,
-            onCreate = onCreateSession,
-            onOpenRemoteSettings = onOpenRemoteSettings,
+            onBrowse = onOpenSidebar,
+            onOpen = { id ->
+                onOpenSession(id)
+                onSessionIntent(com.openbitfun.mobile.core.feature.session.RemoteSessionIntent.Open(id))
+            },
             modifier = modifier,
         )
-    } else {
-        Column(modifier = modifier.fillMaxSize()) {
-            RemoteShellHeader(onOpenSidebar, onOpenRemoteSettings = onOpenRemoteSettings)
-            RemoteSessionListView(
-                state = remoteState,
-                workspaceState = workspaceState,
-                compact = compact,
-                sessionDetailsPlacement = sessionDetailsPlacement,
-                viewSettingsPlacement = viewSettingsPlacement,
-                connectionDetails = connectionDetails,
-                onIntent = onSessionIntent,
-                onWorkspaceIntent = onWorkspaceIntent,
-                onOpen = onOpenSession,
-                onCreate = onCreateSession,
-                modifier = Modifier.weight(1f),
-            )
-        }
     }
 }
 
 @Composable
-private fun RemoteCompactHome(
+internal fun RemoteCompactHome(
     remoteState: RemoteSessionUiState,
     desktopName: String,
     onOpenSidebar: (() -> Unit)?,
-    onCreate: () -> Unit,
-    onOpenRemoteSettings: () -> Unit,
-    modifier: Modifier,
+    onBrowse: (() -> Unit)?,
+    onOpen: (String) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val ready = remoteState as? RemoteSessionUiState.Ready
-    val hasSessions = ready?.sessions?.isNotEmpty() == true
-    val loading = remoteState is RemoteSessionUiState.Loading
-    val title = when {
-        loading -> stringResource(R.string.sessions_loading)
-        remoteState is RemoteSessionUiState.Failed -> stringResource(R.string.sessions_failed)
-        hasSessions -> stringResource(R.string.remote_pick_session)
-        else -> stringResource(R.string.remote_empty_title)
-    }
-    val body = if (hasSessions) {
-        stringResource(R.string.remote_pick_session_text)
-    } else {
-        stringResource(R.string.remote_empty_text)
-    }
-
-    Column(modifier = modifier.fillMaxSize()) {
-        RemoteShellHeader(onOpenSidebar, desktopName, onOpenRemoteSettings)
+    val sessions = ready?.sessions.orEmpty()
+    val recent = RecentSessionsPresentation.sessionIds(sessions.map {
+        RecentSessionUiState(it.id, it.status, it.updatedAt, it.createdAt)
+    }).mapNotNull { id -> sessions.firstOrNull { it.id == id } }
+    Column(modifier.fillMaxSize()) {
+        RemoteShellHeader(onOpenSidebar, desktopName, null)
         Column(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(start = 24.dp, end = 24.dp, bottom = 56.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
+            Modifier.weight(1f).align(Alignment.CenterHorizontally)
+                .widthIn(max = MobileDesignGeometry.RecentHomeMaxWidth).fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = MobileDesignGeometry.RecentHomeGutter, vertical = 24.dp),
         ) {
-            if (loading) {
-                CircularProgressIndicator(
-                    modifier = Modifier.padding(bottom = 18.dp).size(28.dp),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            WelcomeBrandFlow(Modifier.align(Alignment.CenterHorizontally).size(MobileDesignGeometry.RecentHomeMarkSize), sweep = true)
+            Text(stringResource(R.string.home_recent_title), fontSize = 25.sp,
+                fontWeight = FontWeight.Medium, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 32.dp))
+            if (remoteState is RemoteSessionUiState.Loading) CircularProgressIndicator(Modifier.size(24.dp))
+            if (remoteState is RemoteSessionUiState.Failed) {
+                Text(stringResource(R.string.sessions_failed), color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            Text(
-                title,
-                fontSize = 20.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface,
-                textAlign = TextAlign.Center,
-            )
-            Text(
-                body,
-                fontSize = 14.sp,
-                lineHeight = 21.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.width(280.dp).padding(top = 10.dp),
-            )
-            if (!loading) {
-                Button(
-                    onClick = onCreate,
-                    shape = RoundedCornerShape(23.dp),
-                    modifier = Modifier.padding(top = 12.dp).width(148.dp).height(46.dp),
-                ) {
-                    Text(stringResource(R.string.remote_start_session), fontSize = 15.sp)
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(stringResource(R.string.home_recent_recent), fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+                if (onBrowse != null) TextButton(
+                    onClick = onBrowse,
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onSurface),
+                ) { Text(stringResource(R.string.home_recent_all), fontSize = 12.sp) }
+            }
+            recent.forEach { session ->
+                Column(Modifier.fillMaxWidth().clickable { onOpen(session.id) }
+                    .padding(vertical = MobileDesignGeometry.RecentHomeRowPadding)) {
+                    Text(session.title, fontSize = 15.sp, maxLines = 2)
+                    val workspace = session.workspaceName?.takeIf { it.isNotBlank() }
+                        ?: session.workspacePath.orEmpty().trimEnd('/').substringAfterLast('/')
+                    Text(listOf(desktopName, workspace).filter { it.isNotBlank() }.joinToString(" · "),
+                        fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 6.dp), maxLines = 1)
                 }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
-        }
-    }
-}
-
-/** The remote landing page precedes the connection chooser, as on HarmonyOS. */
-@Composable
-internal fun DisconnectedRemoteHome(
-    onOpenSidebar: (() -> Unit)?,
-    onConnect: () -> Unit,
-) {
-    Column(Modifier.fillMaxSize().testTag("remote-disconnected-home")) {
-        RemoteShellHeader(onOpenSidebar = onOpenSidebar, onOpenRemoteSettings = null)
-        Column(
-            modifier = Modifier.weight(1f).fillMaxWidth()
-                .padding(start = 20.dp, end = 20.dp, bottom = 48.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp, Alignment.CenterVertically),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Surface(
-                shape = RoundedCornerShape(24.dp),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                modifier = Modifier.size(74.dp),
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Icon(painterResource(R.drawable.ic_symbol_desktop), contentDescription = null,
-                        modifier = Modifier.size(42.dp))
-                }
-            }
-            Text(stringResource(R.string.sidebar_connect_desktop),
-                style = MaterialTheme.typography.headlineSmall, textAlign = TextAlign.Center)
-            Text(stringResource(R.string.remote_connect_description),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
-            Button(onClick = onConnect, shape = RoundedCornerShape(22.dp),
-                modifier = Modifier.width(136.dp).height(44.dp)) {
-                Text(stringResource(R.string.pairing_connect), style = MaterialTheme.typography.titleSmall)
+            if (recent.isEmpty() && remoteState !is RemoteSessionUiState.Loading) {
+                Text(stringResource(if (desktopName.isBlank()) R.string.home_recent_connect else R.string.home_recent_empty),
+                    fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 18.dp))
             }
         }
     }
@@ -384,7 +315,7 @@ private fun RemoteShellHeader(
             verticalArrangement = Arrangement.spacedBy(3.dp),
         ) {
             Text(
-                stringResource(R.string.navigation_remote),
+                stringResource(R.string.app_name),
                 fontSize = if (hasSubtitle) 18.sp else 17.sp,
                 fontWeight = FontWeight.Medium,
                 maxLines = 1,
@@ -436,6 +367,9 @@ internal fun RemoteWorkspacePanel(
     showPreview: Boolean = true,
 ) {
     var fileReference by rememberSaveable { mutableStateOf("") }
+    var directoryDialog by rememberSaveable { mutableStateOf(false) }
+    var workspacePath by rememberSaveable { mutableStateOf("") }
+    var savedConnectionId by rememberSaveable { mutableStateOf<String?>(null) }
     Text(stringResource(R.string.workspace_title), style = MaterialTheme.typography.titleLarge)
     when (state) {
         RemoteWorkspaceUiState.Idle -> Unit
@@ -447,22 +381,43 @@ internal fun RemoteWorkspacePanel(
             }
         }
         is RemoteWorkspaceUiState.Ready -> {
+            if (directoryDialog) RuntimeDirectoryPickerDialog(state.directoryPicker, savedConnectionId, onIntent, { workspacePath = it; directoryDialog = false }, { directoryDialog = false })
             state.selected?.let { selected ->
                 Text(selected.name, style = MaterialTheme.typography.titleMedium)
                 if (selected.gitBranch.isNotEmpty()) Text(selected.gitBranch)
             }
+            OutlinedTextField(value = workspacePath, onValueChange = { workspacePath = it },
+                label = { Text(stringResource(R.string.workspace_target_path)) }, enabled = !state.busy,
+                modifier = Modifier.fillMaxWidth())
+            TextButton(onClick = { directoryDialog = true; onIntent(RemoteWorkspaceIntent.BrowseWorkspaceDirectories(workspacePath.ifBlank { "/" }, savedConnectionId, false)) }, enabled = !state.busy) { Text(stringResource(R.string.workspace_choose_folder)) }
+            TextButton(onClick = { savedConnectionId = null }, enabled = !state.busy) {
+                Text(stringResource(R.string.workspace_target_device))
+            }
+            state.savedConnections.forEach { connection ->
+                TextButton(onClick = { savedConnectionId = connection.id }, enabled = !state.busy) {
+                    Text((if (savedConnectionId == connection.id) "✓ " else "") + connection.name)
+                }
+            }
+            if (state.savedConnectionsFailure) Text(stringResource(R.string.workspace_connections_failed), color = MaterialTheme.colorScheme.error)
+            // A hand-typed path has no workspace ID: only the legacy projection can be sent.
+            TextButton(enabled = !state.busy && workspacePath.isNotBlank(), onClick = {
+                onIntent(RemoteWorkspaceIntent.SelectWorkspace(workspacePath, savedConnectionId, null))
+            }) { Text(stringResource(R.string.workspace_open_path)) }
+            state.workspaceReferenceFailure?.let { failure ->
+                Text(stringResource(workspaceReferenceFailureText(failure)), color = MaterialTheme.colorScheme.error)
+            }
             state.workspaces.forEach { workspace ->
                 TextButton(
-                    onClick = { onIntent(RemoteWorkspaceIntent.SelectWorkspace(workspace.path)) },
-                    enabled = !state.busy && state.selected?.path != workspace.path,
-                ) { Text(workspace.name) }
+                    onClick = { onIntent(RemoteWorkspaceIntent.SelectWorkspace(workspace.path, workspace.remoteConnectionId, workspace.remoteSshHost, false, workspace.workspaceId)) },
+                    enabled = !state.busy && !state.isSelected(workspace),
+                ) { Text(workspace.displayName) }
             }
             if (state.assistants.isNotEmpty()) {
                 Text(stringResource(R.string.assistants_title), style = MaterialTheme.typography.titleSmall)
                 state.assistants.forEach { assistant ->
                     TextButton(
-                        onClick = { onIntent(RemoteWorkspaceIntent.SelectAssistant(assistant.path)) },
-                        enabled = !state.busy,
+                        onClick = { onIntent(RemoteWorkspaceIntent.SelectAssistant(assistant.path, assistant.workspaceId)) },
+                        enabled = !state.busy && !state.isSelected(assistant),
                     ) { Text(assistant.name) }
                 }
             }

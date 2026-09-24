@@ -50,9 +50,9 @@ export interface ModelSelectionResolution {
 function findSelectableModel(models: readonly AIModelConfig[], modelRef: string | null | undefined): AIModelConfig | null {
   const value = modelRef?.trim();
   if (!value) return null;
-  return models.find(model => isSelectableTextChatModel(model)
-    && (model.id === value || model.name === value || model.model_name === value)
-  ) ?? null;
+  // Config IDs identify credentials; display and upstream names do not.
+  const matches = models.filter(model => isSelectableTextChatModel(model) && model.id === value);
+  return matches.length === 1 ? matches[0] : null;
 }
 
 function resolveModelForContextWindow(
@@ -135,20 +135,24 @@ export function resolveModelSelection({
     if (model) {
       const selectorId = ref === 'primary' || ref === 'fast'
         ? ref
-        : model.id?.trim() || model.model_name.trim();
+        : model.id;
       return {
         model,
         selectorId,
-        concreteModelId: model.id?.trim() || model.model_name.trim(),
+        concreteModelId: model.id,
         source: candidate.source,
         recovered,
       };
+    }
+    // A pinned session must not silently switch accounts when its ID is unavailable.
+    if (candidate.source === 'session') {
+      return { model: null, source: 'session', recovered: true };
     }
     recovered = true;
   }
 
   const fallback = selectableModels[0];
-  const concreteModelId = fallback.id?.trim() || fallback.model_name.trim();
+  const concreteModelId = fallback.id;
   return {
     model: fallback,
     selectorId: concreteModelId,
@@ -206,29 +210,42 @@ export async function resolveReasoningPresetForSessionCreation(
   modelName?: string,
 ): Promise<string | undefined> {
   try {
-    let modelSelection = modelName?.trim();
-    if (!modelSelection) {
-      const configManager = await import('@/infrastructure/config/services/ConfigManager').then(m => m.configManager);
-      const configData = await configManager.getConfigs(['ai.agent_model_defaults']);
-      const agentModelDefaults = configData['ai.agent_model_defaults'] as AgentModelDefaultsConfig | undefined;
-      modelSelection = agentModelDefaults?.mode?.trim() || 'primary';
-    }
+    const configManager = await import('@/infrastructure/config/services/ConfigManager').then(m => m.configManager);
+    const configData = await configManager.getConfigs([
+      'ai.models',
+      'ai.default_models',
+      'ai.agent_model_defaults',
+    ]);
+    const models = (configData['ai.models'] as AIModelConfig[] | undefined) || [];
+    const defaultModels = (configData['ai.default_models'] as DefaultModelsConfig | undefined) || {};
+    const agentModelDefaults = configData['ai.agent_model_defaults'] as AgentModelDefaultsConfig | undefined;
+    const selection = modelName?.trim() || agentModelDefaults?.mode?.trim() || 'primary';
+    const model = resolveModelForContextWindow(selection, models, defaultModels)
+      ?? resolveModelForContextWindow('primary', models, defaultModels);
+    const modelId = model?.id;
+    if (!model || !modelId) return undefined;
 
-    const catalog = await aiApi.getModelCatalog();
-    const selectedModelId = modelSelection === 'primary'
-      ? catalog.default_models.primary ?? undefined
-      : modelSelection === 'fast'
-        ? catalog.default_models.fast ?? catalog.default_models.primary ?? undefined
-        : modelSelection;
-    const concreteModelId = selectedModelId
-      && catalog.models.some(model => model.id === selectedModelId)
-      ? selectedModelId
-      : catalog.default_models.primary ?? undefined;
-    if (!concreteModelId) return undefined;
-    const projection = catalog.models.find(model => model.id === concreteModelId)?.reasoning;
-    if (projection?.status !== 'known') return undefined;
-    const preset = getRecentReasoningPreset(concreteModelId);
-    return projection.presets?.some(item => item.id === preset) ? preset : undefined;
+    const preset = getRecentReasoningPreset(modelId);
+    // No recent preset means nothing to validate: stopping here keeps session
+    // creation free of any catalog read.
+    if (!preset) return undefined;
+
+    // Ask the host for this one model's projection instead of pulling the whole
+    // model catalog. The projection is a few hundred bytes, while the catalog
+    // carried the public models.dev projections of every provider and reasoning
+    // model — multi-MiB over a peer connection, and awaited before the session
+    // RPC was even issued.
+    const projection = await aiApi.projectReasoningCatalog({
+      provider: model.provider,
+      modelName: model.model_name || modelId,
+      baseUrl: model.base_url,
+      contextWindow: model.context_window,
+      maxTokens: model.max_tokens,
+      reasoning: model.reasoning ?? {},
+    });
+    if (projection.status !== 'known') return undefined;
+    const presetSupported = projection.presets?.some(item => item.id === preset) ?? false;
+    return presetSupported ? preset : undefined;
   } catch (error) {
     log.warn('Failed to resolve recent reasoning preset during session creation', { error });
     return undefined;

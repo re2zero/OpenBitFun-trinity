@@ -68,7 +68,7 @@ pub(crate) fn derive_parent_permission_runtime_ceiling(
 
 pub(crate) async fn load_parent_permission_runtime_ceiling(
     agent_type: Option<&str>,
-    workspace_root: Option<&std::path::Path>,
+    workspace_id: Option<&str>,
 ) -> OpenBitFunResult<PermissionRuntimeCeiling> {
     let service = GlobalConfigManager::get_service().await?;
     let global: GlobalConfig = service.get_config(None).await?;
@@ -78,7 +78,7 @@ pub(crate) async fn load_parent_permission_runtime_ceiling(
     });
     let definition_constraints = agent_type.and_then(|agent_type| {
         crate::agentic::agents::get_agent_registry()
-            .get_agent(agent_type, workspace_root)
+            .get_agent(agent_type, workspace_id)
             .map(|agent| agent.permission_constraints().clone())
     });
     Ok(derive_parent_permission_runtime_ceiling(
@@ -149,6 +149,8 @@ mod tests {
     #[test]
     fn context_mode_key_outranks_the_legacy_auto_approve_flag() {
         let mut global = GlobalConfig::default();
+        global.tool_permissions.policy.preset =
+            openbitfun_runtime_ports::PermissionPolicyPreset::Ask;
         global.tool_permissions.interaction.auto_approve_ask = true;
         let mut context_vars = std::collections::HashMap::new();
 

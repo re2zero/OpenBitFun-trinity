@@ -1,12 +1,13 @@
+import { Button, IconButton } from '@openbitfun/ui';
 import {
-  ArrowClockwise,
-  ArrowSquareOut,
-  GithubLogo,
-  GlobeSimple,
+  LogIn,
+  RefreshCw as ArrowClockwise,
+  ExternalLink as ArrowSquareOut,
+  Globe as GlobeSimple,
   Moon,
-  SignOut,
+  LogOut as SignOut,
   Sun,
-} from '@phosphor-icons/react';
+} from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import {
   sharedMarketAccountApi,
@@ -35,6 +36,8 @@ export default function App() {
     currentRoute().kind === 'catalog' ? window.location.search : '',
   );
   const [account, setAccount] = useState<SharedMarketAccount>();
+  const [failedAvatar, setFailedAvatar] = useState<string | null>(null);
+  const accountLabel = account?.email ?? account?.user.login ?? '';
   const [accountResolved, setAccountResolved] = useState(false);
   const [accountBusy, setAccountBusy] = useState(false);
   const [accountError, setAccountError] = useState<Error>();
@@ -58,7 +61,7 @@ export default function App() {
   useEffect(() => {
     void sharedMarketAccountApi
       .config()
-      .then((config) => setGithubAuthConfigured(config.githubAuthConfigured))
+      .then((config) => setGithubAuthConfigured(config.githubAuthConfigured || config.emailAuthConfigured === true))
       .catch(() => undefined);
     void refreshAccount();
   }, [refreshAccount]);
@@ -139,27 +142,26 @@ export default function App() {
             )}
           </nav>
           <div className="header-actions">
-            <button
+            <Button labelBehavior="static"
               type="button"
               className="icon-button language-button"
               onClick={() => setLocale(locale === 'zh-CN' ? 'en-US' : 'zh-CN')}
               aria-label={locale === 'zh-CN' ? t('useEnglish') : t('useChinese')}
               title={locale === 'zh-CN' ? t('useEnglish') : t('useChinese')}
             >
-              <GlobeSimple size={19} weight="regular" aria-hidden="true" />
+              <GlobeSimple size={19} aria-hidden="true" />
               <span>{locale === 'zh-CN' ? 'EN' : '中'}</span>
-            </button>
-            <button
+            </Button>
+            <IconButton
               type="button"
               className="icon-button"
               onClick={toggleTheme}
               aria-label={theme === 'dark' ? t('switchToLight') : t('switchToDark')}
               title={theme === 'dark' ? t('switchToLight') : t('switchToDark')}
-            >
-              {theme === 'dark'
-                ? <Sun size={20} weight="regular" aria-hidden="true" />
-                : <Moon size={20} weight="regular" aria-hidden="true" />}
-            </button>
+              icon={theme === 'dark'
+                ? <Sun size={20} aria-hidden="true" />
+                : <Moon size={20} aria-hidden="true" />}
+            />
             {!accountResolved ? (
               <div className="account-loading" role="status" aria-label={t('accountLoading')}>
                 <span className="account-loading__avatar" aria-hidden="true" />
@@ -168,18 +170,21 @@ export default function App() {
               </div>
             ) : account ? (
               <div className="account-profile">
-                <img src={account.user.avatarUrl} alt="" width="28" height="28" />
-                <span title={`@${account.user.login}`}>@{account.user.login}</span>
-                <button
+                <div className="profile-avatar" role="img" aria-label={accountLabel}>
+                  {account.user.avatarUrl && failedAvatar !== account.user.avatarUrl
+                    ? <img src={account.user.avatarUrl} alt="" width="28" height="28" onError={() => setFailedAvatar(account.user.avatarUrl)} />
+                    : accountLabel.trim().charAt(0).toUpperCase() || '?'}
+                </div>
+                <span title={accountLabel}>{account.email ?? `@${account.user.login}`}</span>
+                <IconButton
                   type="button"
                   className="account-signout"
                   onClick={() => void signOut()}
                   disabled={accountBusy}
                   aria-label={t('signOut')}
                   title={t('signOut')}
-                >
-                  <SignOut size={18} weight="regular" aria-hidden="true" />
-                </button>
+                  icon={<SignOut size={18} aria-hidden="true" />}
+                />
               </div>
             ) : (
               <a
@@ -191,7 +196,7 @@ export default function App() {
                   if (githubAuthConfigured === false) event.preventDefault();
                 }}
               >
-                <GithubLogo size={18} weight="bold" aria-hidden="true" />
+                <LogIn size={18} aria-hidden="true" />
                 <span>{t('signInGitHub')}</span>
               </a>
             )}
@@ -202,10 +207,10 @@ export default function App() {
       {accountError && (
         <div className="account-alert" role="alert" title={accountError.message}>
           <span>{t('accountError')}</span>
-          <button type="button" onClick={() => void refreshAccount()}>
-            <ArrowClockwise size={17} weight="bold" aria-hidden="true" />
+          <Button labelBehavior="static" type="button" onClick={() => void refreshAccount()}>
+            <ArrowClockwise size={17} aria-hidden="true" />
             {t('retryAccount')}
-          </button>
+          </Button>
         </div>
       )}
 
@@ -243,10 +248,9 @@ export default function App() {
       <footer className="site-footer">
         <div className="shell site-footer__inner">
           <span>{t('brand')} {t('market')}</span>
-          <p>{t('footerNote')}</p>
           <a className="site-footer__link" href={OPENBITFUN_HOME_URL} target="_blank" rel="noreferrer">
             {t('openbitfunHome')}
-            <ArrowSquareOut size={16} weight="regular" aria-hidden="true" />
+            <ArrowSquareOut size={16} aria-hidden="true" />
           </a>
         </div>
       </footer>

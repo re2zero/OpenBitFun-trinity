@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const hostQueueMock = vi.hoisted(() => ({ supported: vi.fn(() => false), refresh: vi.fn() }));
+vi.mock('./hostDialogQueue', () => ({
+  hostQueueSupported: hostQueueMock.supported,
+  hostDialogQueue: () => ({ refresh: hostQueueMock.refresh }),
+}));
+
 const agentApiMock = vi.hoisted(() => ({ rollbackSessionToTurn: vi.fn() }));
 const eventBusMock = vi.hoisted(() => ({ emit: vi.fn() }));
 const loadSessionHistory = vi.hoisted(() => vi.fn(async () => undefined));
@@ -37,6 +43,8 @@ describe('SessionRollbackService', () => {
   });
   beforeEach(() => {
     vi.clearAllMocks();
+    hostQueueMock.supported.mockReturnValue(false);
+    hostQueueMock.refresh.mockResolvedValue({ items: [] });
     loadSessionHistory.mockResolvedValue(undefined);
     sessions.clear();
     historyViews.clear();
@@ -59,6 +67,22 @@ describe('SessionRollbackService', () => {
     });
   });
 
+  it('refuses host-owned queued work before invoking rollback', async () => {
+    hostQueueMock.supported.mockReturnValue(true);
+    hostQueueMock.refresh.mockResolvedValue({ items: [{ turnId: 'queued-turn', status: 'blocked' }] });
+    await expect(rollbackSessionToTurn({ sessionId: 'session-1', targetTurnId: 'turn-7', kind: 'rollback' }))
+      .rejects.toThrow('Clear the host message queue');
+    expect(agentApiMock.rollbackSessionToTurn).not.toHaveBeenCalled();
+  });
+
+  it('refuses path-only mutations until legacy identity has been hydrated', async () => {
+    const session = sessions.get('session-1');
+    delete session.workspaceId;
+    await expect(rollbackSessionToTurn({ sessionId: 'session-1', targetTurnId: 'turn-7', kind: 'rollback' }))
+      .rejects.toThrow('workspace ID is unavailable');
+    expect(agentApiMock.rollbackSessionToTurn).not.toHaveBeenCalled();
+  });
+
   it('submits stable persisted identity and reloads only after completion', async () => {
     agentApiMock.rollbackSessionToTurn.mockResolvedValue({
       status: 'completed',
@@ -76,7 +100,6 @@ describe('SessionRollbackService', () => {
     expect(agentApiMock.rollbackSessionToTurn).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: 'session-1',
       workspaceId: 'local_workspace-1',
-      workspaceHostname: 'localhost',
       targetTurnId: 'turn-7',
       expectedStorageTurnIndex: 7,
       expectedCatalogRevision: 'catalog-3',

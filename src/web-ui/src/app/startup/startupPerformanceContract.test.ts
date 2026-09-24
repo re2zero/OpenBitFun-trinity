@@ -24,6 +24,31 @@ function staticImportSpecifiers(source: string): string[] {
 }
 
 describe('startup performance contract', () => {
+  it('creates native glass with a transparent background instead of repainting it after load', () => {
+    const source = readSource('../../../../apps/desktop/src/appearance.rs');
+    const mainWindow = source.slice(source.indexOf('pub fn create_main_window('), source.indexOf('fn show_main_window_for_startup('));
+
+    expect(mainWindow).toContain('.transparent(true)');
+    expect(mainWindow).toContain('.background_color(tauri::window::Color(0, 0, 0, 0))');
+    expect(mainWindow).toContain('tauri::window::Effect::Acrylic');
+    // The Windows host fill ignores alpha during repaint. Changing its color
+    // after page load can cover the native material even with transparent CSS.
+    expect(mainWindow).not.toContain('.set_background_color(');
+  });
+
+  it('waits for the startup document before revealing the transparent native window', () => {
+    const source = readSource('../../../../apps/desktop/src/appearance.rs');
+    const mainWindow = source.slice(source.indexOf('pub fn create_main_window('), source.indexOf('fn show_main_window_for_startup('));
+
+    expect(mainWindow).toContain('.visible(false)');
+    expect(mainWindow).toMatch(/PageLoadEvent::Finished\)\s*\{\s*let _ = startup_page_ready.send\(true\)/);
+    const wait = mainWindow.indexOf('startup_page_ready_rx.wait_for(');
+    expect(wait).toBeGreaterThan(-1);
+    expect(mainWindow.indexOf('show_main_window_for_startup(')).toBeGreaterThan(wait);
+    // Failed navigation must not leave an invisible application indefinitely.
+    expect(mainWindow).toContain('tokio::time::timeout(');
+  });
+
   it('keeps the pre-React startup fallback vector-only', () => {
     const source = readSource('../../../index.html');
 
@@ -195,10 +220,10 @@ describe('startup performance contract', () => {
     expect(desktopLibSource).toContain('MAIN_WINDOW_DEFAULT_WIDTH: f64 = 1200.0');
     expect(desktopLibSource).toContain('MAIN_WINDOW_DEFAULT_HEIGHT: f64 = 800.0');
     expect(desktopAppearanceSource).not.toContain('windows_maximize_show_wait_action');
-    expect(desktopLibSource).toContain('tauri_plugin_window_state::Builder::default()');
-    expect(desktopLibSource).toContain('.with_state_flags(StateFlags::empty())');
-    expect(desktopLibSource).toContain('.with_filter(|label| label == "main")');
-    expect(desktopLibSource).toContain('Resetting undersized main window state');
+    expect(desktopLibSource).toContain('.manage(window_state_support::MainWindowState::default())');
+    expect(desktopLibSource).not.toContain('tauri_plugin_window_state::Builder');
+    expect(desktopLibSource).toContain('window_state_support::restore(window)');
+    expect(desktopLibSource).toContain('window_state_support::save(app, reason)');
     expect(desktopLibSource).toContain('MAIN_WINDOW_USES_TRANSIENT_GEOMETRY');
     expect(toolbarModeProviderSource).not.toContain(
       "import { systemAPI } from '@/infrastructure/api/service-api/SystemAPI'"
@@ -342,7 +367,13 @@ describe('startup performance contract', () => {
     expect(appLayoutSource).toContain("import { FlowChatManager }");
     expect(appLayoutSource).not.toContain("import('../../flow_chat/services/FlowChatManager')");
     expect(footerSource).not.toContain("import { AboutDialog }");
-    expect(footerSource).toContain("import('../../AboutDialog')");
+    expect(footerSource).not.toContain("import('../../AboutDialog')");
+    expect(footerSource).toContain("new Event('nav:show-about')");
+    expect(appLayoutSource).toContain("window.addEventListener('nav:show-about', handleShowAbout)");
+    expect(appLayoutSource).not.toContain('useUpdateInstallStore');
+    const aboutSource = readSource('../components/AboutDialog/AboutDialog.tsx');
+    expect(aboutSource).not.toContain('AppUpdatePanel');
+    expect(aboutSource).not.toContain('useUpdateInstallStore');
     expect(chatPaneSource).not.toContain("from '../../../flow_chat'");
     expect(chatPaneSource).toContain(
       "from '../../../flow_chat/components/modern/ModernFlowChatContainer'"
@@ -478,14 +509,15 @@ describe('startup performance contract', () => {
     expect(registrySource).toContain("id: 'application.general'");
   });
 
-  it('keeps ecosystem governance lazy until its owner surface is opened', () => {
+  it('keeps ACP settings lazy while discovery stays inline in the ecosystem header', () => {
     const sceneSource = readSource(
       '../scenes/ecosystem-compatibility/EcosystemCompatibilityScene.tsx'
     );
-    const ownerSpecifier = '@/infrastructure/config/components/ExternalSourcesConfig';
+    const ownerSpecifier = '@/infrastructure/config/components/AcpAgentsConfig';
 
     expect(dynamicImportSpecifiers(sceneSource)).toContain(ownerSpecifier);
     expect(staticImportSpecifiers(sceneSource)).not.toContain(ownerSpecifier);
+    expect(staticImportSpecifiers(sceneSource)).toContain('./ExternalDiscoveryToggle');
   });
 
   it('keeps tool-card metadata separate from heavy card implementations', () => {

@@ -1,3 +1,4 @@
+import { computerUseControlAppearanceDescriptor } from '@/app/components/ComputerUseControlCard.appearance';
 import { confirmDialogAppearanceDescriptor } from '@/infrastructure/confirm-dialog';
 import { inputDialogAppearanceDescriptor } from '@/app/components/InputDialog/appearance';
 import { windowControlsAppearanceDescriptor } from '@/app/components/WindowControls/appearance';
@@ -53,6 +54,7 @@ import { announcementAppearanceDescriptor } from '@/shared/announcement-system/a
 import { contextMenuAppearanceDescriptor } from '@/shared/context-menu-system/appearance';
 import { contextListAppearanceDescriptor } from '@/shared/context-system/appearance';
 import { notificationAppearanceDescriptor } from '@/shared/notification-system/appearance';
+import { imageLightboxAppearanceDescriptor } from '@/shared/ui/ImageLightbox.appearance';
 import { canvasToolAppearanceDescriptor } from '@/tools/openbitfun-canvas/appearance';
 import { generativeWidgetAppearanceDescriptor } from '@/tools/generative-widget/appearance';
 import { editorToolAppearanceDescriptor } from '@/tools/editor/appearance';
@@ -97,6 +99,7 @@ import { dateTimePickerAppearanceDescriptor } from '@/app/components/scheduled-j
 import { todosSceneAppearanceDescriptor } from '@/app/scenes/todos/appearance';
 import { flexiblePanelAppearanceDescriptor } from '@/app/components/panels/base/FlexiblePanel.appearance';
 import { btwSessionPanelAppearanceDescriptor } from '@/flow_chat/components/btw/BtwSessionPanel.appearance';
+import { conversationExcerptAppearanceDescriptor } from '@/flow_chat/selection/ConversationExcerpt.appearance';
 import { modernFlowChatAppearanceDescriptor, virtualMessageListAppearanceDescriptor } from '@/flow_chat/components/modern/appearance';
 import { modelSettingsAppearanceDescriptor } from '@/infrastructure/config/components/ModelSettingsPage.appearance';
 import { reasoningConfigPanelAppearanceDescriptor } from '@/infrastructure/config/components/ReasoningConfigPanel.appearance';
@@ -106,6 +109,7 @@ import { acpAgentsConfigAppearanceDescriptor } from '@/infrastructure/config/com
 import { runtimeSettingsAppearanceDescriptor } from '@/infrastructure/config/components/RuntimeSettingsPages.appearance';
 import { sessionTitleConfigAppearanceDescriptor } from '@/infrastructure/config/components/SessionTitleConfig.appearance';
 import { mcpToolsConfigAppearanceDescriptor } from '@/infrastructure/config/components/McpToolsConfig.appearance';
+import { mcpServerConfigDialogAppearanceDescriptor } from '@/infrastructure/config/components/MCPServerConfigDialog.appearance';
 import { externalMcpOverviewAppearanceDescriptor } from '@/infrastructure/config/components/ExternalMcpOverview.appearance';
 import { voiceInputDiagnosticsAppearanceDescriptor } from '@/infrastructure/config/components/VoiceInputDiagnostics.appearance';
 import { assistantCardAppearanceDescriptor } from '@/app/scenes/profile/views/AssistantCard.appearance';
@@ -144,7 +148,6 @@ import { statusBarPopoversAppearanceDescriptor } from '@/tools/editor/components
 import { mEditorAppearanceDescriptor } from '@/tools/editor/meditor/components/MEditor.appearance';
 import { globalSearchAppearanceDescriptor } from '@/app/global-search/GlobalSearchRoot.appearance';
 import { workspaceRelatedPathsDialogAppearanceDescriptor } from '@/app/components/NavPanel/sections/workspaces/WorkspaceRelatedPathsDialog.appearance';
-import { branchSelectModalAppearanceDescriptor } from '@/app/components/panels/BranchSelectModal.appearance';
 import { floatingMiniChatAppearanceDescriptor } from '@/app/layout/FloatingMiniChat.appearance';
 import { miniAppBubbleWelcomeAppearanceDescriptor } from '@/app/layout/MiniAppBubbleWelcome.appearance';
 import { branchesViewAppearanceDescriptor } from '@/app/scenes/git/views/BranchesView.appearance';
@@ -180,6 +183,7 @@ import { canvasEditorGroupAppearanceDescriptor } from '@/app/components/panels/c
 import { canvasThumbnailAppearanceDescriptor } from '@/app/components/panels/content-canvas/mission-control/ThumbnailCard.appearance';
 import { canvasTabOverflowAppearanceDescriptor } from '@/app/components/panels/content-canvas/tab-bar/TabOverflowMenu.appearance';
 import { browserPanelAppearanceDescriptor } from '@/app/scenes/browser/BrowserPanel.appearance';
+import { browserPreviewAppearanceDescriptor } from '@/app/scenes/browser/BrowserPreview.appearance';
 import { nurseryGalleryAppearanceDescriptor } from '@/app/scenes/profile/views/NurseryGallery.appearance';
 import { gitGraphViewAppearanceDescriptor } from '@/app/scenes/git/views/GraphView.appearance';
 import { navBarAppearanceDescriptor } from '@/app/components/NavBar/NavBar.appearance';
@@ -198,6 +202,7 @@ import { miniAppDetailModalAppearanceDescriptor } from '@/app/scenes/miniapps/co
 import { agentCardAppearanceDescriptor } from '@/app/scenes/agents/components/AgentCard.appearance';
 import { coreAgentCardAppearanceDescriptor } from '@/app/scenes/agents/components/CoreAgentCard.appearance';
 import { agentCapabilityTooltipAppearanceDescriptor } from '@/app/scenes/agents/components/AgentCapabilityTooltip.appearance';
+import { agentCapabilityOptionAppearanceDescriptor } from '@/app/scenes/agents/components/AgentCapabilityOption.appearance';
 import { gitNavAppearanceDescriptor } from '@/app/scenes/git/GitNav.appearance';
 import { fileViewerNavAppearanceDescriptor } from '@/app/scenes/file-viewer/FileViewerNav.appearance';
 import { assistantQuickInputAppearanceDescriptor } from '@/app/scenes/profile/views/AssistantQuickInput.appearance';
@@ -212,6 +217,7 @@ import { flowTextBlockAppearanceDescriptor } from '@/flow_chat/components/FlowTe
 import { chatInputApprovalBandAppearanceDescriptor } from '@/flow_chat/components/ChatInputApprovalBand.appearance';
 import { canvasToolCardAppearanceDescriptor } from '@/flow_chat/tool-cards/CanvasToolCard.appearance';
 import { computerUseToolCardAppearanceDescriptor } from '@/flow_chat/tool-cards/ComputerUseToolCard.appearance';
+import { openBitFunControlToolCardAppearanceDescriptor } from '@/flow_chat/tool-cards/OpenBitFunControlToolCard.appearance';
 import { miniAppToolDisplayAppearanceDescriptor } from '@/flow_chat/tool-cards/MiniAppToolDisplay.appearance';
 import { modelThinkingDisplayAppearanceDescriptor } from '@/flow_chat/tool-cards/ModelThinkingDisplay.appearance';
 import { toolTimeoutIndicatorAppearanceDescriptor } from '@/flow_chat/tool-cards/ToolTimeoutIndicator.appearance';
@@ -286,6 +292,7 @@ export function createDefaultAppearanceRegistry(): AppearanceRegistry {
     .registerComponent(mcpToolDisplayAppearanceDescriptor)
     .registerComponent(skillsConfigAppearanceDescriptor)
     .registerComponent(diffEditorAppearanceDescriptor)
+    .registerComponent(computerUseControlAppearanceDescriptor)
     .registerComponent(agentCompanionDesktopPetAppearanceDescriptor)
     .registerComponent(toolGroupPickerAppearanceDescriptor)
     .registerComponent(inlineDiffPreviewAppearanceDescriptor)
@@ -310,6 +317,7 @@ export function createDefaultAppearanceRegistry(): AppearanceRegistry {
     .registerComponent(contextMenuAppearanceDescriptor)
     .registerComponent(contextListAppearanceDescriptor)
     .registerComponent(notificationAppearanceDescriptor)
+    .registerComponent(imageLightboxAppearanceDescriptor)
     .registerComponent(canvasToolAppearanceDescriptor)
     .registerComponent(generativeWidgetAppearanceDescriptor)
     .registerComponent(editorToolAppearanceDescriptor)
@@ -334,6 +342,7 @@ export function createDefaultAppearanceRegistry(): AppearanceRegistry {
     .registerComponent(agentCardAppearanceDescriptor)
     .registerComponent(coreAgentCardAppearanceDescriptor)
     .registerComponent(agentCapabilityTooltipAppearanceDescriptor)
+    .registerComponent(agentCapabilityOptionAppearanceDescriptor)
     .registerComponent(gitNavAppearanceDescriptor)
     .registerComponent(fileViewerNavAppearanceDescriptor)
     .registerComponent(assistantQuickInputAppearanceDescriptor)
@@ -358,6 +367,7 @@ export function createDefaultAppearanceRegistry(): AppearanceRegistry {
     .registerComponent(dateTimePickerAppearanceDescriptor)
     .registerComponent(flexiblePanelAppearanceDescriptor)
     .registerComponent(btwSessionPanelAppearanceDescriptor)
+    .registerComponent(conversationExcerptAppearanceDescriptor)
     .registerComponent(modernFlowChatAppearanceDescriptor)
     .registerComponent(virtualMessageListAppearanceDescriptor)
     .registerComponent(modelSettingsAppearanceDescriptor)
@@ -368,6 +378,7 @@ export function createDefaultAppearanceRegistry(): AppearanceRegistry {
     .registerComponent(runtimeSettingsAppearanceDescriptor)
     .registerComponent(sessionTitleConfigAppearanceDescriptor)
     .registerComponent(mcpToolsConfigAppearanceDescriptor)
+    .registerComponent(mcpServerConfigDialogAppearanceDescriptor)
     .registerComponent(externalMcpOverviewAppearanceDescriptor)
     .registerComponent(voiceInputDiagnosticsAppearanceDescriptor)
     .registerComponent(assistantCardAppearanceDescriptor)
@@ -397,7 +408,6 @@ export function createDefaultAppearanceRegistry(): AppearanceRegistry {
     .registerComponent(mEditorAppearanceDescriptor)
     .registerComponent(globalSearchAppearanceDescriptor)
     .registerComponent(workspaceRelatedPathsDialogAppearanceDescriptor)
-    .registerComponent(branchSelectModalAppearanceDescriptor)
     .registerComponent(floatingMiniChatAppearanceDescriptor)
     .registerComponent(miniAppBubbleWelcomeAppearanceDescriptor)
     .registerComponent(branchesViewAppearanceDescriptor)
@@ -433,6 +443,7 @@ export function createDefaultAppearanceRegistry(): AppearanceRegistry {
     .registerComponent(canvasThumbnailAppearanceDescriptor)
     .registerComponent(canvasTabOverflowAppearanceDescriptor)
     .registerComponent(browserPanelAppearanceDescriptor)
+    .registerComponent(browserPreviewAppearanceDescriptor)
     .registerComponent(nurseryGalleryAppearanceDescriptor)
     .registerComponent(deepReviewConsentDialogAppearanceDescriptor)
     .registerComponent(flowToolCardAppearanceDescriptor)
@@ -440,6 +451,7 @@ export function createDefaultAppearanceRegistry(): AppearanceRegistry {
     .registerComponent(chatInputApprovalBandAppearanceDescriptor)
     .registerComponent(canvasToolCardAppearanceDescriptor)
     .registerComponent(computerUseToolCardAppearanceDescriptor)
+    .registerComponent(openBitFunControlToolCardAppearanceDescriptor)
     .registerComponent(miniAppToolDisplayAppearanceDescriptor)
     .registerComponent(modelThinkingDisplayAppearanceDescriptor)
     .registerComponent(toolTimeoutIndicatorAppearanceDescriptor)

@@ -12,6 +12,7 @@ import {
   PAGE_BG,
   SCRIM,
   SHELL_SCRIM,
+  SIDEBAR_BG,
   TRANSPARENT,
 } from './Theme';
 
@@ -21,6 +22,7 @@ const WIDE_SHEET_RADIUS: number = 30;
 export struct AppShell {
   @Param shellState: AppShellState = new AppShellState();
   @Param useWideLayout: boolean = false;
+  @Param allowSidebar: boolean = true;
   @Param compactAccountLogin: boolean = false;
   @Param settingsPlacement: SettingsPlacement =
     SettingsPlacementPolicy.compactBottom(SettingsSheetKind.Settings);
@@ -47,23 +49,43 @@ export struct AppShell {
             }
           })
 
+      // The open drawer's fill is a floor under the whole shell, not a panel
+      // the width of the sidebar. The content card's rounded corners have to
+      // curve onto something: when the fill stopped at the card's left edge
+      // they curved onto the page white instead, so a square-cornered grey
+      // block sat against a rounded card with a white wedge between them.
+      Column()
+        .width('100%')
+        .height('100%')
+        .backgroundColor(SIDEBAR_BG)
+        .expandSafeArea([SafeAreaType.SYSTEM], [SafeAreaEdge.TOP, SafeAreaEdge.BOTTOM])
+        .hitTestBehavior(HitTestMode.None)
+        .opacity((this.allowSidebar && this.shellState.showSidebar) ? 1 : 0)
+        // Matched to the content card rather than to the sidebar panel: the
+        // card must never finish moving before the floor it curves onto has
+        // finished fading, in either direction.
+        .animation({
+          duration: (this.allowSidebar && this.shellState.showSidebar) ? 320 : 250,
+          curve: Curve.EaseOut
+        })
+
       Column() {
         // The drawer is a compact affordance. Wide layouts put the same session
         // list in the master pane instead, and this copy stayed mounted behind
         // an opacity of 0 — invisible, but rebuilt on every selection change,
         // which on a tablet doubled the cost of switching sessions. Compact
         // keeps it mounted so opening and closing still cross-fades.
-        if (!this.useWideLayout || this.shellState.showSidebar) {
+        if (!this.useWideLayout || (this.allowSidebar && this.shellState.showSidebar)) {
           this.sidebar()
         }
       }
       .width(this.sidebarWidth())
       .height('100%')
       .alignItems(HorizontalAlign.Start)
-      .opacity(this.shellState.showSidebar ? 1 : 0)
-      .translate({ x: this.shellState.showSidebar ? '0%' : '-10%' })
+      .opacity((this.allowSidebar && this.shellState.showSidebar) ? 1 : 0)
+      .translate({ x: (this.allowSidebar && this.shellState.showSidebar) ? '0%' : '-10%' })
       .animation({
-        duration: this.shellState.showSidebar ? 300 : 220,
+        duration: (this.allowSidebar && this.shellState.showSidebar) ? 300 : 220,
         curve: Curve.EaseOut
       })
 
@@ -75,7 +97,7 @@ export struct AppShell {
         .height('100%')
         .bindSheet($$this.shellState.showConnectSheet, this.ConnectSheetContent(), this.connectSheetOptions())
 
-        if (this.shellState.showSidebar) {
+        if ((this.allowSidebar && this.shellState.showSidebar)) {
           Column() {
           }
           .width('100%')
@@ -92,23 +114,23 @@ export struct AppShell {
       .width('100%')
       .height('100%')
       .backgroundColor(PAGE_BG)
-      .borderRadius(this.shellState.showSidebar ? 28 : 0)
+      .borderRadius((this.allowSidebar && this.shellState.showSidebar) ? 28 : 0)
       .clip(true)
       .shadow({
-        radius: this.shellState.showSidebar ? 34 : 0,
-        color: this.shellState.showSidebar ? SHELL_SCRIM : TRANSPARENT,
-        offsetX: this.shellState.showSidebar ? -10 : 0
+        radius: (this.allowSidebar && this.shellState.showSidebar) ? 34 : 0,
+        color: (this.allowSidebar && this.shellState.showSidebar) ? SHELL_SCRIM : TRANSPARENT,
+        offsetX: (this.allowSidebar && this.shellState.showSidebar) ? -10 : 0
       })
-      .blur(this.shellState.showSidebar ? 1.1 : 0)
+      .blur((this.allowSidebar && this.shellState.showSidebar) ? 1.1 : 0)
       .scale({
-        x: this.shellState.showSidebar ? 0.985 : 1,
-        y: this.shellState.showSidebar ? 0.992 : 1,
+        x: (this.allowSidebar && this.shellState.showSidebar) ? 0.985 : 1,
+        y: (this.allowSidebar && this.shellState.showSidebar) ? 0.992 : 1,
         centerX: '0%',
-        centerY: '50%'
+        centerY: MobileDesignGeometry.conversationHeaderHeight / 2
       })
-      .translate({ x: this.shellState.showSidebar ? this.sidebarWidth() : 0 })
+      .translate({ x: (this.allowSidebar && this.shellState.showSidebar) ? this.sidebarWidth() : 0 })
       .animation({
-        duration: this.shellState.showSidebar ? 320 : 250,
+        duration: (this.allowSidebar && this.shellState.showSidebar) ? 320 : 250,
         curve: Curve.EaseOut
       })
     }

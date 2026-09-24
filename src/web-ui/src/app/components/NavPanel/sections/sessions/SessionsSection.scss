@@ -80,7 +80,11 @@
     color: var(--openbitfun-color-content-muted);
     font-size: var(--openbitfun-type-meta-font-size);
 
-    svg {
+    .openbitfun-nav-panel__inline-loading-icon {
+      inline-size: var(--openbitfun-control-icon-size-xs);
+      block-size: var(--openbitfun-control-icon-size-xs);
+      color: var(--openbitfun-color-content-secondary);
+      opacity: var(--openbitfun-opacity-muted);
       flex: 0 0 auto;
       animation: openbitfun-nav-session-spin 1s linear infinite;
     }
@@ -236,6 +240,10 @@
     font-size: var(--openbitfun-type-meta-font-size);
     line-height: var(--openbitfun-type-body-sm-line-height);
     white-space: nowrap;
+
+    &:not([data-overflow='true']) {
+      text-align: right;
+    }
   }
 
   // Status and the menu share one trailing cell, including when status is idle.
@@ -344,8 +352,33 @@
     letter-spacing: var(--openbitfun-type-modifier-tracking-wide-letter-spacing);
     white-space: nowrap;
 
-    svg {
+    .openbitfun-nav-panel__inline-item-review-icon {
+      inline-size: var(--openbitfun-control-icon-size2xs);
+      block-size: var(--openbitfun-control-icon-size2xs);
+      color: var(--openbitfun-color-content-secondary);
+      opacity: var(--openbitfun-opacity-muted);
       animation: openbitfun-nav-session-spin 1s linear infinite;
+    }
+  }
+
+  &__inline-item-worktree-badge {
+    flex: 0 0 auto;
+    // Icon-only circle sized like the neighbouring background-subagent badge, so
+    // the marker reads at a normal icon size without a label beside the title.
+    display: inline-grid;
+    place-items: center;
+    inline-size: var(--openbitfun-control-icon-size-md);
+    block-size: var(--openbitfun-control-icon-size-md);
+    border: 1px dashed var(--openbitfun-color-border-subtle);
+    border-radius: 999px;
+    background: var(--openbitfun-color-action-quiet-hover);
+    color: var(--openbitfun-color-content-secondary);
+    // Kill the inline strut so the icon stays optically centered in the circle.
+    line-height: 0;
+
+    .openbitfun-nav-panel__inline-item-worktree-icon {
+      inline-size: var(--openbitfun-control-icon-size-xs);
+      block-size: var(--openbitfun-control-icon-size-xs);
     }
   }
 
@@ -356,8 +389,8 @@
     place-items: center;
     justify-items: center;
     align-items: center;
-    width: 16px;
-    height: 16px;
+    width: var(--openbitfun-control-icon-size-md);
+    height: var(--openbitfun-control-icon-size-md);
     padding: 0;
     border: 1px solid var(--openbitfun-color-status-success-border);
     border-radius: 999px;
@@ -373,14 +406,16 @@
     grid-area: 1 / 1;
     place-self: center;
     display: block;
-    width: 10px;
-    height: 10px;
+    inline-size: var(--openbitfun-control-icon-size-xs);
+    block-size: var(--openbitfun-control-icon-size-xs);
+    color: var(--openbitfun-color-content-secondary);
+    opacity: var(--openbitfun-opacity-muted);
     flex-shrink: 0;
     transform-origin: center center;
     transition: opacity var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard), transform var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard);
 
-    &.is-bot {
-      animation: openbitfun-nav-background-subagent-bot-cycle 3.6s ease-in-out infinite;
+    &.is-agent {
+      animation: openbitfun-nav-background-subagent-agent-cycle 3.6s ease-in-out infinite;
     }
 
     &.is-loader {
@@ -526,8 +561,23 @@
     }
   }
 
+  // The toggle is a lighter sibling of `__inline-item`, so its state icon needs
+  // the row's 20px trailing cell as well: the cell ends on the row inset and the
+  // glyph centres inside it. Flushing the bare 12px icon to the padding edge put
+  // its centre half a cell off the column the dots above and below it share.
+  &__inline-toggle-trailing {
+    display: grid;
+    flex: 0 0 var(--openbitfun-space-5);
+    place-items: center;
+    inline-size: var(--openbitfun-space-5);
+  }
+
   &__inline-toggle-spinner {
     flex: 0 0 auto;
+    inline-size: var(--openbitfun-control-icon-size-xs);
+    block-size: var(--openbitfun-control-icon-size-xs);
+    color: var(--openbitfun-color-content-secondary);
+    opacity: var(--openbitfun-opacity-muted);
     animation: openbitfun-nav-session-spin 1s linear infinite;
   }
 
@@ -682,7 +732,7 @@
   }
 }
 
-@keyframes openbitfun-nav-background-subagent-bot-cycle {
+@keyframes openbitfun-nav-background-subagent-agent-cycle {
   0%,
   62%,
   100% {
@@ -724,7 +774,7 @@
   .openbitfun-nav-panel__inline-item-background-subagent-icon {
     animation: none;
 
-    &.is-bot {
+    &.is-agent {
       opacity: 1;
       transform: none;
     }
@@ -804,7 +854,9 @@
   &__inline-item {
     height: 30px;
     gap: var(--openbitfun-space-2);
-    padding-right: var(--openbitfun-space-2);
+    // Trailing edge of the row, not the reading gutter: it has to match the
+    // workspace rows and the group toggle so all trailing actions end on one column.
+    padding-right: var(--openbitfun-space-1);
     border-radius: var(--openbitfun-radius-base);
     @include nav-font.nav-panel-text-row;
 

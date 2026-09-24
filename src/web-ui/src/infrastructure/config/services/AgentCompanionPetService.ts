@@ -1,23 +1,27 @@
+import { globalEventBus } from '@/infrastructure/event-bus';
 import { api } from '@/infrastructure/api/service-api/ApiClient';
 import { readFile } from '@tauri-apps/plugin-fs';
 import type { AgentCompanionPetSelection } from './AIExperienceConfigService';
 import { isTauriRuntime } from '@/infrastructure/runtime';
 import { createLogger } from '@/shared/utils/logger';
 import builtinPetMetadata from './agentCompanionBuiltinPetMetadata.json';
+import { getPetSpriteLayout } from './agentCompanionPetSprite';
 
 const log = createLogger('AgentCompanionPetService');
 const BUILTIN_PET_BASE = '/agent-companion-pets';
 const BUILTIN_PET_DISPLAY_NAMES = builtinPetMetadata.displayNames;
 
+export const AGENT_COMPANION_PETS_CHANGED = 'agent-companion-pets-changed';
+
 export const DEFAULT_AGENT_COMPANION_PET: AgentCompanionPetSelection = {
-  id: 'blue-golden',
-  displayName: BUILTIN_PET_DISPLAY_NAMES.blueGolden,
-  description:
-    'A sweet, round-faced blue-golden shaded cat with wide bright eyes and soft silver-blue fur warmed by creamy-gold highlights.',
+  id: 'bitblob',
+  displayName: 'BitBlob',
+  description: 'Rounded lavender companion with a soft antenna and curious eyes.',
   source: 'preset',
-  packagePath: `${BUILTIN_PET_BASE}/blue-golden`,
-  spritesheetPath: `${BUILTIN_PET_BASE}/blue-golden/spritesheet.png`,
-  spritesheetMimeType: 'image/png',
+  packagePath: `${BUILTIN_PET_BASE}/bitblob`,
+  spritesheetPath: `${BUILTIN_PET_BASE}/bitblob/spritesheet.webp`,
+  spritesheetMimeType: 'image/webp',
+  spriteVersionNumber: 2,
 };
 
 /** Cache: absolute file path → blob URL (prevents re-reading the same file). */
@@ -64,6 +68,36 @@ export function releaseAgentCompanionPetPreviewBlobs(
 const BUILTIN_PETS: AgentCompanionPetSelection[] = [
   {
     ...DEFAULT_AGENT_COMPANION_PET,
+  },
+  {
+    id: 'blue-golden',
+    displayName: BUILTIN_PET_DISPLAY_NAMES.blueGolden,
+    description:
+      'A sweet, round-faced blue-golden shaded cat with wide bright eyes and soft silver-blue fur warmed by creamy-gold highlights.',
+    source: 'preset',
+    packagePath: `${BUILTIN_PET_BASE}/blue-golden`,
+    spritesheetPath: `${BUILTIN_PET_BASE}/blue-golden/spritesheet.png`,
+    spritesheetMimeType: 'image/png',
+  },
+  {
+    id: 'openbitfun-girl',
+    displayName: BUILTIN_PET_DISPLAY_NAMES.openbitfunGirl,
+    description: 'Fangling, a silver-haired short-legged companion with a softly oval face and hollow rounded-hexagon ornaments.',
+    source: 'preset',
+    packagePath: `${BUILTIN_PET_BASE}/openbitfun-girl`,
+    spritesheetPath: `${BUILTIN_PET_BASE}/openbitfun-girl/spritesheet.webp`,
+    spritesheetMimeType: 'image/webp',
+    spriteVersionNumber: 2,
+  },
+  {
+    id: 'deepseek-goldwhale',
+    displayName: BUILTIN_PET_DISPLAY_NAMES.goldWhale,
+    description: 'A quiet whale maid with long blue curls, a whale apron, and a gold sea-patterned skirt.',
+    source: 'preset',
+    packagePath: `${BUILTIN_PET_BASE}/deepseek-goldwhale`,
+    spritesheetPath: `${BUILTIN_PET_BASE}/deepseek-goldwhale/spritesheet.webp`,
+    spritesheetMimeType: 'image/webp',
+    spriteVersionNumber: 2,
   },
   {
     id: 'openbitfun',
@@ -195,6 +229,7 @@ export async function importAgentCompanionPetPackage(path: string): Promise<Agen
   const pet = await api.invoke<AgentCompanionPetSelection>('import_agent_companion_pet_package', {
     request: { path },
   });
+  globalEventBus.emit(AGENT_COMPANION_PETS_CHANGED, {});
   return withPreviewSrc(pet);
 }
 
@@ -202,6 +237,7 @@ export async function deleteAgentCompanionPetPackage(packagePath: string): Promi
   await api.invoke('delete_agent_companion_pet_package', {
     request: { packagePath },
   });
+  globalEventBus.emit(AGENT_COMPANION_PETS_CHANGED, {});
 }
 
 /**
@@ -216,4 +252,64 @@ export async function resolveAgentCompanionPetSrc(
   if (pet.source === 'preset') return pet.spritesheetPath;
   if (!isTauriRuntime()) return '';
   return readFileAsBlobUrl(pet.spritesheetPath, pet.spritesheetMimeType);
+}
+
+/** Recover the version omitted by older builds without rewriting or discarding user settings. */
+export async function resolveAgentCompanionPet(pet: AgentCompanionPetSelection) {
+  let resolved = pet;
+  if (pet.source === 'user' && pet.spriteVersionNumber == null && isTauriRuntime()) {
+    const { pets } = await api.invoke<ListAgentCompanionPetsResponse>('list_agent_companion_pets');
+    const installed = pets.find(item => item.packagePath === pet.packagePath);
+    if (!installed) throw new Error('Selected pet package is unavailable or unsupported');
+    resolved = installed;
+  }
+  const layout = getPetSpriteLayout(resolved.spriteVersionNumber);
+  const src = await resolveAgentCompanionPetSrc(resolved);
+  return { src, layout };
+}
+
+
+export interface ExternalPetCandidate {
+  sourceKey: string;
+  fingerprint: string;
+  pet: Omit<AgentCompanionPetSelection, 'source'> & { source: 'codex' };
+  previewDataUrl: string;
+  imported: AgentCompanionPetSelection | null;
+  copyModified: boolean;
+  sourceChanged: boolean;
+  builtinId?: string;
+}
+
+export interface ExternalPetCatalog {
+  candidates: ExternalPetCandidate[];
+  diagnostics: string[];
+}
+
+/** An explicit version proves the host checks the reviewed package before copying. */
+export async function listExternalAgentCompanionPets(): Promise<ExternalPetCatalog> {
+  const response = await api.invoke<{
+    importOperationsVersion?: number;
+    builtinImportVersion?: number;
+    external?: ExternalPetCatalog;
+  }>('list_agent_companion_pets', { request: { includeExternal: true, builtinImportVersion: 1 } });
+  if (response.importOperationsVersion !== 1 || !response.external
+    || !Array.isArray(response.external.candidates) || !Array.isArray(response.external.diagnostics)
+    || response.external.candidates.some((entry) => (entry.builtinId != null
+      && (typeof entry.builtinId !== 'string' || !entry.builtinId || response.builtinImportVersion !== 1))
+      || typeof entry.sourceKey !== 'string'
+      || typeof entry.fingerprint !== 'string' || typeof entry.pet?.packagePath !== 'string'
+      || typeof entry.previewDataUrl !== 'string' || !entry.previewDataUrl.startsWith('data:image/png;base64,'))) {
+    throw new Error('Pet discovery or reviewed import is unavailable on this host');
+  }
+  return response.external;
+}
+
+export async function importReviewedAgentCompanionPet(candidate: ExternalPetCandidate): Promise<AgentCompanionPetSelection> {
+  const pet = await api.invoke<AgentCompanionPetSelection>('import_agent_companion_pet_package', {
+    request: { path: candidate.pet.packagePath, expectedFingerprint: candidate.fingerprint,
+      ...(candidate.builtinId ? { builtinId: candidate.builtinId } : {}),
+    },
+  });
+  globalEventBus.emit(AGENT_COMPANION_PETS_CHANGED, {});
+  return pet;
 }

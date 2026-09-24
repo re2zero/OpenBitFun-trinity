@@ -1,7 +1,17 @@
 import Foundation
+import OpenBitFunMobileCore
+import OSLog
 
 @MainActor
 enum MobileLaunchConfiguration {
+    static var streamingRegressionPreview: Bool {
+        #if DEBUG
+        ProcessInfo.processInfo.arguments.contains("--streaming-regression")
+        #else
+        false
+        #endif
+    }
+
     static var pairingAccountPreview: Bool { ProcessInfo.processInfo.arguments.contains("--pairing-account") }
     static var pairingManualPreview: Bool { ProcessInfo.processInfo.arguments.contains("--pairing-manual") }
     static func makeModel() -> MobileAppModel {
@@ -11,9 +21,9 @@ enum MobileLaunchConfiguration {
             selectedSessionID: first.id,
             messages: [
                 ChatMessage(id: UUID(), role: .user, text: "你好"),
-                ChatMessage(id: UUID(), role: .assistant, text: "这是 OpenBitFun 的移动端会话界面。你可以从手机连接桌面端，查看工作区、会话和 Agent 的执行状态。")
+                ChatMessage(id: UUID(), role: .assistant, text: "这是 OpenBitFun 的移动端会话界面。你可以从手机连接桌面端，查看工作区、会话和智能体的执行状态。")
             ],
-            connectCore: !ProcessInfo.processInfo.arguments.contains("--harness-preview") && designPreviewScenario() == nil
+            connectCore: !streamingRegressionPreview && !ProcessInfo.processInfo.arguments.contains("--permission-mailbox-preview") && !ProcessInfo.processInfo.arguments.contains("--harness-preview") && designPreviewScenario() == nil
         )
         return configure(model)
     }
@@ -32,6 +42,15 @@ enum MobileLaunchConfiguration {
             model.configureConnectedPreview()
             model.remoteHostCapabilities = ["harness_profiles_v1"]
         }
+        #if DEBUG
+        if arguments.contains("--permission-mailbox-preview") {
+            model.configureTimelinePreview()
+            model.permissionMailbox = PermissionMailboxUiState(requests: [
+                PermissionMailboxRequest(requestId: "preview-write", action: "write", resources: ["/workspace/readme.md"], toolCallId: nil, source: "Write")
+            ], busy: false, failed: false)
+            Logger(subsystem: "com.openbitfun.mobile.ios", category: "permission-mailbox").info("Mailbox preview requests=\(model.permissionMailbox?.requests.count ?? -1)")
+        }
+        #endif
         if arguments.contains("--connected") {
             model.configureConnectedPreview()
         }
@@ -69,6 +88,20 @@ enum MobileLaunchConfiguration {
         if arguments.contains("--timeline-preview") {
             model.configureTimelinePreview()
         }
+        if arguments.contains("--plan-preview") {
+            model.configureConnectedPreview()
+            let plan = MobileTimelineTool(
+                id: "preview-plan", name: "CreatePlan", phase: "COMPLETED", kind: "DOCUMENT",
+                operation: "WRITE_FILE", target: "parity.plan.md", filePath: "/workspace/parity.plan.md",
+                fileLabel: "parity.plan.md", input: "", output: "", question: nil, questions: [], actions: [],
+                planPath: "/workspace/parity.plan.md", planName: "Mobile parity", planOverview: "Review the three native clients."
+            )
+            model.timelineRows = [MobileConversationRow(
+                id: "preview-plan-row", kind: "ASSISTANT", text: "", thinking: nil, images: [], tools: [plan],
+                blocks: [.tools(id: "preview-plan-tools", tools: [plan])], streaming: false, typing: false,
+                showRetry: false, error: nil
+            )]
+        }
         if arguments.contains("--file-preview") {
             model.filePreview = MobileFilePreview(
                 id: "src/main.rs",
@@ -77,16 +110,20 @@ enum MobileLaunchConfiguration {
                 mimeType: "text/x-rust",
                 imageData: nil,
                 truncated: false,
+                lineStart: 2,
+                lineEnd: 3,
                 failure: nil
             )
         }
         if arguments.contains("--download-preview") {
+            let previewURL = FileManager.default.temporaryDirectory.appendingPathComponent("openbitfun-download-preview.rs")
+            try? Data("fn main() {}\n".utf8).write(to: previewURL)
             model.pendingDownload = MobilePendingDownload(
                 reference: "computer://src/main.rs",
                 remotePath: "src/main.rs",
                 name: "main.rs",
                 mimeType: "text/x-rust",
-                data: Data("fn main() {}\n".utf8)
+                localURL: previewURL
             )
             model.downloadTargetPath = "src/main.rs"
             model.downloadPhase = .saving
@@ -112,7 +149,7 @@ enum MobileLaunchConfiguration {
                 ComposerModelOption(
                     id: "preview-codex",
                     primaryLabel: "GPT-5.6 Codex",
-                    secondaryLabel: "GitHub 账号",
+                    secondaryLabel: "OpenBitFun 账号",
                     source: "ACCOUNT",
                     selected: true
                 ),
@@ -267,11 +304,11 @@ private extension MobileAppModel {
         let offlineWorkspace = MobileWorkspaceGroup(path: "/office/project", name: "Office project", selected: false, sessions: [cachedSession], deviceKey: "preview-offline")
         let failedWorkspace = MobileWorkspaceGroup(path: "/staging/project", name: "Staging", selected: false, sessions: [failedSession], deviceKey: "preview-mac")
         deviceDirectory = [
-            MobileDeviceDirectoryEntry(id: "preview-desktop", name: "DESKTOP-KM3L4UI", online: true, expanded: true, status: "READY", error: nil, workspaces: [previewWorkspace], sessions: previewWorkspace.sessions),
-            MobileDeviceDirectoryEntry(id: "preview-mac", name: "Studio Mac", online: true, expanded: true, status: "FAILED", error: "REMOTE_UNAVAILABLE", workspaces: [failedWorkspace], sessions: [failedSession]),
-            MobileDeviceDirectoryEntry(id: "preview-offline", name: "Office PC", online: false, expanded: false, status: "READY", error: nil, workspaces: [offlineWorkspace], sessions: [cachedSession])
+            MobileDeviceDirectoryEntry(id: "preview-desktop", name: "DESKTOP-KM3L4UI", online: true, status: "READY", error: nil, workspaces: [previewWorkspace], sessions: previewWorkspace.sessions),
+            MobileDeviceDirectoryEntry(id: "preview-mac", name: "Studio Mac", online: true, status: "FAILED", error: "REMOTE_UNAVAILABLE", workspaces: [failedWorkspace], sessions: [failedSession]),
+            MobileDeviceDirectoryEntry(id: "preview-offline", name: "Office PC", online: false, status: "READY", error: nil, workspaces: [offlineWorkspace], sessions: [cachedSession])
         ]
-        workspaceCatalog = [(path: "/workspace/OpenBitFun", name: "OpenBitFun", selected: true)]
+        workspaceCatalog = [(path: "/workspace/OpenBitFun", name: "OpenBitFun", selected: true, remoteConnectionId: nil, remoteSshHost: nil, workspaceId: nil)]
         remoteAssistants = [
             MobileAssistantOption(path: "/workspace/OpenBitFun/.openbitfun/assistants/review", name: "代码审查助手")
         ]
@@ -312,7 +349,7 @@ private extension MobileAppModel {
         timelineRows = [
             MobileConversationRow(
                 id: userID, kind: "USER", text: "介绍本项目", thinking: nil,
-                images: [], tools: [], blocks: [], streaming: false, typing: false, pending: false,
+                images: [], tools: [], blocks: [], streaming: false, typing: false,
                 showRetry: false, error: nil
             ),
             MobileConversationRow(
@@ -326,7 +363,7 @@ private extension MobileAppModel {
                     ),
                     .tools(id: "preview-tools", tools: [readOne, readTwo, approval, question]),
                 ],
-                streaming: false, typing: false, pending: false, showRetry: true,
+                streaming: false, typing: false, showRetry: true,
                 error: "桌面端进程意外退出。"
             ),
         ]

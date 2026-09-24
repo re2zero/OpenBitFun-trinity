@@ -1,4 +1,6 @@
-import { ArrowClockwise, GithubLogo, Image, Package, XCircle } from '@phosphor-icons/react';
+import { Button } from '@openbitfun/ui';
+import { GithubLogo } from '@phosphor-icons/react';
+import { RefreshCw as ArrowClockwise, Image, Package, CircleX as XCircle } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
 import { sharedMarketLoginUrl } from './account';
 import { skinMarketApi } from './api';
@@ -113,14 +115,14 @@ export function SubmissionsPage({ account, accountResolved, locale, t }: Submiss
           <h1>{t('submissionsTitle')}</h1>
           <p>{t('submissionsIntro')}</p>
         </div>
-        <button type="button" className="secondary-button" onClick={() => void load()} disabled={loading}>
-          <ArrowClockwise size={18} weight="bold" aria-hidden="true" />
+        <Button labelBehavior="static" type="button" className="secondary-button" onClick={() => void load()} disabled={loading}>
+          <ArrowClockwise size={18} aria-hidden="true" />
           {t('refresh')}
-        </button>
+        </Button>
       </header>
       {error && (
         <div className="workflow-error" role="alert">
-          <XCircle size={20} weight="fill" aria-hidden="true" />
+          <XCircle size={20} fill="currentColor" aria-hidden="true" />
           <span>{t('submissionsError')}</span>
           <small>{error.message}</small>
         </div>
@@ -128,7 +130,7 @@ export function SubmissionsPage({ account, accountResolved, locale, t }: Submiss
       {loading && items.length === 0 ? <div className="workflow-loading">{t('submissionsLoading')}</div>
         : items.length === 0 ? (
           <div className="workflow-empty">
-            <Package size={34} weight="regular" aria-hidden="true" />
+            <Package size={34} aria-hidden="true" />
             <h2>{t('submissionsEmptyTitle')}</h2>
             <p>{t('submissionsEmptyBody')}</p>
           </div>
@@ -147,7 +149,7 @@ export function SubmissionsPage({ account, accountResolved, locale, t }: Submiss
                         onError={(event) => retryOriginalMarketImage(event.currentTarget, submission.previewUrl!)}
                       />
                     )
-                    : <Image size={26} weight="regular" aria-hidden="true" />}
+                    : <Image size={26} aria-hidden="true" />}
                 </div>
                 <div className="submission-card__body">
                   <div className="submission-card__title">
@@ -166,14 +168,14 @@ export function SubmissionsPage({ account, accountResolved, locale, t }: Submiss
                   )}
                 </div>
                 {(submission.status === 'draft' || submission.status === 'submitted') && (
-                  <button
+                  <Button labelBehavior="static"
                     type="button"
                     className="text-button text-button--danger"
                     disabled={actingId === submission.submissionId}
                     onClick={() => void withdraw(submission)}
                   >
                     {actingId === submission.submissionId ? t('withdrawing') : t('withdraw')}
-                  </button>
+                  </Button>
                 )}
               </article>
             ))}

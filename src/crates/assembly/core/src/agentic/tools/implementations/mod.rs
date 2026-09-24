@@ -16,8 +16,12 @@ pub mod computer_use_actions;
 #[cfg(feature = "tools-computer-use")]
 pub mod computer_use_locate;
 #[cfg(feature = "tools-computer-use")]
+pub(crate) mod computer_use_presentation;
+#[cfg(feature = "tools-computer-use")]
+mod computer_use_program;
+#[cfg(feature = "tools-computer-use")]
 pub mod computer_use_tool;
-#[cfg(feature = "tools-browser-web")]
+#[cfg(any(feature = "tools-browser-web", feature = "tools-computer-use"))]
 pub mod control_hub;
 #[cfg(feature = "tools-browser-web")]
 pub mod control_hub_tool;
@@ -48,9 +52,9 @@ pub mod miniapp_init_tool;
 #[cfg(feature = "tools-miniapp")]
 pub mod miniapp_publish_tool;
 pub mod openbitfun_control_tool;
-#[cfg(feature = "tools-miniapp")]
+#[cfg(feature = "tools-pages")]
 pub mod page_deploy_tool;
-#[cfg(feature = "tools-miniapp")]
+#[cfg(feature = "tools-pages")]
 pub mod page_publish_tool;
 mod plan_artifact_diagnostics;
 #[cfg(feature = "tools-miniapp")]
@@ -120,9 +124,9 @@ pub use miniapp_init_tool::InitMiniAppTool;
 #[cfg(feature = "tools-miniapp")]
 pub use miniapp_publish_tool::PublishMiniAppTool;
 pub use openbitfun_control_tool::OpenBitFunControlTool;
-#[cfg(feature = "tools-miniapp")]
+#[cfg(feature = "tools-pages")]
 pub use page_deploy_tool::PageDeployTool;
-#[cfg(feature = "tools-miniapp")]
+#[cfg(feature = "tools-pages")]
 pub use page_publish_tool::PagePublishTool;
 #[cfg(feature = "tools-miniapp")]
 pub use playbook_tool::PlaybookTool;

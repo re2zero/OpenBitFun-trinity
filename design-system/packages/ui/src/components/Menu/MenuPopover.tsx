@@ -31,6 +31,8 @@ export interface MenuPopoverProps extends Omit<MenuProps, "children"> {
   open: boolean;
   onClose: () => void;
   anchorRef?: RefObject<HTMLElement | null>;
+  /** Logical owner for coordinate menus rendered outside their source tree. */
+  ownerRef?: RefObject<HTMLElement | null>;
   position?: { x: number; y: number };
   placement?: LayerPlacement;
   /** Stable wrappers must forward all props (and refs for root/item/separator). */
@@ -54,7 +56,7 @@ function ownItems(menu: HTMLElement) {
 }
 
 /** Anchored/coordinate menu with nested navigation, safe pointer corridors and focus return. */
-export function MenuPopover({ items, open, onClose, anchorRef, position, placement = "bottom", autoFocusFirstItem = true, ...props }: MenuPopoverProps) {
+export function MenuPopover({ items, open, onClose, anchorRef, ownerRef, position, placement = "bottom", autoFocusFirstItem = true, ...props }: MenuPopoverProps) {
   const markerRef = useRef<HTMLSpanElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const treeId = useId();
@@ -100,7 +102,7 @@ export function MenuPopover({ items, open, onClose, anchorRef, position, placeme
   return (
     <>
       <span ref={markerRef} hidden />
-      <Portal ownerDocument={markerRef.current?.ownerDocument}>{content}</Portal>
+      <Portal ownerDocument={markerRef.current?.ownerDocument} ownerRef={ownerRef ?? anchorRef} open={open}>{content}</Portal>
     </>
   );
 }
@@ -119,7 +121,7 @@ interface MenuLevelProps extends Omit<MenuProps, "children"> {
   parts?: MenuPopoverParts;
 }
 
-function MenuLevel({ items, open, phase, treeId, onClose, onBack, anchorRef, position, placement, menuRef: externalRef, autoFocusFirstItem, className, style, parts, ...props }: MenuLevelProps) {
+function MenuLevel({ items, open, phase, treeId, onClose, onBack, anchorRef, position, placement, menuRef: externalRef, autoFocusFirstItem, className, inlineSize, style, parts, ...props }: MenuLevelProps) {
   const MenuSurface = parts?.root ?? Menu;
   const Item = parts?.item ?? MenuItem;
   const Separator = parts?.separator ?? MenuSeparator;
@@ -195,17 +197,17 @@ function MenuLevel({ items, open, phase, treeId, onClose, onBack, anchorRef, pos
     return () => doc?.removeEventListener("keydown", keyboard, true);
   });
 
-  const submenu = activeEntry ? <SubmenuBoundary className={styles.submenuBoundary}><MenuLevel key={activeEntry.id} id={submenuId} aria-label={activeEntry.label} menuRef={submenuRef} items={activeEntry.submenu!} open={open} phase={phase} treeId={treeId} onClose={onClose} parts={parts}
+  const submenu = activeEntry ? <SubmenuBoundary className={styles.submenuBoundary}><MenuLevel key={activeEntry.id} id={submenuId} aria-label={activeEntry.label} menuRef={submenuRef} items={activeEntry.submenu!} open={open} phase={phase} treeId={treeId} onClose={onClose} parts={parts} inlineSize={inlineSize}
     onBack={() => { intent.closeNow(); submenuAnchor.current?.focus(); }} anchorRef={submenuAnchor} placement="right" autoFocusFirstItem={keyboardOpen.current}
     onPointerEnter={intent.keepOpen} onPointerLeave={intent.requestClose} /></SubmenuBoundary> : null;
 
   return <>
-    <MenuSurface {...props} ref={node => { (menuRef as { current: HTMLDivElement | null }).current = node; }} className={classNames(styles.popup, className)} autoFocusFirstItem={open && autoFocusFirstItem && Boolean(layout)} tabIndex={-1}
-      style={{ ...layout?.style, ...style, visibility: layout ? undefined : "hidden" }} data-openbitfun-menu-tree={treeId} data-placement={layout?.placement ?? placement} data-state={phase}
+    <MenuSurface {...props} ref={node => { (menuRef as { current: HTMLDivElement | null }).current = node; }} className={classNames(styles.popup, className)} inlineSize={inlineSize} autoFocusFirstItem={open && autoFocusFirstItem && Boolean(layout)} tabIndex={-1}
+      style={{ ...layout?.style, ...style, visibility: layout ? undefined : "hidden" }} data-openbitfun-native-webview-occlusion data-openbitfun-menu-tree={treeId} data-placement={layout?.placement ?? placement} data-state={phase}
       aria-hidden={!open || undefined} {...(!open ? { inert: "" } : {})} onContextMenu={event => event.preventDefault()}>
-      {items.map(item => item.separator ? <Separator key={item.id} /> : <Item key={item.id} data-menu-id={item.id} leading={item.icon ? <Leading>{item.icon}</Leading> : undefined} shortcut={item.shortcut ? <Shortcut>{item.shortcut}</Shortcut> : undefined} tone={item.tone} role={item.role} checked={item.checked}
+      {items.map(item => item.separator ? <Separator key={item.id} /> : <Item key={item.id} data-menu-id={item.id} leading={item.icon ? <Leading className={styles.icon} data-openbitfun-icon-slot="true">{item.icon}</Leading> : undefined} shortcut={item.shortcut ? <Shortcut>{item.shortcut}</Shortcut> : undefined} tone={item.tone} role={item.role} checked={item.checked}
         disabled={item.disabled} aria-disabled={item.disabled || undefined} aria-haspopup={item.submenu?.length ? "menu" : undefined} aria-expanded={item.submenu?.length ? activeEntry?.id === item.id : undefined}
-        aria-controls={activeEntry?.id === item.id ? submenuId : undefined} metadata={item.submenu?.length ? <Arrow><Icon name="chevron-right" size="sm" /></Arrow> : undefined}
+        aria-controls={activeEntry?.id === item.id ? submenuId : undefined} metadata={item.submenu?.length ? <Arrow className={styles.submenuArrow}><Icon name="chevron-right" size="sm" /></Arrow> : undefined}
         onClick={event => { event.stopPropagation(); if (item.submenu?.length) openSubmenu(item, event.currentTarget, true); else activate(item); }}
         onPointerEnter={event => { if (activeId === null || activeId === item.id) submenuAnchor.current = event.currentTarget; keyboardOpen.current = false; intent.requestChange(!item.disabled && item.submenu?.length ? item.id : null, event); }}
         onPointerLeave={intent.requestClose}
@@ -213,6 +215,10 @@ function MenuLevel({ items, open, phase, treeId, onClose, onBack, anchorRef, pos
         <Label>{item.label}</Label>
       </Item>)}
     </MenuSurface>
-    {submenu && <Portal ownerDocument={menuRef.current?.ownerDocument}>{submenu}</Portal>}
+    {submenu && <Portal ownerDocument={menuRef.current?.ownerDocument} ownerRef={menuRef} open={open}
+      surfaceRef={submenuRef} dismissOnPointerOutside onDismiss={reason => {
+        if (reason === "escape-key") { intent.closeNow(); submenuAnchor.current?.focus(); }
+        else onClose();
+      }}>{submenu}</Portal>}
   </>;
 }

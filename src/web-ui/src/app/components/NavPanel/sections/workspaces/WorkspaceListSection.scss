@@ -377,8 +377,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 16px;
-    height: 16px;
+    width: var(--_nav-icon-size-prominent);
+    height: var(--_nav-icon-size-prominent);
     flex-shrink: 0;
     color: inherit;
     /* The row color already communicates inactive, hover, and active states.
@@ -1137,8 +1137,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 16px;
-    height: 16px;
+    width: var(--_nav-icon-size-prominent);
+    height: var(--_nav-icon-size-prominent);
     flex-shrink: 0;
     border-radius: 0;
     background: transparent;
@@ -1486,4 +1486,30 @@
   &__assistant-item-menu-trigger {
     @include nav-font.nav-panel-text-icon;
   }
+}
+
+.openbitfun-nav-panel__assistant-item-name-action[data-openbitfun-component='action-item'],
+.openbitfun-nav-panel__workspace-item-name-action[data-openbitfun-component='action-item'] {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  min-block-size: 0;
+  padding: 0;
+  border-radius: 0;
+  color: inherit;
+  background: transparent;
+
+  > [data-openbitfun-part='trigger'] > [data-openbitfun-part='label'] {
+    display: contents;
+    font: inherit;
+  }
+}
+.openbitfun-nav-panel__workspace-item[data-openbitfun-state~='remote'] .openbitfun-nav-panel__workspace-item-name-action {
+  flex: 1 1 0;
+  max-width: none;
+}
+
+.openbitfun-nav-panel__assistant-item-name-action[data-openbitfun-component='action-item'] {
+  flex: 1 1 0;
+  > [data-openbitfun-part='trigger'] { width: 100%; }
 }

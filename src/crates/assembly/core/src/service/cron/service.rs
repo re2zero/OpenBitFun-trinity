@@ -5,24 +5,29 @@ use super::schedule::{
 };
 use super::store::CronJobStore;
 use super::types::{
-    CreateCronJobRequest, CronJob, CronJobPayload, CronJobTarget, CronJobTargetKind,
+    CreateCronJobRequest, CronJob, CronJobPayload, CronJobTarget, CronJobTargetKind, CronJobsFile,
     CronLaunchSpec, CronSchedule, CronWorkspaceRef, UpdateCronJobRequest, DEFAULT_RETRY_DELAY_MS,
 };
+use super::{CronJobsChangedEvent, CronJobsChangedReason, CRON_JOBS_CHANGED_EVENT};
+use crate::agentic::coordination::scheduler::DIALOG_TURN_ID_ALREADY_SETTLED_MESSAGE;
 use crate::agentic::coordination::{
     ConversationCoordinator, DialogQueuePriority, DialogScheduler, DialogSubmissionPolicy,
     DialogTriggerSource,
 };
 use crate::agentic::core::SessionConfig;
 use crate::agentic::workspace::WorkspaceBinding;
+use crate::infrastructure::events::{emit_global_event, BackendEvent};
 use crate::infrastructure::PathManager;
 use crate::service_agent_runtime::CoreServiceAgentRuntime;
 use crate::util::errors::{OpenBitFunError, OpenBitFunResult};
 use chrono::{Local, SecondsFormat, TimeZone, Utc};
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use openbitfun_agent_runtime::scheduled_job::ScheduledJobEnqueueFailureAction;
 use openbitfun_agent_runtime::sdk::AgentRuntime;
 use openbitfun_runtime_ports::{AgentDialogPrependedReminder, AgentDialogTurnRequest};
+use openbitfun_services_core::exclusive_file_lease::{ExclusiveFileLease, ExclusiveFileLeaseError};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::{Mutex, Notify, RwLock};
@@ -30,6 +35,11 @@ use tokio::time::Duration;
 use uuid::Uuid;
 
 static GLOBAL_CRON_SERVICE: OnceLock<Arc<CronService>> = OnceLock::new();
+
+/// How long a standby instance waits before re-checking whether the scheduling
+/// owner released the lease. Only a process exit releases it, so this is a
+/// takeover latency bound, not a lock timeout.
+const STANDBY_TAKEOVER_RETRY: Duration = Duration::from_secs(30);
 
 pub struct CronService {
     coordinator: Arc<ConversationCoordinator>,
@@ -39,6 +49,12 @@ pub struct CronService {
     mutation_lock: Arc<Mutex<()>>,
     wakeup: Arc<Notify>,
     runner_started: AtomicBool,
+    /// Held by the process that schedules jobs and writes `jobs.json`.
+    ///
+    /// Two desktop instances share one user data directory, so without this
+    /// lease both schedulers fire the same trigger, and the loser retries a
+    /// turn id the winner already consumed.
+    scheduling_lease: SchedulingLease,
 }
 
 impl CronService {
@@ -47,24 +63,15 @@ impl CronService {
         coordinator: Arc<ConversationCoordinator>,
         scheduler: Arc<DialogScheduler>,
     ) -> OpenBitFunResult<Arc<Self>> {
-        let store = Arc::new(CronJobStore::new(path_manager).await?);
-        let loaded = store.load().await?;
-        let current_ms = now_ms();
-
-        let mut jobs = HashMap::new();
-        let mut needs_save = false;
-
-        for mut job in loaded.jobs {
-            if jobs.contains_key(&job.id) {
-                return Err(OpenBitFunError::service(format!(
-                    "Duplicate scheduled job id found in jobs.json: {}",
-                    job.id
-                )));
-            }
-
-            needs_save |= reconcile_loaded_job(&mut job, current_ms)?;
-            jobs.insert(job.id.clone(), job);
+        // Take the scheduling lease before touching the store: it is what makes
+        // this instance the only writer of jobs.json.
+        let scheduling_lease = SchedulingLease::new(path_manager.cron_scheduler_lease_file());
+        if scheduling_lease.claim() {
+            scheduling_lease.publish_ownership();
         }
+
+        let store = Arc::new(CronJobStore::new(path_manager).await?);
+        let (jobs, needs_save) = materialize_loaded_jobs(store.load().await?).await?;
 
         let runtime = CoreServiceAgentRuntime::agent_runtime_with_dialog_turns(
             coordinator.clone(),
@@ -80,13 +87,37 @@ impl CronService {
             mutation_lock: Arc::new(Mutex::new(())),
             wakeup: Arc::new(Notify::new()),
             runner_started: AtomicBool::new(false),
+            scheduling_lease,
         });
 
+        if !service.is_scheduling_owner() {
+            warn!(
+                "Another OpenBitFun instance owns scheduled jobs; this instance runs as standby and only reads them: lease={}",
+                service.scheduling_lease.path().display()
+            );
+        }
+
         if needs_save {
-            service.persist_snapshot().await?;
+            if service.is_scheduling_owner() {
+                service.persist_snapshot().await?;
+            } else {
+                // Writing here would clobber state the owner is advancing.
+                warn!(
+                    "Deferring scheduled job store upgrade to the owning instance: lease={}",
+                    service.scheduling_lease.path().display()
+                );
+            }
         }
 
         Ok(service)
+    }
+
+    /// Whether this instance schedules jobs and owns `jobs.json`.
+    ///
+    /// Standby instances reject job changes and read the store from disk so
+    /// they never report state the owner has already replaced.
+    pub fn is_scheduling_owner(&self) -> bool {
+        self.scheduling_lease.is_owned()
     }
 
     pub fn start(self: &Arc<Self>) {
@@ -99,33 +130,129 @@ impl CronService {
         }
 
         let service = Arc::clone(self);
+        if service.is_scheduling_owner() {
+            tokio::spawn(async move {
+                service.run_loop().await;
+            });
+            return;
+        }
         tokio::spawn(async move {
-            service.run_loop().await;
+            service.run_standby_loop().await;
         });
     }
 
+    fn require_scheduling_owner(&self, operation: &str) -> OpenBitFunResult<()> {
+        self.scheduling_lease.require_owned(operation)
+    }
+
+    /// Waits for the owner's lease so this instance can take over scheduling.
+    async fn run_standby_loop(self: Arc<Self>) {
+        loop {
+            tokio::time::sleep(STANDBY_TAKEOVER_RETRY).await;
+            match self.try_take_over_scheduling().await {
+                Ok(true) => {
+                    self.run_loop().await;
+                    return;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    warn!("Failed to take over scheduled job scheduling: {}", error);
+                }
+            }
+        }
+    }
+
+    async fn try_take_over_scheduling(&self) -> OpenBitFunResult<bool> {
+        if !self.scheduling_lease.claim() {
+            return Ok(false);
+        }
+        if self.is_scheduling_owner() {
+            return Ok(true);
+        }
+
+        // The previous owner advanced job state while this instance was standby,
+        // so adopt the store before scheduling from it. Ownership stays
+        // unpublished until the adoption is in memory, and standby callers are
+        // refused during that window instead of writing a stale map.
+        let (jobs, needs_save) = self.load_jobs_from_store().await?;
+        *self.jobs.write().await = jobs;
+        self.scheduling_lease.publish_ownership();
+        if needs_save {
+            self.persist_snapshot().await?;
+        }
+        self.notify_jobs_changed(CronJobsChangedReason::StateChanged, None)
+            .await;
+        info!(
+            "Scheduled job scheduler took ownership from a released lease: lease={}",
+            self.scheduling_lease.path().display()
+        );
+        Ok(true)
+    }
+
+    async fn load_jobs_from_store(&self) -> OpenBitFunResult<(HashMap<String, CronJob>, bool)> {
+        materialize_loaded_jobs(self.store.load().await?).await
+    }
+
+    /// Standby readers see the owner's current state instead of their own
+    /// snapshot from startup. Owner reads stay on the in-memory map, which is
+    /// authoritative while it holds the lease.
+    async fn refresh_from_store_when_standby(&self) {
+        if self.is_scheduling_owner() {
+            return;
+        }
+        match self.load_jobs_from_store().await {
+            Ok((jobs, _)) => {
+                *self.jobs.write().await = jobs;
+            }
+            Err(error) => {
+                warn!(
+                    "Failed to read scheduled jobs from the owning instance's store: {}",
+                    error
+                );
+            }
+        }
+    }
+
     pub async fn list_jobs(&self) -> Vec<CronJob> {
+        self.refresh_from_store_when_standby().await;
         let jobs = self.jobs.read().await;
         jobs.values().cloned().collect::<Vec<_>>()
     }
 
+    /// Broadcast a job-set change hint to product surfaces.
+    ///
+    /// The event bus is created later than this service during startup, so an
+    /// early emit is a no-op; surfaces still bootstrap their lists with an
+    /// explicit `list_cron_jobs` fetch.
+    async fn notify_jobs_changed(&self, reason: CronJobsChangedReason, job_id: Option<String>) {
+        let payload = match serde_json::to_value(CronJobsChangedEvent { reason, job_id }) {
+            Ok(payload) => payload,
+            Err(error) => {
+                warn!("Failed to serialize scheduled job change event: {}", error);
+                return;
+            }
+        };
+        if let Err(error) = emit_global_event(BackendEvent::Custom {
+            event_name: CRON_JOBS_CHANGED_EVENT.to_string(),
+            payload,
+        })
+        .await
+        {
+            warn!("Failed to emit scheduled job change event: {}", error);
+        }
+    }
+
     pub async fn list_jobs_filtered(
         &self,
-        workspace_path: Option<&str>,
         workspace_id: Option<&str>,
-        remote_connection_id: Option<&str>,
         session_id: Option<&str>,
         target_kind: Option<CronJobTargetKind>,
     ) -> Vec<CronJob> {
+        self.refresh_from_store_when_standby().await;
         let jobs = self.jobs.read().await;
         jobs.values()
             .filter(|job| {
-                let workspace_matches = matches_workspace_filter(
-                    job.workspace(),
-                    workspace_path,
-                    workspace_id,
-                    remote_connection_id,
-                );
+                let workspace_matches = matches_workspace_filter(job.workspace(), workspace_id);
                 let session_matches = session_id
                     .map(|session_id| job.session_id() == Some(session_id))
                     .unwrap_or(true);
@@ -139,10 +266,12 @@ impl CronService {
     }
 
     pub async fn get_job(&self, job_id: &str) -> Option<CronJob> {
+        self.refresh_from_store_when_standby().await;
         self.jobs.read().await.get(job_id).cloned()
     }
 
     pub async fn create_job(&self, request: CreateCronJobRequest) -> OpenBitFunResult<CronJob> {
+        self.require_scheduling_owner("creating a scheduled job")?;
         let target = self.canonicalize_target(request.target).await?;
         let _guard = self.mutation_lock.lock().await;
         let mut jobs = self.jobs.write().await;
@@ -173,6 +302,8 @@ impl CronService {
 
         self.persist_jobs_locked(&jobs).await?;
         drop(jobs);
+        self.notify_jobs_changed(CronJobsChangedReason::Created, Some(job.id.clone()))
+            .await;
         self.wakeup.notify_one();
 
         Ok(job)
@@ -183,6 +314,7 @@ impl CronService {
         job_id: &str,
         request: UpdateCronJobRequest,
     ) -> OpenBitFunResult<CronJob> {
+        self.require_scheduling_owner("updating a scheduled job")?;
         let canonicalized_target = match request.target {
             Some(target) => Some(self.canonicalize_target(target).await?),
             None => None,
@@ -232,6 +364,8 @@ impl CronService {
         let updated = job.clone();
         self.persist_jobs_locked(&jobs).await?;
         drop(jobs);
+        self.notify_jobs_changed(CronJobsChangedReason::Updated, Some(updated.id.clone()))
+            .await;
         self.wakeup.notify_one();
 
         Ok(updated)
@@ -249,12 +383,15 @@ impl CronService {
     }
 
     pub async fn delete_job(&self, job_id: &str) -> OpenBitFunResult<bool> {
+        self.require_scheduling_owner("deleting a scheduled job")?;
         let _guard = self.mutation_lock.lock().await;
         let mut jobs = self.jobs.write().await;
         let existed = jobs.remove(job_id).is_some();
         if existed {
             self.persist_jobs_locked(&jobs).await?;
             drop(jobs);
+            self.notify_jobs_changed(CronJobsChangedReason::Deleted, Some(job_id.to_string()))
+                .await;
             self.wakeup.notify_one();
         }
         Ok(existed)
@@ -262,6 +399,7 @@ impl CronService {
 
     /// Remove all scheduled jobs bound to the given session (e.g. after session delete).
     pub async fn delete_jobs_for_session(&self, session_id: &str) -> OpenBitFunResult<usize> {
+        self.require_scheduling_owner("deleting scheduled jobs of a session")?;
         let session_id = session_id.trim();
         if session_id.is_empty() {
             return Ok(0);
@@ -274,12 +412,15 @@ impl CronService {
         if removed > 0 {
             self.persist_jobs_locked(&jobs).await?;
             drop(jobs);
+            self.notify_jobs_changed(CronJobsChangedReason::Deleted, None)
+                .await;
             self.wakeup.notify_one();
         }
         Ok(removed)
     }
 
     pub async fn run_job_now(&self, job_id: &str) -> OpenBitFunResult<CronJob> {
+        self.require_scheduling_owner("running a scheduled job now")?;
         {
             let _guard = self.mutation_lock.lock().await;
             let mut jobs = self.jobs.write().await;
@@ -293,6 +434,11 @@ impl CronService {
 
             self.persist_jobs_locked(&jobs).await?;
             drop(jobs);
+            self.notify_jobs_changed(
+                CronJobsChangedReason::StateChanged,
+                Some(job_id.to_string()),
+            )
+            .await;
             self.wakeup.notify_one();
         }
 
@@ -342,18 +488,32 @@ impl CronService {
     where
         F: FnOnce(&mut CronJob, i64),
     {
+        if !self.is_scheduling_owner() {
+            // Turn lifecycle events reach every instance, but only the owner
+            // tracks job state; writing here would race the owner's store.
+            debug!(
+                "Ignoring scheduled job turn state change while standby: turn_id={}",
+                turn_id
+            );
+            return Ok(());
+        }
         let _guard = self.mutation_lock.lock().await;
         let mut jobs = self.jobs.write().await;
-        let Some(job) = jobs
+        let Some(job_id) = jobs
             .values_mut()
             .find(|job| job.state.active_turn_id.as_deref() == Some(turn_id))
+            .map(|job| {
+                update(job, now_ms());
+                job.id.clone()
+            })
         else {
             return Ok(());
         };
 
-        update(job, now_ms());
         self.persist_jobs_locked(&jobs).await?;
         drop(jobs);
+        self.notify_jobs_changed(CronJobsChangedReason::StateChanged, Some(job_id))
+            .await;
         self.wakeup.notify_one();
         Ok(())
     }
@@ -518,6 +678,22 @@ impl CronService {
                     scheduled_at_ms
                 );
             }
+            Err(error) if cron_enqueue_error_is_turn_already_settled(&error) => {
+                job.state.mark_trigger_delivered_elsewhere(now_after_submit);
+                job.updated_at_ms = now_after_submit;
+
+                if job.is_one_shot() {
+                    job.enabled = false;
+                }
+
+                info!(
+                    "Scheduled job trigger was already delivered by another owner: job_id={}, target_kind={:?}, target_session_id={}, scheduled_at_ms={}",
+                    job.id,
+                    job.target_kind(),
+                    submit_target_session_id(&enqueue_input),
+                    scheduled_at_ms
+                );
+            }
             Err(error) => {
                 let missing_session = matches!(job.target_kind(), CronJobTargetKind::Session)
                     && cron_enqueue_error_is_missing_session(&error);
@@ -553,6 +729,11 @@ impl CronService {
 
         self.persist_jobs_locked(&jobs).await?;
         drop(jobs);
+        self.notify_jobs_changed(
+            CronJobsChangedReason::StateChanged,
+            Some(job_id.to_string()),
+        )
+        .await;
         self.wakeup.notify_one();
         Ok(())
     }
@@ -574,6 +755,7 @@ impl CronService {
                 execution: Default::default(),
                 agent_type: resolved.agent_type,
                 workspace_path: Some(resolved.workspace_path),
+                workspace_id: resolved.workspace_id,
                 remote_connection_id: resolved.remote_connection_id,
                 remote_ssh_host: resolved.remote_ssh_host,
                 policy: scheduled_job_policy(),
@@ -591,7 +773,11 @@ impl CronService {
         &self,
         enqueue_input: &EnqueueInput,
     ) -> Result<ResolvedEnqueueSubmission, String> {
-        match &enqueue_input.target {
+        let target = self
+            .canonicalize_target(enqueue_input.target.clone())
+            .await
+            .map_err(|error| error.to_string())?;
+        match &target {
             CronJobTarget::Session {
                 session_id,
                 workspace,
@@ -604,6 +790,7 @@ impl CronService {
                     .unwrap_or_default();
                 Ok(ResolvedEnqueueSubmission {
                     session_id: session_id.clone(),
+                    workspace_id: workspace.workspace_id.clone(),
                     workspace_path: workspace.workspace_path.clone(),
                     remote_connection_id: workspace.remote_connection_id.clone(),
                     remote_ssh_host: workspace.remote_ssh_host.clone(),
@@ -639,6 +826,7 @@ impl CronService {
 
                 Ok(ResolvedEnqueueSubmission {
                     session_id: created.session_id,
+                    workspace_id: workspace.workspace_id.clone(),
                     workspace_path: workspace.workspace_path.clone(),
                     remote_connection_id: workspace.remote_connection_id.clone(),
                     remote_ssh_host: workspace.remote_ssh_host.clone(),
@@ -658,6 +846,16 @@ impl CronService {
         {
             *workspace =
                 Self::resolve_session_target_workspace_ref(&self.coordinator, session_id).await?;
+        } else {
+            // The only path reader is the temporary persisted/wire upgrade adapter.
+            target = crate::service::workspace::legacy_compat::upgrade_legacy_cron_target(target)
+                .await?;
+            if let CronJobTarget::Workspace { workspace, .. } = &mut target {
+                let id = workspace.workspace_id.as_deref().ok_or_else(|| {
+                    OpenBitFunError::validation("Scheduled job workspace ID is required")
+                })?;
+                *workspace = workspace_ref_from_binding(&WorkspaceBinding::resolve(id).await?);
+            }
         }
 
         Ok(target)
@@ -694,6 +892,123 @@ pub fn get_global_cron_service() -> Option<Arc<CronService>> {
 
 pub fn set_global_cron_service(service: Arc<CronService>) {
     let _ = GLOBAL_CRON_SERVICE.set(service);
+}
+
+/// Process-local view of the cross-process lease that decides which instance
+/// schedules jobs and writes `jobs.json`.
+///
+/// The lease is held until the process exits; dropping it releases the OS lock
+/// so a standby instance can take over.
+struct SchedulingLease {
+    path: PathBuf,
+    lease: std::sync::Mutex<Option<ExclusiveFileLease>>,
+    owned: AtomicBool,
+}
+
+impl SchedulingLease {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            lease: std::sync::Mutex::new(None),
+            owned: AtomicBool::new(false),
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn is_owned(&self) -> bool {
+        self.owned.load(Ordering::SeqCst)
+    }
+
+    /// Takes the cross-process lease without publishing ownership, so the
+    /// caller can adopt the store it protects first. `false` means another
+    /// process holds it and this instance stays standby.
+    ///
+    /// A lease that cannot be created at all fails open: scheduled jobs keep
+    /// working exactly as they did before the lease existed, instead of a
+    /// product feature going silently dead because one lock file is
+    /// unavailable. That case stays loud in the log and leaves the
+    /// multi-instance hazard in place.
+    fn claim(&self) -> bool {
+        if self.is_owned() {
+            return true;
+        }
+        match ExclusiveFileLease::try_acquire(&self.path) {
+            Ok(lease) => {
+                *self
+                    .lease
+                    .lock()
+                    .expect("Scheduled job lease slot poisoned") = Some(lease);
+                true
+            }
+            Err(ExclusiveFileLeaseError::InUse) => false,
+            Err(error) => {
+                error!(
+                    "Failed to acquire the scheduled job lease {}; scheduling without cross-instance protection: {}",
+                    self.path.display(),
+                    error
+                );
+                true
+            }
+        }
+    }
+
+    fn publish_ownership(&self) {
+        self.owned.store(true, Ordering::SeqCst);
+    }
+
+    fn require_owned(&self, operation: &str) -> OpenBitFunResult<()> {
+        if self.is_owned() {
+            return Ok(());
+        }
+        Err(OpenBitFunError::service(format!(
+            "Scheduled jobs are managed by the other running OpenBitFun instance (lease: {}); {} was refused here instead of overwriting its state",
+            self.path.display(),
+            operation
+        )))
+    }
+}
+
+/// Turns the persisted file into the in-memory job map, applying the one-time
+/// target upgrade and the startup reconciliation. The returned flag reports
+/// whether the result differs from what is on disk.
+async fn materialize_loaded_jobs(
+    loaded: CronJobsFile,
+) -> OpenBitFunResult<(HashMap<String, CronJob>, bool)> {
+    let current_ms = now_ms();
+    let mut jobs = HashMap::new();
+    let mut needs_save = false;
+
+    for mut job in loaded.jobs {
+        if jobs.contains_key(&job.id) {
+            return Err(OpenBitFunError::service(format!(
+                "Duplicate scheduled job id found in jobs.json: {}",
+                job.id
+            )));
+        }
+
+        // Upgrade persisted pre-ID targets once. Unavailable/ambiguous records
+        // stay on disk and fail explicitly when executed, never select a folder.
+        let old_target = job.target.clone();
+        match crate::service::workspace::legacy_compat::upgrade_legacy_cron_target(
+            job.target.clone(),
+        )
+        .await
+        {
+            Ok(target) => job.target = target,
+            Err(error) => warn!(
+                "Unable to upgrade scheduled job workspace: job_id={}, error={}",
+                job.id, error
+            ),
+        }
+        needs_save |= job.target != old_target;
+        needs_save |= reconcile_loaded_job(&mut job, current_ms)?;
+        jobs.insert(job.id.clone(), job);
+    }
+
+    Ok((jobs, needs_save))
 }
 
 fn reconcile_loaded_job(job: &mut CronJob, now_ms: i64) -> OpenBitFunResult<bool> {
@@ -808,10 +1123,10 @@ fn materialize_workspace_ref(workspace: CronWorkspaceRef) -> CronWorkspaceRef {
             .workspace_id
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
-        workspace_path: normalize_workspace_path_for_matching(&workspace.workspace_path),
+        workspace_path: normalize_workspace_io_path(&workspace.workspace_path),
         project_workspace_path: workspace
             .project_workspace_path
-            .map(|value| normalize_workspace_path_for_matching(&value))
+            .map(|value| normalize_workspace_io_path(&value))
             .filter(|value| !value.is_empty()),
         execution_target: workspace.execution_target,
         remote_connection_id: workspace
@@ -828,8 +1143,8 @@ fn materialize_workspace_ref(workspace: CronWorkspaceRef) -> CronWorkspaceRef {
 fn workspace_ref_from_binding(binding: &WorkspaceBinding) -> CronWorkspaceRef {
     CronWorkspaceRef {
         workspace_id: binding.workspace_id.clone(),
-        workspace_path: normalize_workspace_path_for_matching(&binding.root_path_string()),
-        project_workspace_path: Some(normalize_workspace_path_for_matching(
+        workspace_path: normalize_workspace_io_path(&binding.root_path_string()),
+        project_workspace_path: Some(normalize_workspace_io_path(
             &binding.project_root_path_string(),
         )),
         execution_target: binding.execution_target.clone(),
@@ -892,30 +1207,13 @@ fn validate_workspace_ref(workspace: &CronWorkspaceRef) -> OpenBitFunResult<()> 
     Ok(())
 }
 
-fn matches_workspace_filter(
-    workspace: &CronWorkspaceRef,
-    workspace_path: Option<&str>,
-    workspace_id: Option<&str>,
-    remote_connection_id: Option<&str>,
-) -> bool {
-    let normalized_job_workspace_path =
-        normalize_workspace_path_for_matching(&workspace.workspace_path);
-    let workspace_path_matches = workspace_path
-        .map(|value| normalized_job_workspace_path == normalize_workspace_path_for_matching(value))
-        .unwrap_or(true);
-    let workspace_id_matches = workspace_id
-        .map(|value| {
-            workspace.workspace_id.as_deref() == Some(value) || workspace.workspace_id.is_none()
-        })
-        .unwrap_or(true);
-    let remote_connection_matches = remote_connection_id
-        .map(|value| workspace.remote_connection_id.as_deref() == Some(value))
-        .unwrap_or(true);
-
-    workspace_path_matches && workspace_id_matches && remote_connection_matches
+fn matches_workspace_filter(workspace: &CronWorkspaceRef, workspace_id: Option<&str>) -> bool {
+    workspace_id
+        .map(|id| workspace.workspace_id.as_deref() == Some(id))
+        .unwrap_or(true)
 }
 
-fn normalize_workspace_path_for_matching(path: &str) -> String {
+fn normalize_workspace_io_path(path: &str) -> String {
     let mut normalized = path.trim().replace('\\', "/");
 
     if normalized.starts_with("file://") {
@@ -1014,6 +1312,7 @@ struct EnqueueInput {
 
 struct ResolvedEnqueueSubmission {
     session_id: String,
+    workspace_id: Option<String>,
     workspace_path: String,
     remote_connection_id: Option<String>,
     remote_ssh_host: Option<String>,
@@ -1027,6 +1326,15 @@ fn submit_target_session_id(enqueue_input: &EnqueueInput) -> &str {
     }
 }
 
+/// The trigger's dialog turn already exists, so this trigger was delivered by
+/// another owner instead of failing.
+///
+/// The trigger's turn ID is derived from its scheduled timestamp, so every retry
+/// for the same trigger is rejected the same way; retrying can never succeed.
+fn cron_enqueue_error_is_turn_already_settled(error: &str) -> bool {
+    error.contains(DIALOG_TURN_ID_ALREADY_SETTLED_MESSAGE)
+}
+
 /// Permanent failure: coordinator cannot load session metadata (session deleted from disk).
 fn cron_enqueue_error_is_missing_session(error: &str) -> bool {
     error.contains("Session metadata not found")
@@ -1035,7 +1343,7 @@ fn cron_enqueue_error_is_missing_session(error: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::service::cron::CronJobState;
+    use crate::service::cron::{CronJobState, CRON_JOBS_VERSION};
 
     fn sample_job(schedule: CronSchedule) -> CronJob {
         CronJob {
@@ -1062,6 +1370,128 @@ mod tests {
             updated_at_ms: 0,
             state: CronJobState::default(),
         }
+    }
+
+    #[test]
+    fn enqueue_failure_classifies_already_delivered_trigger() {
+        assert!(cron_enqueue_error_is_turn_already_settled(&format!(
+            "{}: session_id=session_1, turn_id=cronjob_cron_test_1000",
+            DIALOG_TURN_ID_ALREADY_SETTLED_MESSAGE
+        )));
+        assert!(!cron_enqueue_error_is_turn_already_settled(
+            "Session is already open for writing: session_1"
+        ));
+        assert!(!cron_enqueue_error_is_turn_already_settled(
+            "Session metadata not found"
+        ));
+    }
+
+    #[tokio::test]
+    async fn loaded_jobs_are_rewritten_when_they_gain_their_first_anchor() {
+        let mut job = sample_job(CronSchedule::Every {
+            every_ms: 60_000,
+            anchor_ms: None,
+        });
+        // An id-carrying workspace needs no legacy upgrade, so the pending save
+        // can only come from the anchor reconciliation.
+        if let CronJobTarget::Session { workspace, .. } = &mut job.target {
+            workspace.workspace_id = Some("workspace_1".to_string());
+        }
+
+        let (jobs, needs_save) = materialize_loaded_jobs(CronJobsFile {
+            version: CRON_JOBS_VERSION,
+            jobs: vec![job],
+        })
+        .await
+        .expect("load");
+
+        assert_eq!(jobs.len(), 1);
+        assert!(
+            needs_save,
+            "a job that gains its first schedule anchor must be written back"
+        );
+    }
+
+    #[tokio::test]
+    async fn loaded_jobs_reject_duplicate_ids_before_scheduling() {
+        let mut job = sample_job(CronSchedule::Every {
+            every_ms: 60_000,
+            anchor_ms: Some(0),
+        });
+        if let CronJobTarget::Session { workspace, .. } = &mut job.target {
+            workspace.workspace_id = Some("workspace_1".to_string());
+        }
+
+        let error = materialize_loaded_jobs(CronJobsFile {
+            version: CRON_JOBS_VERSION,
+            jobs: vec![job.clone(), job],
+        })
+        .await
+        .expect_err("duplicate ids must be rejected");
+
+        assert!(error.to_string().contains("Duplicate scheduled job id"));
+    }
+
+    #[test]
+    fn a_second_lease_on_the_same_path_stays_standby_and_refuses_writes() {
+        let project_root = tempfile::tempdir().expect("project root");
+        let lease_path = project_root.path().join("cron").join("scheduler.lock");
+
+        let owner = SchedulingLease::new(lease_path.clone());
+        assert!(owner.claim(), "first claim");
+        owner.publish_ownership();
+        assert!(owner.is_owned());
+
+        let standby = SchedulingLease::new(lease_path.clone());
+        assert!(!standby.claim(), "the lease is held elsewhere");
+        assert!(!standby.is_owned());
+
+        let error = standby
+            .require_owned("updating a scheduled job")
+            .expect_err("standby must refuse job changes");
+        assert!(error.to_string().contains("managed by the other running"));
+        assert!(error.to_string().contains("scheduler.lock"));
+
+        // The leaseless owner stays able to act on its own store.
+        owner
+            .require_owned("updating a scheduled job")
+            .expect("owner may write");
+    }
+
+    #[test]
+    fn dropping_the_owner_releases_the_lease_for_takeover() {
+        let project_root = tempfile::tempdir().expect("project root");
+        let lease_path = project_root.path().join("cron").join("scheduler.lock");
+
+        let owner = SchedulingLease::new(lease_path.clone());
+        assert!(owner.claim(), "first claim");
+        owner.publish_ownership();
+        drop(owner);
+
+        let standby = SchedulingLease::new(lease_path);
+        assert!(
+            standby.claim(),
+            "a released lease must be claimable for takeover"
+        );
+        assert!(!standby.is_owned(), "ownership needs an explicit publish");
+        standby.publish_ownership();
+        assert!(standby.is_owned());
+    }
+
+    #[test]
+    fn an_unusable_lease_path_fails_open_instead_of_disabling_scheduling() {
+        let project_root = tempfile::tempdir().expect("project root");
+        // A regular file where the lease directory should be makes the lease
+        // impossible to create, which is not the same as "someone else holds it".
+        let blocking_file = project_root.path().join("cron");
+        std::fs::write(&blocking_file, b"not a directory").expect("blocking file");
+
+        let lease = SchedulingLease::new(blocking_file.join("scheduler.lock"));
+
+        assert!(
+            lease.claim(),
+            "an unusable lease must keep the pre-lease scheduling behavior"
+        );
     }
 
     #[test]
@@ -1094,7 +1524,7 @@ mod tests {
     }
 
     #[test]
-    fn matches_workspace_filter_tolerates_separator_differences() {
+    fn workspace_filter_uses_id_even_when_paths_differ() {
         let workspace = CronWorkspaceRef {
             workspace_id: Some("local_workspace".to_string()),
             workspace_path: r"C:\Users\wsp\.openbitfun\personal_assistant\workspace".to_string(),
@@ -1106,14 +1536,16 @@ mod tests {
 
         assert!(matches_workspace_filter(
             &workspace,
-            Some("C:/Users/wsp/.openbitfun/personal_assistant/workspace"),
-            Some("local_workspace"),
-            None,
+            Some("local_workspace")
+        ));
+        assert!(!matches_workspace_filter(
+            &workspace,
+            Some("another-workspace")
         ));
     }
 
     #[test]
-    fn matches_workspace_filter_normalizes_remote_like_paths() {
+    fn workspace_filter_never_matches_an_unmigrated_record_by_path() {
         let workspace = CronWorkspaceRef {
             workspace_id: None,
             workspace_path: "/home/wsp/projects/test/".to_string(),
@@ -1123,12 +1555,11 @@ mod tests {
             remote_ssh_host: Some("host-1".to_string()),
         };
 
-        assert!(matches_workspace_filter(
+        assert!(!matches_workspace_filter(
             &workspace,
-            Some(r"\home\wsp\projects\test"),
-            None,
-            Some("ssh-1"),
+            Some("remote-workspace")
         ));
+        assert!(matches_workspace_filter(&workspace, None));
     }
 
     #[test]

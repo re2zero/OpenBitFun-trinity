@@ -15,7 +15,7 @@
 //!     `execute_forwarded_turn`, `apply_interactive_request`.
 
 use crate::service_agent_runtime::{
-    remote_opened_workspace_catalog, remote_workspace_display_name,
+    remote_opened_workspace_catalog, remote_workspace_display_name, remote_workspace_metadata,
 };
 use log::{error, info};
 use serde_json::Value;
@@ -178,7 +178,7 @@ fn ready_to_chat_body(state: &BotChatState, s: &'static BotStrings) -> Option<St
 /// never resolve a peer path against this host's workspace service.
 async fn refresh_assistant_name(state: &mut BotChatState) {
     use crate::service::workspace::get_global_workspace_service;
-    if state.active_remote_device.is_some() || state.current_assistant.is_none() {
+    if state.active_remote_device.is_some() || state.assistant_workspace_ref().is_none() {
         return;
     }
     let Some(service) = get_global_workspace_service() else {
@@ -191,14 +191,25 @@ fn refresh_assistant_name_from_workspaces(
     state: &mut BotChatState,
     workspaces: &[crate::service::workspace::WorkspaceInfo],
 ) {
-    let Some(path) = state.current_assistant.as_deref() else {
+    let Some(reference) = state.assistant_workspace_ref() else {
         return;
     };
-    if let Some(workspace) = workspaces
-        .iter()
-        .find(|workspace| workspace.root_path.to_string_lossy() == path)
-    {
-        state.current_assistant_name = Some(remote_workspace_display_name(workspace).to_string());
+    // Upgrade-only ingress. Explicit IDs never fall back to a legacy path.
+    match crate::service::workspace::legacy_compat::resolve_legacy_workspace_reference(
+        workspaces,
+        reference.workspace_id.as_deref(),
+        &reference.path,
+        None,
+        None,
+    ) {
+        Ok(Some(workspace)) => {
+            state.current_assistant_id = Some(workspace.id.clone());
+            state.current_assistant = Some(workspace.root_path.to_string_lossy().into_owned());
+            state.current_assistant_name =
+                Some(remote_workspace_display_name(&workspace).to_string());
+        }
+        Ok(None) => {}
+        Err(error) => log::warn!("Failed to upgrade bot assistant workspace identity: {error}"),
     }
 }
 
@@ -374,6 +385,9 @@ async fn start_switch_model(state: &mut BotChatState, s: &'static BotStrings) ->
         }
     };
 
+    // A bot menu reads the configured models and the session selection only: the
+    // models.dev bodies belong to the host's own settings surface, and a chat
+    // controller never offers provider or reasoning-catalog editing.
     let catalog = match CoreServiceAgentRuntime::load_remote_model_catalog(Some(&session_id)).await
     {
         Ok(c) => c,
@@ -470,21 +484,12 @@ async fn select_model(
 
 async fn open_bot_workspace(
     workspace_service: &crate::service::workspace::WorkspaceService,
-    path: std::path::PathBuf,
-    remote_connection_id: Option<&str>,
-    remote_ssh_host: Option<&str>,
-    log_context: &str,
+    workspace_id: &str,
 ) -> Result<crate::service::workspace::WorkspaceInfo, String> {
     let coordinator = crate::agentic::coordination::get_global_coordinator()
         .ok_or_else(|| "Conversation coordinator not initialized".to_string())?;
     coordinator
-        .open_workspace_with_runtime_ownership(
-            workspace_service,
-            path,
-            remote_connection_id,
-            remote_ssh_host,
-            log_context,
-        )
+        .select_workspace_with_runtime_ownership(workspace_service, workspace_id)
         .await
         .map_err(|error| error.to_string())
 }
@@ -521,18 +526,11 @@ pub async fn bootstrap_im_chat_after_pairing(state: &mut BotChatState) -> String
         return s.bootstrap_workspace_unavailable.to_string();
     };
 
-    if let Err(e) = open_bot_workspace(
-        ws_service.as_ref(),
-        ws_info.root_path.clone(),
-        None,
-        None,
-        "IM bot pairing",
-    )
-    .await
-    {
+    if let Err(e) = open_bot_workspace(ws_service.as_ref(), &ws_info.id).await {
         return format!("{}{e}", s.workspace_open_failed_prefix);
     }
 
+    state.current_assistant_id = Some(ws_info.id.clone());
     state.current_assistant = Some(ws_info.root_path.to_string_lossy().to_string());
     state.current_assistant_name = Some(remote_workspace_display_name(&ws_info).to_string());
     state.current_session_id = None;
@@ -689,6 +687,21 @@ pub async fn handle_command(
     cmd: BotCommand,
     images: Vec<super::super::remote_server::ImageAttachment>,
 ) -> HandleResult {
+    if state.active_remote_device.is_none()
+        && !state.account_remote_context
+        && state.current_workspace.as_ref().is_some_and(|workspace| {
+            workspace.remote_ssh_host.as_deref().map(str::trim) == Some("localhost")
+                && workspace
+                    .remote_connection_id
+                    .as_deref()
+                    .is_none_or(|id| id.trim().is_empty())
+        })
+    {
+        if let Some(service) = crate::service::workspace::get_global_workspace_service() {
+            repair_local_bot_workspace_state(state, &service.list_workspace_infos().await);
+        }
+    }
+
     let image_contexts: Vec<crate::agentic::image_analysis::ImageContextData> =
         super::super::remote_server::images_to_contexts(if images.is_empty() {
             None
@@ -1033,12 +1046,20 @@ fn remote_workspace_choices(response: &str) -> Result<Vec<BotWorkspaceChoice>, S
                     .filter(|value| !value.is_empty())
             };
             let path = text("path")?;
-            Some(BotWorkspaceChoice::new(
-                path,
-                text("name").unwrap_or(path),
-                text("remote_connection_id").map(str::to_string),
-                text("remote_ssh_host").map(str::to_string),
-            ))
+            let local = matches!(text("workspace_kind"), Some("normal" | "assistant"));
+            Some(
+                BotWorkspaceChoice::new(
+                    path,
+                    text("name").unwrap_or(path),
+                    text("remote_connection_id")
+                        .filter(|_| !local)
+                        .map(str::to_string),
+                    text("remote_ssh_host")
+                        .filter(|_| !local)
+                        .map(str::to_string),
+                )
+                .with_workspace_id(text("workspace_id").map(str::to_string)),
+            )
         })
         .collect())
 }
@@ -1083,6 +1104,7 @@ fn local_pro_workspace_choices(
                 workspace.remote_connection_id,
                 workspace.remote_ssh_host,
             )
+            .with_workspace_id(Some(workspace.workspace_id))
         })
         .collect()
 }
@@ -1092,6 +1114,9 @@ fn current_workspace_choice<'a>(
     selected: &BotWorkspaceChoice,
 ) -> Option<&'a BotWorkspaceChoice> {
     options.iter().find(|option| {
+        if let Some(id) = selected.workspace_id.as_deref() {
+            return option.workspace_id.as_deref() == Some(id);
+        }
         option.path == selected.path
             && option.remote_connection_id == selected.remote_connection_id
             && option.remote_ssh_host == selected.remote_ssh_host
@@ -1123,7 +1148,7 @@ async fn start_local_switch(
             .filter(|workspace| {
                 workspace.kind == openbitfun_runtime_ports::RemoteWorkspaceKind::Assistant
             })
-            .map(|workspace| (workspace.path, workspace.name))
+            .map(|workspace| (workspace.workspace_id, workspace.name))
             .collect();
         if options.is_empty() {
             return result_from_menu(
@@ -1176,10 +1201,20 @@ fn workspace_selection_view(
     let mut items = Vec::new();
     let mut body = String::new();
     for (i, choice) in options.iter().enumerate() {
+        // The ID decides the current item whenever both sides carry one; the
+        // legacy triple is only for rows a pre-ID host could not label.
         let is_current = state.current_workspace.as_ref().is_some_and(|current| {
-            current.path == choice.path
-                && current.remote_connection_id == choice.remote_connection_id
-                && current.remote_ssh_host == choice.remote_ssh_host
+            match (
+                current.workspace_id.as_deref(),
+                choice.workspace_id.as_deref(),
+            ) {
+                (Some(current_id), Some(choice_id)) => current_id == choice_id,
+                _ => {
+                    current.path == choice.path
+                        && current.remote_connection_id == choice.remote_connection_id
+                        && current.remote_ssh_host == choice.remote_ssh_host
+                }
+            }
         });
         let marker = if is_current { s.current_marker } else { "" };
         let host_hint = choice
@@ -1214,8 +1249,8 @@ fn assistant_selection_view(
 ) -> MenuView {
     let mut items = Vec::new();
     let mut body = String::new();
-    for (i, (path, name)) in options.iter().enumerate() {
-        let is_current = state.current_assistant.as_deref() == Some(path.as_str());
+    for (i, (workspace_id, name)) in options.iter().enumerate() {
+        let is_current = state.current_assistant_id.as_deref() == Some(workspace_id.as_str());
         let marker = if is_current { s.current_marker } else { "" };
         body.push_str(&format!("{}. {}{}\n", i + 1, name, marker));
         items.push(MenuItem::default(
@@ -1283,12 +1318,21 @@ async fn select_workspace(
             let result = show_workspace_choices(state, options, s);
             return workspace_list_changed_result(state, result, s);
         };
-        let cmd = serde_json::json!({
-            "cmd": "set_workspace",
-            "path": choice.path,
-            "remote_connection_id": choice.remote_connection_id,
-            "remote_ssh_host": choice.remote_ssh_host,
-        });
+        // A choice the device labelled with an ID is selected by that ID
+        // alone, so an ID-aware host can never fall back to the path. Rows
+        // from a pre-ID host carry no ID and get the legacy projection.
+        let cmd = match choice.workspace_id.as_deref() {
+            Some(workspace_id) => serde_json::json!({
+                "cmd": "set_workspace",
+                "workspace_id": workspace_id,
+            }),
+            None => serde_json::json!({
+                "cmd": "set_workspace",
+                "path": choice.path,
+                "remote_connection_id": choice.remote_connection_id,
+                "remote_ssh_host": choice.remote_ssh_host,
+            }),
+        };
         let cmd_json = serde_json::to_string(&cmd).unwrap_or_default();
         return match exec_remote_rpc(state, &cmd_json).await {
             Ok(resp) => {
@@ -1328,6 +1372,12 @@ async fn select_workspace(
                         .and_then(|value| value.as_str())
                         .map(str::to_string)
                         .or_else(|| choice.remote_ssh_host.clone()),
+                )
+                .with_workspace_id(
+                    val.get("workspace_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .or_else(|| choice.workspace_id.clone()),
                 );
                 state.current_workspace = Some(workspace_ref);
                 state.current_session_id = None;
@@ -1365,6 +1415,45 @@ async fn select_workspace(
     select_local_workspace(state, &ws_service, choice, s).await
 }
 
+fn bot_workspace_ref(workspace: &crate::service::workspace::WorkspaceInfo) -> BotWorkspaceRef {
+    BotWorkspaceRef::with_identity(
+        workspace.root_path.to_string_lossy().to_string(),
+        remote_workspace_metadata(
+            &workspace.workspace_kind,
+            &workspace.metadata,
+            "connectionId",
+        ),
+        remote_workspace_metadata(&workspace.workspace_kind, &workspace.metadata, "sshHost"),
+    )
+    .with_workspace_id(Some(workspace.id.clone()))
+}
+
+/// Repair the host-only local marker emitted by older bot versions using this
+/// host's registry. Never reinterpret another device's paths or an explicit SSH
+/// connection, and preserve ambiguous local/remote roots.
+fn repair_local_bot_workspace_state(
+    state: &mut BotChatState,
+    workspaces: &[crate::service::workspace::WorkspaceInfo],
+) {
+    if state.active_remote_device.is_some() || state.account_remote_context {
+        return;
+    }
+    let Some(current) = state.current_workspace.as_mut() else {
+        return;
+    };
+    if let Ok(Some(record)) =
+        crate::service::workspace::legacy_compat::resolve_legacy_workspace_reference(
+            workspaces,
+            current.workspace_id.as_deref(),
+            &current.path,
+            current.remote_connection_id.as_deref(),
+            current.remote_ssh_host.as_deref(),
+        )
+    {
+        *current = bot_workspace_ref(&record);
+    }
+}
+
 async fn select_local_workspace(
     state: &mut BotChatState,
     ws_service: &crate::service::workspace::WorkspaceService,
@@ -1376,35 +1465,23 @@ async fn select_local_workspace(
         let result = show_workspace_choices(state, options, s);
         return workspace_list_changed_result(state, result, s);
     };
-    let path_buf = std::path::PathBuf::from(&choice.path);
-    match open_bot_workspace(
-        ws_service,
-        path_buf,
-        choice.remote_connection_id.as_deref(),
-        choice.remote_ssh_host.as_deref(),
-        "bot workspace switch",
-    )
-    .await
-    {
+    let result = async {
+        let id = choice
+            .workspace_id
+            .as_deref()
+            .ok_or_else(|| "Workspace catalog is missing its ID".to_string())?;
+        let coordinator = crate::agentic::coordination::get_global_coordinator()
+            .ok_or_else(|| "Conversation coordinator not initialized".to_string())?;
+        coordinator
+            .select_workspace_with_runtime_ownership(ws_service, id)
+            .await
+            .map_err(|error| error.to_string())
+    }
+    .await;
+    match result {
         Ok(info) => {
             let workspace_path = info.root_path.to_string_lossy().to_string();
-            let remote_connection_id = info
-                .remote_ssh_connection_id()
-                .map(str::to_string)
-                .or_else(|| choice.remote_connection_id.clone());
-            let remote_ssh_host = info
-                .metadata
-                .get("sshHost")
-                .and_then(|value| value.as_str())
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-                .or_else(|| choice.remote_ssh_host.clone());
-            let workspace_ref = BotWorkspaceRef::with_identity(
-                workspace_path.clone(),
-                remote_connection_id,
-                remote_ssh_host,
-            );
+            let workspace_ref = bot_workspace_ref(&info);
             state.current_workspace = Some(workspace_ref.clone());
             state.current_session_id = None;
             info!(
@@ -1432,7 +1509,7 @@ async fn select_local_workspace(
 
 async fn select_assistant(
     state: &mut BotChatState,
-    path: &str,
+    workspace_id: &str,
     s: &'static BotStrings,
 ) -> HandleResult {
     use crate::service::workspace::get_global_workspace_service;
@@ -1443,33 +1520,34 @@ async fn select_assistant(
             return result_from_menu(state, MenuView::plain(s.workspace_service_unavailable));
         }
     };
-    select_local_assistant(state, &ws_service, path, s).await
+    select_local_assistant(state, &ws_service, workspace_id, s).await
 }
 
 async fn select_local_assistant(
     state: &mut BotChatState,
     ws_service: &crate::service::workspace::WorkspaceService,
-    path: &str,
+    workspace_id: &str,
     s: &'static BotStrings,
 ) -> HandleResult {
     let workspaces = remote_opened_workspace_catalog(ws_service).await;
     let Some(workspace) = workspaces.iter().find(|workspace| {
         workspace.kind == openbitfun_runtime_ports::RemoteWorkspaceKind::Assistant
-            && workspace.path == path
+            && workspace.workspace_id == workspace_id
     }) else {
         let result = start_local_switch(state, ws_service, s).await;
         return workspace_list_changed_result(state, result, s);
     };
     let name = &workspace.name;
-    let path_buf = std::path::PathBuf::from(path);
-    match open_bot_workspace(ws_service, path_buf, None, None, "bot assistant switch").await {
+    match open_bot_workspace(ws_service, &workspace.workspace_id).await {
         Ok(_info) => {
-            state.current_assistant = Some(path.to_string());
+            state.current_assistant = Some(workspace.path.clone());
+            state.current_assistant_id = Some(workspace_id.to_string());
             state.current_assistant_name = Some(name.to_string());
             state.current_session_id = None;
-            info!("Bot switched assistant to: {path}");
+            info!("Bot switched assistant to workspace: {workspace_id}");
 
-            let session_count = count_workspace_sessions(path).await;
+            let reference = state.assistant_workspace_ref().expect("selected assistant");
+            let session_count = count_workspace_sessions_for_ref(&reference).await;
             let body = format!(
                 "{}: {} · {}",
                 s.current_assistant_label,
@@ -1487,77 +1565,38 @@ async fn select_local_assistant(
     }
 }
 
-/// Looks up SSH identity for a workspace path already known to WorkspaceService.
-async fn bot_workspace_remote_identity(workspace_path: &str) -> (Option<String>, Option<String>) {
-    use crate::service::remote_ssh::normalize_remote_workspace_path;
-    use crate::service::workspace::{get_global_workspace_service, WorkspaceKind};
-
-    let Some(service) = get_global_workspace_service() else {
-        return (None, None);
-    };
-    let want = normalize_remote_workspace_path(workspace_path);
-    let path_buf = std::path::PathBuf::from(workspace_path);
-
-    let candidates = {
-        let mut list = Vec::new();
-        if let Some(current) = service.get_current_workspace().await {
-            list.push(current);
-        }
-        if let Some(by_path) = service.get_workspace_by_path(&path_buf).await {
-            list.push(by_path);
-        }
-        list.extend(service.get_recent_workspaces().await);
-        list
-    };
-
-    for workspace in candidates {
-        if workspace.workspace_kind != WorkspaceKind::Remote {
-            continue;
-        }
-        let root = normalize_remote_workspace_path(&workspace.root_path.to_string_lossy());
-        if root != want {
-            continue;
-        }
-        let connection_id = workspace.remote_ssh_connection_id().map(str::to_string);
-        let ssh_host = workspace
-            .metadata
-            .get("sshHost")
-            .and_then(|value| value.as_str())
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string);
-        return (connection_id, ssh_host);
+/// Upgrade-only conversion of persisted bot state; all operations below use ID.
+async fn resolve_bot_workspace(
+    workspace: &BotWorkspaceRef,
+) -> Result<crate::service::workspace::WorkspaceInfo, String> {
+    let service = crate::service::workspace::get_global_workspace_service()
+        .ok_or_else(|| "Workspace service is unavailable".to_string())?;
+    if let Some(id) = workspace.workspace_id.as_deref() {
+        return service
+            .require_workspace(id)
+            .await
+            .map_err(|error| error.to_string());
     }
-
-    (None, None)
+    service
+        .resolve_legacy_workspace_reference(
+            None,
+            &workspace.path,
+            workspace.remote_connection_id.as_deref(),
+            workspace.remote_ssh_host.as_deref(),
+        )
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Workspace ID is unavailable; select a saved workspace".to_string())
 }
 
-/// Resolves the on-disk sessions directory for a bot workspace ref.
-///
-/// Remote SSH workspaces store sessions under `~/.openbitfun/remote_ssh/{host}/...`,
-/// not under the remote POSIX path itself. Prefer identity captured at workspace
-/// selection time; fall back to registry lookup only for legacy path-only state.
 async fn resolve_bot_session_storage_path_for_ref(
     workspace: &BotWorkspaceRef,
 ) -> Option<std::path::PathBuf> {
     use crate::agentic::session::CoreSessionStorePort;
-    use openbitfun_runtime_ports::{SessionStoragePathRequest, SessionStorePort};
-
-    let mut remote_connection_id = workspace.remote_connection_id.clone();
-    let mut remote_ssh_host = workspace.remote_ssh_host.clone();
-    if remote_connection_id.is_none() && remote_ssh_host.is_none() {
-        let (fallback_connection_id, fallback_ssh_host) =
-            bot_workspace_remote_identity(&workspace.path).await;
-        remote_connection_id = fallback_connection_id;
-        remote_ssh_host = fallback_ssh_host;
-    }
-
+    use openbitfun_runtime_ports::SessionStorePort;
+    let record = resolve_bot_workspace(workspace).await.ok()?;
     CoreSessionStorePort::default()
-        .resolve_session_storage_path(SessionStoragePathRequest {
-            workspace_path: std::path::PathBuf::from(&workspace.path),
-            remote_connection_id,
-            remote_ssh_host,
-        })
+        .resolve_workspace_storage(&record.id)
         .await
         .ok()
         .map(|resolution| resolution.effective_storage_path)
@@ -1586,10 +1625,6 @@ async fn count_workspace_sessions_for_ref(workspace: &BotWorkspaceRef) -> usize 
         .unwrap_or(0)
 }
 
-async fn count_workspace_sessions(workspace_path: &str) -> usize {
-    count_workspace_sessions_for_ref(&BotWorkspaceRef::local(workspace_path)).await
-}
-
 fn truncate_label(label: &str, max_chars: usize) -> String {
     let trimmed = label.trim();
     if trimmed.chars().count() <= max_chars {
@@ -1604,9 +1639,42 @@ fn truncate_label(label: &str, max_chars: usize) -> String {
 
 #[derive(Debug, Clone)]
 struct RemoteDeviceWorkspaceFacts {
+    /// Record ID reported by the device. A device that reports it accepts
+    /// ID-only workspace references; a device that does not is a pre-ID host.
+    workspace_id: Option<String>,
     path: String,
     remote_connection_id: Option<String>,
     remote_ssh_host: Option<String>,
+}
+
+impl RemoteDeviceWorkspaceFacts {
+    /// Workspace fields for a session-level RPC to this device. An ID-aware
+    /// device gets only the ID so it can never fall back to the path; a
+    /// pre-ID device gets the legacy projection it still understands.
+    fn apply_to_command(&self, command: &mut serde_json::Value) {
+        let Some(fields) = command.as_object_mut() else {
+            return;
+        };
+        match self.workspace_id.as_deref() {
+            Some(workspace_id) => {
+                fields.insert(
+                    "workspace_id".into(),
+                    Value::String(workspace_id.to_string()),
+                );
+            }
+            None => {
+                fields.insert("workspace_path".into(), Value::String(self.path.clone()));
+                fields.insert(
+                    "remote_connection_id".into(),
+                    serde_json::to_value(&self.remote_connection_id).unwrap_or(Value::Null),
+                );
+                fields.insert(
+                    "remote_ssh_host".into(),
+                    serde_json::to_value(&self.remote_ssh_host).unwrap_or(Value::Null),
+                );
+            }
+        }
+    }
 }
 
 async fn query_remote_device_workspace(
@@ -1633,6 +1701,12 @@ async fn query_remote_device_workspace(
                 .to_string()
         })?;
     Ok(RemoteDeviceWorkspaceFacts {
+        workspace_id: val
+            .get("workspace_id")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
         path: path.to_string(),
         remote_connection_id: val
             .get("remote_connection_id")
@@ -1666,14 +1740,12 @@ async fn start_resume(
                 );
             }
         };
-        let cmd = serde_json::json!({
+        let mut cmd = serde_json::json!({
             "cmd": "list_sessions",
-            "workspace_path": workspace.path,
-            "remote_connection_id": workspace.remote_connection_id,
-            "remote_ssh_host": workspace.remote_ssh_host,
             "limit": 10,
             "offset": page * 10,
         });
+        workspace.apply_to_command(&mut cmd);
         let cmd_json = serde_json::to_string(&cmd).unwrap_or_default();
         match exec_remote_rpc(state, &cmd_json).await {
             Ok(resp) => {
@@ -1804,8 +1876,8 @@ async fn start_resume(
             }
         }
     } else {
-        match &state.current_assistant {
-            Some(p) => BotWorkspaceRef::local(p.clone()),
+        match state.assistant_workspace_ref() {
+            Some(reference) => reference,
             None => {
                 return result_from_menu(
                     state,
@@ -2076,14 +2148,12 @@ async fn create_session(state: &mut BotChatState, agent_type: &str) -> HandleRes
                 );
             }
         };
-        let cmd = serde_json::json!({
+        let mut cmd = serde_json::json!({
             "cmd": "create_session",
             "agent_type": agent_type,
             "session_name": session_name,
-            "workspace_path": workspace.path,
-            "remote_connection_id": workspace.remote_connection_id,
-            "remote_ssh_host": workspace.remote_ssh_host,
         });
+        workspace.apply_to_command(&mut cmd);
         let cmd_json = serde_json::to_string(&cmd).unwrap_or_default();
         match exec_remote_rpc(state, &cmd_json).await {
             Ok(resp) => {
@@ -2144,8 +2214,8 @@ async fn create_session(state: &mut BotChatState, agent_type: &str) -> HandleRes
     };
 
     let workspace_ref = if is_claw {
-        if let Some(p) = state.current_assistant.clone() {
-            Some(BotWorkspaceRef::local(p))
+        if let Some(reference) = state.assistant_workspace_ref() {
+            Some(reference)
         } else {
             let ws_service = match get_global_workspace_service() {
                 Some(s) => s,
@@ -2156,15 +2226,17 @@ async fn create_session(state: &mut BotChatState, agent_type: &str) -> HandleRes
                     );
                 }
             };
-            let resolved: Option<(String, String)> =
+            let resolved: Option<(String, String, String)> =
                 if let Some(primary_ws) = ws_service.get_primary_assistant_workspace().await {
                     Some((
+                        primary_ws.id.clone(),
                         primary_ws.root_path.to_string_lossy().to_string(),
                         remote_workspace_display_name(&primary_ws).to_string(),
                     ))
                 } else {
                     match ws_service.create_assistant_workspace(None).await {
                         Ok(ws_info) => Some((
+                            ws_info.id.clone(),
                             ws_info.root_path.to_string_lossy().to_string(),
                             remote_workspace_display_name(&ws_info).to_string(),
                         )),
@@ -2176,11 +2248,16 @@ async fn create_session(state: &mut BotChatState, agent_type: &str) -> HandleRes
                         }
                     }
                 };
-            if let Some((ref path, ref name)) = resolved {
+            if let Some((ref id, ref path, ref name)) = resolved {
+                state.current_assistant_id = Some(id.clone());
                 state.current_assistant = Some(path.clone());
                 state.current_assistant_name = Some(name.clone());
             }
-            resolved.map(|(path, _)| BotWorkspaceRef::local(path))
+            resolved.map(|(id, path, _)| {
+                let mut reference = BotWorkspaceRef::local(path);
+                reference.workspace_id = Some(id);
+                reference
+            })
         }
     } else {
         state.current_workspace.clone()
@@ -2225,20 +2302,25 @@ async fn create_session(state: &mut BotChatState, agent_type: &str) -> HandleRes
         return result_from_menu(state, view);
     };
 
-    let (mut remote_connection_id, mut remote_ssh_host) = (
-        workspace_ref.remote_connection_id.clone(),
-        workspace_ref.remote_ssh_host.clone(),
-    );
-    if remote_connection_id.is_none() && remote_ssh_host.is_none() {
-        let fallback = bot_workspace_remote_identity(&workspace_ref.path).await;
-        remote_connection_id = fallback.0;
-        remote_ssh_host = fallback.1;
-    }
+    let record = match resolve_bot_workspace(&workspace_ref).await {
+        Ok(record) => record,
+        Err(error) => {
+            return result_from_menu(
+                state,
+                MenuView::plain(format!("{}{}", s.session_create_failed_prefix, error)),
+            )
+        }
+    };
+    let identity = bot_workspace_ref(&record);
     let request = build_remote_session_create_request(
         session_name,
         agent_type,
-        Some(workspace_ref.path.clone()),
-        RemoteSessionWorkspaceIdentity::new(remote_connection_id, remote_ssh_host),
+        Some(record.root_path.to_string_lossy().into_owned()),
+        RemoteSessionWorkspaceIdentity::new(
+            identity.remote_connection_id,
+            identity.remote_ssh_host,
+        )
+        .with_workspace_id(Some(record.id)),
         RemoteConnectSubmissionSource::Bot,
     );
     let runtime = match CoreServiceAgentRuntime::agent_runtime(coordinator.clone()) {
@@ -2710,6 +2792,51 @@ fn parse_question_numbers(input: &str) -> Option<Vec<usize>> {
 
 #[allow(clippy::too_many_arguments)]
 async fn handle_question_reply(
+    state: &mut BotChatState,
+    tool_id: String,
+    questions: Vec<BotQuestion>,
+    current_index: usize,
+    answers: Vec<Value>,
+    awaiting_custom_text: bool,
+    pending_answer: Option<Value>,
+    message: &str,
+    s: &'static BotStrings,
+) -> HandleResult {
+    let interaction = if let Some(target) = state.pending_remote_target.as_ref() {
+        target.start_question_interaction(&tool_id).await
+    } else if let Some(session_id) = state.current_session_id.as_deref() {
+        crate::agentic::tools::user_input_manager::get_user_input_manager()
+            .start_interaction(session_id, &tool_id)
+            .map_err(|error| error.to_string())
+    } else {
+        Err("Question has no associated session".into())
+    };
+    let mut result = handle_question_reply_after_interaction(
+        state,
+        tool_id,
+        questions,
+        current_index,
+        answers,
+        awaiting_custom_text,
+        pending_answer,
+        message,
+        s,
+    )
+    .await;
+    if let Err(error) = interaction {
+        if matches!(
+            state.pending_action,
+            Some(PendingAction::AskUserQuestion { .. })
+        ) {
+            let warning = format!("Question timeout could not be stopped: {error}");
+            result.reply = format!("{warning}\n\n{}", result.reply);
+            result.menu = result.menu.with_body(result.reply.clone());
+        }
+    }
+    result
+}
+
+async fn handle_question_reply_after_interaction(
     state: &mut BotChatState,
     tool_id: String,
     questions: Vec<BotQuestion>,
@@ -3496,6 +3623,69 @@ fn truncate_at_char_boundary(s: &str, max_len: usize) -> String {
 mod parse_command_tests {
     use super::*;
 
+    #[tokio::test]
+    async fn bot_partial_answer_stops_unattended_timeout() {
+        use openbitfun_agent_runtime::user_questions::{
+            get_user_input_manager, PendingUserQuestion,
+        };
+        let manager = get_user_input_manager();
+        let (sender, mut receiver) = tokio::sync::oneshot::channel();
+        let _registration = manager.register_question(
+            PendingUserQuestion::new(
+                "bot-timeout-question",
+                "bot-timeout-session",
+                None,
+                None,
+                serde_json::json!({}),
+            ),
+            sender,
+        );
+        let mut state = BotChatState::new("bot-timeout-chat".into());
+        state.current_session_id = Some("bot-timeout-session".into());
+        let questions = vec![
+            BotQuestion {
+                question: "Choose".into(),
+                header: "Question".into(),
+                multi_select: false,
+                options: vec![BotQuestionOption {
+                    label: "Yes".into(),
+                    description: String::new()
+                }],
+            };
+            2
+        ];
+        let s = strings_for(BotLanguage::EnUS);
+        handle_question_reply(
+            &mut state,
+            "bot-timeout-question".into(),
+            questions,
+            0,
+            vec![],
+            false,
+            None,
+            "1",
+            s,
+        )
+        .await;
+        assert!(
+            manager
+                .pending_question_snapshot("bot-timeout-session")
+                .questions[0]
+                .interaction_started
+        );
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            state.pending_action,
+            Some(PendingAction::AskUserQuestion {
+                current_index: 1,
+                ..
+            })
+        ));
+    }
+
     #[test]
     fn remote_picker_prefers_opened_workspaces_and_keeps_bot_mode_separation() {
         let response = serde_json::json!({
@@ -3610,6 +3800,104 @@ mod parse_command_tests {
     }
 
     #[tokio::test]
+    async fn local_bot_identity_repairs_legacy_state_without_retargeting_remote_workspaces() {
+        use crate::service::workspace::{WorkspaceKind, WorkspaceService};
+        use openbitfun_runtime_ports::RemoteSessionWorkspaceIdentity;
+        use openbitfun_services_integrations::remote_connect::{
+            build_remote_session_create_request, RemoteConnectSubmissionSource,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let paths = Arc::new(
+            crate::infrastructure::PathManager::with_user_root_for_tests(
+                root.path().join("user-root"),
+            ),
+        );
+        let service = WorkspaceService::new_for_test_path_manager(paths).await;
+        let project_root = root.path().join("project");
+        std::fs::create_dir_all(&project_root).unwrap();
+        let project = service.open_workspace(project_root).await.unwrap();
+        assert_eq!(
+            project.metadata.get("sshHost").and_then(Value::as_str),
+            Some("localhost")
+        );
+        let path = project.root_path.to_string_lossy().to_string();
+        let choices = local_pro_workspace_choices(remote_opened_workspace_catalog(&service).await);
+        assert_eq!(choices.len(), 1);
+        assert!(choices[0].remote_ssh_host.is_none());
+        // The identity captured after a successful open must agree with the picker.
+        assert_eq!(
+            bot_workspace_ref(&project),
+            BotWorkspaceRef::local(&path).with_workspace_id(Some(project.id.clone()))
+        );
+
+        let legacy = serde_json::json!({
+            "path": path, "remote_connection_id": null, "remote_ssh_host": "localhost"
+        });
+        let mut state = BotChatState::new("chat".into());
+        state.current_workspace = Some(serde_json::from_value(legacy.clone()).unwrap());
+        state.current_session_id = Some("keep-session".into());
+        repair_local_bot_workspace_state(&mut state, &[project.clone()]);
+        assert_eq!(
+            state.current_workspace,
+            Some(BotWorkspaceRef::local(&path).with_workspace_id(Some(project.id.clone())))
+        );
+        assert_eq!(state.current_session_id.as_deref(), Some("keep-session"));
+        let serialized = serde_json::to_value(state.current_workspace.as_ref().unwrap()).unwrap();
+        let restored: BotWorkspaceRef = serde_json::from_value(serialized).unwrap();
+        assert_eq!(
+            restored,
+            BotWorkspaceRef::local(&path).with_workspace_id(Some(project.id.clone()))
+        );
+        let request = build_remote_session_create_request(
+            "test",
+            "Code",
+            Some(path.clone()),
+            RemoteSessionWorkspaceIdentity::new(
+                restored.remote_connection_id,
+                restored.remote_ssh_host,
+            )
+            .with_workspace_id(restored.workspace_id),
+            RemoteConnectSubmissionSource::Bot,
+        );
+        assert_eq!(request.workspace_id.as_deref(), Some(project.id.as_str()));
+        assert!(request.remote_connection_id.is_none());
+        assert!(request.remote_ssh_host.is_none());
+
+        let mut remote = project.clone();
+        remote.id = "remote-workspace".into();
+        remote.workspace_kind = WorkspaceKind::Remote;
+        remote
+            .metadata
+            .insert("connectionId".into(), serde_json::json!("ssh-localhost"));
+        let remote_ref = bot_workspace_ref(&remote);
+        assert_eq!(
+            remote_ref.remote_connection_id.as_deref(),
+            Some("ssh-localhost")
+        );
+        assert_eq!(remote_ref.remote_ssh_host.as_deref(), Some("localhost"));
+        state.current_workspace = Some(remote_ref.clone());
+        repair_local_bot_workspace_state(&mut state, &[project.clone()]);
+        assert_eq!(state.current_workspace, Some(remote_ref));
+
+        state.current_workspace = Some(serde_json::from_value(legacy).unwrap());
+        let before = state.current_workspace.clone();
+        repair_local_bot_workspace_state(&mut state, &[project.clone(), remote]);
+        assert_eq!(state.current_workspace, before);
+        repair_local_bot_workspace_state(&mut state, &[]);
+        assert_eq!(state.current_workspace, before);
+        state.account_remote_context = true;
+        repair_local_bot_workspace_state(&mut state, &[project.clone()]);
+        assert_eq!(state.current_workspace, before);
+        state.account_remote_context = false;
+        state.active_remote_device = Some(RemoteDeviceTarget {
+            device_id: "other-device".into(),
+            device_name: "Other device".into(),
+        });
+        repair_local_bot_workspace_state(&mut state, &[project]);
+        assert_eq!(state.current_workspace, before);
+    }
+
+    #[tokio::test]
     async fn local_bot_pickers_use_opened_rows_and_refresh_assistant_identity() {
         use crate::service::workspace::{WorkspaceCreateOptions, WorkspaceKind, WorkspaceService};
         let root = tempfile::tempdir().unwrap();
@@ -3673,6 +3961,25 @@ mod parse_command_tests {
             &service.get_assistant_workspaces().await,
         );
         assert_eq!(state.current_assistant_name.as_deref(), Some("Mina"));
+        assert_eq!(
+            state.current_assistant_id.as_deref(),
+            Some(assistant.id.as_str())
+        );
+        let mut stale = state.clone();
+        stale.current_assistant_id = Some("missing-assistant-id".into());
+        stale.current_assistant_name = Some("Keep old label".into());
+        refresh_assistant_name_from_workspaces(
+            &mut stale,
+            &service.get_assistant_workspaces().await,
+        );
+        assert_eq!(
+            stale.current_assistant_id.as_deref(),
+            Some("missing-assistant-id")
+        );
+        assert_eq!(
+            stale.current_assistant_name.as_deref(),
+            Some("Keep old label")
+        );
 
         std::fs::write(assistant_root.join("IDENTITY.md"), "---\nname: Kira\n---\n").unwrap();
         service
@@ -3712,13 +4019,7 @@ mod parse_command_tests {
             "closed assistants remain tracked"
         );
         state.display_mode = BotDisplayMode::Assistant;
-        let result = select_local_assistant(
-            &mut state,
-            &service,
-            &assistant.root_path.to_string_lossy(),
-            strings,
-        )
-        .await;
+        let result = select_local_assistant(&mut state, &service, &assistant.id, strings).await;
         assert!(result.menu.title.contains(strings.workspace_list_changed));
         assert!(result.menu.title.contains(strings.switch_no_assistants));
         assert!(state.pending_action.is_none());
@@ -4290,9 +4591,13 @@ mod handle_chat_tests {
 
     #[tokio::test]
     async fn remote_turn_reconnects_delivers_interactions_and_reads_original_device_bytes() {
-        use openbitfun_services_integrations::remote_connect::{
-            account::AccountSession, device_crypto, encryption,
-        };
+        for supports_interaction in [true, false] {
+            assert_remote_question_round_trip(supports_interaction).await;
+        }
+    }
+
+    async fn assert_remote_question_round_trip(supports_interaction: bool) {
+        use openbitfun_services_integrations::remote_connect::{device_crypto, encryption};
         use std::sync::{Arc, Mutex};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -4308,46 +4613,61 @@ mod handle_chat_tests {
         )
         .unwrap();
         let server = tokio::spawn(async move {
-            let mut polls = 0;
+            use futures::{SinkExt, StreamExt};
+            use tokio_tungstenite::tungstenite::{
+                handshake::derive_accept_key, protocol::Role, Message,
+            };
+            let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let mut clients = tokio::task::JoinSet::new();
             loop {
                 let (mut socket, _) = listener.accept().await.unwrap();
-                let mut bytes = Vec::new();
-                let (header_end, length) = loop {
-                    let mut block = [0u8; 4096];
-                    let count = socket.read(&mut block).await.unwrap();
-                    if count == 0 {
+                let public = public.clone();
+                let observed = observed.clone();
+                let polls = polls.clone();
+                clients.spawn(async move {
+                    let mut bytes = Vec::new();
+                    let header_end = loop {
+                        let mut block = [0u8; 4096];
+                        let count = socket.read(&mut block).await.unwrap();
+                        if count == 0 { return; }
+                        bytes.extend_from_slice(&block[..count]);
+                        if let Some(end) = bytes.windows(4).position(|v| v == b"\r\n\r\n") { break end + 4; }
+                        assert!(bytes.len() < 128 * 1024);
+                    };
+                    let header = std::str::from_utf8(&bytes[..header_end]).unwrap();
+                    if header.starts_with("GET /api/devices/device-a/key ") {
+                        let reply = serde_json::json!({"device_id":"device-a","public_key":public}).to_string();
+                        let http = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", reply.len(), reply);
+                        socket.write_all(http.as_bytes()).await.unwrap();
                         return;
                     }
-                    bytes.extend_from_slice(&block[..count]);
-                    if let Some(end) = bytes.windows(4).position(|v| v == b"\r\n\r\n") {
-                        let header = std::str::from_utf8(&bytes[..end]).unwrap();
-                        let length = header
-                            .lines()
-                            .find_map(|line| {
-                                line.to_ascii_lowercase()
-                                    .strip_prefix("content-length:")
-                                    .map(|v| v.trim().parse::<usize>().unwrap())
-                            })
-                            .unwrap_or(0);
-                        break (end + 4, length);
-                    }
-                    assert!(bytes.len() < 128 * 1024);
-                };
-                while bytes.len() < header_end + length {
-                    let mut block = [0u8; 4096];
-                    let count = socket.read(&mut block).await.unwrap();
-                    assert!(count > 0);
-                    bytes.extend_from_slice(&block[..count]);
-                }
-                let header = std::str::from_utf8(&bytes[..header_end]).unwrap();
-                let reply = if header.starts_with("GET /api/devices/device-a/key ") {
-                    serde_json::json!({"device_id":"device-a","public_key":public})
-                } else {
-                    assert!(header.starts_with("POST /api/devices/device-a/rpc "));
-                    let envelope: Value=serde_json::from_slice(&bytes[header_end..header_end+length]).unwrap();
-                    let plaintext=encryption::decrypt_from_base64(&key,envelope["encrypted_data"].as_str().unwrap(),envelope["nonce"].as_str().unwrap()).unwrap();
-                    let command: Value=serde_json::from_str(&plaintext).unwrap();
-                    observed.lock().unwrap().push(command.clone());
+                    assert!(header.starts_with("GET /v1/updates/"), "{header}");
+                    let websocket_key = header.lines().find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("sec-websocket-key").then_some(value.trim())
+                    }).unwrap();
+                    let accept = derive_accept_key(websocket_key.as_bytes());
+                    socket.write_all(format!("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n").as_bytes()).await.unwrap();
+                    let mut ws = tokio_tungstenite::WebSocketStream::from_partially_read(socket, bytes[header_end..].to_vec(), Role::Server, None).await;
+                    ws.send(Message::Text(r#"0{"sid":"fixture","upgrades":[],"pingInterval":25000,"pingTimeout":20000,"maxPayload":1000000}"#.into())).await.unwrap();
+                    while let Some(frame) = ws.next().await {
+                        let Ok(Message::Text(text)) = frame else { break; };
+                        if text.starts_with("40") {
+                            ws.send(Message::Text(r#"40{"sid":"fixture"}"#.into())).await.unwrap();
+                            ws.send(Message::Text(r#"42["auth-ok",{"userId":"test-user","deviceId":"controller"}]"#.into())).await.unwrap();
+                            continue;
+                        }
+                        if text == "3" { continue; }
+                        assert!(text.starts_with("42"), "Unexpected Socket.IO frame: {text}");
+                        let array_start = text.find('[').unwrap();
+                        let ack_id = &text[2..array_start];
+                        let event: Value = serde_json::from_str(&text[array_start..]).unwrap();
+                        assert_eq!(event[0], "rpc-call");
+                        assert_eq!(event[1]["method"], "device-a:invoke");
+                        let envelope = &event[1]["params"];
+                        let plaintext = encryption::decrypt_from_base64(&key, envelope["encrypted_data"].as_str().unwrap(), envelope["nonce"].as_str().unwrap()).unwrap();
+                        let command: Value = serde_json::from_str(&plaintext).unwrap();
+                        observed.lock().unwrap().push(command.clone());
                     let response=match command["cmd"].as_str().unwrap() {
                         "send_message" => {
                             assert_eq!(command["session_id"],"session-a");
@@ -4357,8 +4677,8 @@ mod handle_chat_tests {
                         }
                         "poll_session" => {
                             assert_eq!(command["session_id"],"session-a");
-                            polls += 1;
-                            if polls == 1 { continue; } // Lost connection after submission.
+                            let polls = polls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                            if polls == 1 { break; } // Lost connection after submission.
                             let tool = if polls == 2 {
                                 serde_json::json!({"id":"question-a","name":"AskUserQuestion","status":"running",
                                     "tool_input":{"questions":[{"question":"Format?","options":[{"label":"PNG"}]}]}})
@@ -4372,6 +4692,15 @@ mod handle_chat_tests {
                                     "active_turn":{"turn_id":"next-turn","status":"active","text":"do not send this"},
                                     "new_messages":[{"id":"accepted-turn_assistant","role":"assistant","status":"done","content":"![image](result.png)"}]})
                             }
+                        }
+                        "get_workspace_info" => serde_json::json!({"resp":"workspace_info", "capabilities":
+                            if supports_interaction { vec!["user_question_interaction_v1"] } else { vec![] }
+                        }),
+                        "start_question_interaction" => {
+                            assert!(supports_interaction);
+                            assert_eq!(command["session_id"], "session-a");
+                            assert_eq!(command["tool_id"], "question-a");
+                            serde_json::json!({"resp":"interaction_accepted", "action":"start_question_interaction", "target_id":"question-a"})
                         }
                         "answer_question" => {
                             assert_eq!(command["tool_id"],"question-a");
@@ -4396,11 +4725,11 @@ mod handle_chat_tests {
                         }
                         other=>panic!("Unexpected command: {other}"),
                     };
-                    let (encrypted_data, nonce)=encryption::encrypt_to_base64(&key,&response.to_string()).unwrap();
-                    serde_json::json!({"encrypted_data":encrypted_data,"nonce":nonce})
-                }.to_string();
-                let http=format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",reply.len(),reply);
-                socket.write_all(http.as_bytes()).await.unwrap();
+                    let (encrypted_data, nonce) = encryption::encrypt_to_base64(&key, &response.to_string()).unwrap();
+                    let response = serde_json::json!([{"ok":true,"result":{"encrypted_data":encrypted_data,"nonce":nonce}}]);
+                    ws.send(Message::Text(format!("43{ack_id}{response}").into())).await.unwrap();
+                    }
+                });
             }
         });
         let mut state = BotChatState::new("chat".into());
@@ -4495,6 +4824,18 @@ mod handle_chat_tests {
                 .count(),
             1
         );
+        let observed = calls.lock().unwrap();
+        let activity = observed
+            .iter()
+            .position(|call| call["cmd"] == "start_question_interaction");
+        let answer = observed
+            .iter()
+            .position(|call| call["cmd"] == "answer_question")
+            .unwrap();
+        assert_eq!(activity.is_some(), supports_interaction);
+        if let Some(activity) = activity {
+            assert!(activity < answer);
+        }
         server.abort();
     }
 

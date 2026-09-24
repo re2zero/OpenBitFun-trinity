@@ -30,11 +30,12 @@ vi.mock('../AgenticEventListener', () => ({
   agenticEventListener: agenticListenerMock,
 }));
 
+import { agentAPI } from '@/infrastructure/api/service-api/AgentAPI';
+import { sessionStream } from '../../session-stream/SessionStream';
 import { FlowChatStore } from '../../store/FlowChatStore';
 import {
   installPeerSessionRefresh,
   isSessionProjectionAttachable,
-  PEER_SESSION_REFRESH_INTERVAL_MS,
   requestPeerSessionRefresh,
   runtimeProjectionCaughtUp,
 } from './PeerSessionRefreshModule';
@@ -66,7 +67,7 @@ describe('PeerSessionRefreshModule', () => {
     vi.useRealTimers();
   });
 
-  it('refreshes immediately, periodically, and on an event-gap request', async () => {
+  it('hydrates once and repairs explicit gaps without periodic requests', async () => {
     const refreshPeerSessionSnapshot = vi.fn(async () => ({
       applied: false,
       backendState: 'Processing',
@@ -78,7 +79,7 @@ describe('PeerSessionRefreshModule', () => {
       sessions: new Map([
         ['session-1', {
           sessionId: 'session-1',
-          workspacePath: '/peer/project',
+          workspaceId: 'workspace-1', workspacePath: '/peer/project',
           historyState: 'ready',
           isHistorical: false,
           isTransient: false,
@@ -104,12 +105,12 @@ describe('PeerSessionRefreshModule', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(refreshPeerSessionSnapshot).toHaveBeenCalledTimes(1);
 
-    await vi.advanceTimersByTimeAsync(PEER_SESSION_REFRESH_INTERVAL_MS);
-    expect(refreshPeerSessionSnapshot).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(refreshPeerSessionSnapshot).toHaveBeenCalledTimes(1);
 
     requestPeerSessionRefresh('session-1');
     await vi.advanceTimersByTimeAsync(0);
-    expect(refreshPeerSessionSnapshot).toHaveBeenCalledTimes(3);
+    expect(refreshPeerSessionSnapshot).toHaveBeenCalledTimes(2);
 
     cleanup();
   });
@@ -135,7 +136,7 @@ describe('PeerSessionRefreshModule', () => {
     } as any;
 
     const cleanup = installPeerSessionRefresh(context);
-    await vi.advanceTimersByTimeAsync(PEER_SESSION_REFRESH_INTERVAL_MS * 2);
+    await vi.advanceTimersByTimeAsync(60_000 * 2);
 
     expect(refreshPeerSessionSnapshot).not.toHaveBeenCalled();
     cleanup();
@@ -170,7 +171,7 @@ describe('PeerSessionRefreshModule re-attach after a surface switch', () => {
       sessions: new Map([
         ['session-1', {
           sessionId: 'session-1',
-          workspacePath: '/repo/OpenBitFun',
+          workspaceId: 'workspace-1', workspacePath: '/repo/OpenBitFun',
           historyState: 'ready',
           isHistorical: false,
           isTransient: false,
@@ -212,7 +213,7 @@ describe('PeerSessionRefreshModule re-attach after a surface switch', () => {
 
     const cleanup = installPeerSessionRefresh(contextWithSnapshot(refresh));
     await vi.advanceTimersByTimeAsync(1);
-    await vi.advanceTimersByTimeAsync(PEER_SESSION_REFRESH_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(60_000);
 
     expect(refresh).toHaveBeenCalled();
     expect(stateMachineMock.transition).toHaveBeenCalled();
@@ -233,11 +234,32 @@ describe('PeerSessionRefreshModule re-attach after a surface switch', () => {
 
     const cleanup = installPeerSessionRefresh(contextWithSnapshot(refresh));
     await vi.advanceTimersByTimeAsync(1);
-    await vi.advanceTimersByTimeAsync(PEER_SESSION_REFRESH_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(60_000);
 
     expect(refresh).toHaveBeenCalledTimes(1);
     expect(stateMachineMock.reset).not.toHaveBeenCalled();
     cleanup();
+  });
+
+  it('repairs a missing ToolEnd from the prefix instead of an empty suffix after the delivered cursor', async () => {
+    stateMachineMock.get.mockReturnValue({
+      getCurrentState: () => 'processing',
+      getContext: () => ({ lastUpdateTime: Date.now(), version: 0 }),
+    });
+    const stream = sessionStream('local', 'session-1');
+    const position = (cursor: number) => ({ streamId: 'runtime-linux', cursor });
+    stream.offer('agentic://dialog-turn-started', { turnId: 'turn-live' }, position(1), () => {});
+    stream.offer('agentic://text-chunk', { turnId: 'turn-live' }, position(3), () => {});
+    const delta = vi.spyOn(agentAPI, 'loadSessionEventBackfill').mockResolvedValue({
+      kind: 'delta', sessionId: 'session-1', streamId: 'runtime-linux', cursor: 3, events: [],
+    } as any);
+    const refresh = vi.fn(async () => ({ applied: false }));
+    const cleanup = installPeerSessionRefresh(contextWithSnapshot(refresh));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(delta).not.toHaveBeenCalled();
+    expect(refresh).toHaveBeenCalledOnce();
+    cleanup();
+    delta.mockRestore();
   });
 
   it('still attaches a fresh streaming turn when the projection is stale', async () => {
@@ -285,7 +307,7 @@ describe('PeerSessionRefreshModule re-attach after a surface switch', () => {
     refresh.mockClear();
 
     documentStub.visibilityState = 'hidden';
-    await vi.advanceTimersByTimeAsync(PEER_SESSION_REFRESH_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(60_000);
     expect(refresh).not.toHaveBeenCalled();
 
     requestPeerSessionRefresh('session-1');
@@ -375,7 +397,7 @@ describe('PeerSessionRefreshModule re-attach after a surface switch', () => {
     cleanup();
   });
 
-  it('replays the Runtime projection before reconciling the blocking mailbox', async () => {
+  it('preserves other-session events while replaying the Runtime projection before its mailbox', async () => {
     stateMachineMock.get.mockReturnValue({
       getCurrentState: () => 'idle',
       getContext: () => ({ lastUpdateTime: 0, version: 0 }),
@@ -401,15 +423,22 @@ describe('PeerSessionRefreshModule re-attach after a surface switch', () => {
         },
       ],
     };
-    const refresh = vi.fn(async () => ({
-      applied: true,
-      backendState: 'Processing { current_turn_id: "turn-live", phase: Streaming }',
-      latestTurnId: 'turn-live',
-      latestTurnStatus: 'processing',
-      runtimeEventSnapshot,
-      pendingUserQuestions: { revision: 2, questions: [] },
-    }));
+    const pendingOtherSession: string[] = [];
+    const paintedOtherSession: string[] = [];
+    const refresh = vi.fn(async () => {
+      pendingOtherSession.push('other-session text');
+      return {
+        applied: true,
+        backendState: 'Processing { current_turn_id: "turn-live", phase: Streaming }',
+        latestTurnId: 'turn-live',
+        latestTurnStatus: 'processing',
+        runtimeEventSnapshot,
+        pendingUserQuestions: { revision: 2, questions: [] },
+      };
+    });
     const context = contextWithSnapshot(refresh);
+    context.eventBatcher.flushNow.mockImplementation(() => paintedOtherSession.push(...pendingOtherSession.splice(0)));
+    context.eventBatcher.clear.mockImplementation(() => { pendingOtherSession.length = 0; });
 
     const cleanup = installPeerSessionRefresh(context);
     await vi.advanceTimersByTimeAsync(1);
@@ -424,7 +453,8 @@ describe('PeerSessionRefreshModule re-attach after a surface switch', () => {
       'agentic://text-chunk',
       runtimeEventSnapshot.events[1].payload,
     );
-    expect(context.eventBatcher.clear).toHaveBeenCalled();
+    expect(paintedOtherSession).toEqual(['other-session text']);
+    expect(context.eventBatcher.clear).not.toHaveBeenCalled();
     expect(context.flowChatStore.prepareRuntimeTurnReplay).toHaveBeenCalledWith(
       'session-1',
       'turn-live',
@@ -574,7 +604,7 @@ describe('PeerSessionRefreshModule dead subscription recovery', () => {
       sessions: new Map([
         ['session-1', {
           sessionId: 'session-1',
-          workspacePath: '/repo/OpenBitFun',
+          workspaceId: 'workspace-1', workspacePath: '/repo/OpenBitFun',
           historyState: 'ready',
           isHistorical: false,
           isTransient: false,
@@ -628,7 +658,7 @@ describe('PeerSessionRefreshModule dead subscription recovery', () => {
 
     const cleanup = installPeerSessionRefresh(context);
     await vi.advanceTimersByTimeAsync(1);
-    await vi.advanceTimersByTimeAsync(PEER_SESSION_REFRESH_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(60_000);
 
     expect(refreshPeerSessionSnapshot).toHaveBeenCalled();
     cleanup();
@@ -640,7 +670,7 @@ describe('PeerSessionRefreshModule dead subscription recovery', () => {
 
     const cleanup = installPeerSessionRefresh(context);
     await vi.advanceTimersByTimeAsync(1);
-    await vi.advanceTimersByTimeAsync(PEER_SESSION_REFRESH_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(60_000);
 
     expect(ensureLiveSubscription).toHaveBeenCalled();
     cleanup();
@@ -652,7 +682,7 @@ describe('PeerSessionRefreshModule dead subscription recovery', () => {
 
     const cleanup = installPeerSessionRefresh(context);
     await vi.advanceTimersByTimeAsync(1);
-    await vi.advanceTimersByTimeAsync(PEER_SESSION_REFRESH_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(60_000);
 
     expect(ensureLiveSubscription).not.toHaveBeenCalled();
     cleanup();
@@ -661,7 +691,7 @@ describe('PeerSessionRefreshModule dead subscription recovery', () => {
 
 describe('isSessionProjectionAttachable', () => {
   const base = {
-    workspacePath: '/repo/OpenBitFun',
+    workspaceId: 'workspace-1', workspacePath: '/repo/OpenBitFun',
     isTransient: false,
     isHistorical: false,
     historyState: 'ready' as const,
@@ -681,7 +711,7 @@ describe('isSessionProjectionAttachable', () => {
     expect(isSessionProjectionAttachable({ ...base, historyState: 'failed' })).toBe(false);
     expect(isSessionProjectionAttachable({ ...base, isHistorical: true })).toBe(false);
     expect(isSessionProjectionAttachable({ ...base, isTransient: true })).toBe(false);
-    expect(isSessionProjectionAttachable({ ...base, workspacePath: '   ' })).toBe(false);
+    expect(isSessionProjectionAttachable({ ...base, workspaceId: '   ' })).toBe(false);
     expect(isSessionProjectionAttachable(null)).toBe(false);
   });
 });
@@ -721,7 +751,7 @@ describe('PeerSessionRefreshModule attach eligibility after a surface switch', (
       sessions: new Map([
         ['session-new', {
           sessionId: 'session-new',
-          workspacePath: '/repo/OpenBitFun',
+          workspaceId: 'workspace-1', workspacePath: '/repo/OpenBitFun',
           historyState: 'new',
           isHistorical: false,
           isTransient: false,
@@ -745,7 +775,6 @@ describe('PeerSessionRefreshModule attach eligibility after a surface switch', (
 
     expect(refreshPeerSessionSnapshot).toHaveBeenCalledWith(
       'session-new',
-      '/repo/OpenBitFun',
       expect.objectContaining({ requireActiveSession: false }),
     );
     cleanup();
@@ -758,7 +787,7 @@ describe('PeerSessionRefreshModule attach eligibility after a surface switch', (
       sessions: new Map([
         ['session-meta', {
           sessionId: 'session-meta',
-          workspacePath: '/repo/OpenBitFun',
+          workspaceId: 'workspace-1', workspacePath: '/repo/OpenBitFun',
           historyState: 'metadata-only',
           isHistorical: true,
           isTransient: false,
@@ -795,14 +824,14 @@ describe('PeerSessionRefreshModule attach eligibility after a surface switch', (
       sessions: new Map([
         ['session-active', {
           sessionId: 'session-active',
-          workspacePath: '/repo/OpenBitFun',
+          workspaceId: 'workspace-1', workspacePath: '/repo/OpenBitFun',
           historyState: 'new',
           isHistorical: false,
           isTransient: false,
         }],
         ['session-bg', {
           sessionId: 'session-bg',
-          workspacePath: '/repo/OpenBitFun',
+          workspaceId: 'workspace-1', workspacePath: '/repo/OpenBitFun',
           historyState: 'new',
           isHistorical: false,
           isTransient: false,
@@ -829,7 +858,6 @@ describe('PeerSessionRefreshModule attach eligibility after a surface switch', (
 
     expect(refreshPeerSessionSnapshot).toHaveBeenCalledWith(
       'session-bg',
-      '/repo/OpenBitFun',
       expect.objectContaining({ requireActiveSession: false }),
     );
     cleanup();
@@ -860,14 +888,14 @@ describe('PeerSessionRefreshModule attach eligibility after a surface switch', (
       sessions: new Map([
         ['session-active', {
           sessionId: 'session-active',
-          workspacePath: '/repo/OpenBitFun',
+          workspaceId: 'workspace-1', workspacePath: '/repo/OpenBitFun',
           historyState: 'new',
           isHistorical: false,
           isTransient: false,
         }],
         ['session-bg', {
           sessionId: 'session-bg',
-          workspacePath: '/repo/OpenBitFun',
+          workspaceId: 'workspace-1', workspacePath: '/repo/OpenBitFun',
           historyState: 'new',
           isHistorical: false,
           isTransient: false,
@@ -903,7 +931,6 @@ describe('PeerSessionRefreshModule attach eligibility after a surface switch', (
 
     expect(refreshPeerSessionSnapshot).toHaveBeenCalledWith(
       'session-bg',
-      '/repo/OpenBitFun',
       expect.objectContaining({ requireActiveSession: false }),
     );
     cleanup();
@@ -956,7 +983,7 @@ describe('PeerSessionRefreshModule journal apply', () => {
         {
           sessionId: 'session-1',
           title: 'Live',
-          workspacePath: '/repo/OpenBitFun',
+          workspaceId: 'workspace-1', workspacePath: '/repo/OpenBitFun',
           historyState: 'ready',
           isHistorical: false,
           isTransient: false,

@@ -1,5 +1,6 @@
 package com.openbitfun.mobile.app.ui.shell
 
+import com.openbitfun.mobile.app.ui.account.messageRes
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -50,11 +51,11 @@ import com.openbitfun.mobile.app.ui.common.AdaptiveModalSurface
 import com.openbitfun.mobile.app.ui.remote.AccountRemoteScreen
 import com.openbitfun.mobile.app.ui.remote.ConnectAccountDeviceScreen
 import com.openbitfun.mobile.app.ui.remote.FilePreviewSurface
-import com.openbitfun.mobile.app.ui.remote.DisconnectedRemoteHome
-import com.openbitfun.mobile.app.ui.remote.PairingScreen
+import com.openbitfun.mobile.app.ui.remote.ConnectView
 import com.openbitfun.mobile.app.ui.settings.GeneralSettingsScreen
 import com.openbitfun.mobile.app.ui.settings.SettingsScreen
 import com.openbitfun.mobile.app.ui.shell.sidebar.AppSidebar
+import com.openbitfun.mobile.app.ui.theme.openBitFunColors
 import com.openbitfun.mobile.app.viewmodel.AccountViewModel
 import com.openbitfun.mobile.core.feature.account.AccountIntent
 import com.openbitfun.mobile.core.feature.account.AccountUiState
@@ -70,6 +71,7 @@ import com.openbitfun.mobile.core.feature.layout.SettingsPlacementPolicy
 import com.openbitfun.mobile.core.feature.layout.SettingsSheetKind
 import com.openbitfun.mobile.core.feature.session.RemoteSessionUiState
 import com.openbitfun.mobile.core.feature.session.RemoteSessionIntent
+import com.openbitfun.mobile.core.feature.session.WorkspaceSessionDirectoryUiState
 import com.openbitfun.mobile.core.feature.workspace.RemoteFilePreviewUiState
 import com.openbitfun.mobile.core.feature.workspace.RemoteFileDownloadUiState
 import com.openbitfun.mobile.core.feature.workspace.RemoteWorkspaceIntent
@@ -133,6 +135,7 @@ internal fun MobileScreen() {
     val accountState by accountViewModel.state.collectAsStateWithLifecycle()
     val accountRemoteState by accountViewModel.remoteState.collectAsStateWithLifecycle()
     val accountPhase by accountViewModel.connectionPhase.collectAsStateWithLifecycle()
+    val accountWorkspaceDirectory by accountViewModel.workspaceDirectory.collectAsStateWithLifecycle()
     val readyAccount = accountState as? AccountUiState.Ready
     val linkContext = androidx.compose.ui.platform.LocalContext.current
     var pendingDeviceLink by rememberSaveable { mutableStateOf<String?>(null) }
@@ -180,6 +183,10 @@ internal fun MobileScreen() {
         RemoteControlSource.ACCOUNT_DEVICE -> accountRemoteState
         RemoteControlSource.NONE -> RemoteSessionUiState.Idle
     }
+    val activeWorkspaceDirectory = when (controlSummary.source) {
+        RemoteControlSource.ACCOUNT_DEVICE -> accountWorkspaceDirectory
+        RemoteControlSource.NONE -> WorkspaceSessionDirectoryUiState(emptyList())
+    }
 
     fun dispatchActiveWorkspace(intent: RemoteWorkspaceIntent) {
         when (controlSummary.source) {
@@ -187,6 +194,10 @@ internal fun MobileScreen() {
             RemoteControlSource.NONE -> Unit
         }
     }
+
+    // Full-screen previews replace the conversation composition. Keep the
+    // platform document launcher alive across both presentation surfaces.
+    com.openbitfun.mobile.app.ui.remote.RemoteDownloadSaver(activeWorkspaceState, ::dispatchActiveWorkspace)
 
     fun dispatchActiveSession(intent: RemoteSessionIntent) {
         when (controlSummary.source) {
@@ -277,6 +288,28 @@ internal fun MobileScreen() {
     // The button and the pane are the same sidebar; exactly one of them is real.
     val showMenu = sidebarWidth == 0
 
+    // Persist the owner with the visibility flag: rememberSaveable inputs alone
+    // do not validate the identity of restored values after recreation.
+    val workspacePickerOwner = listOf(readyAccount?.relayUrl.orEmpty(), readyAccount?.userId.orEmpty(),
+        readyAccount?.selectedDeviceId.orEmpty(), controlSummary.source.name)
+    var workspacePickerSavedOwner by rememberSaveable { mutableStateOf(workspacePickerOwner) }
+    var workspacePickerOpen by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(workspacePickerOwner) {
+        if (workspacePickerSavedOwner != workspacePickerOwner) {
+            workspacePickerOpen = false
+            workspacePickerSavedOwner = workspacePickerOwner
+        }
+    }
+    if (workspacePickerOpen && workspacePickerSavedOwner == workspacePickerOwner) {
+        (activeWorkspaceState as? RemoteWorkspaceUiState.Ready)?.let { ready ->
+            com.openbitfun.mobile.app.ui.remote.RuntimeWorkspacePickerDialog(
+                ready, ::dispatchActiveWorkspace, { workspacePickerOpen = false },
+            )
+        }
+    }
+    (activeWorkspaceState as? RemoteWorkspaceUiState.Ready)?.let { ready ->
+        if (ready.deviceTools.visible) com.openbitfun.mobile.app.ui.remote.DeviceToolsDialog(ready, ::dispatchActiveWorkspace)
+    }
     val sidebar: @Composable () -> Unit = {
         AppSidebar(
             permanent = sidebarWidth > 0,
@@ -290,6 +323,7 @@ internal fun MobileScreen() {
             remoteDeviceName = controlSummary.desktopName,
             remoteState = activeRemoteState,
             workspaceState = activeWorkspaceState,
+            workspaceDirectory = activeWorkspaceDirectory,
             remoteActive = shell.surface == MobileSurface.REMOTE,
             remoteSelectedSessionId = shell.remoteSessionId,
             query = shell.sidebarQuery,
@@ -304,6 +338,9 @@ internal fun MobileScreen() {
                 shell.openRemoteConnect()
                 closeDrawer()
             },
+            onRefreshRemoteDevices = { accountViewModel.dispatch(AccountIntent.RefreshDevices) },
+            refreshingRemoteDevices = readyAccount?.refreshing == true,
+            directoryRefreshError = readyAccount?.refreshFailure?.let { stringResource(it.messageRes()) },
             onRetryRemoteDevice = {
                 dispatchActiveSession(RemoteSessionIntent.Load)
                 dispatchActiveWorkspace(RemoteWorkspaceIntent.Load)
@@ -314,28 +351,53 @@ internal fun MobileScreen() {
                 shell.closeRemoteSession()
             },
             onOpenRemoteSession = { sessionId ->
-                dispatchActiveSession(RemoteSessionIntent.Open(sessionId))
                 shell.openRemoteSession(sessionId)
                 closeDrawer()
+                dispatchActiveSession(RemoteSessionIntent.Open(sessionId))
             },
-            onCreateRemoteInWorkspace = { path, agentType ->
+            onCreateRemoteInWorkspace = { workspace, agentType ->
+                // With an ID the create carries only the ID; the legacy triple is for pre-ID rows.
                 dispatchActiveSession(
                     RemoteSessionIntent.CreateSession(
                         agentType = agentType,
                         title = "",
                         instruction = "",
                         modelId = null,
-                        workspacePath = path,
+                        workspacePath = workspace.path,
+                        remoteConnectionId = workspace.remoteConnectionId,
+                        remoteSshHost = workspace.remoteSshHost,
+                        workspaceId = workspace.workspaceId,
                     ),
                 )
                 shell.show(MobileSurface.REMOTE)
                 closeDrawer()
             },
-            onOpenRemoteWorkspace = { path ->
-                dispatchActiveWorkspace(RemoteWorkspaceIntent.SelectWorkspace(path))
+            onWorkspaceTool = { path, connectionId, terminal ->
+                dispatchActiveWorkspace(RemoteWorkspaceIntent.OpenDeviceTools(path, connectionId))
+                if (terminal) dispatchActiveWorkspace(RemoteWorkspaceIntent.SelectDeviceToolsPanel(com.openbitfun.mobile.core.feature.workspace.DeviceToolsPanel.TERMINAL))
+                closeDrawer()
+            },
+            onAddRemoteWorkspace = { workspacePickerOpen = true },
+            onOpenRemoteWorkspace = { workspace ->
+                dispatchActiveWorkspace(RemoteWorkspaceIntent.SelectWorkspace(workspace.path, workspace.remoteConnectionId, workspace.remoteSshHost, false, workspace.workspaceId))
                 shell.show(MobileSurface.REMOTE)
                 shell.closeRemoteSession()
                 closeDrawer()
+            },
+            onExpandRemoteWorkspace = { workspace ->
+                // The branch is loaded by workspace ID; the legacy triple only serves pre-ID rows.
+                dispatchActiveSession(
+                    RemoteSessionIntent.LoadWorkspaceSessions(
+                        workspace.path, workspace.remoteConnectionId, workspace.remoteSshHost, workspace.workspaceId,
+                    ),
+                )
+            },
+            onRetryRemoteWorkspaceSessions = { workspace ->
+                dispatchActiveSession(
+                    RemoteSessionIntent.RetryWorkspaceSessions(
+                        workspace.path, workspace.remoteConnectionId, workspace.remoteSshHost, workspace.workspaceId,
+                    ),
+                )
             },
             onDeleteRemoteSession = { id -> dispatchActiveSession(RemoteSessionIntent.DeleteSession(id)) },
             onOpenSettings = {
@@ -385,6 +447,7 @@ internal fun MobileScreen() {
                                 )
                             },
                             accountUsername = readyAccount?.username.orEmpty(),
+                            attachmentOwner = org.json.JSONArray(listOf(readyAccount?.relayUrl, readyAccount?.username, readyAccount?.selectedDeviceId)).toString(),
                             phase = accountPhase,
                             settingsPlacement = settingsPlacement,
                             sessionDetailsPlacement = sessionDetailsPlacement,
@@ -408,23 +471,21 @@ internal fun MobileScreen() {
                         )
 
                         RemoteControlSource.NONE -> if (readyAccount != null) {
-                            ConnectAccountDeviceScreen(
-                                state = readyAccount,
-                                onBack = { shell.openRemoteConnect() },
-                                onRefresh = { accountViewModel.dispatch(AccountIntent.RefreshDevices) },
-                                onSelect = accountViewModel::selectDevice,
-                                onOpenScanner = {
-                                    shell.openRemoteScanner()
-                                },
-                                modifier = Modifier,
+                            com.openbitfun.mobile.app.ui.remote.RemoteCompactHome(
+                                remoteState = RemoteSessionUiState.Idle,
+                                desktopName = "",
+                                onOpenSidebar = { compactDrawerOpen = true },
+                                onBrowse = { shell.openRemoteConnect() },
+                                onOpen = {},
                             )
-                        } else {
-                            DisconnectedRemoteHome(
-                                onOpenSidebar = if (showMenu) { { compactDrawerOpen = true } } else null,
-                                onConnect = shell::openRemoteConnect,
-                            )
-
-                        }
+                        } else WelcomeHome(
+                            signedIn = readyAccount != null,
+                            onLogin = {
+                                if (readyAccount != null) shell.openRemoteConnect() else shell.openAccount()
+                            },
+                            onScan = shell::openRemoteScanner,
+                            modifier = Modifier.fillMaxSize(),
+                        )
                     }
                 }
             }
@@ -480,6 +541,10 @@ internal fun MobileScreen() {
                 if (sidebarWidth > 0) {
                     PermanentDrawerSheet(
                         Modifier.width(sidebarWidth.dp).testTag(MASTER_DETAIL_TEST_TAG),
+                        // Material fills a drawer sheet from surfaceContainerLow;
+                        // the rail paints its own chrome, so the sheet gets out
+                        // of the way rather than tinting a second layer under it.
+                        drawerContainerColor = openBitFunColors.sidebar.background,
                     ) { sidebar() }
                     PaneSeparator(
                         if (previewVisible) {
@@ -586,17 +651,12 @@ internal fun MobileScreen() {
                 onOpenScanner = shell::openRemoteScanner,
                 modifier = sheetModifier,
             )
-        } else PairingScreen(
-            onDeviceLink = connectDeviceLink,
+        } else ConnectView(
+            onSubmit = connectDeviceLink,
             modifier = sheetModifier,
-            settingsPlacement = settingsPlacement,
-            sessionDetailsPlacement = sessionDetailsPlacement,
-            viewSettingsPlacement = remoteViewSettingsPlacement,
-            onOpenRemoteSettings = { shell.openSettings(SettingsMode.REMOTE) },
             onBack = shell::closeRemoteConnect,
             onOpenAccount = { shell.closeRemoteConnect(); shell.openAccount() },
             startScanning = shell.remoteScanRequested,
-
         )
     }
     AdaptiveModalSurface(

@@ -19,11 +19,11 @@ use openbitfun_core::service::terminal::{
     CreateSessionRequest as CoreCreateSessionRequest,
     ExecuteCommandRequest as CoreExecuteCommandRequest,
     ExecuteCommandResponse as CoreExecuteCommandResponse,
-    GetHistoryRequest as CoreGetHistoryRequest, GetHistoryResponse as CoreGetHistoryResponse,
-    ResizeRequest as CoreResizeRequest, SendCommandRequest as CoreSendCommandRequest,
-    SessionResponse as CoreSessionResponse, SessionSource as CoreSessionSource,
-    ShellInfo as CoreShellInfo, ShellType, SignalRequest as CoreSignalRequest, TerminalApi,
-    TerminalConfig, WriteRequest as CoreWriteRequest,
+    GetHistoryResponse as CoreGetHistoryResponse, ResizeRequest as CoreResizeRequest,
+    SendCommandRequest as CoreSendCommandRequest, SessionResponse as CoreSessionResponse,
+    SessionSource as CoreSessionSource, ShellInfo as CoreShellInfo, ShellType,
+    SignalRequest as CoreSignalRequest, TerminalApi, TerminalConfig,
+    WriteRequest as CoreWriteRequest,
 };
 
 use super::app_state::AppState;
@@ -107,6 +107,8 @@ impl Default for TerminalState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateSessionRequest {
+    #[serde(default)]
+    pub workspace_id: Option<String>,
     pub session_id: Option<String>,
     pub name: Option<String>,
     pub shell_type: Option<String>,
@@ -124,6 +126,8 @@ pub struct CreateSessionRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
     pub id: String,
     pub name: String,
     pub shell_type: String,
@@ -144,6 +148,7 @@ pub struct SessionResponse {
 impl From<CoreSessionResponse> for SessionResponse {
     fn from(resp: CoreSessionResponse) -> Self {
         Self {
+            workspace_id: resp.workspace_id,
             id: resp.id,
             name: resp.name,
             shell_type: format!("{:?}", resp.shell_type),
@@ -270,6 +275,9 @@ pub struct GetHistoryResponse {
     pub session_id: String,
     pub data: String,
     pub history_size: usize,
+    pub next_offset: u64,
+    pub cursor: u64,
+    pub truncated: bool,
     /// PTY column count at the time history was captured.
     pub cols: u16,
     /// PTY row count at the time history was captured.
@@ -282,6 +290,9 @@ impl From<CoreGetHistoryResponse> for GetHistoryResponse {
             session_id: resp.session_id,
             data: resp.data,
             history_size: resp.history_size,
+            next_offset: resp.history_size as u64,
+            cursor: resp.history_size as u64,
+            truncated: false,
             cols: resp.cols,
             rows: resp.rows,
         }
@@ -328,15 +339,6 @@ pub async fn terminal_get_shells(
     Ok(shells.into_iter().map(ShellInfo::from).collect())
 }
 
-/// Check if the given working directory belongs to any registered remote workspace.
-/// Returns (connection_id, remote_cwd) if so.
-async fn lookup_remote_for_terminal(working_directory: Option<&str>) -> Option<(String, String)> {
-    let wd = working_directory?;
-    let manager = get_remote_workspace_manager()?;
-    let entry = manager.lookup_connection(wd, None).await?;
-    Some((entry.connection_id, wd.to_string()))
-}
-
 /// Try to find session in remote terminal manager. Returns true if found.
 async fn is_remote_session(session_id: &str) -> bool {
     if let Some(manager) = get_remote_workspace_manager() {
@@ -347,7 +349,84 @@ async fn is_remote_session(session_id: &str) -> bool {
     false
 }
 
+/// Coalesce PTY notifications; terminal bytes remain in the owning replay buffer.
+fn notify_terminal_replay(session_id: &str) {
+    use std::{
+        collections::HashSet,
+        sync::{Mutex as StdMutex, OnceLock},
+    };
+    static PENDING: OnceLock<(StdMutex<HashSet<String>>, tokio::sync::Notify)> = OnceLock::new();
+    let pending =
+        PENDING.get_or_init(|| (StdMutex::new(HashSet::new()), tokio::sync::Notify::new()));
+    static WORKER: std::sync::Once = std::sync::Once::new();
+    WORKER.call_once(|| {
+        tokio::spawn(async {
+            loop {
+                let pending = PENDING
+                    .get()
+                    .expect("Terminal notification state initialized");
+                pending.1.notified().await;
+                tokio::time::sleep(std::time::Duration::from_millis(75)).await;
+                let ids: Vec<_> = pending
+                    .0
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .drain()
+                    .collect();
+                let Some(hub) = super::remote_connect_api::host_stream_hub().await else {
+                    continue;
+                };
+                for id in ids {
+                    let mut cursor = None;
+                    if let Some(state) = get_remote_workspace_manager() {
+                        if let Some(manager) = state.get_terminal_manager().await {
+                            cursor = manager.replay_cursor(&id).await;
+                        }
+                    }
+                    if cursor.is_none() {
+                        if let Ok(api) = TerminalApi::from_singleton() {
+                            cursor = api.session_manager().replay_cursor(&id).await;
+                        }
+                    }
+                    if let Err(error) = hub
+                        .append(
+                            format!("terminal-{id}"),
+                            "terminal-output".into(),
+                            serde_json::json!({"terminal_id":id,"cursor":cursor}),
+                        )
+                        .await
+                    {
+                        warn!("Failed to publish terminal stream notification: {}", error);
+                    }
+                }
+            }
+        });
+    });
+    pending
+        .0
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(session_id.to_string());
+    pending.1.notify_one();
+}
+
+async fn register_terminal_stream(id: &str) -> Result<(), String> {
+    if let Some(hub) = super::remote_connect_api::host_stream_hub().await {
+        hub.append(
+            format!("terminal-{id}"),
+            "terminal-created".into(),
+            serde_json::json!({"terminal_id":id}),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 fn emit_terminal_event(app_handle: &AppHandle, event: &TerminalEvent) -> bool {
+    if let TerminalEvent::Data { session_id, .. } | TerminalEvent::Exit { session_id, .. } = event {
+        notify_terminal_replay(session_id);
+    }
     let event_name = "terminal_event";
     let local_emit_succeeded = match app_handle.emit(event_name, event) {
         Ok(()) => true,
@@ -393,11 +472,16 @@ async fn spawn_remote_pty_session(
         .await
         .map_err(|e| format!("Failed to create remote session: {}", e))?;
 
-    let session = result.session;
+    let mut session = result.session;
+    terminal_manager
+        .set_workspace_id(&session.id, request.workspace_id.clone())
+        .await;
+    session.workspace_id = request.workspace_id.clone();
     let mut rx = result.output_rx;
     let session_id = session.id.clone();
 
     let response = SessionResponse {
+        workspace_id: session.workspace_id,
         id: session.id,
         name: session.name,
         shell_type: "Remote".to_string(),
@@ -459,16 +543,61 @@ async fn spawn_remote_pty_session(
         );
     });
 
+    register_terminal_stream(&session_id).await?;
     Ok(response)
 }
 
 #[tauri::command]
 pub async fn terminal_create(
     _app: AppHandle,
-    request: CreateSessionRequest,
+    mut request: CreateSessionRequest,
     state: State<'_, TerminalState>,
     app_state: State<'_, AppState>,
 ) -> Result<SessionResponse, String> {
+    if let Some(id) = request.workspace_id.as_deref() {
+        let service = openbitfun_core::service::workspace::get_global_workspace_service()
+            .ok_or("Workspace service is unavailable")?;
+        let workspace = service
+            .require_workspace(id)
+            .await
+            .map_err(|e| e.to_string())?;
+        request.connection_id = match workspace.workspace_kind {
+            openbitfun_core::service::workspace::WorkspaceKind::Remote => Some(
+                workspace
+                    .remote_ssh_connection_id()
+                    .ok_or("Remote workspace is missing its saved SSH connection ID")?
+                    .to_owned(),
+            ),
+            _ => Some(String::new()),
+        };
+        request
+            .working_directory
+            .get_or_insert_with(|| workspace.root_path.to_string_lossy().into_owned());
+    } else if request.connection_id.is_none() {
+        // Upgrade-only pre-ID terminal payload. Never infer a target from cwd.
+        let service = openbitfun_core::service::workspace::get_global_workspace_service()
+            .ok_or("Workspace service is unavailable")?;
+        let workspace = service
+            .resolve_legacy_workspace_reference(
+                None,
+                request.working_directory.as_deref().unwrap_or_default(),
+                None,
+                None,
+            )
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or("Terminal workspace ID is unavailable")?;
+        request.workspace_id = Some(workspace.id.clone());
+        request.connection_id = match workspace.workspace_kind {
+            openbitfun_core::service::workspace::WorkspaceKind::Remote => Some(
+                workspace
+                    .remote_ssh_connection_id()
+                    .ok_or("Remote workspace is missing its saved SSH connection ID")?
+                    .to_owned(),
+            ),
+            _ => Some(String::new()),
+        };
+    }
     // Explicit SSH connection (Relay Deploy wizard) — no remote workspace required.
     // Register AppState's RemoteTerminalManager onto the global workspace manager so
     // subsequent terminal_get/write/resize/close look up the same session store.
@@ -478,6 +607,15 @@ pub async fn terminal_create(
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
+        let ssh = app_state.get_ssh_manager_async().await?;
+        if !ssh
+            .get_saved_connections()
+            .await
+            .iter()
+            .any(|profile| profile.id == connection_id)
+        {
+            return Err("Remote terminal requires a connection saved on this host".into());
+        }
         let terminal_manager = app_state
             .get_remote_terminal_manager_async()
             .await
@@ -501,26 +639,6 @@ pub async fn terminal_create(
         .await;
     }
 
-    if let Some((connection_id, remote_cwd)) =
-        lookup_remote_for_terminal(request.working_directory.as_deref()).await
-    {
-        if let Some(remote_manager) = get_remote_workspace_manager() {
-            let terminal_manager = remote_manager
-                .get_terminal_manager()
-                .await
-                .ok_or("Remote terminal manager not available")?;
-
-            return spawn_remote_pty_session(
-                &_app,
-                &terminal_manager,
-                &connection_id,
-                &request,
-                Some(remote_cwd.as_str()),
-            )
-            .await;
-        }
-    }
-
     let api = state.get_or_init_api().await?;
 
     let parsed_shell_type = request.shell_type.and_then(|s| parse_shell_type(&s));
@@ -542,6 +660,21 @@ pub async fn terminal_create(
         .await
         .map_err(|e| format!("Failed to create session: {}", e))?;
 
+    let mut session = session;
+    if let Some(workspace_id) = request.workspace_id {
+        api.session_manager()
+            .set_owner(
+                &session.id,
+                openbitfun_core::service::terminal::session::SessionOwner {
+                    id: workspace_id.clone(),
+                    owner_type: openbitfun_core::service::terminal::session::OwnerType::Workspace,
+                },
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        session.workspace_id = Some(workspace_id);
+    }
+    register_terminal_stream(&session.id).await?;
     Ok(SessionResponse::from(session))
 }
 
@@ -555,6 +688,7 @@ pub async fn terminal_get(
         if let Some(terminal_manager) = remote_manager.get_terminal_manager().await {
             if let Some(session) = terminal_manager.get_session(&session_id).await {
                 return Ok(SessionResponse {
+                    workspace_id: session.workspace_id,
                     id: session.id,
                     name: session.name,
                     shell_type: "Remote".to_string(),
@@ -592,6 +726,7 @@ pub async fn terminal_list(
         if let Some(terminal_manager) = remote_manager.get_terminal_manager().await {
             let remote_sessions = terminal_manager.list_sessions().await;
             all_sessions.extend(remote_sessions.into_iter().map(|s| SessionResponse {
+                workspace_id: s.workspace_id,
                 id: s.id,
                 name: s.name,
                 shell_type: "Remote".to_string(),
@@ -798,36 +933,11 @@ pub async fn terminal_execute(
                 .get_terminal_manager()
                 .await
                 .ok_or("Remote terminal manager not available")?;
-            let session = terminal_manager
-                .get_session(&request.session_id)
+            let result = terminal_manager
+                .execute(&request.session_id, &request.command, request.timeout_ms)
                 .await
-                .ok_or("Remote session not found")?;
-            let ssh_manager = remote_manager
-                .get_ssh_manager()
-                .await
-                .ok_or("SSH manager not available")?;
-            let (stdout, stderr, exit_code) = ssh_manager
-                .execute_command(&session.connection_id, &request.command)
-                .await
-                .map_err(|e| format!("Failed to execute remote command: {}", e))?;
-
-            return Ok(ExecuteCommandResponse {
-                command: request.command,
-                command_id: format!(
-                    "remote-cmd-{}",
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis()
-                ),
-                output: if stderr.is_empty() {
-                    stdout
-                } else {
-                    format!("{}\n{}", stdout, stderr)
-                },
-                exit_code: Some(exit_code),
-                completion_reason: "completed".to_string(),
-            });
+                .map_err(|e| e.to_string())?;
+            return Ok(ExecuteCommandResponse::from(result));
         }
     }
 
@@ -927,39 +1037,41 @@ pub async fn terminal_shutdown_all(state: State<'_, TerminalState>) -> Result<()
 #[tauri::command]
 pub async fn terminal_get_history(
     session_id: String,
+    after_offset: Option<u64>,
     state: State<'_, TerminalState>,
 ) -> Result<GetHistoryResponse, String> {
-    if is_remote_session(&session_id).await {
-        if let Some(remote_manager) = get_remote_workspace_manager() {
-            if let Some(terminal_manager) = remote_manager.get_terminal_manager().await {
-                if let Some(session) = terminal_manager.get_session(&session_id).await {
-                    return Ok(GetHistoryResponse {
-                        session_id: session.id,
-                        data: String::new(),
-                        history_size: 0,
-                        cols: session.cols,
-                        rows: session.rows,
-                    });
-                }
-            }
+    let after = after_offset.unwrap_or(0);
+    let limit = if after_offset.is_some() {
+        64 * 1024
+    } else {
+        usize::MAX
+    };
+    let mut page = None;
+    if let Some(manager) = get_remote_workspace_manager() {
+        if let Some(remote) = manager.get_terminal_manager().await {
+            page = remote.replay_page(&session_id, after, limit).await;
         }
     }
-
-    let api = state.get_or_init_api().await?;
-
-    let core_request = CoreGetHistoryRequest { session_id };
-
-    let response = api
-        .get_history(core_request)
-        .await
-        .map_err(|e| format!("Failed to get history: {}", e))?;
-
+    let page = if let Some(page) = page {
+        page
+    } else {
+        state
+            .get_or_init_api()
+            .await?
+            .session_manager()
+            .replay_page(&session_id, after, limit)
+            .await
+            .ok_or("Terminal session is unavailable")?
+    };
     Ok(GetHistoryResponse {
-        session_id: response.session_id,
-        data: response.data,
-        history_size: response.history_size,
-        cols: response.cols,
-        rows: response.rows,
+        session_id,
+        data: page.data,
+        history_size: page.history_size,
+        next_offset: page.next_offset,
+        cursor: page.cursor,
+        truncated: page.truncated,
+        cols: page.cols,
+        rows: page.rows,
     })
 }
 

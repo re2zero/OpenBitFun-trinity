@@ -1,3 +1,4 @@
+import { installTrayUnreadService } from './trayUnreadService';
 import { agentAPI, type AgenticEvent, type PermissionRequest } from '@/infrastructure/api/service-api/AgentAPI';
 import { sessionAPI } from '@/infrastructure/api/service-api/SessionAPI';
 import { getActiveSurfaceId, getActiveSurfaceScope, onSurfaceActivated, surfaceIdForDevice, type DeviceSurfaceId } from '@/infrastructure/peer-device/deviceSurface';
@@ -80,9 +81,9 @@ function publish(sessionId: string): void {
 function targetFor(sessionId: string): ActivityTarget | undefined {
   const session = flowChatStore.getState().sessions.get(sessionId);
   if (!session || session.isTransient || session.config.dispatchJobId) return;
-  const workspacePath = session.projectWorkspacePath || session.config.projectWorkspacePath || session.workspacePath;
-  if (!workspacePath) return;
-  return { sessionId, workspacePath, remoteConnectionId: session.remoteConnectionId, remoteSshHost: session.remoteSshHost };
+  const workspaceId = session.projectWorkspaceId || session.workspaceId || session.config.workspaceId;
+  if (!workspaceId) return;
+  return { sessionId, workspaceId };
 }
 
 /** Installed for the FlowChat lifetime, with one subscription per source. */
@@ -169,6 +170,7 @@ export function installSessionNavStatusService(): () => void {
     ['agentic://tool-event', callback => agentAPI.onToolEvent(callback)],
   ];
   const eventNames = new Set(events.map(([name]) => name));
+  const disposeTrayUnread = installTrayUnreadService();
   const disposers = events.map(([name, listen]) => listen(event => {
     if (observed.delete(event)) return;
     sessionActivityStore.observe(getActiveSurfaceId(), name, event);
@@ -212,9 +214,9 @@ export function installSessionNavStatusService(): () => void {
     if (machineTurns.get(sessionId) === identity) return;
     machineTurns.set(sessionId, identity);
     if (machine.currentState === SessionExecutionState.PROCESSING) {
-      sessionActivityStore.observe(getActiveSurfaceId(), 'agentic://dialog-turn-started', {
-        sessionId, turnId: machine.context.currentDialogTurnId,
-      });
+      // A local start is not a host acknowledgement. Refresh the host facts;
+      // navigation projects the pending local Turn until those facts catch up.
+      sessionActivityStore.invalidate(sessionId);
     }
     publish(sessionId);
   }));
@@ -272,6 +274,7 @@ export function installSessionNavStatusService(): () => void {
   for (const sessionId of rows.keys()) { publish(sessionId); refresh(sessionId); }
   cleanup = () => {
     disposed = true;
+    disposeTrayUnread();
     sync.dispose();
     clearInterval(interval);
     disposers.forEach(dispose => dispose());

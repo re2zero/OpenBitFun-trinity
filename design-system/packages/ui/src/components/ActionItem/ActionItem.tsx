@@ -27,9 +27,14 @@ export type ActionItemTone = "neutral" | "danger";
 export interface ActionItemProps
   extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, "children" | "className"> {
   actions?: readonly ActionItemAction[];
+  /** Independently interactive trailing content, outside the primary button. */
+  actionContent?: ReactNode;
+  triggerClassName?: string;
   children: ReactNode;
   className?: string;
   leading?: ReactNode;
+  /** Static labels preserve wrapping without implicit overflow motion or tooltips. */
+  labelBehavior?: "overflow" | "static";
   metadata?: ReactNode;
   reserveLeadingSpace?: boolean;
   shortcut?: ReactNode;
@@ -38,10 +43,13 @@ export interface ActionItemProps
 
 export const ActionItem = forwardRef<HTMLButtonElement, ActionItemProps>(function ActionItem({
   actions = [],
+  actionContent,
+  triggerClassName,
   children,
   className,
   disabled,
   leading,
+  labelBehavior = "overflow",
   metadata,
   reserveLeadingSpace = false,
   shortcut,
@@ -60,18 +68,22 @@ export const ActionItem = forwardRef<HTMLButtonElement, ActionItemProps>(functio
     >
       <button data-overflow-trigger
         {...props}
-        className={styles.trigger}
+        className={classNames(styles.trigger, triggerClassName)}
         data-openbitfun-part="trigger"
         disabled={disabled}
         ref={ref}
         type={type}
       >
         {hasLeadingArea && (
-          <span aria-hidden="true" className={styles.leading} data-openbitfun-part="leading">
+          <span aria-hidden="true" className={styles.leading} data-openbitfun-icon-slot="true" data-openbitfun-part="leading">
             {leading}
           </span>
         )}
-        <OverflowText className={styles.label} data-openbitfun-part="label">{children}</OverflowText>
+        {labelBehavior === "static" ? (
+          <span className={classNames(styles.label, styles.staticLabel)} data-openbitfun-part="label">{children}</span>
+        ) : (
+          <OverflowText className={styles.label} data-openbitfun-part="label">{children}</OverflowText>
+        )}
         {metadata !== undefined && metadata !== null && (
           <span className={styles.metadata} data-openbitfun-part="metadata">
             {metadata}
@@ -83,8 +95,9 @@ export const ActionItem = forwardRef<HTMLButtonElement, ActionItemProps>(functio
           </span>
         )}
       </button>
-      {actions.length > 0 && (
+      {(actions.length > 0 || actionContent != null) && (
         <span className={styles.actions} data-openbitfun-part="actions">
+          {actionContent}
           {actions.map((action) => (
               <IconButton
                 aria-label={action.label}

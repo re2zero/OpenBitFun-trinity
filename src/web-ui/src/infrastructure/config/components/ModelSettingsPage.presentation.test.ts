@@ -21,7 +21,8 @@ describe('ModelSettingsPage presentation', () => {
     expect(source).not.toMatch(/label=\{`[^`]*\*[^`]*`\}/);
     expect(source.match(/<ConfigPageRow label=\{t\('form\.configName'\)\} required/g)).toHaveLength(2);
     expect(source.match(/<ConfigPageRow label=\{t\('form\.modelSelection'\)\} required/g)).toHaveLength(2);
-    expect(source.match(/<ConfigPageRow label=\{t\('form\.baseUrl'\)\} required/g)).toHaveLength(1);
+    // Template and custom-provider editors both require an API URL.
+    expect(source.match(/<ConfigPageRow label=\{t\('form\.baseUrl'\)\} required/g)).toHaveLength(2);
     expect(source).toContain('<ConfigPageRow label={label} required align="center" wide>');
   });
 
@@ -36,5 +37,14 @@ describe('ModelSettingsPage presentation', () => {
       /&__custom-headers-row,\s*&__custom-request-body-row\s*\{\s*> \.openbitfun-config-page-row__meta\s*\{\s*width: 100%;\s*max-width: none;/,
     );
     expect(styles).toMatch(/&__inline-header-actions\s*\{[\s\S]*?margin-left: auto;/);
+  });
+
+  it('keeps subscription actions right-aligned through the shared compact breakpoint', () => {
+    expect(styles).toMatch(
+      /@container config-panel \(max-width: 520px\)\s*\{\s*&__cli-account\.openbitfun-config-page-row\s*\{[\s\S]*?grid-template-columns: minmax\(0, 1fr\) auto;[\s\S]*?gap: var\(--openbitfun-space-4\);[\s\S]*?justify-content: flex-end;/,
+    );
+    expect(styles).toMatch(
+      /@container config-panel \(max-width: 360px\)\s*\{\s*&__cli-account\.openbitfun-config-page-row\s*\{[\s\S]*?grid-template-columns: minmax\(0, 1fr\);[\s\S]*?gap: var\(--openbitfun-space-2\);[\s\S]*?justify-content: flex-start;/,
+    );
   });
 });

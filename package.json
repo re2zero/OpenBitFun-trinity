@@ -1,7 +1,7 @@
 {
   "name": "OpenBitFun",
   "private": true,
-  "version": "1.0.0-beta",
+  "version": "1.0.1",
   "type": "module",
   "engines": {
     "node": ">=22.12.0"
@@ -60,13 +60,13 @@
     "theme:color-audit:test": "node --test scripts/audit-theme-colors.test.mjs scripts/audit-cli-theme-colors.test.mjs scripts/audit-frontend-colors.test.mjs",
     "motion:audit": "node scripts/audit-web-motion.mjs",
     "theme:visual-contract": "node scripts/validate-theme-visual-contract.mjs",
-    "appearance:contract-audit": "node scripts/audit-appearance-contracts.mjs",
+    "appearance:contract-audit": "node --test scripts/appearance-dom-contracts.test.mjs && node scripts/audit-appearance-contracts.mjs",
     "flowchat:log:analyze": "node scripts/diagnostics/analyze-flowchat-log.mjs",
     "flowchat:log:analyze:test": "node --test scripts/diagnostics/analyze-flowchat-log.test.mjs",
     "product:identity:audit": "node scripts/product-identity-audit.mjs",
     "product:identity:audit:test": "node --test scripts/product-identity-audit.test.mjs",
     "release:version:check": "node scripts/verify-release-version-sync.mjs",
-    "check:repo-hygiene": "pnpm run product:identity:audit:test && pnpm run product:identity:audit && pnpm run release:version:check && node scripts/check-repo-hygiene.mjs && node scripts/update-models-dev-snapshot.mjs --check",
+    "check:repo-hygiene": "pnpm run product:identity:audit:test && pnpm run product:identity:audit && pnpm run release:version:check && node --test scripts/check-repo-hygiene.test.mjs && node scripts/check-repo-hygiene.mjs && node scripts/update-models-dev-snapshot.mjs --check",
     "models-dev:check": "node scripts/update-models-dev-snapshot.mjs --check",
     "models-dev:update": "node scripts/update-models-dev-snapshot.mjs",
     "check:build-prereqs": "node scripts/check-build-prereqs.mjs",
@@ -188,6 +188,7 @@
     "jszip": "^3.10.1",
     "pdf-lib": "^1.17.1",
     "pnpm": "^10.32.1",
-    "pptxgenjs": "^4.0.1"
+    "pptxgenjs": "^4.0.1",
+    "socket.io-client": "4.8.3"
   }
 }

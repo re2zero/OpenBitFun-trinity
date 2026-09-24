@@ -22,7 +22,41 @@ function extractBlock(source: string, selector: string): string {
 }
 
 describe('UserMessageItem metadata visibility', () => {
-  it('shows the copy, edit, and rollback actions as one always-available cluster', () => {
+  it('keeps image editing vertically ordered and compact', () => {
+    const stylesheet = readFileSync(
+      fileURLToPath(new URL('./UserMessageItem.scss', import.meta.url)),
+      'utf8',
+    ).replace(/\r\n?/g, '\n');
+    const editLayout = extractBlock(stylesheet, '\n.user-message-item__edit-layout {');
+    const composer = extractBlock(stylesheet, '\n.user-message-edit-composer {');
+    const textarea = extractBlock(stylesheet, '\n.user-message-edit-composer__textarea {');
+    const richInput = extractBlock(stylesheet, '\n.user-message-edit-composer__rich-input {');
+    const bubble = extractBlock(stylesheet, '\n.user-message-item {');
+    const main = extractBlock(stylesheet, '\n.user-message-item__main {');
+    const content = extractBlock(stylesheet, '\n.user-message-item__content {');
+    const editingBubble = extractBlock(stylesheet, '\n.user-message-item--editing {');
+
+    expect(editLayout).toContain('flex-direction: column;');
+    expect(editLayout).toContain('gap: var(--openbitfun-control-flow-chat-inline-gap);');
+    expect(composer).toContain('min-block-size: 0;');
+    expect(composer).toContain('padding: 0;');
+    expect(textarea).toContain('min-height: var(--openbitfun-control-height-sm);');
+    expect(richInput).toContain('min-height: var(--openbitfun-control-height-sm);');
+    expect(bubble).toContain('width: fit-content;');
+    expect(bubble).not.toContain('min-width:');
+    expect(bubble).toContain('max-width: min(72%, 48rem);');
+    expect(bubble).toContain('border: none;');
+    expect(main).toContain('justify-content: center;');
+    expect(content).toContain('flex: 0 1 auto;');
+    expect(content).toContain('width: fit-content;');
+    expect(content).toContain('max-width: 100%;');
+    expect(editingBubble).toContain('width: auto;');
+    expect(editingBubble).toContain('max-width: none;');
+    expect(stylesheet).not.toContain('.user-message-item__images--editing');
+    expect(stylesheet).not.toContain('min-height: 5.5rem;');
+  });
+
+  it('reveals the copy, edit, and rollback actions as one hover or focus cluster', () => {
     const stylesheet = readFileSync(
       fileURLToPath(new URL('./UserMessageItem.scss', import.meta.url)),
       'utf8',
@@ -30,9 +64,12 @@ describe('UserMessageItem metadata visibility', () => {
     const actions = extractBlock(stylesheet, '\n.user-message-item__actions {');
     const shell = extractBlock(stylesheet, '.user-message-item-shell {');
 
-    expect(actions).toContain('opacity: 1;');
-    expect(actions).toContain('pointer-events: auto;');
+    expect(actions).toContain('opacity: 0;');
+    expect(actions).toContain('pointer-events: none;');
+    expect(actions).not.toContain('visibility: hidden;');
     expect(shell).not.toContain('.user-message-item__actions');
+    expect(stylesheet).toContain('.user-message-item-shell:hover .user-message-item__actions,');
+    expect(stylesheet).toContain('.user-message-item-shell:focus-within .user-message-item__actions {\n  opacity: 1;\n  pointer-events: auto;');
 
     expect(stylesheet).toContain([
       '.user-message-item__copy-btn,',
@@ -42,25 +79,40 @@ describe('UserMessageItem metadata visibility', () => {
     expect(stylesheet).not.toContain('.user-message-item__edit-btn {\n  opacity: 1;');
   });
 
-  it('shows the out-of-bubble timestamp without changing row geometry', () => {
+  it('reveals the timestamp beside the actions without shifting the action cluster', () => {
     const stylesheet = readFileSync(
       fileURLToPath(new URL('./UserMessageItem.scss', import.meta.url)),
       'utf8',
     ).replace(/\r\n?/g, '\n');
     const shell = extractBlock(stylesheet, '.user-message-item-shell {');
     const timestamp = extractBlock(stylesheet, '\n.user-message-item__timestamp {');
+    const sharedLayout = readFileSync(
+      fileURLToPath(new URL('../../_transcript-layout.scss', import.meta.url)),
+      'utf8',
+    );
+    const metaLayout = extractBlock(sharedLayout, '@mixin metadata-row {');
 
-    expect(timestamp).toContain('opacity: 1;');
+    expect(timestamp).toContain('opacity: 0;');
+    expect(timestamp).toContain('visibility: hidden;');
     expect(timestamp).toContain('pointer-events: none;');
-    expect(timestamp).toContain('margin-right: auto;');
+    expect(timestamp).not.toContain('margin-inline-end: auto;');
+    expect(stylesheet).toContain('.user-message-item-shell:hover .user-message-item__timestamp,');
+    expect(stylesheet).toContain('.user-message-item-shell:focus-within .user-message-item__timestamp {\n  opacity: 1;\n  visibility: visible;');
     const meta = extractBlock(stylesheet, '\n.user-message-item__meta {');
-    expect(meta).toContain('display: flex;');
-    expect(meta).not.toMatch(/position:\s*(absolute|fixed);/);
-    expect(meta).not.toMatch(/(?:^|\n)\s*(?:max-)?height:/);
-    expect(meta).toContain('justify-content: flex-end;');
-    expect(meta).toContain('padding: var(--openbitfun-space-1) 0 0;');
+    expect(metaLayout).toContain('display: flex;');
+    expect(meta + metaLayout).not.toMatch(/position:\s*(absolute|fixed);/);
+    expect(meta + metaLayout).not.toMatch(/(?:^|\n)\s*(?:max-)?height:/);
+    expect(metaLayout).toContain('justify-content: flex-end;');
+    const bubble = extractBlock(stylesheet, '\n.user-message-item {');
+    expect(bubble).toContain('padding: 0.46rem var(--_user-message-padding-inline);');
+    expect(shell).toContain('--_user-message-padding-inline: var(--_user-message-radius);');
+    // The bubble's surface ends on the reading column's content edge instead of
+    // one radius past it, so a sent message lines up with the tool cards and the
+    // composer card that share that edge.
+    expect(bubble).toContain('margin-inline: auto 0;');
+    expect(meta).toContain('padding-inline: 0;');
+    expect(meta).toContain('padding-block: calc(var(--openbitfun-space-1) / 2) 0;');
     expect(meta).toContain('pointer-events: auto;');
-    expect(stylesheet).toContain('margin: 0;');
     expect(shell).not.toContain('.user-message-item__timestamp');
     expect(shell).not.toContain('&--with-timestamp');
   });

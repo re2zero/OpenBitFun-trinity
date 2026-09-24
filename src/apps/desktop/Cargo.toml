@@ -14,19 +14,21 @@ name = "openbitfun-desktop"
 path = "src/main.rs"
 
 [build-dependencies]
+cc = { workspace = true }
 tauri-build = { workspace = true }
 serde_json = { workspace = true }
 
 [dependencies]
+openbitfun-services-core = { path = "../../crates/services/services-core", features = ["pet-packages"] }
 # Internal crates
 openbitfun-core = { path = "../../crates/assembly/core", features = ["product-full"] }
 openbitfun-relay-service = { path = "../../crates/services/relay-service" }
 openbitfun-agent-runtime = { path = "../../crates/execution/agent-runtime", features = ["agent-runtime"] }
 openbitfun-runtime-ports = { path = "../../crates/contracts/runtime-ports", features = ["agent-api", "permission", "workspace-ports"] }
 openbitfun-product-domains = { path = "../../crates/contracts/product-domains", features = ["appearance-market"] }
-openbitfun-services-integrations = { path = "../../crates/services/services-integrations", features = ["canvas-runtime", "miniapp-market", "remote-ssh-concrete", "speech-realtime"] }
+openbitfun-services-integrations = { path = "../../crates/services/services-integrations", features = ["canvas-runtime", "miniapp-market", "skillhub", "remote-ssh-concrete", "speech-realtime"] }
 openbitfun-core-types = { path = "../../crates/contracts/core-types" }
-openbitfun-agent-tools = { path = "../../crates/execution/tool-contracts", features = ["element-token"] }
+openbitfun-agent-tools = { path = "../../crates/execution/tool-contracts", features = ["element-token", "computer-use-contract"] }
 openbitfun-transport = { path = "../../crates/adapters/transport", features = ["tauri-adapter"] }
 openbitfun-events = { path = "../../crates/contracts/events" }
 openbitfun-webdriver = { path = "../../crates/adapters/webdriver" }
@@ -42,7 +44,6 @@ tauri-plugin-autostart = { workspace = true }
 tauri-plugin-notification = { workspace = true }
 tauri-plugin-updater = { workspace = true }
 tauri-plugin-single-instance = { workspace = true }
-tauri-plugin-window-state = { workspace = true }
 keepawake = { workspace = true }
 # Keep Tauri's transitive time resolution on the known-good release.
 time = { workspace = true }
@@ -85,7 +86,8 @@ sha2 = { workspace = true }
 minisign-verify = { workspace = true }
 screenshots = { workspace = true }
 enigo = { workspace = true }
-image = { workspace = true, features = ["jpeg", "png"] }
+# Controller-local drag thumbnails decode these formats; other files use UI icons.
+image = { workspace = true, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 resvg = { workspace = true }
 tempfile = { workspace = true }
 
@@ -101,7 +103,7 @@ foreign-types = { workspace = true }
 libc = { workspace = true }
 objc2 = { workspace = true, features = ["exception"] }
 objc2-foundation = { workspace = true, features = ["std", "NSArray", "NSData", "NSDictionary", "NSError", "NSString"] }
-objc2-app-kit = { workspace = true }
+objc2-app-kit = { workspace = true, features = ["std", "libc", "NSWorkspace", "NSRunningApplication"] }
 objc2-vision = { workspace = true, features = ["std", "VNRecognizeTextRequest", "VNRequest", "VNObservation", "VNRequestHandler", "VNUtils", "VNTypes", "objc2-core-foundation"] }
 
 [target.'cfg(windows)'.dependencies]
@@ -123,7 +125,11 @@ windows = { workspace = true, features = [
   "Win32_Graphics_Dxgi",
   "Win32_Graphics_Dxgi_Common",
   "Win32_Graphics_Gdi",
+  "Win32_Security",
   "Win32_Storage_FileSystem",
+  "Win32_System_LibraryLoader",
+  "Win32_System_SystemServices",
+  "Win32_System_Threading",
   "Win32_Storage_Xps",
   "Win32_System_Com",
   "Win32_System_Ole",
@@ -133,10 +139,16 @@ windows = { workspace = true, features = [
   "Win32_System_WinRT_Graphics",
   "Win32_System_WinRT_Graphics_Capture",
   "Win32_UI_Accessibility",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }
 windows-core = { workspace = true }
 webview2-com = { workspace = true }
+
+[target.'cfg(windows)'.dev-dependencies]
+# Real Shell IDataObject fixtures for native drag-image lifecycle regressions.
+windows = { workspace = true, features = ["Win32_UI_Shell_Common"] }
 
 [features]
 default = []
@@ -146,9 +158,17 @@ default = []
 devtools = ["tauri/devtools", "openbitfun-webdriver/embedded"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
-atspi = { workspace = true }
+atspi = { workspace = true, features = ["zbus"] }
+gstreamer = { workspace = true }
+gstreamer-app = { workspace = true }
 leptess = { workspace = true }
 libc = { workspace = true }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "computer_use_native_roundtrip"
+path = "tests/computer_use_native_roundtrip.rs"
+harness = false
+required-features = ["devtools"]

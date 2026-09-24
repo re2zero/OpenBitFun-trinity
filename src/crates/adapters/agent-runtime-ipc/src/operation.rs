@@ -17,6 +17,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeSessionRestoreRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    /// Upgrade-only pre-ID wire field.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub workspace_path: String,
     pub session_id: String,
 }
@@ -181,6 +185,14 @@ pub enum RuntimeIpcOperation {
         request_id: String,
         reply: PermissionReply,
     },
+    CancelUserQuestion {
+        session_id: String,
+        tool_id: String,
+    },
+    StartQuestionInteraction {
+        session_id: String,
+        tool_id: String,
+    },
     SubmitUserAnswers {
         request: RuntimeUserAnswersRequest,
     },
@@ -226,6 +238,8 @@ impl RuntimeIpcOperation {
             Self::CancelTurn { request } => Some(&request.session_id),
             Self::PendingPermissions { session_id }
             | Self::RespondPermission { session_id, .. } => Some(session_id),
+            Self::StartQuestionInteraction { session_id, .. }
+            | Self::CancelUserQuestion { session_id, .. } => Some(session_id),
             Self::SubmitUserAnswers { request } => Some(&request.session_id),
             Self::Health
             | Self::ListAgentModes { session_id: None }
@@ -274,6 +288,8 @@ impl RuntimeIpcOperation {
             | Self::SteerTurn { .. }
             | Self::CancelTurn { .. }
             | Self::RespondPermission { .. }
+            | Self::CancelUserQuestion { .. }
+            | Self::StartQuestionInteraction { .. }
             | Self::SubmitUserAnswers { .. } => {
                 RuntimeIpcOperationRules::new(CurrentController, false, false, true)
             }
@@ -472,6 +488,7 @@ mod tests {
     fn restore_and_pending_permission_rules_preserve_existing_behavior() {
         let restore = RuntimeIpcOperation::RestoreSession {
             request: RuntimeSessionRestoreRequest {
+                workspace_id: None,
                 workspace_path: "D:/workspace/project".to_string(),
                 session_id: "session-2".to_string(),
             },
@@ -502,6 +519,7 @@ mod tests {
     fn lineage_rules_keep_root_controller_and_allow_active_read_only_inspection() {
         let query = RuntimeIpcOperation::GetSessionLineage {
             request: AgentSessionLineageRequest {
+                workspace_id: None,
                 workspace_path: "D:/workspace/project".to_string(),
                 anchor_session_id: "root-1".to_string(),
                 remote_connection_id: None,
@@ -510,6 +528,7 @@ mod tests {
         };
         let inspect = RuntimeIpcOperation::InspectLineageSession {
             request: AgentSessionLineageTranscriptRequest {
+                workspace_id: None,
                 workspace_path: "D:/workspace/project".to_string(),
                 root_session_id: "root-1".to_string(),
                 session_id: "child-1".to_string(),
@@ -520,6 +539,7 @@ mod tests {
         };
         let cancel = RuntimeIpcOperation::CancelLineageSession {
             request: AgentSessionLineageCancellationRequest {
+                workspace_id: None,
                 workspace_path: "D:/workspace/project".to_string(),
                 root_session_id: "root-1".to_string(),
                 session_id: "child-1".to_string(),
@@ -552,5 +572,28 @@ mod tests {
         assert!(!cancel_rules.requires_idle);
         assert!(!cancel_rules.serializes_session_selection);
         assert!(cancel_rules.side_effecting);
+    }
+}
+
+/// Temporary serialization boundary for a pre-ID Shared Runtime (protocol 18).
+/// Paths here are projections of an already selected host-owned workspace, never
+/// lookup keys in current code. Remove when support for protocol 18 sunsets.
+pub fn legacy_workspace_operation(
+    operation: RuntimeIpcOperation,
+    workspace_root: &str,
+) -> RuntimeIpcOperation {
+    use RuntimeIpcOperation::{ListSessions, RestoreSession};
+    match operation {
+        ListSessions { mut request } => {
+            request.workspace_id = None;
+            request.workspace_path = workspace_root.to_owned();
+            ListSessions { request }
+        }
+        RestoreSession { mut request } => {
+            request.workspace_id = None;
+            request.workspace_path = workspace_root.to_owned();
+            RestoreSession { request }
+        }
+        other => other,
     }
 }

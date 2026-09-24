@@ -6,7 +6,7 @@ import { registerContentCloseGuard } from './contentResourceLifecycle';
 import { fileTabManager } from '@/shared/services/FileTabManager';
 import { openFileInBestTarget, createTerminalTab, createGitCodeEditorTab, createTab } from '@/shared/utils/tabUtils';
 import { openContentInBestTarget, openWorkbenchContent } from '@/shared/services/workbenchContentService';
-import { clearAgentCanvasForPeerSwitch, switchAgentCanvasWorkspace, useAgentCanvasStore, useGitCanvasStore } from '../components/panels/content-canvas/stores';
+import { clearAgentCanvasForPeerSwitch, switchAgentCanvasScope, useAgentCanvasStore, useGitCanvasStore } from '../components/panels/content-canvas/stores';
 import { appManager } from '../services/AppManager';
 import { flowChatStore } from '@/flow_chat/store/FlowChatStore';
 import type { Session } from '@/flow_chat/types/flow-chat';
@@ -23,7 +23,7 @@ import { workspaceManager } from '@/infrastructure/services/business/workspaceMa
 import type { WorkspaceInfo } from '@/shared/types';
 
 vi.mock('@/infrastructure/services/business/workspaceManager', () => ({
-  workspaceManager: { getState: vi.fn(() => ({ currentWorkspace: { id: 'project', rootPath: '/project' },
+  workspaceManager: { getState: vi.fn(() => ({ currentWorkspace: { id: 'project', rootPath: '/project' }, recentWorkspaces: [],
     openedWorkspaces: new Map([['project', { id: 'project', rootPath: '/project' }]]) })) },
 }));
 
@@ -122,16 +122,16 @@ describe('workbench content navigation', () => {
     fileTabManager.openFile({ filePath: '/project/a.ts', sceneJustOpened: true });
     openFileInBestTarget({ filePath: '/project/a.ts', jumpToLine: 42 }, { source: 'project-nav' });
     const canvas = useAgentCanvasStore.getState();
-    expect(canvas.workspaceKey).toBe('project');
+    expect(canvas.scopeKey).toBe('session-a');
     expect(canvas.primaryGroup.tabs).toHaveLength(1);
     expect(canvas.primaryGroup.tabs[0].content.data).toMatchObject({ filePath: '/project/a.ts', jumpToLine: 42 });
     expect(useSceneStore.getState().openTabs.map(tab => tab.session?.sessionId)).toEqual(['session-a']);
     expect(appManager.getState().layout.rightPanelCollapsed).toBe(false);
     expect(Object.values(useContentResourceStore.getState().resources)).toHaveLength(0);
 
-    // AuxPane's later first mount and stale workspace events cannot reset this write.
-    switchAgentCanvasWorkspace(null, 'project');
-    switchAgentCanvasWorkspace('previous-workspace', 'project');
+    // AuxPane's later first mount and stale scope syncs cannot reset this write.
+    switchAgentCanvasScope('session-a');
+    switchAgentCanvasScope('session-a');
     expect(useAgentCanvasStore.getState().primaryGroup.tabs[0].id).toBe(canvas.primaryGroup.tabs[0].id);
   });
 
@@ -149,15 +149,15 @@ describe('workbench content navigation', () => {
   it('chooses the matching workspace tab while a different workspace session is active', () => {
     const target = openSession();
     const other = openSession('other-session', { workspaceId: undefined, workspacePath: '/other' });
-    switchAgentCanvasWorkspace(undefined, 'other');
+    switchAgentCanvasScope('other-session');
     useAgentCanvasStore.getState().addTab({ type: 'text-viewer', title: 'Other', data: { content: 'draft' } }, 'active');
     const previous = useAgentCanvasStore.getState().primaryGroup.tabs[0];
     fileTabManager.openFile({ filePath: '/project/a.ts', workspacePath: '/project' });
     expect(useSceneStore.getState().activeTabId).toBe(getSessionSceneTabId(target));
     expect(useSceneStore.getState().openTabs.map(tab => tab.session)).toEqual([target, other]);
-    expect(useAgentCanvasStore.getState().workspaceKey).toBe('project');
+    expect(useAgentCanvasStore.getState().scopeKey).toBe('session-a');
     expect(useAgentCanvasStore.getState().primaryGroup.tabs[0].content.data.filePath).toBe('/project/a.ts');
-    switchAgentCanvasWorkspace(undefined, 'other');
+    switchAgentCanvasScope('other-session');
     expect(useAgentCanvasStore.getState().primaryGroup.tabs.map(tab => tab.id)).toEqual([previous.id]);
   });
 
@@ -176,7 +176,7 @@ describe('workbench content navigation', () => {
   it.each(['local', 'peer'])('uses the matching SSH workspace tab on the %s surface', surfaceId => {
     activateSurface(surfaceId);
     const workspaces = workspaceManager.getState();
-    const sshWorkspace = { id: 'ssh-project', rootPath: '/srv/project', connectionId: 'ssh-a' } as WorkspaceInfo;
+    const sshWorkspace = { id: 'ssh-project', rootPath: '/srv/project', connectionId: 'ssh-a', workspaceKind: 'remote' } as WorkspaceInfo;
     vi.mocked(workspaceManager.getState).mockReturnValue({ ...workspaces,
       currentWorkspace: sshWorkspace, openedWorkspaces: new Map([[sshWorkspace.id, sshWorkspace]]) });
     try {
@@ -185,22 +185,22 @@ describe('workbench content navigation', () => {
       useSceneStore.getState().openScene('git');
       fileTabManager.openFile({ filePath: 'a.ts', workspacePath: sshWorkspace.rootPath, remoteConnectionId: 'ssh-a' });
       expect(useSceneStore.getState().activeTabId).toBe(getSessionSceneTabId(target));
-      expect(useAgentCanvasStore.getState().workspaceKey).toBe(sshWorkspace.id);
+      expect(useAgentCanvasStore.getState().scopeKey).toBe('ssh-session');
       expect(useAgentCanvasStore.getState().primaryGroup.tabs[0].content.metadata?.resourceScope).toEqual({
         surfaceId, workspaceId: sshWorkspace.id, workspacePath: sshWorkspace.rootPath, remoteConnectionId: 'ssh-a',
       });
-      fileTabManager.openFile({ filePath: 'b.ts', workspacePath: sshWorkspace.rootPath, remoteConnectionId: 'ssh-b' });
-      expect(useSceneStore.getState().activeTabId).toMatch(/^content:/);
+      expect(() => fileTabManager.openFile({ filePath: 'b.ts', workspacePath: sshWorkspace.rootPath, remoteConnectionId: 'ssh-b' })).toThrow('Workspace identity');
+      expect(useSceneStore.getState().activeTabId).toBe(getSessionSceneTabId(target));
       expect(useAgentCanvasStore.getState().primaryGroup.tabs).toHaveLength(1);
     } finally { vi.mocked(workspaceManager.getState).mockReturnValue(workspaces); }
   });
 
-  it('resolves a legacy worktree session through its owning project before routing', () => {
-    const target = openSession('worktree-session', { workspaceId: undefined, workspacePath: '/worktrees/a',
+  it('routes an upgraded worktree session through its owning project ID', () => {
+    const target = openSession('worktree-session', { workspaceId: 'worktree-id', projectWorkspaceId: 'project', workspacePath: '/worktrees/a',
       projectWorkspacePath: '/project' });
     fileTabManager.openFile({ filePath: '/project/a.ts', workspacePath: '/project' });
     expect(useSceneStore.getState().activeTabId).toBe(getSessionSceneTabId(target));
-    expect(useAgentCanvasStore.getState().workspaceKey).toBe('project');
+    expect(useAgentCanvasStore.getState().scopeKey).toBe('worktree-session');
     expect(useAgentCanvasStore.getState().primaryGroup.tabs).toHaveLength(1);
   });
 
@@ -265,9 +265,10 @@ describe('workbench content navigation', () => {
     { workspacePath: '/project', remoteConnectionId: 'ssh-other' },
   ])('does not route a different workspace or filesystem into the selected session: %j', origin => {
     openSession();
-    fileTabManager.openFile({ filePath: 'a.ts', ...origin });
+    const selected = useSceneStore.getState().activeTabId;
+    expect(() => fileTabManager.openFile({ filePath: 'a.ts', ...origin })).toThrow('Workspace identity');
     expect(useAgentCanvasStore.getState().primaryGroup.tabs).toHaveLength(0);
-    expect(useSceneStore.getState().activeTabId).toMatch(/^content:/);
+    expect(useSceneStore.getState().activeTabId).toBe(selected);
     expect(appManager.getState().layout.rightPanelCollapsed).toBe(true);
   });
 
@@ -331,11 +332,11 @@ describe('workbench content navigation', () => {
     } finally { stop(); }
   });
 
-  it('activates an existing session tab before committing and preserves the previous workspace canvas', async () => {
+  it('activates an existing session tab before committing and preserves the previous scope canvas', async () => {
     openSession();
     useSceneStore.getState().openScene('git');
     flowChatStore.setState(state => ({ ...state, activeSessionId: null }));
-    switchAgentCanvasWorkspace(null, 'other-workspace');
+    switchAgentCanvasScope('scratch-session');
     useAgentCanvasStore.getState().addTab({ type: 'markdown-viewer', title: 'Previous', data: 'draft' }, 'active');
     const previous = useAgentCanvasStore.getState().primaryGroup.tabs[0];
     const stop = registerSessionSceneNavigation({ current: () => null, isActive: () => false,
@@ -345,10 +346,10 @@ describe('workbench content navigation', () => {
       } });
     try {
       fileTabManager.openFile({ filePath: '/project/a.ts' });
-      await vi.waitFor(() => expect(useAgentCanvasStore.getState().workspaceKey).toBe('project'));
+      await vi.waitFor(() => expect(useAgentCanvasStore.getState().scopeKey).toBe('session-a'));
       expect(useAgentCanvasStore.getState().primaryGroup.tabs[0].content.data.filePath).toBe('/project/a.ts');
       expect(flowChatStore.getState().activeSessionId).toBe('session-a');
-      switchAgentCanvasWorkspace(null, 'other-workspace');
+      switchAgentCanvasScope('scratch-session');
       expect(useAgentCanvasStore.getState().primaryGroup.tabs.map(tab => tab.id)).toEqual([previous.id]);
     } finally { stop(); }
   });
@@ -471,7 +472,7 @@ describe('workbench content navigation', () => {
     fileTabManager.openFile({ filePath: '/project/a.ts' });
     const tab = useSceneStore.getState().openTabs[0];
     activateSurface('peer');
-    globalEventBus.emit('workspace:file-renamed', { surfaceId: 'local', oldPath: '/project/a.ts', newPath: '/project/b.ts' });
+    globalEventBus.emit('workspace:file-renamed', { surfaceId: 'local', workspaceId: 'project', oldPath: '/project/a.ts', newPath: '/project/b.ts' });
     expect(useContentResourceStore.getState().resources[tab.contentId!].target).toEqual({ kind: 'file', path: '/project/b.ts' });
   });
   it('detaches regular terminals on tab close and reconciles explicit renames and destruction', async () => {

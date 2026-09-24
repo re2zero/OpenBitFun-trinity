@@ -1,7 +1,12 @@
 package com.openbitfun.mobile.core.feature.directory
 
+import com.openbitfun.mobile.core.domain.LegacyWorkspaceCompatibility
+import com.openbitfun.mobile.core.domain.identity
+import com.openbitfun.mobile.core.domain.belongsTo
+import com.openbitfun.mobile.core.domain.RemoteWorkspaceIdentity
 import com.openbitfun.mobile.core.domain.RecentWorkspace
 import com.openbitfun.mobile.core.domain.RemoteSession
+import com.openbitfun.mobile.core.feature.workspace.WorkspaceCatalogSource
 
 /**
  * Where one device's directory entry is in its load lifecycle.
@@ -35,7 +40,14 @@ public data class WorkspaceDirectoryEntry public constructor(
     public val path: String,
     public val expanded: Boolean,
     public val status: WorkspaceDirectoryStatus,
-)
+    public val remoteConnectionId: String?,
+    public val remoteSshHost: String?,
+    public val workspaceId: String?,
+) {
+    public constructor(path: String, expanded: Boolean, status: WorkspaceDirectoryStatus, remoteConnectionId: String?, remoteSshHost: String?) : this(path, expanded, status, remoteConnectionId, remoteSshHost, null)
+    public constructor(path: String, expanded: Boolean, status: WorkspaceDirectoryStatus) : this(path, expanded, status, null, null)
+    public val identity: RemoteWorkspaceIdentity get() = RemoteWorkspaceIdentity(path, remoteConnectionId, remoteSshHost, workspaceId)
+}
 
 /** Why a device's directory content cannot be shown. */
 public enum class DeviceDirectoryFailure {
@@ -63,47 +75,62 @@ public data class DeviceDirectoryEntry public constructor(
     public val deviceId: String,
     public val deviceName: String,
     public val online: Boolean,
-    public val expanded: Boolean,
     public val status: DeviceDirectoryStatus,
     public val error: DeviceDirectoryFailure?,
     public val workspaces: List<RecentWorkspace>,
     public val sessions: List<RemoteSession>,
     public val workspaceDirectory: List<WorkspaceDirectoryEntry>,
+    public val catalogSource: WorkspaceCatalogSource?,
+    public val recentWorkspaces: List<RecentWorkspace>,
 ) {
-    public constructor(
-        deviceId: String,
-        deviceName: String,
-        online: Boolean,
-        expanded: Boolean,
-        status: DeviceDirectoryStatus,
-        error: DeviceDirectoryFailure?,
-        workspaces: List<RecentWorkspace>,
-        sessions: List<RemoteSession>,
-    ) : this(deviceId, deviceName, online, expanded, status, error, workspaces, sessions, emptyList())
-
-    public fun workspace(path: String): WorkspaceDirectoryEntry? {
-        val normalized = normalizeWorkspacePath(path)
-        return workspaceDirectory.firstOrNull { normalizeWorkspacePath(it.path) == normalized }
+    /**
+     * Sessions filed under [workspace]. An ID resolves by ID alone (an unknown ID
+     * owns nothing); a pre-ID reference resolves through [LegacyWorkspaceCompatibility]
+     * and an ambiguous root owns nothing rather than one arbitrary row.
+     */
+    public fun sessionsForWorkspace(workspace: RemoteWorkspaceIdentity): List<RemoteSession> {
+        val catalog = workspaces.map { it.identity() }
+        val identity = LegacyWorkspaceCompatibility.resolve(workspace, catalog) ?: return emptyList()
+        return sessions.filter { it.belongsTo(identity, catalog) }
     }
 
-    public companion object {
-        private fun normalizeWorkspacePath(path: String): String {
-            val trimmed = path.trim()
-            val normalized = trimmed.trimEnd('/')
-            return normalized.ifEmpty { trimmed }
-        }
+    /** ID-first lookup; use when the caller holds a workspace ID. */
+    public fun sessionsForWorkspaceId(workspaceId: String): List<RemoteSession> =
+        sessionsForWorkspace(RemoteWorkspaceIdentity("", null, null, workspaceId))
 
+    /** Pre-ID lookup for callers that only hold the legacy triple; delegates through the compatibility resolver. */
+    public fun sessionsForWorkspace(path: String, remoteConnectionId: String?, remoteSshHost: String?): List<RemoteSession> =
+        sessionsForWorkspace(RemoteWorkspaceIdentity(path, remoteConnectionId, remoteSshHost))
+
+    /** Directory entry for [workspace], resolved the same way as [sessionsForWorkspace]. */
+    public fun workspace(workspace: RemoteWorkspaceIdentity): WorkspaceDirectoryEntry? {
+        val identity = LegacyWorkspaceCompatibility.resolve(workspace, workspaces.map { it.identity() }) ?: return null
+        return workspaceDirectory.firstOrNull { it.identity.matches(identity) }
+    }
+
+    /** ID-first lookup; use when the caller holds a workspace ID. */
+    public fun workspaceById(workspaceId: String): WorkspaceDirectoryEntry? =
+        workspace(RemoteWorkspaceIdentity("", null, null, workspaceId))
+
+    public fun workspace(path: String): WorkspaceDirectoryEntry? = workspace(path, null, null)
+
+    /** Pre-ID lookup for callers that only hold the legacy triple; delegates through the compatibility resolver. */
+    public fun workspace(path: String, remoteConnectionId: String?, remoteSshHost: String?): WorkspaceDirectoryEntry? =
+        workspace(RemoteWorkspaceIdentity(path, remoteConnectionId, remoteSshHost))
+
+    public companion object {
         public fun empty(deviceId: String, deviceName: String, online: Boolean): DeviceDirectoryEntry =
             DeviceDirectoryEntry(
                 deviceId = deviceId,
                 deviceName = deviceName,
                 online = online,
-                expanded = false,
                 status = DeviceDirectoryStatus.IDLE,
                 error = null,
                 workspaces = emptyList(),
                 sessions = emptyList(),
                 workspaceDirectory = emptyList(),
+                catalogSource = null,
+                recentWorkspaces = emptyList(),
             )
     }
 }
@@ -139,14 +166,6 @@ public sealed interface DeviceDirectoryIntent {
         public val deviceId: String,
     ) : DeviceDirectoryIntent
 
-    public data class Expand public constructor(
-        public val deviceId: String,
-    ) : DeviceDirectoryIntent
-
-    public data class Collapse public constructor(
-        public val deviceId: String,
-    ) : DeviceDirectoryIntent
-
     public data class Retry public constructor(
         public val deviceId: String,
     ) : DeviceDirectoryIntent
@@ -155,12 +174,24 @@ public sealed interface DeviceDirectoryIntent {
         public val deviceId: String,
         public val path: String,
         public val expanded: Boolean,
-    ) : DeviceDirectoryIntent
+        public val remoteConnectionId: String?,
+        public val remoteSshHost: String?,
+        public val workspaceId: String?,
+    ) : DeviceDirectoryIntent {
+        public constructor(deviceId: String, path: String, expanded: Boolean, remoteConnectionId: String?, remoteSshHost: String?) : this(deviceId, path, expanded, remoteConnectionId, remoteSshHost, null)
+        public constructor(deviceId: String, path: String, expanded: Boolean) : this(deviceId, path, expanded, null, null)
+    }
 
     public data class RetryWorkspace public constructor(
         public val deviceId: String,
         public val path: String,
-    ) : DeviceDirectoryIntent
+        public val remoteConnectionId: String?,
+        public val remoteSshHost: String?,
+        public val workspaceId: String?,
+    ) : DeviceDirectoryIntent {
+        public constructor(deviceId: String, path: String, remoteConnectionId: String?, remoteSshHost: String?) : this(deviceId, path, remoteConnectionId, remoteSshHost, null)
+        public constructor(deviceId: String, path: String) : this(deviceId, path, null, null)
+    }
 
     public data object Stop : DeviceDirectoryIntent
 }

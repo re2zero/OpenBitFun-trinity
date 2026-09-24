@@ -59,10 +59,11 @@ function createDialogTurn(status: DialogTurn['status'] = 'processing'): DialogTu
   };
 }
 
-function createContext(dialogTurn: DialogTurn): any {
+function createContext(dialogTurn: DialogTurn, sessionPatch: Record<string, unknown> = {}): any {
   const session = {
     sessionId: SESSION_ID,
     dialogTurns: [dialogTurn],
+    workspaceId: 'workspace-local',
     workspacePath: 'D:/workspace/OpenBitFun',
     createdAt: 1,
     lastActiveAt: 2,
@@ -70,6 +71,7 @@ function createContext(dialogTurn: DialogTurn): any {
     config: {},
     error: null,
     sessionKind: 'normal',
+    ...sessionPatch,
   };
 
   return {
@@ -114,7 +116,28 @@ describe('PersistenceModule', () => {
     expect(mockSaveSessionMetadata).toHaveBeenCalledWith(expect.objectContaining({
       unreadCompletion: undefined,
       lastTurn: expect.objectContaining({ turnId: TURN_ID, status: 'completed', executionGeneration: 2 }),
-    }), 'D:/workspace/OpenBitFun', ['unreadCompletion', 'needsUserAttention'], undefined, undefined);
+    }), 'workspace-local', ['unreadCompletion', 'needsUserAttention']);
+  });
+
+  it('addresses session storage through the owning project for a worktree session', async () => {
+    const turn = createDialogTurn('completed');
+    const context = createContext(turn, {
+      workspaceId: 'worktree-cli',
+      projectWorkspaceId: 'main-project',
+      config: {
+        executionTarget: { kind: 'managedWorktree', worktreeId: 'worktree-cli', rootPath: '/tmp/tree' },
+      },
+    });
+
+    await updateSessionMetadata(context, SESSION_ID, ['unreadCompletion', 'needsUserAttention']);
+
+    // The execution worktree is usually not an open workspace, so addressing the
+    // session's own storage through it is rejected, while the owning project
+    // resolves to the identical session directory.
+    expect(mockSaveSessionMetadata).toHaveBeenCalledWith(expect.anything(), 'main-project', [
+      'unreadCompletion',
+      'needsUserAttention',
+    ]);
   });
 
   it('never writes old notification metadata to a device selected during its read', async () => {
@@ -404,9 +427,7 @@ describe('PersistenceModule', () => {
     await saveDialogTurnToDisk(context, SESSION_ID, TURN_ID);
     expect(mockSaveSessionTurn).toHaveBeenCalledWith(
       expect.objectContaining({ turnIndex: 140 }),
-      expect.any(String),
-      undefined,
-      undefined,
+      'workspace-local',
     );
   });
 
@@ -424,9 +445,7 @@ describe('PersistenceModule', () => {
 
     expect(mockSaveSessionTurn).toHaveBeenCalledWith(
       expect.objectContaining({ turnIndex: 140 }),
-      expect.any(String),
-      undefined,
-      undefined,
+      'workspace-local',
     );
   });
 });

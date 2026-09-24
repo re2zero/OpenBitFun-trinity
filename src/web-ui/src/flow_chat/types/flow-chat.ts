@@ -120,6 +120,12 @@ export interface FlowToolItem extends FlowItem {
     kind: 'user_question';
     revision: number;
   };
+  /** Host-owned live question state, independent of model tool arguments. */
+  userQuestionWait?: {
+    deadlineMs?: number | null;
+    monotonicDeadlineMs?: number;
+    interactionStarted: boolean;
+  };
 }
 
 export interface ToolRejectOptions {
@@ -175,6 +181,8 @@ export interface ImageAnalysisResult {
 }
 
 export interface ModelRoundRenderHints {
+  /** Display-only recovery boundary, derived from the preceding cancelled round. */
+  continuedAfterInterruption?: boolean;
   /**
    * Keep all round items in the normal transcript instead of merging
    * collapsible tools and adjacent narrative into an explore group.
@@ -482,6 +490,7 @@ export interface Session {
 
   /** Stable backend id — always set for new sessions; do not infer workspace from path alone. */
   workspaceId?: string;
+  projectWorkspaceId?: string;
 
   /** SSH remote: same `workspacePath` on different hosts must not share coordinator/persistence. */
   remoteConnectionId?: string;
@@ -642,6 +651,7 @@ export interface SessionConfig {
   worktreeIsolationRequested?: boolean;
   /** Binds session to `WorkspaceInfo.id` (path alone is insufficient for remotes). */
   workspaceId?: string;
+  projectWorkspaceId?: string;
   /** Disambiguates sessions when multiple remote workspaces share the same `workspacePath`. */
   remoteConnectionId?: string;
   remoteSshHost?: string;

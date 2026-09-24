@@ -28,6 +28,20 @@ slices that are outside pure product logic but still platform-neutral.
   orchestration ports, LAN endpoint helpers, IM bot provider clients,
   provider-private cursor caches, mobile-web relay upload, image-context adapter
   contracts, remote workspace helpers, and command/response assembly.
+- `remote_connect::host_stream` is the host-side owner of on-demand session,
+  terminal and catalog streams: an in-memory, byte-bounded per-stream log with
+  an epoch, `read_stream`/`unsubscribe_stream` handling, and `HostStreamNotifier`
+  hint leases. `remote_connect::host_stream_subscriber` is the Rust controller
+  reader. Neither the relay nor any client persists stream content; do not add
+  relay-stored history, `get_session_key`, or a durable stream cache here.
+- Session history reads use `HostStreamHub::read_history` with a Core-owned
+  source loader. Backfill allocates decreasing JS-safe sequences below the
+  live sequence range; it never advances the forward cursor. One source gate
+  orders backfill, live publication, and history invalidation. Undo/import and
+  cache misses across evicted pages require an epoch fence, never silent skips.
+  Only the requested page's bodies enter the bounded log; the pending source
+  batch is at most one persisted turn, which can itself be large. No wire or
+  persisted-format migration is required; all controllers retain `read_stream`.
 - The `remote-persistence` feature is the lightweight persisted-shape owner shared
   by Remote Connect, remote SSH, and offline migration. Keep it free of network,
   SSH transport, and runtime orchestration dependencies so owner readers and
@@ -125,6 +139,8 @@ cargo test -p openbitfun-services-integrations --no-default-features --features 
 cargo test -p openbitfun-services-integrations --no-default-features --features remote-ssh-concrete --lib remote_ssh::wsl::tests::
 cargo test --locked -p openbitfun-services-integrations --no-default-features --features remote-ssh-concrete --lib remote_ssh::relay_deploy::tests::
 cargo test --locked -p openbitfun-services-integrations --no-default-features --features remote-connect --lib remote_connect::relay_client::tests::
+cargo test --locked -p openbitfun-services-integrations --no-default-features --features remote-connect --lib remote_connect::host_stream::tests::
+cargo test --locked -p openbitfun-services-integrations --no-default-features --features remote-connect --lib remote_connect::host_stream_subscriber::tests::
 cargo test -p openbitfun-services-integrations --no-default-features --features file-watch --test file_watch_contracts
 cargo test --locked -p openbitfun-services-integrations --no-default-features --features workspace-search --test workspace_search_contracts
 cargo test --locked -p openbitfun-services-integrations --no-default-features --features deep-research --lib deep_research::tests::
@@ -134,6 +150,13 @@ pnpm run check:core-boundaries
 
 Other family-specific targets remain in `Cargo.toml`; add a guide command only
 for a recurring workflow, not to mirror every test target.
+
+For persistent public marketplace image caching (restart/offline reuse, URL
+boundaries, and bounded disk storage), run:
+
+```bash
+cargo test --locked -p openbitfun-services-integrations --no-default-features --features miniapp-market --lib market_image::tests
+```
 
 On Windows with an initialized WSL distribution, set `OPENBITFUN_TEST_WSL_DISTRO`
 and run `cargo test -p openbitfun-services-integrations --no-default-features
@@ -155,3 +178,12 @@ For the remote Flashgrep distribution gate and retained protocol helpers, use:
 ```bash
 cargo test --locked -p openbitfun-services-integrations --no-default-features --features remote-ssh,workspace-search --lib remote_ssh::workspace_search::service::tests::
 ```
+
+For SkillHub search, authentication, archive validation and installation, use:
+
+```bash
+cargo test --locked -p openbitfun-services-integrations --no-default-features --features skillhub --lib skillhub::tests
+```
+
+These loopback protocol fixtures exercise the serving host's HTTP and filesystem
+behavior; they do not establish real SSH, relay, peer or dispatch support.

@@ -154,6 +154,10 @@ internal fun CreateSessionScreen(
 ) {
     var draft by rememberSaveable { mutableStateOf("") }
     var workspacePath by rememberSaveable { mutableStateOf("") }
+    var workspaceConnectionId by rememberSaveable { mutableStateOf<String?>(null) }
+    var workspaceSshHost by rememberSaveable { mutableStateOf<String?>(null) }
+    // The stable reference; the three fields above are display context once this is set.
+    var workspaceId by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedModelId by rememberSaveable { mutableStateOf<String?>(null) }
     // Not saveable: an open sheet is a finger part-way through a gesture.
     var pickerKind by remember { mutableStateOf<CreateSelectionKind?>(null) }
@@ -169,29 +173,13 @@ internal fun CreateSessionScreen(
     val selectedModel = modelOptions.firstOrNull { it.id == selectedModelId }
         ?: modelOptions.firstOrNull { it.selected }
         ?: modelOptions.firstOrNull()
-    LaunchedEffect(ready?.selected?.kind, ready?.assistants, workspacePath) {
-        if (workspacePath.isEmpty() && ready?.selected?.kind != ASSISTANT_KIND) {
-            ready?.assistants?.firstOrNull()?.let {
-                onWorkspaceIntent(RemoteWorkspaceIntent.SelectAssistant(it.path))
-            }
-        }
+    val selectWorkspace: (WorkspaceChoice?) -> Unit = { workspace ->
+        workspacePath = workspace?.path.orEmpty()
+        workspaceConnectionId = workspace?.remoteConnectionId
+        workspaceSshHost = workspace?.remoteSshHost
+        workspaceId = workspace?.workspaceId
     }
-    val selectWorkspace: (String) -> Unit = { path ->
-        workspacePath = path
-        // Applied now rather than at send: `set_workspace` is a round trip to
-        // the desktop, so the settled selection can be shown while the draft is
-        // still being written. Chat selects the assistant workspace; projects
-        // select their concrete workspace.
-        if (path.isEmpty()) {
-            if (ready?.selected?.kind != ASSISTANT_KIND) {
-                ready?.assistants?.firstOrNull()?.let {
-                    onWorkspaceIntent(RemoteWorkspaceIntent.SelectAssistant(it.path))
-                }
-            }
-        } else {
-            onWorkspaceIntent(RemoteWorkspaceIntent.SelectWorkspace(path))
-        }
-    }
+    val selectedChoice = WorkspaceChoice(workspacePath, "", workspaceConnectionId, workspaceSshHost, workspaceId)
 
     val voiceInput = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
@@ -276,7 +264,7 @@ internal fun CreateSessionScreen(
                 label = when {
                     workspaceState is RemoteWorkspaceUiState.Loading -> stringResource(R.string.sessions_loading)
                     workspacePath.isEmpty() -> stringResource(R.string.create_chat)
-                    else -> ready?.workspaces?.firstOrNull { it.path == workspacePath }?.name.orEmpty()
+                    else -> ready?.workspaces?.firstOrNull { selectedChoice.refersTo(WorkspaceChoice(it.path, it.displayName, it.remoteConnectionId, it.remoteSshHost, it.workspaceId)) }?.displayName.orEmpty()
                         .ifEmpty { workspacePath }
                 },
                 expanded = pickerKind == CreateSelectionKind.WORKSPACE,
@@ -298,10 +286,8 @@ internal fun CreateSessionScreen(
                     shadowElevation = 18.dp,
                     ) {
                         WorkspacePicker(
-                        workspaces = ready?.workspaces.orEmpty().map {
-                            WorkspaceChoice(path = it.path, name = it.name)
-                        },
-                        selectedPath = workspacePath,
+                        workspaces = ready?.workspaces.orEmpty().map { WorkspaceChoice(it.path, it.displayName, it.remoteConnectionId, it.remoteSshHost, it.workspaceId) },
+                        selected = selectedChoice,
                         showHeader = false,
                         onDismiss = { pickerKind = null },
                         onPick = { path ->
@@ -366,6 +352,10 @@ internal fun CreateSessionScreen(
                             title = "",
                             instruction = draft,
                             modelId = selectedModelId,
+                            workspacePath = workspacePath.takeIf { it.isNotBlank() },
+                            remoteConnectionId = workspaceConnectionId,
+                            remoteSshHost = workspaceSshHost,
+                            workspaceId = workspaceId?.takeIf { workspacePath.isNotBlank() },
                         ),
                     )
                     draft = ""
@@ -379,10 +369,8 @@ internal fun CreateSessionScreen(
     if (compact && pickerKind == CreateSelectionKind.WORKSPACE) {
         ModalBottomSheet(onDismissRequest = { pickerKind = null }) {
             WorkspacePicker(
-                workspaces = ready?.workspaces.orEmpty().map {
-                    WorkspaceChoice(path = it.path, name = it.name)
-                },
-                selectedPath = workspacePath,
+                workspaces = ready?.workspaces.orEmpty().map { WorkspaceChoice(it.path, it.displayName, it.remoteConnectionId, it.remoteSshHost, it.workspaceId) },
+                selected = selectedChoice,
                 showHeader = true,
                 onDismiss = { pickerKind = null },
                 onPick = { path ->
@@ -405,7 +393,18 @@ private const val ASSISTANT_KIND = "assistant"
  * The workspace domain type carries a kind and a timestamp the picker has no use
  * for, and the app layer cannot see `core-domain` anyway.
  */
-private data class WorkspaceChoice(val path: String, val name: String)
+private data class WorkspaceChoice(val path: String, val name: String, val remoteConnectionId: String?, val remoteSshHost: String?, val workspaceId: String?) {
+    /**
+     * ID-first identity: when both rows carry a workspace ID only the IDs are
+     * compared; a row from a pre-ID host falls back to the legacy triple.
+     */
+    fun refersTo(other: WorkspaceChoice): Boolean {
+        val ownId = workspaceId?.takeIf { it.isNotBlank() }
+        val otherId = other.workspaceId?.takeIf { it.isNotBlank() }
+        if (ownId != null && otherId != null) return ownId == otherId
+        return path == other.path && remoteConnectionId == other.remoteConnectionId && remoteSshHost == other.remoteSshHost
+    }
+}
 
 /**
  * The tap target that puts the keyboard away.
@@ -502,10 +501,10 @@ private fun DevicePicker(
 @Composable
 private fun WorkspacePicker(
     workspaces: List<WorkspaceChoice>,
-    selectedPath: String,
+    selected: WorkspaceChoice,
     showHeader: Boolean,
     onDismiss: () -> Unit,
-    onPick: (String) -> Unit,
+    onPick: (WorkspaceChoice?) -> Unit,
     modifier: Modifier,
 ) {
     Column(modifier = modifier) {
@@ -532,8 +531,8 @@ private fun WorkspacePicker(
         PickerRow(
             title = stringResource(R.string.create_chat),
             subtitle = "",
-            selected = selectedPath.isEmpty(),
-            onClick = { onPick("") },
+            selected = selected.path.isEmpty(),
+            onClick = { onPick(null) },
         )
         if (workspaces.isEmpty()) {
             Text(
@@ -550,8 +549,8 @@ private fun WorkspacePicker(
                 // Two projects can share a name; the path is what tells them
                 // apart, and it is the only place the user can check.
                 subtitle = workspace.path,
-                selected = workspace.path == selectedPath,
-                onClick = { onPick(workspace.path) },
+                selected = selected.path.isNotEmpty() && selected.refersTo(workspace),
+                onClick = { onPick(workspace) },
             )
         }
     }

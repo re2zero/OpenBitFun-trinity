@@ -103,12 +103,33 @@ async fn updater_endpoints_by_policy() -> Vec<tauri::Url> {
 
 /// Tauri's `latest-v1.json` platform key for this host, e.g. `darwin-aarch64`.
 /// Mirrors `scripts/generate-tauri-latest-json.mjs`.
+///
+/// Linux installs append a bundle-type suffix (`-deb` / `-rpm`) so the manifest
+/// hands each install form the package its updater can actually install:
+/// tauri-plugin-updater derives `dpkg -i` / `rpm -U` / AppImage rewrite from the
+/// same [`tauri::utils::platform::bundle_type`] this key is derived from. A bare
+/// `linux-*` key would feed AppImage bytes to a deb install, which the plugin
+/// rejects as `invalid updater binary format`.
 fn updater_platform_key() -> String {
     let os = match std::env::consts::OS {
         "macos" => "darwin",
         other => other,
     };
-    format!("{os}-{}", std::env::consts::ARCH)
+    format!(
+        "{os}-{}{}",
+        std::env::consts::ARCH,
+        updater_platform_key_suffix(tauri::utils::platform::bundle_type())
+    )
+}
+
+/// Manifest-key suffix for the running install form, kept in step with
+/// `scripts/generate-tauri-latest-json.mjs` (`linux-<arch>-deb` / `linux-<arch>-rpm`).
+fn updater_platform_key_suffix(bundle: Option<tauri::utils::config::BundleType>) -> &'static str {
+    match bundle {
+        Some(tauri::utils::config::BundleType::Deb) => "-deb",
+        Some(tauri::utils::config::BundleType::Rpm) => "-rpm",
+        _ => "",
+    }
 }
 
 /// Read one updater manifest and return the download URL it advertises for this
@@ -429,6 +450,10 @@ pub struct CheckCommandResponse {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunCommandRequest {
+    #[serde(default)]
+    pub controller_local: bool,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
@@ -495,8 +520,16 @@ pub async fn check_commands_exist(
 pub async fn run_system_command(
     request: RunCommandRequest,
 ) -> Result<CommandOutputResponse, String> {
-    if let Some(cwd) = request.cwd.as_deref() {
-        if openbitfun_core::service::remote_ssh::workspace_state::is_remote_path(cwd.trim()).await {
+    if request.workspace_id.is_some() || request.cwd.is_some() {
+        let cwd = request.cwd.as_deref().unwrap_or_default();
+        if openbitfun_core::service::workspace::remote_io_for_legacy_or_id(
+            request.workspace_id.as_deref(),
+            request.controller_local,
+            cwd.trim(),
+        )
+        .await
+        .map_err(|e| e.to_string())?
+        {
             return Err(format!(
                 "run_system_command cannot execute '{}' in remote workspace directory '{}': this command spawns controller-local processes only; local filesystem fallback was not attempted",
                 request.command, cwd
@@ -550,7 +583,7 @@ pub async fn set_macos_edit_menu_mode(
             .get_config::<String>(Some("app.language"))
             .await
             .unwrap_or_else(|_| "zh-CN".to_string());
-        let menubar_mode = if state.workspace_path.read().await.is_some() {
+        let menubar_mode = if state.workspace_id.read().await.is_some() {
             crate::macos_menubar::MenubarMode::Workspace
         } else {
             crate::macos_menubar::MenubarMode::Startup
@@ -712,6 +745,20 @@ pub async fn minimize_to_tray(
         log::info!("Main window minimized to tray via command");
     }
     Ok(())
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetTrayUnreadCountRequest {
+    pub count: u32,
+}
+
+#[tauri::command]
+pub async fn set_tray_unread_count(
+    app: tauri::AppHandle,
+    request: SetTrayUnreadCountRequest,
+) -> Result<(), String> {
+    crate::tray::set_unread_count(&app, request.count)
 }
 
 /// Initialize the desktop tray after the startup shell has become interactive.
@@ -1089,7 +1136,13 @@ mod tests {
     #[test]
     fn updater_platform_key_matches_latest_json_convention() {
         let key = super::updater_platform_key();
-        let (os, arch) = key.split_once('-').expect("os-arch shape");
+        // Optional bundle-type suffix, mirroring the script's linux-<arch>-deb /
+        // linux-<arch>-rpm keys.
+        let base = key
+            .strip_suffix("-deb")
+            .or_else(|| key.strip_suffix("-rpm"))
+            .unwrap_or(&key);
+        let (os, arch) = base.split_once('-').expect("os-arch shape");
         assert!(
             matches!(os, "darwin" | "linux" | "windows"),
             "unexpected updater os segment: {os}"
@@ -1103,6 +1156,45 @@ mod tests {
             key.starts_with("darwin-"),
             "macOS must map to darwin, got {key}"
         );
+        #[cfg(target_os = "linux")]
+        assert!(
+            key.starts_with("linux-"),
+            "Linux keys must stay under the linux- prefix, got {key}"
+        );
+    }
+
+    /// The suffix must mirror the plugin's installer selection exactly: the same
+    /// `bundle_type()` that makes tauri-plugin-updater run `dpkg -i` / `rpm -U`
+    /// must ask the manifest for the `-deb` / `-rpm` payload, and every other
+    /// bundle type must keep the bare `os-arch` key (AppImage rewrite path).
+    #[test]
+    fn updater_platform_key_suffix_matches_plugin_installer_selection() {
+        use tauri::utils::config::BundleType;
+        assert_eq!(
+            super::updater_platform_key_suffix(Some(BundleType::Deb)),
+            "-deb"
+        );
+        assert_eq!(
+            super::updater_platform_key_suffix(Some(BundleType::Rpm)),
+            "-rpm"
+        );
+        assert_eq!(
+            super::updater_platform_key_suffix(Some(BundleType::AppImage)),
+            ""
+        );
+        assert_eq!(
+            super::updater_platform_key_suffix(Some(BundleType::Msi)),
+            ""
+        );
+        assert_eq!(
+            super::updater_platform_key_suffix(Some(BundleType::Nsis)),
+            ""
+        );
+        assert_eq!(
+            super::updater_platform_key_suffix(Some(BundleType::App)),
+            ""
+        );
+        assert_eq!(super::updater_platform_key_suffix(None), "");
     }
 
     #[test]
@@ -1190,6 +1282,8 @@ mod remote_guard_tests {
             .await;
 
         let error = run_system_command(RunCommandRequest {
+            controller_local: false,
+            workspace_id: None,
             command: "git".to_string(),
             args: vec!["status".to_string()],
             cwd: Some(format!("{REMOTE_ROOT}/repo")),

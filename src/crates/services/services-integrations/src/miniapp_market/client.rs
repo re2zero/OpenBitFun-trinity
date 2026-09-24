@@ -6,7 +6,7 @@ use openbitfun_product_domains::miniapp::market::{
     CursorPage, MarketListingDetail, MarketListingSummary, MarketSort, MarketSubmission,
     MarketSubmissionDraftRequest, ReviewDecisionRequest, MARKET_PACKAGE_CONTENT_TYPE,
 };
-use reqwest::{Method, RequestBuilder, Response, StatusCode};
+use reqwest::{Method, RequestBuilder, Response};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -61,10 +61,15 @@ pub struct MarketClient {
 }
 
 impl MarketClient {
+    pub fn configured_base_url() -> String {
+        std::env::var("OPENBITFUN_MINIAPP_MARKET_API_URL")
+            .unwrap_or_else(|_| DEFAULT_MARKET_API_URL.to_string())
+    }
+
     pub async fn from_environment() -> Result<Self, MarketClientError> {
-        let base_url = std::env::var("OPENBITFUN_MINIAPP_MARKET_API_URL")
-            .unwrap_or_else(|_| DEFAULT_MARKET_API_URL.to_string());
-        Self::new(base_url).await
+        let mut client = Self::new(Self::configured_base_url()).await?;
+        client.identity = AccountIdentityClient::from_environment().await?;
+        Ok(client)
     }
 
     pub async fn new(base_url: impl Into<String>) -> Result<Self, MarketClientError> {
@@ -159,13 +164,6 @@ impl MarketClient {
 
     pub async fn me(&mut self) -> Result<Option<MarketMe>, MarketClientError> {
         self.identity.me().await
-    }
-
-    /// Returns the shared marketplace access token after applying the normal
-    /// refresh and expiry policy. Appearance Market uses the same desktop
-    /// identity without creating a second credential vault.
-    pub(crate) async fn access_token(&mut self) -> Result<Option<String>, MarketClientError> {
-        self.identity.access_token().await
     }
 
     pub async fn set_rating(

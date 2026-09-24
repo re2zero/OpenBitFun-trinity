@@ -19,6 +19,9 @@ import {
   shortSessionId
 } from './ConversationRuntime';
 
+/** Longest a streaming turn's transcript write is held back, in milliseconds. */
+const REMOTE_TRANSCRIPT_CACHE_INTERVAL_MS: number = 400;
+
 export class RemoteTranscriptController {
   private readonly remote: RemotePageState;
   private readonly remoteRuntime?: RemoteConversationDependencies;
@@ -28,6 +31,13 @@ export class RemoteTranscriptController {
   private knownRemoteMessageCount: number = 0;
   private isSyncingAfterTurn: boolean = false;
   private isRebuildingRemoteTranscript: boolean = false;
+  private pendingTranscriptCache: number = -1;
+  // True while the transcript changed without a write behind it. A history page
+  // is read oldest-first, so every record of the burst lands in front of the
+  // window and nothing already written can be reused: writing during the burst
+  // rewrites the whole transcript once per record, on the thread that draws the
+  // screen, for a page nobody has finished reading yet.
+  private transcriptDirty: boolean = false;
 
   constructor(
     remote: RemotePageState,
@@ -47,6 +57,8 @@ export class RemoteTranscriptController {
     this.knownPollVersionValue = 0;
     this.knownModelCatalogVersion = 0;
     this.knownRemoteMessageCount = 0;
+    this.cancelPendingTranscriptCache();
+    this.transcriptDirty = false;
   }
 
   updateKnownMessageCount(pollVersion: number, knownMessageCount: number): void {
@@ -97,7 +109,7 @@ export class RemoteTranscriptController {
     const text = rawText.length > 0 ? rawText :
       (images.length > 0 ? RemoteI18n.t('chat.analyzeImageDefault') : '');
     const sessionId = this.remote.activeSession.sessionId || '';
-    if ((!text && images.length === 0) || !sessionId || this.remote.isBusy ||
+    if ((!text && images.length === 0) || !sessionId || this.remote.isBusy || this.remote.connectionState !== 'connected' ||
       !runtime.connection.ensureAvailable()) {
       return;
     }
@@ -164,7 +176,7 @@ export class RemoteTranscriptController {
       this.notify(RemoteI18n.t('chat.planBuildWaitForTurn'));
       return;
     }
-    if (planFilePath.trim().length === 0 || sessionId.length === 0 || this.remote.isBusy ||
+    if (planFilePath.trim().length === 0 || sessionId.length === 0 || this.remote.isBusy || this.remote.connectionState !== 'connected' ||
       !runtime.connection.ensureAvailable()) {
       return;
     }
@@ -197,7 +209,7 @@ export class RemoteTranscriptController {
       sessionId,
       this.remote.activeTurnMessage.id,
       this.remoteActiveTurnId(),
-      runtime.connection.ensureAvailable()
+      this.remote.connectionState === 'connected' && runtime.connection.ensureAvailable()
     );
   }
 
@@ -276,6 +288,10 @@ export class RemoteTranscriptController {
 
   resetRemoteTimeline(sessionId: string): void {
     const runtime = requireRemoteRuntime(this.remoteRuntime);
+    if (this.pendingTranscriptCache !== -1) {
+      clearTimeout(this.pendingTranscriptCache);
+      this.pendingTranscriptCache = -1;
+    }
     runtime.timeline.reset(sessionId);
     this.knownPollVersionValue = 0;
     this.syncRemoteTimeline();
@@ -308,13 +324,28 @@ export class RemoteTranscriptController {
       return;
     }
     if (snapshot.historyRewritten) {
+      this.cancelPendingTranscriptCache();
+      this.transcriptDirty = false;
       this.rebuildRemoteTranscript(snapshot.sessionId);
       return;
     }
     runtime.timeline.applySnapshot(snapshot);
     this.syncRemoteTimeline();
-    if (snapshot.messageSnapshot !== undefined) {
-      this.cacheRemoteTranscript(snapshot.sessionId, true);
+    if (snapshot.historyLoading === true) {
+      // A history page publishes once per record it contains, and every one of
+      // them lands in front of the window, so no row already on disk survives:
+      // writing during the burst rewrites the whole transcript on the thread
+      // that draws the screen, for a cache nothing reads before the next open.
+      this.deferTranscriptCache();
+    } else if (this.transcriptDirty) {
+      // The page settled, and the settle publishes again.
+      this.cacheTranscriptNow(snapshot.sessionId, true);
+    } else if (snapshot.messageSnapshot !== undefined) {
+      // A streaming turn restates the whole transcript on every chunk. Writing
+      // all of it back each time re-encrypts the session dozens of times a
+      // second, so during a turn only the last write of a burst is kept.
+      if (this.hasRunningRemoteTurn()) this.scheduleTranscriptCache(snapshot.sessionId);
+      else this.cacheTranscriptNow(snapshot.sessionId, true);
     } else if (snapshot.newMessages.length > 0) {
       this.cacheRemoteTranscript(snapshot.sessionId, false);
     }
@@ -326,6 +357,7 @@ export class RemoteTranscriptController {
         sessionId: this.remote.activeSession.sessionId,
         title: snapshot.title,
         workspacePath: this.remote.activeSession.workspacePath,
+        remoteConnectionId: this.remote.activeSession.remoteConnectionId,
         agentType: this.remote.activeSession.agentType
       });
     }
@@ -347,6 +379,40 @@ export class RemoteTranscriptController {
    * that cannot be written only costs the next open a fetch it used to pay for
    * anyway.
    */
+  private scheduleTranscriptCache(sessionId: string): void {
+    this.transcriptDirty = true;
+    if (this.pendingTranscriptCache !== -1) return;
+    this.pendingTranscriptCache = setTimeout(() => {
+      this.pendingTranscriptCache = -1;
+      this.cacheRemoteTranscript(sessionId, true);
+      this.transcriptDirty = false;
+    }, REMOTE_TRANSCRIPT_CACHE_INTERVAL_MS);
+  }
+
+  /**
+   * Holds the transcript write back for the rest of a history page.
+   *
+   * Nothing reads the cache before the next open, and the page publishes again
+   * when its read settles, which is where the deferred write lands.
+   */
+  private deferTranscriptCache(): void {
+    this.transcriptDirty = true;
+    this.cancelPendingTranscriptCache();
+  }
+
+  private cancelPendingTranscriptCache(): void {
+    if (this.pendingTranscriptCache !== -1) {
+      clearTimeout(this.pendingTranscriptCache);
+      this.pendingTranscriptCache = -1;
+    }
+  }
+
+  private cacheTranscriptNow(sessionId: string, authoritativeSnapshot: boolean): void {
+    this.cancelPendingTranscriptCache();
+    this.cacheRemoteTranscript(sessionId, authoritativeSnapshot);
+    this.transcriptDirty = false;
+  }
+
   private cacheRemoteTranscript(sessionId: string, authoritativeSnapshot: boolean): void {
     const runtime = requireRemoteRuntime(this.remoteRuntime);
     const state: ChatTimelineState = runtime.timeline.snapshotState();

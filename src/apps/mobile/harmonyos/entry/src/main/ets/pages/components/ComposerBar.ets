@@ -12,6 +12,7 @@ import { ConversationModelPresentationPolicy } from '../policy/ConversationModel
 import { TemplateIcon } from './TemplateIcon';
 import {
   CARD,
+  CARD_OVERLAY,
   INK,
   LINE,
   MEDIA_SCRIM,
@@ -116,8 +117,10 @@ export struct ComposerBar {
     .constraintSize({ maxWidth: this.presentation === ComposerPresentation.Floating ? 760 : 10000 })
     .alignSelf(ItemAlign.Center)
     .padding({
-      left: this.presentation === ComposerPresentation.Floating ? 24 : COMPOSER_COMPACT_HORIZONTAL_GUTTER,
-      right: this.presentation === ComposerPresentation.Floating ? 24 : COMPOSER_COMPACT_HORIZONTAL_GUTTER,
+      left: this.presentation === ComposerPresentation.Floating
+        ? 24 : MobileDesignGeometry.conversationOverlaySideInset,
+      right: this.presentation === ComposerPresentation.Floating
+        ? 24 : MobileDesignGeometry.conversationOverlaySideInset,
       top: 8,
       bottom: this.presentation === ComposerPresentation.Floating ? 16 : 12
     })
@@ -190,7 +193,12 @@ export struct ComposerBar {
       top: this.isComposerExpanded() ? 4 : 0,
       bottom: this.isComposerExpanded() ? 2 : 0
     })
-    .backgroundColor(CARD)
+    // The transcript now runs underneath the pill, so the fill is translucent
+    // and the blur does the separating. The colour is the floor under it: on a
+    // device that does not land the blur the pill is still opaque enough to
+    // read against whatever text is passing behind it.
+    .backgroundColor(CARD_OVERLAY)
+    .backgroundBlurStyle(BlurStyle.Thin)
     .border({ width: this.presentation === ComposerPresentation.Compact ? 0.5 : 1, color: LINE })
     .borderRadius(this.composerRadius())
     .shadow({
@@ -363,7 +371,9 @@ export struct ComposerBar {
           top: this.isComposerExpanded() ? 10 : 0,
           bottom: this.isComposerExpanded() ? 8 : 0
         })
-        .maxLines(this.isComposerExpanded() ? 4 : 1)
+        // Limit the viewport, not the editable text; keep overflow scrollable.
+        .textOverflow(TextOverflow.Clip)
+        .maxLines(this.isComposerExpanded() ? 4 : 1, { overflowMode: MaxLinesMode.SCROLL })
         .defaultFocus(false)
         .onFocus(() => {
           this.inputFocused = true;
@@ -446,6 +456,8 @@ export struct ComposerBar {
     .stateEffect(false)
     .accessibilityText(RemoteI18n.t(ChatComposerPolicy.primaryActionAccessibilityKey(
       this.primaryAction(), this.isVoiceListening)))
+    .enabled(this.primaryAction() !== ComposerPrimaryAction.Stop || this.isVoiceListening ||
+      ChatComposerPolicy.canStop(this.canStop, this.capabilities.requiresRemoteConnection, this.connectionState))
     .onTouch((event: TouchEvent) => {
       if (!this.shouldShowActiveActionSurface()) {
         return;
@@ -463,7 +475,7 @@ export struct ComposerBar {
       if (action === ComposerPrimaryAction.Stop) {
         if (this.isVoiceListening) {
           this.onVoiceInput();
-        } else if (this.canStop) {
+        } else if (ChatComposerPolicy.canStop(this.canStop, this.capabilities.requiresRemoteConnection, this.connectionState)) {
           this.onStop();
         }
         return;

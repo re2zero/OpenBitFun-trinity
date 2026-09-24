@@ -19,6 +19,8 @@ const menuParts: MenuPopoverParts = {
 
 /** Product adapter: portable menus own UI; callbacks retain their product context. */
 export const ContextMenu: React.FC<ContextMenuProps> = ({ items, position, visible, context, onClose, onItemClick }) => {
+  const ownerRef = React.useRef<HTMLElement | null>(null);
+  ownerRef.current = context?.targetElement ?? context?.element ?? null;
   const convert = (item: ContextMenuItem): MenuEntry => ({
     id: item.id,
     label: item.label,
@@ -39,7 +41,9 @@ export const ContextMenu: React.FC<ContextMenuProps> = ({ items, position, visib
     },
   });
 
-  return <MenuPopover items={items.map(convert)} position={position} open={visible} onClose={onClose} parts={menuParts} />;
+  // Context menus size to their own rows: there is no shared column to align with, and the
+  // default menu width leaves a wide gap between short labels and their shortcuts.
+  return <MenuPopover items={items.map(convert)} position={position} ownerRef={ownerRef} open={visible} onClose={onClose} parts={menuParts} inlineSize="content" />;
 };
 
 export default ContextMenu;

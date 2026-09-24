@@ -9,10 +9,9 @@
  */
 
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 
 import { useTranslation } from 'react-i18next';
-import { OverflowText, Menu, MenuItem } from '@openbitfun/ui';
+import { subscribeOverlayInteraction, createOverlayPortal, OverflowText, Menu, MenuItem } from '@openbitfun/ui';
 import { Tooltip, Icon } from '@openbitfun/ui';
 import { RetainedMountBoundary } from '@/shared/presence';
 import { getAppearanceOverlayHost } from '@/infrastructure/appearance/runtime/AppearanceOverlayHost';
@@ -72,8 +71,8 @@ export const AcpModeSelector: React.FC<AcpModeSelectorProps> = ({
         setKeyboardOpen(false);
       }
     };
-    document.addEventListener('mousedown', handlePointerDown);
-    return () => document.removeEventListener('mousedown', handlePointerDown);
+    const removeOverlayMousedown0 = subscribeOverlayInteraction(menuRef, 'mousedown', handlePointerDown);
+    return () => removeOverlayMousedown0?.();
   }, [open]);
 
   useEffect(() => {
@@ -178,7 +177,7 @@ export const AcpModeSelector: React.FC<AcpModeSelectorProps> = ({
       </Tooltip>
 
       <RetainedMountBoundary present={open}>
-        {createPortal(
+        {createOverlayPortal(
           <Menu
             id={menuId}
             ref={menuRef}
@@ -240,6 +239,8 @@ export const AcpModeSelector: React.FC<AcpModeSelectorProps> = ({
             })}
           </Menu>,
           getAppearanceOverlayHost(),
+          null,
+          { open, ownerRef: triggerRef },
         )}
       </RetainedMountBoundary>
     </div>

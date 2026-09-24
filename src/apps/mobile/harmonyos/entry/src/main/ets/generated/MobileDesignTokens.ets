@@ -15,11 +15,13 @@ export class MobileDesignColors {
   static readonly transparent: MobileColorPair = new MobileColorPair("#00000000", "#00000000");
   static readonly pageBg: MobileColorPair = new MobileColorPair("#FFFFFF", "#151514");
   static readonly pageBgFade: MobileColorPair = new MobileColorPair("#00FFFFFF", "#00151514");
+  static readonly pageBgOverlay: MobileColorPair = new MobileColorPair("#B8FFFFFF", "#B8151514");
   static readonly ink: MobileColorPair = new MobileColorPair("#171717", "#F4F3EF");
   static readonly muted: MobileColorPair = new MobileColorPair("#706F6A", "#AAA8A0");
   static readonly subtle: MobileColorPair = new MobileColorPair("#A5A39B", "#77756E");
   static readonly line: MobileColorPair = new MobileColorPair("#E9E7E2", "#363531");
   static readonly card: MobileColorPair = new MobileColorPair("#FFFFFF", "#252522");
+  static readonly cardOverlay: MobileColorPair = new MobileColorPair("#CCFFFFFF", "#CC252522");
   static readonly accent: MobileColorPair = new MobileColorPair("#111111", "#5B5954");
   static readonly fileLink: MobileColorPair = new MobileColorPair("#2563EB", "#60A5FA");
   static readonly primaryAction: MobileColorPair = new MobileColorPair("#111111", "#454540");
@@ -42,6 +44,15 @@ export class MobileDesignColors {
   static readonly floatingBorder: MobileColorPair = new MobileColorPair("#18000000", "#18000000");
   static readonly soft: MobileColorPair = new MobileColorPair("#F4F3F0", "#2D2C28");
   static readonly floatingPanelBg: MobileColorPair = new MobileColorPair("#F7F7F5", "#1E1E1C");
+  static readonly sidebarBg: MobileColorPair = new MobileColorPair("#F8F8F9", "#0E0E10");
+  static readonly sidebarBgFade: MobileColorPair = new MobileColorPair("#00F8F8F9", "#000E0E10");
+  static readonly sidebarRaised: MobileColorPair = new MobileColorPair("#FFFFFF", "#1C1C1F");
+  static readonly sidebarLine: MobileColorPair = new MobileColorPair("#14101A27", "#1FFFFFFF");
+  static readonly sidebarHover: MobileColorPair = new MobileColorPair("#F3F3F5", "#0FFFFFFF");
+  static readonly sidebarSelection: MobileColorPair = new MobileColorPair("#14000000", "#1FFFFFFF");
+  static readonly sidebarInk: MobileColorPair = new MobileColorPair("#CC000000", "#E8E8E8");
+  static readonly sidebarMuted: MobileColorPair = new MobileColorPair("#99000000", "#B0B0B0");
+  static readonly sidebarSubtle: MobileColorPair = new MobileColorPair("#66000000", "#858585");
   static readonly statusSuccess: MobileColorPair = new MobileColorPair("#27C46A", "#3BD47B");
   static readonly statusDanger: MobileColorPair = new MobileColorPair("#E04F4F", "#FF6B6B");
   static readonly codeLineNumber: MobileColorPair = new MobileColorPair("#AAA69D", "#77756E");
@@ -54,17 +65,73 @@ export class MobileDesignColors {
   static readonly codeConstant: MobileColorPair = new MobileColorPair("#A04444", "#E79A9A");
   static readonly codeProperty: MobileColorPair = new MobileColorPair("#466D78", "#9CC8D0");
   static readonly codeTargetBg: MobileColorPair = new MobileColorPair("#FFF1BE", "#5A4E24");
+  static readonly brandDot: MobileColorPair = new MobileColorPair("#16B9CE", "#16B9CE");
+  static readonly welcomeDock: MobileColorPair = new MobileColorPair("#171917", "#171917");
+  static readonly welcomeButton: MobileColorPair = new MobileColorPair("#FFFFFF", "#FFFFFF");
+  static readonly welcomeButtonLabel: MobileColorPair = new MobileColorPair("#171917", "#171917");
+  static readonly welcomeSecondary: MobileColorPair = new MobileColorPair("#B9BCB9", "#B9BCB9");
+  static readonly statusWarning: MobileColorPair = new MobileColorPair("#FF8C00", "#FF8C00");
+}
+
+export class MobileTextScale {
+  static readonly referenceLogicalDpi: number = 153.3;
+  static readonly minFactor: number = 0.85;
+  static readonly maxFactor: number = 1;
+  private static current: number = 1;
+
+  static get factor(): number {
+    return MobileTextScale.current;
+  }
+
+  // xdpi is physical pixels per inch along the horizontal axis; densityPixels is
+  // physical pixels per logical unit. Their ratio is logical units per inch,
+  // compared against the reference the type ramp was tuned on. Displays that
+  // report an implausible xdpi against their nominal 160-per-unit density fall
+  // back to the unscaled ramp rather than trusting bad metrics.
+  static resolve(xdpi: number, densityPixels: number): number {
+    if (!(xdpi > 0) || !(densityPixels > 0)) {
+      return 1;
+    }
+    const nominalDpi = densityPixels * 160;
+    if (xdpi < nominalDpi * 0.5 || xdpi > nominalDpi * 2) {
+      return 1;
+    }
+    const factor = xdpi / densityPixels / MobileTextScale.referenceLogicalDpi;
+    const clamped = Math.min(MobileTextScale.maxFactor, Math.max(MobileTextScale.minFactor, factor));
+    return Math.round(clamped * 1000) / 1000;
+  }
+
+  static apply(xdpi: number, densityPixels: number): number {
+    MobileTextScale.current = MobileTextScale.resolve(xdpi, densityPixels);
+    return MobileTextScale.current;
+  }
+
+  static reset(): void {
+    MobileTextScale.current = 1;
+  }
+
+  static scaled(value: number): number {
+    return Math.round(value * MobileTextScale.current * 2) / 2;
+  }
 }
 
 export class MobileTypographyToken {
-  readonly size: number;
-  readonly lineHeight: number;
+  readonly baseSize: number;
+  readonly baseLineHeight: number;
   readonly weight: number;
 
   constructor(size: number, lineHeight: number, weight: number) {
-    this.size = size;
-    this.lineHeight = lineHeight;
+    this.baseSize = size;
+    this.baseLineHeight = lineHeight;
     this.weight = weight;
+  }
+
+  get size(): number {
+    return MobileTextScale.scaled(this.baseSize);
+  }
+
+  get lineHeight(): number {
+    return MobileTextScale.scaled(this.baseLineHeight);
   }
 }
 
@@ -85,6 +152,7 @@ export class MobileDesignTypography {
   static readonly labelLarge: MobileTypographyToken = new MobileTypographyToken(15, 20, 500);
   static readonly labelMedium: MobileTypographyToken = new MobileTypographyToken(14, 18, 500);
   static readonly labelSmall: MobileTypographyToken = new MobileTypographyToken(12, 16, 400);
+  static readonly brandWordmark: MobileTypographyToken = new MobileTypographyToken(42, 56, 500);
 }
 
 export class MobileDesignGeometry {
@@ -94,6 +162,8 @@ export class MobileDesignGeometry {
   static readonly contentGutter: number = 16;
   static readonly connectionStripHeight: number = 48;
   static readonly timelineTopPadding: number = 22;
+  static readonly conversationOverlaySideInset: number = 16;
+  static readonly conversationEdgeFadeHeight: number = 28;
   static readonly messageSpacing: number = 18;
   static readonly messageBubbleMaxWidth: number = 276;
   static readonly messageBubbleHorizontalPadding: number = 14;
@@ -147,6 +217,27 @@ export class MobileDesignGeometry {
   static readonly modelListBottomPadding: number = 16;
   static readonly modelEmptyAccountHeight: number = 80;
   static readonly modelEditorHeight: number = 560;
+  static readonly welcomeMaxWidth: number = 520;
+  static readonly welcomeGutter: number = 25;
+  static readonly welcomeHeaderHeight: number = 58;
+  static readonly welcomeButtonHeight: number = 49;
+  static readonly welcomeButtonGap: number = 11;
+  static readonly welcomeDockRadius: number = 30;
+  static readonly welcomeDockBottom: number = 39;
+  static readonly welcomeMarkSize: number = 92;
+  static readonly welcomeWordSize: number = 34;
+  static readonly welcomeStageHeight: number = 220;
+  static readonly welcomeHeaderWordSize: number = 17;
+  static readonly recentHomeGutter: number = 24;
+  static readonly recentHomeMarkSize: number = 132;
+  static readonly recentHomeTitleSize: number = 25;
+  static readonly recentHomeMaxWidth: number = 560;
+  static readonly recentHomeRowPadding: number = 18;
+  static readonly approvalCardRadius: number = 12;
+  static readonly approvalCardPadding: number = 12;
+  static readonly approvalCardGap: number = 8;
+  static readonly approvalActionRadius: number = 8;
+  static readonly approvalActionHeight: number = 36;
 }
 
 export class MobileDesignBreakpoints {
@@ -158,4 +249,5 @@ export class MobileDesignBreakpoints {
 export class MobileDesignMotion {
   static readonly quick: number = 180;
   static readonly structure: number = 220;
+  static readonly startupBrand: number = 6800;
 }

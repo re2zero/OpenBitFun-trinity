@@ -4,6 +4,7 @@ import OpenBitFunMobileCore
 private struct MobilePreviewRequestExpectation {
     let requestID: String
     let deviceKey: String?
+    let previewDeviceKey: String?
     let adapterEpoch: UInt64
     let sessionID: String
     let path: String
@@ -12,8 +13,6 @@ private struct MobilePreviewRequestExpectation {
 
 private var filePreviewRequestByModel: [ObjectIdentifier: MobilePreviewRequestExpectation] = [:]
 private var downloadRetryableByModel: [ObjectIdentifier: Bool] = [:]
-private var downloadRetrySessionByModel: [ObjectIdentifier: String] = [:]
-private var downloadRetryEpochByModel: [ObjectIdentifier: Int32] = [:]
 private var downloadRetryDeviceByModel: [ObjectIdentifier: String] = [:]
 private var downloadRetryCallbackEpochByModel: [ObjectIdentifier: UInt64] = [:]
 private var downloadRetryPathByModel: [ObjectIdentifier: String] = [:]
@@ -44,6 +43,7 @@ private func localizedFailureReason(_ localized: (String) -> String, kindName: S
 
 extension MobileAppModel {
     func invalidateTargetScopedFileTransfers() {
+        runtimeDeviceTools = nil
         let modelID = ObjectIdentifier(self)
         filePreviewRequestByModel[modelID] = nil
         filePreview = nil
@@ -55,8 +55,6 @@ extension MobileAppModel {
         downloadStatusText = nil
         downloadPhase = .idle
         downloadRetryableByModel[modelID] = nil
-        downloadRetrySessionByModel[modelID] = nil
-        downloadRetryEpochByModel[modelID] = nil
         downloadRetryDeviceByModel[modelID] = nil
         downloadRetryCallbackEpochByModel[modelID] = nil
         downloadRetryPathByModel[modelID] = nil
@@ -67,30 +65,42 @@ extension MobileAppModel {
             showToast(localized("仅远程工作区文件支持预览"))
             return
         }
+        guard let adapter = coreAdapter, adapter.canOpenRemoteFile else {
+            showToast(localized("连接不可用，请先重新连接"))
+            return
+        }
         filePreviewLoading = true
         let key = ObjectIdentifier(self)
         let requestID = UUID().uuidString
-        let path = normalizedRemotePath(reference)
-        let deviceKey = coreAdapter?.currentRemoteTargetKey
-        let adapterEpoch = coreAdapter?.currentRemoteTargetEpoch ?? 0
-        _ = coreAdapter?.openRemoteFile(
+        // Register before dispatch: a store may publish Loading immediately.
+        filePreviewRequestByModel[key] = MobilePreviewRequestExpectation(
+            requestID: requestID,
+            deviceKey: adapter.currentRemoteTargetKey,
+            previewDeviceKey: adapter.currentFilePreviewDeviceKey,
+            adapterEpoch: adapter.currentRemoteTargetEpoch,
+            sessionID: selectedSessionID,
+            path: normalizedRemotePath(reference),
+            controlTargetEpoch: nil
+        )
+        adapter.openRemoteFile(
             reference: reference,
             label: label,
             sessionID: selectedSessionID,
             requestID: requestID
         )
-        filePreviewRequestByModel[key] = MobilePreviewRequestExpectation(
-            requestID: requestID,
-            deviceKey: deviceKey,
-            adapterEpoch: adapterEpoch,
-            sessionID: selectedSessionID,
-            path: path,
-            controlTargetEpoch: nil
-        )
+    }
+
+    func downloadWorkspaceFile(path: String, label: String) {
+        beginRemoteDownload(reference: path, label: label, sessionID: "")
     }
 
     func downloadRemoteFile(reference: String, label: String) {
-        guard surface == .remote, remoteSessionSelected else { return }
+        guard remoteSessionSelected else { return }
+        beginRemoteDownload(reference: reference, label: label, sessionID: selectedSessionID)
+    }
+
+    private func beginRemoteDownload(reference: String, label: String, sessionID: String) {
+        guard surface == .remote, remoteConnected else { return }
         downloadExporterOpen = false
         pendingDownload = nil
         let modelID = ObjectIdentifier(self)
@@ -105,7 +115,7 @@ extension MobileAppModel {
         coreAdapter?.downloadRemoteFile(
             reference: reference,
             label: label,
-            sessionID: selectedSessionID
+            sessionID: sessionID
         )
     }
 
@@ -171,7 +181,7 @@ extension MobileAppModel {
                     remotePath: awaiting.target.remotePath,
                     name: awaiting.name,
                     mimeType: awaiting.mimeType,
-                    data: Self.data(from: awaiting.bytes),
+                    localURL: URL(fileURLWithPath: awaiting.localReference),
                     sessionID: awaiting.target.sessionId,
                     controlTargetEpoch: awaiting.target.controlTargetEpoch
                 )
@@ -186,8 +196,6 @@ extension MobileAppModel {
             downloadPhase = .failed
             let modelID = ObjectIdentifier(self)
             downloadRetryableByModel[modelID] = failed.retryable
-            downloadRetrySessionByModel[modelID] = failed.target.sessionId
-            downloadRetryEpochByModel[modelID] = failed.target.controlTargetEpoch
             downloadRetryDeviceByModel[modelID] = coreAdapter?.currentRemoteTargetKey
             downloadRetryCallbackEpochByModel[modelID] = coreAdapter?.currentRemoteTargetEpoch ?? 0
             downloadRetryPathByModel[modelID] = failed.target.remotePath
@@ -206,37 +214,30 @@ extension MobileAppModel {
         guard downloadRetryableByModel[modelID] == true,
               let path = downloadRetryPathByModel[modelID],
               downloadTargetPath == path,
-              downloadRetrySessionByModel[modelID] == selectedSessionID,
               downloadRetryDeviceByModel[modelID] == coreAdapter?.currentRemoteTargetKey,
               downloadRetryCallbackEpochByModel[modelID] == coreAdapter?.currentRemoteTargetEpoch else {
             downloadPhase = .failed
             downloadStatusText = localized("下载目标已变化，请重新打开文件")
             return
         }
-        if let preview = filePreview, preview.id == path,
-           preview.sessionID == downloadRetrySessionByModel[modelID],
-           preview.controlTargetEpoch != downloadRetryEpochByModel[modelID] {
-            downloadPhase = .failed
-            downloadStatusText = localized("下载目标已变化，请重新打开文件")
-            return
-        }
-        downloadRemoteFile(reference: "computer://\(path)", label: path.split(separator: "/").last.map(String.init) ?? path)
+        coreAdapter?.retryRemoteDownload()
     }
 
     func apply(filePreviewState state: RemoteFilePreviewUiState) {
         let key = ObjectIdentifier(self)
         if !(state is RemoteFilePreviewUiStateNone) {
             guard var expected = filePreviewRequestByModel[key],
-                  RemoteAuthorityGate.fileTransferCallbackMatchesAuthority(
+                  let identity = stateRequestIdentity(state),
+                  RemoteAuthorityGate.filePreviewCallbackMatchesAuthority(
                       requestTargetKey: expected.deviceKey,
                       requestEpoch: expected.adapterEpoch,
                       adapterTargetKey: coreAdapter?.currentRemoteTargetKey,
-                      adapterEpoch: coreAdapter?.currentRemoteTargetEpoch ?? 0
+                      adapterEpoch: coreAdapter?.currentRemoteTargetEpoch ?? 0,
+                      expectedStoreDeviceKey: expected.previewDeviceKey,
+                      callbackDeviceKey: identity.deviceKey
                   ),
-                  let identity = stateRequestIdentity(state),
                   let target = stateTarget(state),
                   identity.requestId == expected.requestID,
-                  identity.deviceKey == expected.deviceKey,
                   identity.sessionId == expected.sessionID,
                   normalizedRemotePath(identity.path) == expected.path,
                   target.sessionId == expected.sessionID,
@@ -265,7 +266,7 @@ extension MobileAppModel {
                 controlTargetEpoch: text.target.controlTargetEpoch, name: text.name,
                 content: text.content, mimeType: text.mimeType, imageData: nil, truncated: text.truncated,
                 loadedBytes: text.loadedBytes, sizeBytes: text.sizeBytes, markdown: text.markdown,
-                lineStart: text.target.lineStart, failure: nil, failureKind: nil, retryable: false, unsupported: false)
+                lineStart: text.target.lineStart, lineEnd: text.target.lineEnd, failure: nil, failureKind: nil, retryable: false, unsupported: false)
         } else if let image = state as? RemoteFilePreviewUiStateImage {
             filePreview = MobileFilePreview(id: image.target.remotePath, sessionID: image.target.sessionId,
                 controlTargetEpoch: image.target.controlTargetEpoch, name: image.name,

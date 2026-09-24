@@ -1,3 +1,6 @@
+import { workspaceManager } from '@/infrastructure/services/business/workspaceManager';
+import { resolveLegacySessionWorkspace } from '@/infrastructure/api/service-api/legacyWorkspaceCompatibility';
+import { projectUserQuestionTiming } from '../utils/userQuestionTiming';
 /**
  * Flow Chat global state store
  * Prevents state loss when components remount
@@ -37,7 +40,10 @@ import { elapsedMs, nowMs } from '@/shared/utils/timing';
 import { normalizeRemoteSessionScope } from '@/shared/utils/remoteSessionScope';
 import { isSurfaceReconcileEnabled } from '@/infrastructure/peer-device/deviceSurfaceReconcile';
 import { persistedMayWriteTurn } from '@/flow_chat/session-stream/SessionStream';
-import { sessionCompletionReceipt } from '../utils/sessionCompletionReceipt';
+import { SessionRecordReplica, type SessionRecord } from '@/flow_chat/session-stream/SessionRecordReplica';
+import { RelaySessionHistory } from '../services/RelaySessionHistory';
+import { stateMachineManager } from '../state-machine';
+import { ProcessingPhase, SessionExecutionState } from '../state-machine/types';
 import { isTurnAwaitingRecovery } from '../utils/interruptedTurnRecovery';
 import { sessionActivityStore } from './sessionActivityStore';
 import {
@@ -74,6 +80,7 @@ import {
   deriveSessionRelationshipFromMetadata,
   normalizeSessionRelationship,
 } from '../utils/sessionMetadata';
+import { sessionOwningWorkspaceId } from '../utils/sessionOrdering';
 import { sessionProjectWorkspacePath } from '../utils/sessionWorkspace';
 import type { SessionTitleDescriptor } from '../utils/sessionTitle';
 import { deriveContextUsageFromTurns } from '../utils/tokenUsageDisplay';
@@ -95,7 +102,6 @@ import {
   settleInterruptedDialogTurn,
 } from '../utils/dialogTurnStability';
 import type { WorkspaceInfo } from '@/shared/types';
-import { sessionBelongsToWorkspaceNavRow } from '../utils/sessionOrdering';
 import { sessionMatchesWorkspace } from '../utils/workspaceScope';
 import { resolveThreadGoalUserMessageDisplay } from '../utils/threadGoalDisplay';
 import { cleanRemoteUserInput } from '../utils/userInputText';
@@ -972,6 +978,7 @@ function reconcilePendingUserQuestionSnapshot(
         id: pending.toolId,
         type: 'tool',
         toolName: 'AskUserQuestion',
+        userQuestionWait: projectUserQuestionTiming(pending.questions, pending.interactionStarted === true),
         toolCall: {
           id: pending.toolId,
           input: pending.questions,
@@ -1010,11 +1017,58 @@ function reconcilePendingUserQuestionSnapshot(
     }
   }
 
+  for (const turn of nextTurns) {
+    turn.modelRounds = turn.modelRounds.map(round => {
+      const reconciled = reconcileInteractionAttemptItems(round);
+      changed ||= reconciled !== round;
+      return reconciled;
+    });
+  }
+
   return {
     turns: changed ? nextTurns : turns,
     changed,
     revisionApplied: fullyApplied,
   };
+}
+
+/** Keep mailbox edits in the attempt owner used by rendering and later stream writes. */
+function reconcileInteractionAttemptItems(round: ModelRound): ModelRound {
+  if (!round.attempts?.length) return round;
+  const attemptItems = flattenRoundAttemptItems(round);
+  const isMailboxItem = (item: AnyFlowItem) => item.type === 'tool' &&
+    item._runtimeInteractionProjection?.kind === 'user_question';
+  if (!round.items.some(isMailboxItem) && !attemptItems.some(isMailboxItem)) return round;
+  if (attemptItems.length === round.items.length &&
+      attemptItems.every((item, index) => item === round.items[index])) return round;
+
+  const itemsById = new Map(round.items.map(item => [item.id, item]));
+  const ownedIds = new Set(round.attempts.flatMap(attempt => attempt.items.map(item => item.id)));
+  const added = round.items.filter(item => !ownedIds.has(item.id));
+  const attempts = round.attempts.map(attempt => ({
+    ...attempt,
+    items: attempt.items.flatMap(item => {
+      const replacement = itemsById.get(item.id);
+      return replacement ? [replacement] : [];
+    }),
+  }));
+  if (added.length) {
+    // Diagnostic-only attempts remain history. A recovered interaction must
+    // have a visible current owner, even when the checkpoint has no live attempt.
+    let active = sortAttemptEntries(attempts).at(-1);
+    if (!active || active.diagnostic || active.status === 'superseded') {
+      active = {
+        id: `runtime-interaction:${round.id}`,
+        index: Math.max(...attempts.map(attempt => attempt.index)) + 1,
+        status: 'streaming',
+        items: [],
+      };
+      attempts.push(active);
+    }
+    const owner = active;
+    owner.items.push(...added.map(item => withAttemptMetadata(item, owner)));
+  }
+  return synchronizeRoundAttempts({ ...round, attempts });
 }
 
 function itemMatchesIdentity(item: AnyFlowItem, itemId: string): boolean {
@@ -1355,7 +1409,7 @@ interface FullHistoryHydrationRequest {
 
 interface CompleteSessionHistoryLoadRequest {
   sessionId: string;
-  workspacePath: string;
+  workspaceId: string;
   remoteConnectionId?: string;
   remoteSshHost?: string;
   includeInternal?: boolean;
@@ -1880,6 +1934,12 @@ interface SurfaceStateContainer {
   readonly fullHistoryProjectionApplyRequests: Set<string>;
   readonly pendingRemoveSessionOptions: Map<string, RemoveSessionOptions>;
   readonly userQuestionSnapshotRevisions: Map<string, number>;
+  readonly relayQuestionMailboxes: Map<string, PendingUserQuestionSnapshot>;
+  readonly relayMailboxVersions: Map<string, number>;
+  readonly relayRecordVersions: Map<string, number>;
+  readonly relayMailboxReads: Map<string, Promise<void>>;
+  readonly relaySessionRecords: Map<string, SessionRecordReplica>;
+  readonly relaySessionHistory: Map<string, RelaySessionHistory>;
 }
 
 function createSurfaceStateContainer(surfaceId: DeviceSurfaceId): SurfaceStateContainer {
@@ -1895,6 +1955,12 @@ function createSurfaceStateContainer(surfaceId: DeviceSurfaceId): SurfaceStateCo
     fullHistoryProjectionApplyRequests: new Set(),
     pendingRemoveSessionOptions: new Map(),
     userQuestionSnapshotRevisions: new Map(),
+    relayQuestionMailboxes: new Map(),
+    relayRecordVersions: new Map(),
+    relayMailboxVersions: new Map(),
+    relayMailboxReads: new Map(),
+    relaySessionRecords: new Map(),
+    relaySessionHistory: new Map(),
   };
 }
 
@@ -1927,6 +1993,10 @@ export class FlowChatStore {
     // Selecting another surface swaps the whole visible state; subscribers keep
     // rendering the previous device's sessions until they are told.
     onSurfaceActivated(() => {
+      for (const container of this.surfaceContainers.values()) {
+        for (const subscription of container.relaySessionHistory.values()) subscription.close();
+        container.relaySessionHistory.clear();
+      }
       this.notifyListeners();
     });
   }
@@ -2721,48 +2791,51 @@ export class FlowChatStore {
     }
   }
 
-  private getMetadataListRequestKey(
-    workspacePath: string,
-    remoteConnectionId?: string,
-    remoteSshHost?: string,
-  ): string {
-    return this.surfaceKey(
-      workspacePath,
-      remoteConnectionId || '',
-      remoteSshHost || '',
-    );
+  /**
+   * Workspace identity every persisted-history read is addressed with.
+   *
+   * The ID is a storage selector, not the execution directory: the backend
+   * resolves the session directory through the workspace record it is given, and
+   * an isolated worktree record resolves to the same directory as the project it
+   * belongs to. A worktree record is created on demand and can be absent from the
+   * open workspace set, which the backend rejects outright, so history is always
+   * read through the owning project the navigation list groups the session under.
+   */
+  private sessionHistoryWorkspaceId(sessionId: string): string {
+    const session = this.state.sessions.get(sessionId);
+    const workspaceId = session
+      ? sessionOwningWorkspaceId(session)
+      : undefined;
+    if (!workspaceId) throw new Error(`Workspace ID is unavailable for session: ${sessionId}`);
+    return workspaceId;
   }
 
-  private getMetadataPageRequestKey(
-    workspacePath: string,
-    limit: number,
-    cursor?: string,
-    remoteConnectionId?: string,
-    remoteSshHost?: string,
-  ): string {
-    return this.surfaceKey(
-      workspacePath,
-      remoteConnectionId || '',
-      remoteSshHost || '',
-      cursor || '',
-      limit,
-    );
+  private workspaceForId(workspaceId: string) {
+    const catalog = workspaceManager.getState();
+    const workspace = catalog.openedWorkspaces.get(workspaceId)
+      ?? catalog.recentWorkspaces.find(record => record.id === workspaceId);
+    if (!workspace) throw new Error(`Workspace ID is unavailable: ${workspaceId}`);
+    return {
+      workspacePath: workspace.rootPath,
+      remoteConnectionId: workspace.workspaceKind === 'remote' ? workspace.connectionId : undefined,
+      remoteSshHost: workspace.workspaceKind === 'remote' ? workspace.sshHost : undefined,
+    };
+  }
+
+  private getMetadataListRequestKey(workspaceId: string): string {
+    return this.surfaceKey(workspaceId);
+  }
+
+  private getMetadataPageRequestKey(workspaceId: string, limit: number, cursor?: string): string {
+    return this.surfaceKey(workspaceId, cursor || '', limit);
   }
 
   private getFullHistoryHydrationKey(
     sessionId: string,
-    workspacePath: string,
-    remoteConnectionId?: string,
-    remoteSshHost?: string,
+    workspaceId: string,
     includeInternal?: boolean,
   ): string {
-    return this.surfaceKey(
-      sessionId,
-      workspacePath,
-      remoteConnectionId || '',
-      remoteSshHost || '',
-      includeInternal === true ? 1 : 0,
-    );
+    return this.surfaceKey(sessionId, workspaceId, includeInternal === true ? 1 : 0);
   }
 
   private scheduleCompleteSessionHistoryLoad(
@@ -2770,9 +2843,7 @@ export class FlowChatStore {
   ): FullHistoryHydrationRequest {
     const requestKey = this.getFullHistoryHydrationKey(
       request.sessionId,
-      request.workspacePath,
-      request.remoteConnectionId,
-      request.remoteSshHost,
+      request.workspaceId,
       request.includeInternal,
     );
     const existingRequest = this.fullHistoryHydrationRequests.get(requestKey);
@@ -2905,6 +2976,14 @@ export class FlowChatStore {
 
   private clearRemovedSessionHistoryState(sessionIds: Iterable<string>, reason: string): void {
     const removedSessionIds = new Set(sessionIds);
+    for (const id of removedSessionIds) {
+      this.activeSurface.relaySessionHistory.get(id)?.close();
+      this.activeSurface.relaySessionHistory.delete(id);
+      this.activeSurface.relaySessionRecords.delete(id);
+      this.activeSurface.relayQuestionMailboxes.delete(id);
+      this.activeSurface.relayRecordVersions.delete(id);
+      this.activeSurface.relayMailboxVersions.delete(id);
+    }
     if (removedSessionIds.size === 0) {
       return;
     }
@@ -2969,8 +3048,8 @@ export class FlowChatStore {
     }
 
     const canonicalTurns = canonicalSessionTurns(session);
-    const workspacePath = sessionProjectWorkspacePath(session);
-    if (!workspacePath || canonicalTurns.length === 0) {
+    const workspaceId = sessionOwningWorkspaceId(session);
+    if (!workspaceId || canonicalTurns.length === 0) {
       return false;
     }
 
@@ -2985,7 +3064,7 @@ export class FlowChatStore {
     });
     this.scheduleCompleteSessionHistoryLoad({
       sessionId,
-      workspacePath,
+      workspaceId,
       initialSessionTraceId: sessionTraceId,
       requireActiveSession: true,
       expectedDialogTurnIds: canonicalTurns.map(turn => turn.id),
@@ -3007,6 +3086,19 @@ export class FlowChatStore {
   }
 
   public async ensureSessionFullHistory(sessionId: string, reason: string): Promise<boolean> {
+    if (getActiveSurfaceId() !== 'local') {
+      const scope = getActiveSurfaceScope();
+      const surface = this.activeSurface;
+      await this.loadRelaySessionHistory(sessionId);
+      scope.assertCurrent('complete relay session history');
+      const history = surface.relaySessionHistory.get(sessionId);
+      while (surface.state.sessions.get(sessionId)?.isPartial) {
+        if (!history || !await history.loadOlder()) break;
+        scope.assertCurrent('continue relay session history');
+      }
+      scope.assertCurrent('finish relay session history');
+      return surface.state.sessions.get(sessionId)?.isPartial === false;
+    }
     const session = this.state.sessions.get(sessionId);
     if (!session || session.historyState !== 'ready') {
       return false;
@@ -3026,8 +3118,8 @@ export class FlowChatStore {
     );
     if (!hydrationRequest) {
       const canonicalTurns = canonicalSessionTurns(session);
-      const workspacePath = sessionProjectWorkspacePath(session);
-      if (!workspacePath || canonicalTurns.length === 0) {
+      const workspaceId = sessionOwningWorkspaceId(session);
+      if (!workspaceId || canonicalTurns.length === 0) {
         this.fullHistoryProjectionApplyRequests.delete(sessionId);
         return false;
       }
@@ -3035,7 +3127,7 @@ export class FlowChatStore {
       const sessionTraceId = `${sessionId.slice(0, 8)}-${Math.random().toString(36).slice(2, 8)}`;
       hydrationRequest = this.scheduleCompleteSessionHistoryLoad({
         sessionId,
-        workspacePath,
+        workspaceId,
         remoteConnectionId: session.remoteConnectionId,
         remoteSshHost: session.remoteSshHost,
         includeInternal: session.sessionKind === 'subagent',
@@ -3133,6 +3225,9 @@ export class FlowChatStore {
     targetOrdinal: number,
     options?: LoadSessionTurnWindowOptions,
   ): Promise<SessionTurnWindowLoadResult> {
+    if (getActiveSurfaceId() !== 'local') {
+      await this.ensureSessionFullHistory(sessionId, 'relay-turn-navigation');
+    }
     const session = this.state.sessions.get(sessionId);
     const catalog = session?.turnCatalog?.sessionId === sessionId
       ? session.turnCatalog
@@ -3201,8 +3296,32 @@ export class FlowChatStore {
       }
     }
 
+    if (getActiveSurfaceId() !== 'local') {
+      // Turn navigation reads the same canonical log replica. It never starts
+      // a second transcript restore/RPC path after a cache eviction.
+      const before = Math.max(0, Math.floor(options?.before ?? SESSION_TURN_WINDOW_DEFAULT_BEFORE));
+      const after = Math.max(1, Math.floor(options?.after ?? SESSION_TURN_WINDOW_DEFAULT_AFTER));
+      const startOrdinal = Math.max(0, normalizedTargetOrdinal - before);
+      const endOrdinalExclusive = Math.min(catalog.entries.length, normalizedTargetOrdinal + after);
+      const byId = new Map(session.dialogTurns.map(turn => [turn.id, turn]));
+      const turns = catalog.entries.slice(startOrdinal, endOrdinalExclusive)
+        .map(entry => entry.turnId ? byId.get(entry.turnId) : undefined);
+      if (turns.some(turn => !turn)) throw new Error('Relay turn catalog does not match its history');
+      const range = this.cacheSessionLoadedTurnRange(sessionId, {
+        startOrdinal, endOrdinalExclusive, turns: turns as DialogTurn[],
+        lastAccessedAt: Date.now(), source: 'target',
+      }, catalog, normalizedTargetOrdinal);
+      return { status: 'ready', sessionId, targetOrdinal: normalizedTargetOrdinal,
+        targetTurnId: entry.turnId, navigationGeneration: generation,
+        isCurrent: this.isSessionTurnWindowRequestCurrent(sessionId, generation, normalizedTargetOrdinal, source),
+        cacheHit: true, range, catalog };
+    }
+
+    // The owning workspace ID selects the session store; the project root and
+    // SSH facts stay only as the upgrade projection for older hosts.
+    const workspaceId = session.workspaceId ?? session.config.workspaceId;
     const workspacePath = sessionProjectWorkspacePath(session);
-    if (!workspacePath) {
+    if (!workspaceId && !workspacePath) {
       return {
         status: 'not-found',
         sessionId,
@@ -3229,7 +3348,8 @@ export class FlowChatStore {
     );
     return this.loadSessionTurnWindowAttempt({
       sessionId,
-      workspacePath,
+      workspaceId,
+      workspacePath: workspacePath ?? '',
       remoteConnectionId: session.remoteConnectionId,
       remoteSshHost: session.remoteSshHost,
       includeInternal:
@@ -3249,6 +3369,7 @@ export class FlowChatStore {
 
   private async loadSessionTurnWindowAttempt(request: {
     sessionId: string;
+    workspaceId?: string;
     workspacePath: string;
     remoteConnectionId?: string;
     remoteSshHost?: string;
@@ -3294,9 +3415,10 @@ export class FlowChatStore {
 
     const requestKey = this.surfaceKey(
       request.sessionId,
-      request.workspacePath,
-      request.remoteConnectionId ?? '',
-      request.remoteSshHost ?? '',
+      request.workspaceId ?? '',
+      request.workspaceId ? '' : request.workspacePath,
+      request.workspaceId ? '' : request.remoteConnectionId ?? '',
+      request.workspaceId ? '' : request.remoteSshHost ?? '',
       request.targetStorageTurnIndex,
       request.catalog.revision,
       request.before,
@@ -3317,6 +3439,7 @@ export class FlowChatStore {
     try {
       response = await this.invokeSessionTurnWindowRequest(requestKey, {
         sessionId: request.sessionId,
+        workspaceId: request.workspaceId,
         workspacePath: request.workspacePath,
         includeInternal: request.includeInternal,
         targetStorageTurnIndex: request.targetStorageTurnIndex,
@@ -3771,9 +3894,7 @@ export class FlowChatStore {
     const { agentAPI } = await import('@/infrastructure/api/service-api/AgentAPI');
     const restored = await agentAPI.restoreSessionView(
       request.sessionId,
-      request.workspacePath,
-      request.remoteConnectionId,
-      request.remoteSshHost,
+      request.workspaceId,
       fullTraceId,
       request.includeInternal,
       undefined,
@@ -4099,6 +4220,7 @@ export class FlowChatStore {
         workspacePath,
         projectWorkspacePath: config.projectWorkspacePath,
         workspaceId: config.workspaceId,
+        projectWorkspaceId: config.projectWorkspaceId,
         remoteConnectionId,
         remoteSshHost,
         parentSessionId: relationship.parentSessionId,
@@ -4143,6 +4265,7 @@ export class FlowChatStore {
       reviewTargetEvidence?: Session['reviewTargetEvidence'];
       reviewTargetFilePaths?: Session['reviewTargetFilePaths'];
       projectWorkspacePath?: string;
+      projectWorkspaceId?: string;
       executionTarget?: Session['config']['executionTarget'];
       workspaceId?: string;
     },
@@ -4176,6 +4299,7 @@ export class FlowChatStore {
           projectWorkspacePath: meta?.projectWorkspacePath,
           executionTarget: meta?.executionTarget,
           workspaceId: meta?.workspaceId,
+          projectWorkspaceId: meta?.projectWorkspaceId,
         } as any,
         createdAt: Date.now(),
         lastActiveAt: Date.now(),
@@ -4190,6 +4314,7 @@ export class FlowChatStore {
         workspacePath,
         projectWorkspacePath: meta?.projectWorkspacePath,
         workspaceId: meta?.workspaceId,
+        projectWorkspaceId: meta?.projectWorkspaceId,
         remoteConnectionId,
         remoteSshHost,
         parentSessionId: relationship.parentSessionId,
@@ -4557,7 +4682,10 @@ export class FlowChatStore {
 
   /**
    * Apply a backend session rebind (worktree isolation toggled on or off).
-   * The project root stays put; only the execution directory moves.
+   * The project root stays put; only the execution directory moves. A binding
+   * that reports the owning project fills a project identity the session was
+   * created without, and the workspace a session moves away from supplies it
+   * when the binding reports none.
    */
   public updateSessionExecutionTarget(
     sessionId: string,
@@ -4565,6 +4693,7 @@ export class FlowChatStore {
       workspacePath: string;
       projectWorkspacePath: string;
       workspaceId?: string;
+      projectWorkspaceId?: string;
       executionTarget: Session['config']['executionTarget'];
     },
   ): void {
@@ -4573,16 +4702,28 @@ export class FlowChatStore {
       if (!session) return prev;
 
       const newSessions = new Map(prev.sessions);
+      // A binding that moves this session into an isolated execution directory
+      // must never leave it without an owning project: the worktree record it
+      // then carries is an on-demand execution record that owns no navigation
+      // row the user can open. A backend that reports no project ID is answered
+      // with the workspace the session moved away from, which is that project.
+      const isolated = !!binding.executionTarget && binding.executionTarget.kind !== 'local';
+      const owningProjectWorkspaceId = binding.projectWorkspaceId
+        ?? session.projectWorkspaceId
+        ?? session.config.projectWorkspaceId
+        ?? (isolated ? session.workspaceId ?? session.config.workspaceId : undefined);
       newSessions.set(sessionId, {
         ...session,
         workspacePath: binding.workspacePath,
         projectWorkspacePath: binding.projectWorkspacePath,
         workspaceId: binding.workspaceId ?? session.workspaceId,
+        projectWorkspaceId: owningProjectWorkspaceId,
         config: {
           ...session.config,
           workspacePath: binding.workspacePath,
           projectWorkspacePath: binding.projectWorkspacePath,
           workspaceId: binding.workspaceId ?? session.config.workspaceId,
+          projectWorkspaceId: owningProjectWorkspaceId,
           executionTarget: binding.executionTarget,
         },
         lastActiveAt: Date.now(),
@@ -5089,9 +5230,7 @@ export class FlowChatStore {
 
           await agentAPI.deleteSession(
             id,
-            workspacePath,
-            sess?.remoteConnectionId,
-            sess?.remoteSshHost
+            this.sessionHistoryWorkspaceId(id)
           );
         })
       );
@@ -5268,21 +5407,6 @@ export class FlowChatStore {
     );
 
     return runningSessionIds;
-  }
-
-  /** @deprecated Prefer `removeSessionsForWorkspace` with full `WorkspaceInfo`. */
-  public removeSessionsByWorkspace(
-    workspacePath: string,
-    remoteConnectionId?: string | null,
-    remoteSshHost?: string | null
-  ): string[] {
-    const removedSessionIds = Array.from(this.state.sessions.values())
-      .filter(session =>
-        sessionBelongsToWorkspaceNavRow(session, workspacePath, remoteConnectionId, remoteSshHost)
-      )
-      .map(session => session.sessionId);
-
-    return this.removeSessionsByIds(removedSessionIds);
   }
 
   private removeSessionsByIds(removedSessionIds: string[]): string[] {
@@ -5745,6 +5869,179 @@ export class FlowChatStore {
         ...prev,
         sessions: newSessions
       };
+    });
+  }
+
+  public async loadRelaySessionHistory(sessionId: string): Promise<void> {
+    const surface = this.activeSurface;
+    if (surface.surfaceId === 'local') throw new Error('Local history is owned by the local runtime');
+    if (!surface.state.sessions.has(sessionId)) throw new Error('Relay session shell is not loaded');
+    let history = surface.relaySessionHistory.get(sessionId);
+    if (!history) {
+      history = new RelaySessionHistory(sessionId,
+        record => this.applyRelaySessionRecord(record),
+        ready => {
+          this.setState(previous => {
+            const session = previous.sessions.get(sessionId);
+            if (!session) return previous;
+            const sessions = new Map(previous.sessions);
+            sessions.set(sessionId, { ...session, historyState: 'ready', isHistorical: false,
+              // This surface owns presentation only. Execution-context loading
+              // remains on the runtime when it accepts the next command.
+              contextRestoreState: 'ready',
+              isPartial: ready.hasMore, loadedTurnCount: session.dialogTurns.length });
+            return { ...previous, sessions };
+          });
+          if (!ready.hasMore) this.refreshRelayTurnCatalog(sessionId);
+        }, error => {
+          log.error('Relay session history failed', { sessionId, error });
+          this.setSessionHistoryState(sessionId, 'failed');
+          // Retrying opens a fresh replay owner; a failed owner must not turn
+          // the subsequent ready notification into a false successful page.
+          if (surface.relaySessionHistory.get(sessionId) === history) {
+            surface.relaySessionHistory.delete(sessionId);
+            history?.close();
+          }
+        }, () => this.refreshRelayInteractionMailbox(sessionId));
+      surface.relaySessionHistory.set(sessionId, history);
+    }
+    try { await history.open(); }
+    catch (error) {
+      if (surface === this.activeSurface) this.setSessionHistoryState(sessionId, 'failed');
+      if (surface.relaySessionHistory.get(sessionId) === history) surface.relaySessionHistory.delete(sessionId);
+      throw error;
+    }
+  }
+
+  private refreshRelayInteractionMailbox(sessionId: string): Promise<void> {
+    const surface = this.activeSurface;
+    surface.relayMailboxVersions.set(sessionId, (surface.relayMailboxVersions.get(sessionId) ?? 0) + 1);
+    const existing = surface.relayMailboxReads.get(sessionId);
+    if (existing) return existing;
+    const scope = getActiveSurfaceScope();
+    const read = (async () => {
+      while (scope.isCurrent() && surface === this.activeSurface) {
+        const mailboxVersion = surface.relayMailboxVersions.get(sessionId);
+        const recordVersion = surface.relayRecordVersions.get(sessionId) ?? 0;
+        const eventVersion = liveSessionInteractionStore.captureEventVersion(scope.surfaceId);
+        const mailbox = await agentAPI.getSessionInteractionMailbox(sessionId);
+        if (!scope.isCurrent() || surface !== this.activeSurface || !surface.state.sessions.has(sessionId) || mailbox.sessionId !== sessionId) return;
+        if (mailboxVersion !== surface.relayMailboxVersions.get(sessionId)) continue;
+        liveSessionInteractionStore.reconcilePermissionSnapshot(scope.surfaceId, sessionId, mailbox.permissions, eventVersion);
+        // Canonical terminal facts fence an overlapping mailbox response. Do
+        // not turn a busy token stream into repeated mailbox requests.
+        if (recordVersion !== (surface.relayRecordVersions.get(sessionId) ?? 0)) {
+          const turns = surface.state.sessions.get(sessionId)?.dialogTurns ?? [];
+          mailbox.userQuestions = { ...mailbox.userQuestions, questions: mailbox.userQuestions.questions.filter(question => {
+            const turn = turns.find(value => value.id === question.dialogTurnId);
+            const item = turns.flatMap(value => value.modelRounds.flatMap(round => round.items))
+              .find(value => value.type === 'tool' && value.toolCall.id === question.toolId);
+            return (!turn || !['completed', 'cancelled', 'error'].includes(turn.status))
+              && (!item || item.type !== 'tool' || !['completed', 'failed', 'cancelled', 'error'].includes(item.status));
+          }) };
+        }
+        surface.relayQuestionMailboxes.set(sessionId, mailbox.userQuestions);
+        this.reconcilePendingUserQuestions(sessionId, mailbox.userQuestions);
+        return;
+      }
+    })().finally(() => { surface.relayMailboxReads.delete(sessionId); });
+    surface.relayMailboxReads.set(sessionId, read);
+    return read;
+  }
+
+  public async loadOlderRelaySessionHistory(sessionId: string): Promise<boolean> {
+    await this.loadRelaySessionHistory(sessionId);
+    const history = this.activeSurface.relaySessionHistory.get(sessionId);
+    if (!history) throw new Error('Relay session history is no longer active');
+    return history.loadOlder();
+  }
+
+  private refreshRelayTurnCatalog(sessionId: string): void {
+    const session = this.state.sessions.get(sessionId);
+    if (!session || session.isPartial !== false) return;
+    const turns = session.dialogTurns.filter(turn => !isProvisionalUsageReportTurn(turn));
+    // Optimistic submissions have no storage index yet. Do not invent one or
+    // confuse storage positions (which can contain gaps) with visible ordinals.
+    if (turns.some(turn => turn.storageTurnIndex === undefined)) return;
+    const entries = turns.map((turn, ordinal) => ({
+      ordinal, storageTurnIndex: turn.storageTurnIndex!, turnId: turn.id,
+      preview: turn.userMessage.content, previewTruncated: false,
+    }));
+    const revision = `relay:${entries.map(entry => entry.turnId).join('|')}`;
+    this.updateAuthoritativeSessionTurnCatalog(sessionId, {
+      schemaVersion: 1, sessionId, revision, complete: true,
+      totalTurnCount: entries.length, entries,
+    });
+    this.seedSessionHistoryLoadedRanges(sessionId);
+  }
+
+  /** Both realtime delivery and historical pages use the same record owner. */
+  public applyRelaySessionRecord(record: SessionRecord): void {
+    const surface = this.activeSurface;
+    if (surface.surfaceId === 'local') throw new Error('Relay record cannot target the local runtime');
+    if (!surface.state.sessions.has(record.sessionId)) throw new Error('Relay session shell is not loaded');
+    let replica = surface.relaySessionRecords.get(record.sessionId);
+    if (!replica) {
+      replica = new SessionRecordReplica(record.sessionId);
+      surface.relaySessionRecords.set(record.sessionId, replica);
+    }
+    const previousTurn = surface.state.sessions.get(record.sessionId)?.dialogTurns;
+    const change = replica.apply(record);
+    surface.relayRecordVersions.set(record.sessionId, (surface.relayRecordVersions.get(record.sessionId) ?? 0) + 1);
+    if (!change) return;
+    const incoming = change.turn
+      ? this.convertToDialogTurns([change.turn], { activeTurnId: change.turn.turnId })[0]
+      : null;
+    this.setState(previous => {
+      const session = previous.sessions.get(record.sessionId);
+      if (!session) return previous;
+      let dialogTurns = session.dialogTurns.filter(turn => turn.id !== change.turnId);
+      if (incoming) {
+        // A submission can be painted before the runtime allocates its turn ID.
+        // The stable user-message ID joins that optimistic row to its echo.
+        dialogTurns = dialogTurns.filter(turn => turn.userMessage.id !== incoming.userMessage.id);
+        dialogTurns.push(incoming);
+        dialogTurns.sort((a, b) => a.storageTurnIndex !== undefined && b.storageTurnIndex !== undefined
+          ? a.storageTurnIndex - b.storageTurnIndex : a.startTime - b.startTime);
+      }
+      const sessions = new Map(previous.sessions);
+      sessions.set(record.sessionId, { ...session, dialogTurns });
+      return { ...previous, sessions };
+    });
+    const mailbox = surface.relayQuestionMailboxes.get(record.sessionId);
+    if (mailbox) {
+      const turns = this.state.sessions.get(record.sessionId)?.dialogTurns ?? [];
+      const questions = mailbox.questions.filter(question => {
+        const turn = turns.find(value => value.id === question.dialogTurnId);
+        if (turn && ['completed', 'cancelled', 'error'].includes(turn.status)) return false;
+        const item = turns.flatMap(value => value.modelRounds.flatMap(round => round.items))
+          .find(value => value.type === 'tool' && value.toolCall.id === question.toolId);
+        return !item || item.type !== 'tool' || !['completed', 'failed', 'cancelled', 'error'].includes(item.status);
+      });
+      const currentMailbox = { ...mailbox, questions };
+      surface.relayQuestionMailboxes.set(record.sessionId, currentMailbox);
+      this.reconcilePendingUserQuestions(record.sessionId, currentMailbox);
+    }
+    const currentTurns = this.state.sessions.get(record.sessionId)?.dialogTurns ?? [];
+    if (previousTurn?.length !== currentTurns.length
+      || previousTurn?.some((turn, index) => turn.id !== currentTurns[index]?.id
+        || turn.storageTurnIndex !== currentTurns[index]?.storageTurnIndex)) {
+      this.refreshRelayTurnCatalog(record.sessionId);
+    }
+    const latest = currentTurns.at(-1);
+    const running = latest && !['completed', 'cancelled', 'error'].includes(latest.status);
+    const round = latest?.modelRounds.at(-1);
+    const pendingTools = running ? latest.modelRounds.flatMap(modelRound => modelRound.items)
+      .filter((item): item is FlowToolItem => item.type === 'tool' && item.status === 'pending_confirmation')
+      .map(item => item.toolCall.id) : [];
+    stateMachineManager.getOrCreate(record.sessionId).acceptRuntimeStatus({
+      state: latest?.status === 'error' ? SessionExecutionState.ERROR
+        : running ? SessionExecutionState.PROCESSING : SessionExecutionState.IDLE,
+      turnId: latest?.id ?? null, roundId: round?.id ?? null,
+      phase: !running ? null : pendingTools.length ? ProcessingPhase.TOOL_CONFIRMING
+        : round?.items.some(item => item.type === 'tool' && item.status === 'running')
+          ? ProcessingPhase.TOOL_CALLING : ProcessingPhase.THINKING,
+      pendingTools, error: latest?.error ?? null,
     });
   }
 
@@ -6407,26 +6704,14 @@ export class FlowChatStore {
     this.onPersistUnreadCompletion?.(sessionId, completionKind);
   }
 
-  public clearSessionUnreadCompletion(
-    sessionId: string,
-    expected?: { surfaceId: DeviceSurfaceId; receipt: string },
-  ): void {
+  public clearSessionUnreadCompletion(sessionId: string): void {
     let didClear = false;
+    // Explicit acknowledgement also works before the transcript is hydrated.
+    // Bind it to the host summary so a later status refresh cannot restore it.
+    const acknowledgedSummaryTurn = sessionActivityStore.get(sessionId)?.summary?.lastTurn;
     this.setState(prev => {
       const session = prev.sessions.get(sessionId);
       if (!session || !session.hasUnreadCompletion) return prev;
-      if (expected && (getActiveSurfaceId() !== expected.surfaceId
-        || sessionCompletionReceipt(session) !== expected.receipt)) return prev;
-      if (expected) {
-        const summary = sessionActivityStore.get(sessionId)?.summary;
-        const turn = lastUserDialogTurn(session);
-        if (summary && (summary.execution === 'running' || summary.execution === 'queued'
-          || (summary.unreadCompletion && summary.lastTurn && (summary.lastTurn.turnId !== turn?.id
-            || summary.lastTurn.status !== turn?.status
-            || summary.lastTurn.executionGeneration !== (turn?.recovery?.executionGeneration ?? turn?.recoveryEpoch)
-            || (summary.lastTurn.recoveryPending !== undefined
-              && summary.lastTurn.recoveryPending !== isTurnAwaitingRecovery(turn)))))) return prev;
-      }
 
       const updatedSession: Session = {
         ...session,
@@ -6443,10 +6728,26 @@ export class FlowChatStore {
     });
     if (didClear) {
       const turn = lastUserDialogTurn(this.state.sessions.get(sessionId));
-      if (turn) sessionActivityStore.acknowledge(sessionId, turn.id,
+      if (acknowledgedSummaryTurn) sessionActivityStore.acknowledge(sessionId, acknowledgedSummaryTurn.turnId,
+        acknowledgedSummaryTurn.executionGeneration, acknowledgedSummaryTurn.recoveryPending);
+      else if (turn) sessionActivityStore.acknowledge(sessionId, turn.id,
         turn.recovery?.executionGeneration ?? turn.recoveryEpoch, isTurnAwaitingRecovery(turn));
       this.onPersistUnreadCompletion?.(sessionId, undefined);
     }
+  }
+
+  /**
+   * Acknowledge every unread completion at once. Each session still goes through
+   * `clearSessionUnreadCompletion` so persisted receipts and activity
+   * acknowledgements stay identical to clearing them one by one.
+   */
+  public clearAllSessionUnreadCompletions(): number {
+    const unread: string[] = [];
+    for (const session of this.state.sessions.values()) {
+      if (session.hasUnreadCompletion) unread.push(session.sessionId);
+    }
+    for (const sessionId of unread) this.clearSessionUnreadCompletion(sessionId);
+    return unread.length;
   }
 
   /** Mirror only the summary's read marker, never its state into the Turn model. */
@@ -6614,9 +6915,9 @@ export class FlowChatStore {
         return;
       }
 
-      const workspacePath = sessionProjectWorkspacePath(session);
-      if (!workspacePath) {
-        log.warn('Workspace path not available, skipping save', { sessionId, turnId });
+      const workspaceId = session.workspaceId ?? session.config.workspaceId;
+      if (!workspaceId) {
+        log.warn('Workspace ID not available, skipping save', { sessionId, turnId });
         return;
       }
 
@@ -6731,10 +7032,7 @@ export class FlowChatStore {
 
       await sessionAPI.saveSessionTurn(
         turnData,
-        workspacePath,
-        session.remoteConnectionId,
-        session.remoteSshHost
-      );
+        this.sessionHistoryWorkspaceId(sessionId));
     } catch (error) {
       log.error('Failed to save cancelled dialog turn', { sessionId, turnId, error });
     }
@@ -6746,23 +7044,20 @@ export class FlowChatStore {
    * Clears sessions from other workspaces, then loads sessions for the target workspace.
    */
   public async refreshWorkspaceFromDisk(
-    workspacePath: string,
-    remoteConnectionId?: string,
-    remoteSshHost?: string,
+    workspaceId: string,
     traceSource = 'refresh'
   ): Promise<void> {
-    const requestKey = this.getMetadataListRequestKey(workspacePath, remoteConnectionId, remoteSshHost);
+    const requestKey = this.getMetadataListRequestKey(workspaceId);
     this.metadataListRequests.delete(requestKey);
-    await this.initializeFromDisk(workspacePath, remoteConnectionId, remoteSshHost, traceSource);
+    await this.initializeFromDisk(workspaceId, traceSource);
   }
 
   public async initializeFromDisk(
-    workspacePath: string,
-    remoteConnectionId?: string,
-    remoteSshHost?: string,
+    workspaceId: string,
     traceSource = 'unknown'
   ): Promise<void> {
-    const requestKey = this.getMetadataListRequestKey(workspacePath, remoteConnectionId, remoteSshHost);
+    const { remoteConnectionId, remoteSshHost } = this.workspaceForId(workspaceId);
+    const requestKey = this.getMetadataListRequestKey(workspaceId);
     const existingRequest = this.metadataListRequests.get(requestKey);
     const remote = isRemoteTraceContext(remoteConnectionId, remoteSshHost);
     if (existingRequest) {
@@ -6788,10 +7083,7 @@ export class FlowChatStore {
 
     let succeeded = false;
     const loadPromise = this.initializeFromDiskUncached(
-      workspacePath,
-      remoteConnectionId,
-      remoteSshHost,
-      traceSource,
+      workspaceId, traceSource,
     ).then(result => {
       succeeded = result;
     });
@@ -6879,7 +7171,7 @@ export class FlowChatStore {
         logPersistedDispatchMetadataOverlap(metadata, 'metadata-page');
         scope.assertCurrent('processPersistedSessionMetadata');
         const existingSession = this.state.sessions.get(metadata.sessionId);
-        if (existingSession) {
+        if (existingSession?.workspaceId || existingSession?.config.workspaceId) {
           return;
         }
         if (!includeArchived && metadata.status === 'archived') {
@@ -6907,6 +7199,14 @@ export class FlowChatStore {
           }
         }
 
+        const workspaceId = metadata.workspaceId ?? resolveLegacySessionWorkspace({
+          workspacePath: metadata.workspacePath || workspacePath,
+          projectWorkspacePath: metadata.projectWorkspacePath,
+          remoteConnectionId, remoteSshHost,
+        }, [...workspaceManager.getState().openedWorkspaces.values()])?.id;
+        const projectWorkspaceId = metadata.projectWorkspaceId ?? resolveLegacySessionWorkspace({
+          workspacePath: metadata.projectWorkspacePath || workspacePath, remoteConnectionId, remoteSshHost,
+        }, [...workspaceManager.getState().openedWorkspaces.values()])?.id;
         const relationship = deriveSessionRelationshipFromMetadata(metadata);
         const lastFinishedAt = deriveLastFinishedAtFromMetadata(metadata);
         const titleState = deriveSessionTitleStateFromMetadata(metadata);
@@ -6919,8 +7219,23 @@ export class FlowChatStore {
         const persistedCurrentContextUsage = persistedCurrentContextUsageValue(metadata);
 
         this.setState(prev => {
-          if (!scope.isCurrent() || prev.sessions.has(metadata.sessionId)) {
-            return prev;
+          if (!scope.isCurrent()) return prev;
+          const existing = prev.sessions.get(metadata.sessionId);
+          if (existing) {
+            if (existing.workspaceId || existing.config.workspaceId || !workspaceId) return prev;
+            const sessions = new Map(prev.sessions);
+            sessions.set(metadata.sessionId, {
+              ...existing, workspaceId, projectWorkspaceId,
+              workspacePath: metadata.workspacePath || workspacePath,
+              projectWorkspacePath: metadata.projectWorkspacePath || workspacePath,
+              ...remoteScope,
+              config: { ...existing.config, workspaceId, projectWorkspaceId,
+                workspacePath: metadata.workspacePath || workspacePath,
+                projectWorkspacePath: metadata.projectWorkspacePath || workspacePath,
+                executionTarget: metadata.executionTarget,
+              },
+            });
+            return { ...prev, sessions };
           }
 
           const rawAgentType = metadata.agentType || 'Standard';
@@ -6935,6 +7250,7 @@ export class FlowChatStore {
 
           const session: Session = {
             sessionId: metadata.sessionId,
+            workspaceId, projectWorkspaceId,
             title: titleState.title,
             titleSource: titleState.titleSource,
             titleI18nKey: titleState.titleI18nKey,
@@ -6947,6 +7263,7 @@ export class FlowChatStore {
             config: {
               agentType: validatedAgentType,
               modelName: metadata.modelName,
+              workspaceId, projectWorkspaceId,
               workspacePath: metadata.workspacePath || workspacePath,
               projectWorkspacePath: metadata.projectWorkspacePath || workspacePath,
               executionTarget: metadata.executionTarget,
@@ -7008,16 +7325,11 @@ export class FlowChatStore {
    * keeps archived records out of the working set until this is requested.
    */
   public async loadArchivedSessionMetadata(
-    workspacePath: string,
-    remoteConnectionId?: string,
-    remoteSshHost?: string,
+    workspaceId: string,
   ): Promise<void> {
+    const { workspacePath, remoteConnectionId, remoteSshHost } = this.workspaceForId(workspaceId);
     const { sessionAPI } = await import('@/infrastructure/api/service-api/SessionAPI');
-    const sessions = await sessionAPI.listArchivedSessions(
-      workspacePath,
-      remoteConnectionId,
-      remoteSshHost,
-    );
+    const sessions = await sessionAPI.listArchivedSessions(workspaceId);
     await this.processPersistedSessionMetadataList(
       sessions,
       workspacePath,
@@ -7036,21 +7348,18 @@ export class FlowChatStore {
    */
   public async ensurePersistedSessionMetadata(
     sessionId: string,
-    workspacePath: string,
-    remoteConnectionId?: string,
-    remoteSshHost?: string,
+    workspaceId: string,
   ): Promise<boolean> {
-    if (this.state.sessions.has(sessionId)) {
+    const scope = getActiveSurfaceScope();
+    const existing = this.state.sessions.get(sessionId);
+    if (existing?.workspaceId || existing?.config.workspaceId) {
       return true;
     }
 
+    const { workspacePath, remoteConnectionId, remoteSshHost } = this.workspaceForId(workspaceId);
     const { sessionAPI } = await import('@/infrastructure/api/service-api/SessionAPI');
-    const metadata = await sessionAPI.loadSessionMetadata(
-      sessionId,
-      workspacePath,
-      remoteConnectionId,
-      remoteSshHost,
-    );
+    const metadata = await sessionAPI.loadSessionMetadata(sessionId, workspaceId);
+    scope.assertCurrent('load linked session metadata');
     if (!metadata || metadata.status === 'archived') {
       return false;
     }
@@ -7061,23 +7370,19 @@ export class FlowChatStore {
       remoteConnectionId,
       remoteSshHost,
     );
-    return this.state.sessions.has(sessionId);
+    const resolved = this.state.sessions.get(sessionId);
+    return Boolean(resolved?.workspaceId ?? resolved?.config.workspaceId);
   }
 
   public async loadSessionMetadataPage(
-    workspacePath: string,
+    workspaceId: string,
     limit: number,
     cursor?: string,
-    remoteConnectionId?: string,
-    remoteSshHost?: string,
     traceSource = 'unknown'
   ): Promise<SessionMetadataPage> {
+    const { remoteConnectionId, remoteSshHost } = this.workspaceForId(workspaceId);
     const requestKey = this.getMetadataPageRequestKey(
-      workspacePath,
-      limit,
-      cursor,
-      remoteConnectionId,
-      remoteSshHost,
+      workspaceId, limit, cursor,
     );
     const existingRequest = this.metadataPageRequests.get(requestKey);
     const remote = isRemoteTraceContext(remoteConnectionId, remoteSshHost);
@@ -7105,12 +7410,7 @@ export class FlowChatStore {
     }
 
     const loadPromise = this.loadSessionMetadataPageUncached(
-      workspacePath,
-      limit,
-      cursor,
-      remoteConnectionId,
-      remoteSshHost,
-      traceSource,
+      workspaceId, limit, cursor, traceSource,
     );
 
     const request: MetadataPageRequest = { promise: loadPromise };
@@ -7140,13 +7440,12 @@ export class FlowChatStore {
   }
 
   private async loadSessionMetadataPageUncached(
-    workspacePath: string,
+    workspaceId: string,
     limit: number,
     cursor?: string,
-    remoteConnectionId?: string,
-    remoteSshHost?: string,
     traceSource = 'unknown'
   ): Promise<SessionMetadataPage> {
+    const { workspacePath, remoteConnectionId, remoteSshHost } = this.workspaceForId(workspaceId);
     const activityScope = getActiveSurfaceScope();
     const activityRead = sessionActivityStore.beginRead(activityScope.surfaceId);
     const traceStartedAt = nowMs();
@@ -7188,11 +7487,7 @@ export class FlowChatStore {
           command: 'list_persisted_sessions_page',
         });
         const pagePromise = sessionAPI.listSessionsPage({
-          workspacePath,
-          limit,
-          cursor,
-          remoteConnectionId,
-          remoteSshHost,
+          workspaceId, limit, cursor,
         });
         modelConfigPromise = this.loadSessionMetadataModelConfig();
         page = await pagePromise;
@@ -7223,7 +7518,7 @@ export class FlowChatStore {
           command: 'list_persisted_sessions',
           fallback: true,
         });
-        const sessions = await sessionAPI.listSessions(workspacePath, remoteConnectionId, remoteSshHost);
+        const sessions = await sessionAPI.listSessions(workspaceId);
         startupTrace.markPhase('session_metadata_page_request_end', {
           remote,
           source: traceSource,
@@ -7284,11 +7579,10 @@ export class FlowChatStore {
   }
 
   private async initializeFromDiskUncached(
-    workspacePath: string,
-    remoteConnectionId?: string,
-    remoteSshHost?: string,
+    workspaceId: string,
     traceSource = 'unknown'
   ): Promise<boolean> {
+    const { workspacePath, remoteConnectionId, remoteSshHost } = this.workspaceForId(workspaceId);
     const traceStartedAt = nowMs();
     const remote = isRemoteTraceContext(remoteConnectionId, remoteSshHost);
     const metadataListTraceId = `metadata-${Math.random().toString(36).slice(2, 8)}`;
@@ -7301,7 +7595,7 @@ export class FlowChatStore {
     const scope = getActiveSurfaceScope();
     try {
       const { sessionAPI } = await import('@/infrastructure/api/service-api/SessionAPI');
-      const sessions = await sessionAPI.listSessions(workspacePath, remoteConnectionId, remoteSshHost);
+      const sessions = await sessionAPI.listSessions(workspaceId);
       sessionCount = sessions.length;
       scope.assertCurrent('initializeFromDisk');
       startupTrace.markPhase('session_metadata_list_loaded', {
@@ -7369,7 +7663,15 @@ export class FlowChatStore {
             }
           }
 
-          const relationship = deriveSessionRelationshipFromMetadata(metadata);
+          const workspaceId = metadata.workspaceId ?? resolveLegacySessionWorkspace({
+          workspacePath: metadata.workspacePath || workspacePath,
+          projectWorkspacePath: metadata.projectWorkspacePath,
+          remoteConnectionId, remoteSshHost,
+        }, [...workspaceManager.getState().openedWorkspaces.values()])?.id;
+        const projectWorkspaceId = metadata.projectWorkspaceId ?? resolveLegacySessionWorkspace({
+          workspacePath: metadata.projectWorkspacePath || workspacePath, remoteConnectionId, remoteSshHost,
+        }, [...workspaceManager.getState().openedWorkspaces.values()])?.id;
+        const relationship = deriveSessionRelationshipFromMetadata(metadata);
           const lastFinishedAt = deriveLastFinishedAtFromMetadata(metadata);
           const titleState = deriveSessionTitleStateFromMetadata(metadata);
           const hasDynamicDefaultTitle = titleState.titleSource === 'i18n';
@@ -7397,6 +7699,7 @@ export class FlowChatStore {
 
             const session: Session = {
               sessionId: metadata.sessionId,
+              workspaceId, projectWorkspaceId,
               title: titleState.title,
               titleSource: titleState.titleSource,
               titleI18nKey: titleState.titleI18nKey,
@@ -7409,6 +7712,7 @@ export class FlowChatStore {
               config: {
                 agentType: validatedAgentType,
                 modelName: metadata.modelName,
+              workspaceId, projectWorkspaceId,
                 workspacePath: metadata.workspacePath || workspacePath,
                 projectWorkspacePath: metadata.projectWorkspacePath || workspacePath,
                 executionTarget: metadata.executionTarget,
@@ -7544,7 +7848,6 @@ export class FlowChatStore {
    */
   public async refreshPeerSessionSnapshot(
     sessionId: string,
-    workspacePath: string,
     options?: {
       requireActiveSession?: boolean;
       shouldApply?: () => boolean;
@@ -7565,9 +7868,7 @@ export class FlowChatStore {
 
     const restored = await agentAPI.restoreSessionView(
       sessionId,
-      workspacePath,
-      initialSession.remoteConnectionId,
-      initialSession.remoteSshHost,
+      this.sessionHistoryWorkspaceId(sessionId),
       `peer-refresh-${sessionId.slice(0, 8)}`,
       undefined,
       PEER_SESSION_REFRESH_TAIL_TURN_COUNT,
@@ -7827,9 +8128,7 @@ export class FlowChatStore {
 
     const restored = await agentAPI.restoreSessionView(
       sessionId,
-      workspacePath,
-      initialSession.remoteConnectionId,
-      initialSession.remoteSshHost,
+      this.sessionHistoryWorkspaceId(sessionId),
       `settled-turn-${turnId.slice(0, 8)}`,
       initialSession.sessionKind === 'subagent',
       SETTLED_TURN_RECONCILE_TAIL_TURN_COUNT,
@@ -7984,16 +8283,16 @@ export class FlowChatStore {
    */
   public async loadSessionHistory(
     sessionId: string,
-    workspacePath: string,
-    limit?: number,
-    remoteConnectionId?: string,
-    remoteSshHost?: string,
     options?: {
+      limit?: number;
       includeInternal?: boolean;
       deferFullHistoryUntilActive?: boolean;
     }
   ): Promise<void> {
     const traceStartedAt = nowMs();
+    const initialSession = this.state.sessions.get(sessionId);
+    const remoteConnectionId = initialSession?.remoteConnectionId;
+    const remoteSshHost = initialSession?.remoteSshHost;
     const remote = isRemoteTraceContext(remoteConnectionId, remoteSshHost);
     const sessionTraceId = `${sessionId.slice(0, 8)}-${Math.random().toString(36).slice(2, 8)}`;
     startupTrace.markPhase('historical_session_hydrate_start', {
@@ -8002,7 +8301,6 @@ export class FlowChatStore {
       sessionTraceId,
     });
     const scope = getActiveSurfaceScope();
-    const initialSession = this.state.sessions.get(sessionId);
     const preserveDispatchObserverProjection = (): boolean => {
       const latestSession = this.state.sessions.get(sessionId);
       if (!dispatchObserverOwnsSession(sessionId, latestSession)) {
@@ -8051,13 +8349,12 @@ export class FlowChatStore {
       finishDispatchObserverSkip('initial');
       return;
     }
-    // The caller remains authoritative for legacy and remote sessions. Only a
-    // persisted dual-root binding may redirect history storage to the project
-    // root; otherwise a stale in-memory execution path can cross workspaces.
-    const storageWorkspacePath =
-      initialSession?.projectWorkspacePath
-      || initialSession?.config.projectWorkspacePath
-      || workspacePath;
+    if (scope.surfaceId !== 'local') {
+      this.setSessionHistoryState(sessionId, 'hydrating');
+      await this.loadRelaySessionHistory(sessionId);
+      scope.assertCurrent('load relay session history');
+      return;
+    }
     const suppressInitialHydratingState =
       !remote &&
       options?.deferFullHistoryUntilActive === true &&
@@ -8118,9 +8415,7 @@ export class FlowChatStore {
               try {
                 const restoredPromise = agentAPI.restoreSessionWithTurns(
                   sessionId,
-                  storageWorkspacePath,
-                  remoteConnectionId,
-                  remoteSshHost,
+                  this.sessionHistoryWorkspaceId(sessionId),
                   sessionTraceId,
                   options?.includeInternal,
                 );
@@ -8148,9 +8443,7 @@ export class FlowChatStore {
 
             const restoredSessionPromise = agentAPI.restoreSession(
               sessionId,
-              storageWorkspacePath,
-              remoteConnectionId,
-              remoteSshHost,
+              this.sessionHistoryWorkspaceId(sessionId),
               sessionTraceId,
               options?.includeInternal,
             );
@@ -8166,9 +8459,7 @@ export class FlowChatStore {
             try {
               const restoredPromise = agentAPI.restoreSessionView(
                 sessionId,
-                storageWorkspacePath,
-                remoteConnectionId,
-                remoteSshHost,
+                this.sessionHistoryWorkspaceId(sessionId),
                 sessionTraceId,
                 options?.includeInternal,
                 historicalSessionInitialTailTurnCount(remote),
@@ -8250,13 +8541,7 @@ export class FlowChatStore {
           sessionTraceId,
         });
         const { sessionAPI } = await import('@/infrastructure/api/service-api/SessionAPI');
-        turns = await sessionAPI.loadSessionTurns(
-          sessionId,
-          storageWorkspacePath,
-          limit,
-          remoteConnectionId,
-          remoteSshHost
-        );
+        turns = await sessionAPI.loadSessionTurns(sessionId, this.sessionHistoryWorkspaceId(sessionId), options?.limit);
         startupTrace.markPhase('historical_session_turns_load_end', {
           remote,
           sessionId,
@@ -8500,7 +8785,7 @@ export class FlowChatStore {
         } else if (!deferFullHistoryUntilActive) {
           this.scheduleCompleteSessionHistoryLoad({
             sessionId,
-            workspacePath: storageWorkspacePath,
+            workspaceId: this.sessionHistoryWorkspaceId(sessionId),
             remoteConnectionId,
             remoteSshHost,
             includeInternal: options?.includeInternal,
@@ -8674,10 +8959,9 @@ export class FlowChatStore {
               executionMs: tool.executionMs,
               timestamp: tool.startTime,
               status: isLiveTurn
-                ? normalizeLiveItemStatus(
-                    tool.status,
-                    tool.toolResult ? (tool.toolResult.success ? 'completed' : 'error') : 'running',
-                  )
+                ? tool.toolResult
+                  ? (tool.toolResult.success ? 'completed' : 'error')
+                  : normalizeLiveItemStatus(tool.status, 'running')
                 : normalizeRecoveredToolStatus(
                     tool.status,
                     normalizedTurnStatus,

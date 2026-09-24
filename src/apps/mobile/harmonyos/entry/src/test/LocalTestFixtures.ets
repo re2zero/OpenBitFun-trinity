@@ -1,3 +1,7 @@
+import { WorkspaceCatalog, mergeLegacyWorkspaces } from '../main/ets/services/WorkspaceCatalog';
+import { HostSessionStream, HostSessionCallbacks, HostSessionEvent, HostSessionSource, HostStreamPage } from '../main/ets/services/HostSessionStream';
+import { SessionRecord } from '../main/ets/services/DurableSessionReducer';
+import { SavedRuntimeConnection } from '../main/ets/model/RemoteModels';
 import { describe, it, expect } from '@ohos/hypium';
 import { RemoteI18n } from '../main/ets/i18n/RemoteI18n';
 import { ChatSessionController, ChatSessionSnapshot } from '../main/ets/services/ChatSessionController';
@@ -120,6 +124,7 @@ import {
   ReadFileChunkResult,
   ReadFileResult,
   RemoteSession,
+  RemoteWorkspaceIdentity,
   SelectedImageAttachment,
   SteerTurnResult,
   SessionListResult,
@@ -158,6 +163,7 @@ export interface GeneralChatRecordedRequest {
 }
 
 export class FakeRemoteWorkspaceDataSource implements RemoteWorkspaceDataSource {
+  async savedConnections(): Promise<SavedRuntimeConnection[]> { return []; }
   recent: RecentWorkspaceEntry[] = [];
   sessionsByPath: Map<string, RemoteSession[]> = new Map<string, RemoteSession[]>();
   /** Paths whose listing rejects, for the workspace a desktop cannot read. */
@@ -165,12 +171,23 @@ export class FakeRemoteWorkspaceDataSource implements RemoteWorkspaceDataSource 
   /** Every path listed, in the order the listings were started. */
   listedPaths: string[] = [];
 
+  async listWorkspaceCatalog(): Promise<WorkspaceCatalog> {
+    const recent = await this.listRecentWorkspaces();
+    return { workspaces: mergeLegacyWorkspaces(recent, await this.listAssistants()), recentWorkspaces: recent, source: 'recent' };
+  }
+
   async listRecentWorkspaces(): Promise<RecentWorkspaceEntry[]> {
     return this.recent;
   }
 
-  async setWorkspace(_path: string): Promise<WorkspaceInfo> {
+  /** The last identified selection, so tests can assert IDs reach the data source. */
+  lastSetWorkspaceId: string | undefined = undefined;
+  lastSetAssistantId: string | undefined = undefined;
+
+  async setWorkspace(_path: string, _connectionId?: string, _sshHost?: string, workspaceId?: string): Promise<WorkspaceInfo> {
+    this.lastSetWorkspaceId = workspaceId;
     return {
+      workspaceId: workspaceId,
       name: 'workspace', path: '/workspace', hasWorkspace: true,
       gitBranch: 'main', workspaceKind: 'normal', assistantId: ''
     };
@@ -180,19 +197,23 @@ export class FakeRemoteWorkspaceDataSource implements RemoteWorkspaceDataSource 
     return [];
   }
 
-  async setAssistant(_path: string): Promise<WorkspaceInfo> {
+  async setAssistant(_path: string, workspaceId?: string): Promise<WorkspaceInfo> {
+    this.lastSetAssistantId = workspaceId;
     return {
+      workspaceId: workspaceId,
       name: 'assistant', path: '/assistant', hasWorkspace: true,
       gitBranch: '', workspaceKind: 'assistant', assistantId: 'assistant'
     };
   }
 
-  async listSessionsForWorkspace(path: string, _limit: number): Promise<RemoteSession[]> {
-    this.listedPaths.push(path);
-    if (this.failingPaths.includes(path)) {
-      throw new Error(`workspace unavailable: ${path}`);
+  /** Rows with an ID are looked up by ID; pre-ID rows by their path. */
+  async listSessionsForWorkspace(workspace: RemoteWorkspaceIdentity, _limit: number): Promise<RemoteSession[]> {
+    const key = workspace.workspaceId ? workspace.workspaceId : workspace.path;
+    this.listedPaths.push(key);
+    if (this.failingPaths.includes(key)) {
+      throw new Error(`workspace unavailable: ${key}`);
     }
-    return this.sessionsByPath.get(path) || [];
+    return this.sessionsByPath.get(key) || [];
   }
 
   async ping(): Promise<void> {
@@ -693,6 +714,14 @@ export class FakeRemoteFileDownloadClient implements RemoteFileDownloadClient {
     size: 4096
   };
 
+  async streamFile(path: string, sessionId: string | undefined, onChunk: (bytes: Uint8Array, info: FileInfo) => Promise<void>, onProgress?: (downloaded: number, total: number) => void): Promise<FileInfo> {
+    this.readRequests.push(`${path}|${sessionId}`);
+    if (this.shouldFailRead) throw new Error('Expected download failure.');
+    await onChunk(new Uint8Array([1,2,3]), this.fileInfo);
+    if (onProgress) onProgress(this.fileInfo.size, this.fileInfo.size);
+    return this.fileInfo;
+  }
+
   async getFileInfo(path: string, sessionId?: string): Promise<FileInfo> {
     this.infoRequests.push(`${path}|${sessionId || ''}`);
     return this.fileInfo;
@@ -743,10 +772,10 @@ export class RemoteDownloadStatusRecord {
 export class FakeRemoteFileSaver implements RemoteFileSaver {
   savedNames: string[] = [];
 
-  async save(result: ReadFileResult): Promise<string> {
-    this.savedNames.push(result.name);
-    return `test://${result.name}`;
-  }
+  async begin(name: string): Promise<void> { this.savedNames.push(name); }
+  async write(_bytes: Uint8Array): Promise<void> {}
+  async finish(): Promise<string> { return `test://${this.savedNames[this.savedNames.length - 1]}`; }
+  async abort(): Promise<void> {}
 }
 
 export class FakeRemoteToolActionClient implements RemoteToolActionClient {
@@ -1352,4 +1381,30 @@ export class FakeGeneralChatConfigStore extends GeneralChatConfigStore {
     }
     return this.snapshotResult;
   }
+}
+
+export class FakeHostSessionManager extends RemoteSessionManager {
+  callbacks?: HostSessionCallbacks;
+  subscribeSession(logicalId: string, callbacks: HostSessionCallbacks): HostSessionStream {
+    this.callbacks = callbacks;
+    const source: HostSessionSource = {
+      target: 'fixture-host',
+      read: () => new Promise<HostStreamPage>(() => {}),
+      unsubscribe: async (): Promise<void> => {},
+      onHint: () => () => {}, onReconnect: () => () => {}
+    };
+    return new HostSessionStream(logicalId, source, callbacks);
+  }
+  async emit(event: HostSessionEvent): Promise<void> {
+    await this.callbacks?.onEvent(event); await this.callbacks?.onCaughtUp();
+  }
+}
+export function hostRecord(sessionId: string, revision: number, text: string, status: string = 'inprogress'): HostSessionEvent {
+  const record: SessionRecord = { sessionId: sessionId, id: 'item/text', revision: revision,
+    turn: { sessionId: sessionId, turnId: 'turn', turnIndex: 0, timestamp: 1,
+      userMessage: { id: 'user', content: 'question', timestamp: 1 }, status: status },
+    round: { id: 'round', turnId: 'turn', roundIndex: 0, timestamp: 2, status: status },
+    item: { type: 'text', data: { id: 'text', content: text, timestamp: 3 } }
+  };
+  return { session_id: sessionId, event: 'session-record', payload: record };
 }

@@ -9,6 +9,8 @@
   max-width: 520px;
   z-index: 20;
   display: flex;
+  flex-direction: column;
+  gap: 8px;
   justify-content: center;
   padding: 0 16px;
   transition: max-width 0.3s cubic-bezier(0.4, 0, 0.2, 1),
@@ -501,6 +503,7 @@
 }
 
 .chat-composer-sheet > [data-openbitfun-part='header'] {
+  display: flex;
   align-items: center;
   text-align: left;
 }
@@ -634,4 +637,11 @@
   grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
   gap: 4px;
   padding: 0 12px 12px;
+}
+
+.chat-page__composer-leading,
+.chat-page__input-wrap .chat-page__action-btn {
+  border-radius: 50%;
+  aspect-ratio: 1;
+  &:hover, &:active, &:focus { border-radius: 50%; }
 }

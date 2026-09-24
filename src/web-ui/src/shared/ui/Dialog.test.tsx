@@ -11,6 +11,9 @@ describe('overlay exit content', () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
+    const media = new EventTarget();
+    Object.defineProperty(media, 'matches', { value: false });
+    vi.stubGlobal('matchMedia', () => media);
     container = document.createElement('div');
     document.body.appendChild(container);
     root = createRoot(container);
@@ -20,6 +23,30 @@ describe('overlay exit content', () => {
     act(() => root.unmount());
     container.remove();
     vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it('supports an explicit portal host and leaves focus unchanged when restoration is disabled', () => {
+    const host = document.createElement('div');
+    const before = document.createElement('button');
+    const after = document.createElement('button');
+    document.body.append(host, before, after);
+    before.focus();
+    const close = vi.fn();
+    act(() => root.render(<Dialog open onOpenChange={close} portalTarget={host}
+      autoFocus={false} restoreFocus={false} trapFocus={false} preventScroll={false}
+      closeOnEscape={false} closeOnPointerOutside={false}
+      overlayProps={{ className: 'custom-scrim', 'data-product-overlay': 'preview' }}>
+      <button>Inside</button>
+    </Dialog>));
+    expect(document.activeElement).toBe(before);
+    expect(host.querySelector('.custom-scrim')?.getAttribute('data-openbitfun-part')).toBe('overlay');
+    expect(host.querySelector('[data-product-overlay="preview"]')).not.toBeNull();
+    after.focus();
+    act(() => root.render(null));
+    expect(document.activeElement).toBe(after);
+    expect(host.childElementCount).toBe(0);
+    host.remove(); before.remove(); after.remove();
   });
 
   it.each([Dialog, Sheet])('preserves committed content until exit, then accepts a fresh selection', (Surface) => {

@@ -9,8 +9,8 @@ Stable releases continue to be driven by a version bump on `main`. The
 `Release On Version Bump` workflow creates `vMAJOR.MINOR.PATCH` and dispatches
 `Desktop Package` with the default `stable` channel.
 
-The initial 1.x release is **`1.0.0-beta`**, tag **`v1.0.0-beta`** (no numbered
-suffix). It uses `release_channel=stable`, `upload_to_release=true`,
+The first final 1.x release is **`1.0.0`**, tag **`v1.0.0`**. It uses
+`release_channel=stable`, `upload_to_release=true`,
 `prerelease=false`, and explicit `make_latest=true`. The version spelling and
 GitHub release status are separate contracts. Merging this version bump to
 `main` triggers packaging and publication; preparing it locally does not.
@@ -26,18 +26,30 @@ its tag automatically. Release creation and editing use GitHub CLI without
 
 Desktop 1.x reads `latest-v1.json`; CLI 1.x reads `linux-binaries-v1.json`,
 from GitHub Latest or `/release/` on the mirror. Every stable release also carries
-unchanged `latest.json` and `linux-binaries.json` from **v0.2.19**, the final
-legacy release. Publication rejects legacy feeds whose version is not 0.2.19.
-Thus installed 0.2.x clients continue to see only 0.2.x, even after GitHub Latest
-moves to 1.x. Do not rename the 1.x manifests back to the legacy filenames.
+the pinned legacy feeds `latest.json` and `linux-binaries.json` from
+`scripts/fixtures/legacy-update-feeds/`. The desktop feed carries version 0.2.20
+with a release note that points 0.2.x users to the manual 1.x download and the
+Data Migrator; its `platforms` block still resolves to the final 0.2.19
+artifacts, so the notice never installs 1.x into a 0.2.x client. The CLI feed
+stays byte-for-byte on 0.2.19 because the legacy CLI manifest has no note field.
+Preservation validates the copied manifests with an inline Node check (the
+desktop feed must be version 0.2.20 with non-empty notes; the CLI feed must be
+0.2.19) and the publication step byte-compares the uploaded feeds against the
+pinned fixtures, so a drifting fixture or a stale upload fails the run. Do not
+rename the 1.x manifests back to the legacy
+filenames, and keep the pinned fixtures' `platforms` signatures unchanged.
 
-The mirror writes only the versioned feeds and retains existing legacy feeds
-and 0.2.x artifact directories. Deploy the updated mirror script before the
-release and verify both old feed versions and new feed versions afterwards.
+The mirror writes only the versioned 1.x feeds and keeps the two newest
+version directories. It does not retain 0.2.x artifact trees; 0.2.x clients
+keep reading the unchanged `latest.json` / `linux-binaries.json` assets on
+GitHub Latest. Deploy the updated mirror script before the release and verify
+the new feed versions afterwards.
 The old `channel-beta/latest.json` pointer is not modified; new prerelease builds
-use `channel-v1-beta/latest-v1.json`. Existing numbered 1.0.0-beta.N installs
-need a manual installation for this launch: SemVer orders `1.0.0-beta` below
-`1.0.0-beta.N`, regardless of GitHub's Latest status.
+use `channel-v1-beta/latest-v1.json`. The final `1.0.0` version sorts above
+both `1.0.0-beta` and numbered `1.0.0-beta.N` versions. Stable publication
+promotes the beta pointer only if it would not downgrade a newer beta; verify
+that pointer after publication. The historical `1.0.0-beta` launch sorted below
+numbered betas and required manual installation for those users.
 
 This isolation controls in-app update checks, not GitHub's own notifications
 for users who subscribe to repository releases.
@@ -128,6 +140,36 @@ when GitHub's latest-release pointer changes. Publication also compares the
 downloaded Relay descriptor and signature to the image job's signed bytes.
 
 ## Focused packaging checks
+
+### 1.0.0 release verification
+
+Before merging the version bump to `main`:
+
+- Run `pnpm run release:version:check`, `pnpm run test:release-packaging`,
+  `pnpm run check:github-config`, and the focused Relay packaging checks below.
+- Review the release commit and CI results; confirm `v1.0.0` is not already
+  assigned to another commit. Merging the bump starts publication automatically.
+- Verify the publishing repository has the updater signing key, Windows
+  Authenticode credentials, Apple signing/notarization credentials, and GHCR
+  publishing access required by `desktop-package.yml`.
+- Exercise an upgrade from `1.0.0-beta` with existing settings and sessions,
+  and from a numbered beta through the beta feed. Exercise remote workspace,
+  remote control, Peer Device Mode, and Detached Dispatch with supported older
+  peers. Record actual results separately; packaging fixtures do not establish
+  runtime compatibility.
+
+Delivery is complete only after the workflow and published assets are verified:
+
+- `v1.0.0` is published with `prerelease=false` and is GitHub Latest.
+- Desktop packages exist for Windows x64, macOS arm64/x64, and Linux arm64/x64;
+  the custom Windows installer, updater artifacts, and signatures are present.
+- Linux CLI/Relay archives, checksums, signatures, `linux-binaries-v1.json`,
+  and the signed `relay-image.json` are downloadable. The multi-platform Relay
+  image is anonymously pullable.
+- `latest-v1.json` reports `1.0.0` and references downloadable signed artifacts.
+  Legacy `latest.json` and `linux-binaries.json` still report `0.2.19`.
+- Verify the mirror and eligible beta pointer after synchronization, then
+  smoke-test installation and update using the published downloads.
 
 For release workflow and channel-isolation changes, run
 `pnpm run check:github-config` and

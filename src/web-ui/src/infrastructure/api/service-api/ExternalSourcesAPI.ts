@@ -1,4 +1,7 @@
+import { workspaceIdRequest } from './legacyWorkspaceCompatibility';
 import { api } from './ApiClient';
+import { getActiveSurfaceScope } from '@/infrastructure/peer-device/deviceSurface';
+import { notifyMcpConfigChanged } from '@/infrastructure/mcp/configEvents';
 import { globalEventBus } from '@/infrastructure/event-bus';
 
 export type ExternalSourceScope =
@@ -83,6 +86,7 @@ export type ExternalIntegrationPolicyMutation = {
   expectedPreferenceRevision: number;
   scope: 'user' | 'workspace';
   change:
+    | { operation: 'set_automatic_discovery'; enabled: boolean }
     | { operation: 'set_enabled'; enabled: boolean }
     | {
         operation: 'set_ecosystem_mode';
@@ -123,6 +127,16 @@ export interface ExternalSourceRecord {
 }
 
 export interface ExternalSourceCatalogSnapshot {
+  /** Present only on the negotiated catalog discovery endpoint. */
+  discovery?: {
+    enabled: boolean;
+    canChange: boolean;
+    hasScanned: boolean;
+    discoverableCapabilities?: Record<string, string[]>;
+    /** View-only retained results; never sent to the host as authorization. */
+    retainedKinds?: string[];
+    preferenceRevision: number;
+  };
   hostCapabilities: {
     canRefresh: boolean;
     canMutatePolicy: boolean;
@@ -1184,6 +1198,15 @@ export async function invokeExternalSourceCommand<T>(
   args: Record<string, unknown>,
 ): Promise<T> {
   try {
+    const request = args.request as Record<string, unknown> | undefined;
+    if (typeof request?.workspaceId === 'string') {
+      const { workspaceId, ...rest } = request;
+      const reference = await workspaceIdRequest(workspaceId, 'workspacePath');
+      // Old external-source DTOs reject extra SSH fields. Remote workspaces
+      // are unsupported by this local discovery surface on both versions.
+      const wire = 'workspaceId' in reference ? { workspaceId } : { workspacePath: reference.workspacePath };
+      args = { ...args, request: { ...rest, ...wire } };
+    }
     return await api.invoke<T>(command, args);
   } catch (error) {
     const parsed = parseOperationError(error);
@@ -1234,7 +1257,7 @@ async function invokeSnapshot(
     : {};
   return (await invokeCompatibleSurfaceSnapshot({
     request: {
-      workspacePath: request.workspacePath,
+      workspaceId: request.workspaceId,
       forceRefresh: false,
     },
   })).catalog;
@@ -1288,11 +1311,13 @@ async function invokeCompatibleSurfaceSnapshot(
   }
 }
 
-export function normalizeOptionalWorkspacePath(
-  workspacePath: string | undefined,
+export function normalizeOptionalWorkspaceId(
+  workspaceId: string | undefined,
 ): string | undefined {
-  const normalized = workspacePath?.trim();
-  return normalized || undefined;
+  if (workspaceId === undefined) return undefined;
+  const normalized = workspaceId.trim();
+  if (!normalized) throw new Error('Workspace identity is unresolved');
+  return normalized;
 }
 
 let operationSequence = 0;
@@ -1314,31 +1339,32 @@ function controlRequest(
   };
 }
 
-function emitExternalAgentCatalogUpdated(workspacePath?: string) {
+function emitExternalAgentCatalogUpdated(workspaceId?: string) {
   globalEventBus.emit('mode:config:updated', {
     reason: 'external-agent-catalog-updated',
-    workspacePath: normalizeOptionalWorkspacePath(workspacePath),
+    workspaceId: normalizeOptionalWorkspaceId(workspaceId),
   });
 }
 
 export const externalSourcesAPI = {
-  planMcpImport(workspacePath?: string) {
+  planMcpImport(workspaceId?: string) {
     return invokeExternalSourceCommand<ExternalMcpImportPlanV1>(
       'plan_external_mcp_import_command',
-      { request: { workspacePath: normalizeOptionalWorkspacePath(workspacePath) } },
+      { request: { workspaceId: normalizeOptionalWorkspaceId(workspaceId) } },
     );
   },
 
-  applyMcpImport(
-    workspacePath: string | undefined,
+  async applyMcpImport(
+    workspaceId: string | undefined,
     plan: ExternalMcpImportPlanV1,
     selections: ExternalMcpImportSelectionV1[],
   ) {
-    return invokeExternalSourceCommand<ExternalMcpImportApplyResultV1>(
+    const scope = getActiveSurfaceScope();
+    const result = await invokeExternalSourceCommand<ExternalMcpImportApplyResultV1>(
       'apply_external_mcp_import_command',
       {
         request: {
-          workspacePath: normalizeOptionalWorkspacePath(workspacePath),
+          workspaceId: normalizeOptionalWorkspaceId(workspaceId),
           importRequest: {
             schemaVersion: 1,
             planFingerprint: plan.planFingerprint,
@@ -1347,40 +1373,98 @@ export const externalSourcesAPI = {
         },
       },
     );
+    scope.assertCurrent('confirm MCP import');
+    if (result.outcome.status === 'applied') notifyMcpConfigChanged(scope);
+    return result;
   },
 
-  async getControlSnapshot(workspacePath?: string, forceRefresh = false) {
+  async getControlSnapshot(workspaceId?: string, forceRefresh = false) {
     return invokeCompatibleSurfaceSnapshot({
-      request: { workspacePath: normalizeOptionalWorkspacePath(workspacePath), forceRefresh },
+      request: { workspaceId: normalizeOptionalWorkspaceId(workspaceId), forceRefresh },
     });
   },
 
-  revealSourceLocation(workspacePath: string | undefined, sourceKey: string) {
+  revealSourceLocation(workspaceId: string | undefined, sourceKey: string) {
     return invokeExternalSourceCommand<void>('reveal_external_source_location', {
       request: {
-        workspacePath: normalizeOptionalWorkspacePath(workspacePath),
+        workspaceId: normalizeOptionalWorkspaceId(workspaceId),
         sourceKey,
       },
     });
   },
 
-  async getSnapshot(workspacePath?: string, forceRefresh = false) {
+  async getDiscoverySnapshot(workspaceId?: string, forceRefresh = false): Promise<ExternalSourceCatalogSnapshot> {
+    try {
+      const value = await invokeExternalSourceCommand<{
+        schemaVersion: number;
+        automaticDiscovery: boolean;
+        canChangeAutomaticDiscovery: boolean;
+        hasScanned: boolean;
+        discoverableCapabilities: Record<string, string[]>;
+        preferenceRevision: number;
+        catalog: unknown;
+      }>('get_external_source_discovery_snapshot', {
+        request: { workspaceId: normalizeOptionalWorkspaceId(workspaceId), forceRefresh },
+      });
+      if (!value || typeof value !== 'object') {
+        throw new ExternalSourceApiError('invalid_response', 'Invalid discovery snapshot', false);
+      }
+      if (value.schemaVersion !== 1) {
+        throw new ExternalSourceApiError('incompatible_version', 'Unsupported discovery snapshot version', false);
+      }
+      if (typeof value.automaticDiscovery !== 'boolean'
+        || typeof value.canChangeAutomaticDiscovery !== 'boolean' || typeof value.hasScanned !== 'boolean'
+        || !isNonNegativeInteger(value.preferenceRevision)
+        || !value.discoverableCapabilities || typeof value.discoverableCapabilities !== 'object'
+        || Array.isArray(value.discoverableCapabilities)
+        || !Object.values(value.discoverableCapabilities).every((ids) => Array.isArray(ids) && ids.every((id) => typeof id === 'string'))) {
+        throw new ExternalSourceApiError('invalid_response', 'Invalid discovery snapshot', false);
+      }
+      return {
+        ...normalizeSnapshot(value.catalog),
+        preferenceRevision: value.preferenceRevision,
+        discovery: {
+          enabled: value.automaticDiscovery,
+          canChange: value.canChangeAutomaticDiscovery,
+          hasScanned: value.hasScanned,
+          discoverableCapabilities: value.discoverableCapabilities,
+          preferenceRevision: value.preferenceRevision,
+        },
+      };
+    } catch (error) {
+      if (!(error instanceof ExternalSourceApiError) || error.code !== 'incompatible_version') throw error;
+      // Old hosts remain viewable, but never receive the new mutation.
+      return this.getSnapshot(workspaceId, forceRefresh);
+    }
+  },
+
+  async setAutomaticDiscovery(workspaceId: string | undefined, enabled: boolean, expectedPreferenceRevision: number) {
+    const path = normalizeOptionalWorkspaceId(workspaceId);
+    await invokeExternalSourceCommand('update_external_integration_policy_command', {
+      request: {
+        workspaceId: normalizeOptionalWorkspaceId(workspaceId),
+        mutation: { expectedPreferenceRevision, scope: path ? 'workspace' : 'user',
+          change: { operation: 'set_automatic_discovery', enabled } },
+      },
+    });
+    return this.getDiscoverySnapshot(workspaceId);
+  },
+
+  async getSnapshot(workspaceId?: string, forceRefresh = false) {
     return (await invokeCompatibleSurfaceSnapshot({
-      request: { workspacePath: normalizeOptionalWorkspacePath(workspacePath), forceRefresh },
+      request: { workspaceId: normalizeOptionalWorkspaceId(workspaceId), forceRefresh },
     })).catalog;
   },
 
   async getWorkspaceReferences(
-    workspacePath: string,
-    workspaceId?: string,
+    workspaceId: string,
     forceRefresh = false,
   ) {
     const snapshot = await invokeExternalSourceCommand<WorkspaceReferenceSnapshot>(
       'get_workspace_reference_snapshot',
       {
         request: {
-          workspacePath: normalizeOptionalWorkspacePath(workspacePath),
-          workspaceId: workspaceId?.trim() || undefined,
+          workspaceId: normalizeOptionalWorkspaceId(workspaceId),
           forceRefresh,
         },
       },
@@ -1395,7 +1479,7 @@ export const externalSourcesAPI = {
   },
 
   async expandPromptCommand(
-    workspacePath: string | undefined,
+    workspaceId: string | undefined,
     name: string,
     argumentsText: string,
     candidateId: string,
@@ -1411,7 +1495,7 @@ export const externalSourcesAPI = {
       'expand_external_prompt_command_command',
       {
         request: {
-          workspacePath: normalizeOptionalWorkspacePath(workspacePath),
+          workspaceId: normalizeOptionalWorkspaceId(workspaceId),
           name,
           arguments: argumentsText,
           nativeCommands,
@@ -1429,14 +1513,14 @@ export const externalSourcesAPI = {
   },
 
   getNativePromptCommandConflicts(
-    workspacePath: string | undefined,
+    workspaceId: string | undefined,
     nativeCommands: NativePromptCommandDescriptor[],
   ) {
     return invokeExternalSourceCommand<NativePromptCommandConflictSnapshot>(
       'get_native_prompt_command_conflicts_command',
       {
         request: {
-          workspacePath: normalizeOptionalWorkspacePath(workspacePath),
+          workspaceId: normalizeOptionalWorkspaceId(workspaceId),
           nativeCommands,
         },
       },
@@ -1444,7 +1528,7 @@ export const externalSourcesAPI = {
   },
 
   setNativePromptCommandConflictChoice(
-    workspacePath: string | undefined,
+    workspaceId: string | undefined,
     nativeCommands: NativePromptCommandDescriptor[],
     selectedCandidateId: string,
     expectedPreferenceRevision: number,
@@ -1453,7 +1537,7 @@ export const externalSourcesAPI = {
       'set_native_prompt_command_conflict_choice_command',
       {
         request: {
-          workspacePath: normalizeOptionalWorkspacePath(workspacePath),
+          workspaceId: normalizeOptionalWorkspaceId(workspaceId),
           nativeCommands,
           selectedCandidateId,
           expectedPreferenceRevision,
@@ -1463,23 +1547,23 @@ export const externalSourcesAPI = {
   },
 
   async setSourceEnabled(
-    workspacePath: string | undefined,
+    workspaceId: string | undefined,
     sourceKey: string,
     enabled: boolean,
     expectedPreferenceRevision: number,
   ) {
-    const normalizedWorkspacePath = normalizeOptionalWorkspacePath(workspacePath);
+    const normalizedWorkspaceId = normalizeOptionalWorkspaceId(workspaceId);
     try {
       const surface = await invokeSurfaceSnapshot('apply_external_source_control_action_command', {
         request: {
-          workspacePath: normalizedWorkspacePath,
+          workspaceId: normalizedWorkspaceId,
           control: controlRequest(
             { type: 'set_source_enabled', sourceKey, enabled },
             expectedPreferenceRevision,
           ),
         },
       });
-      emitExternalAgentCatalogUpdated(workspacePath);
+      emitExternalAgentCatalogUpdated(workspaceId);
       return surface.catalog;
     } catch (error) {
       if (!(error instanceof ExternalSourceApiError) || error.code !== 'incompatible_version') {
@@ -1487,25 +1571,25 @@ export const externalSourcesAPI = {
       }
       const catalog = await invokeSnapshot('set_external_source_enabled_command', {
         request: {
-          workspacePath: normalizedWorkspacePath,
+          workspaceId: normalizedWorkspaceId,
           sourceKey,
           enabled,
           expectedPreferenceRevision,
         },
       });
-      emitExternalAgentCatalogUpdated(workspacePath);
+      emitExternalAgentCatalogUpdated(workspaceId);
       return catalog;
     }
   },
 
   async setSafeMode(
-    workspacePath: string | undefined,
+    workspaceId: string | undefined,
     enabled: boolean,
     expectedPreferenceRevision: number,
   ) {
     const surface = await invokeSurfaceSnapshot('apply_external_source_control_action_command', {
       request: {
-        workspacePath: normalizeOptionalWorkspacePath(workspacePath),
+        workspaceId: normalizeOptionalWorkspaceId(workspaceId),
         control: controlRequest(
           { type: 'set_safe_mode', enabled },
           expectedPreferenceRevision,
@@ -1516,14 +1600,14 @@ export const externalSourcesAPI = {
   },
 
   setConflictChoice(
-    workspacePath: string | undefined,
+    workspaceId: string | undefined,
     conflictKey: string,
     candidateId: string,
     expectedPreferenceRevision: number,
   ) {
     return invokeSnapshot('set_external_source_conflict_choice_command', {
       request: {
-        workspacePath: normalizeOptionalWorkspacePath(workspacePath),
+        workspaceId: normalizeOptionalWorkspaceId(workspaceId),
         conflictKey,
         candidateId,
         expectedPreferenceRevision,
@@ -1532,7 +1616,7 @@ export const externalSourcesAPI = {
   },
 
   setToolTargetDecision(
-    workspacePath: string | undefined,
+    workspaceId: string | undefined,
     approvalKey: string,
     decisionKey: string,
     approved: boolean,
@@ -1540,7 +1624,7 @@ export const externalSourcesAPI = {
   ) {
     return invokeSnapshot('set_external_tool_target_decision_command', {
       request: {
-        workspacePath: normalizeOptionalWorkspacePath(workspacePath),
+        workspaceId: normalizeOptionalWorkspaceId(workspaceId),
         approvalKey,
         decisionKey,
         approved,
@@ -1550,7 +1634,7 @@ export const externalSourcesAPI = {
   },
 
   setToolTargetsEnabled(
-    workspacePath: string | undefined,
+    workspaceId: string | undefined,
     decisions: Array<{ approvalKey: string; decisionKey: string }>,
     enabled: boolean,
     expectedCatalogGeneration: number,
@@ -1558,7 +1642,7 @@ export const externalSourcesAPI = {
   ) {
     return invokeSnapshot('set_external_tool_targets_enabled_command', {
       request: {
-        workspacePath: normalizeOptionalWorkspacePath(workspacePath),
+        workspaceId: normalizeOptionalWorkspaceId(workspaceId),
         decisions,
         enabled,
         expectedCatalogGeneration,
@@ -1568,14 +1652,14 @@ export const externalSourcesAPI = {
   },
 
   setToolConflictChoice(
-    workspacePath: string | undefined,
+    workspaceId: string | undefined,
     conflictKey: string,
     candidateId: string,
     expectedPreferenceRevision: number,
   ) {
     return invokeSnapshot('set_external_tool_conflict_choice_command', {
       request: {
-        workspacePath: normalizeOptionalWorkspacePath(workspacePath),
+        workspaceId: normalizeOptionalWorkspaceId(workspaceId),
         conflictKey,
         candidateId,
         expectedPreferenceRevision,
@@ -1584,7 +1668,7 @@ export const externalSourcesAPI = {
   },
 
   async setSubagentActivation(
-    workspacePath: string | undefined,
+    workspaceId: string | undefined,
     candidateId: string,
     approved: boolean,
     expectedSubagentGeneration: number,
@@ -1593,7 +1677,7 @@ export const externalSourcesAPI = {
   ) {
     const catalog = await invokeSnapshot('set_external_subagent_activation_command', {
       request: {
-        workspacePath: normalizeOptionalWorkspacePath(workspacePath),
+        workspaceId: normalizeOptionalWorkspaceId(workspaceId),
         candidateId,
         approved,
         expectedSubagentGeneration,
@@ -1601,12 +1685,12 @@ export const externalSourcesAPI = {
         decisionKey,
       },
     });
-    emitExternalAgentCatalogUpdated(workspacePath);
+    emitExternalAgentCatalogUpdated(workspaceId);
     return catalog;
   },
 
   async setSubagentsEnabled(
-    workspacePath: string | undefined,
+    workspaceId: string | undefined,
     decisions: Array<{ candidateId: string; decisionKey: string }>,
     enabled: boolean,
     expectedSubagentGeneration: number,
@@ -1614,19 +1698,19 @@ export const externalSourcesAPI = {
   ) {
     const catalog = await invokeSnapshot('set_external_subagents_enabled_command', {
       request: {
-        workspacePath: normalizeOptionalWorkspacePath(workspacePath),
+        workspaceId: normalizeOptionalWorkspaceId(workspaceId),
         decisions,
         enabled,
         expectedSubagentGeneration,
         expectedPreferenceRevision,
       },
     });
-    emitExternalAgentCatalogUpdated(workspacePath);
+    emitExternalAgentCatalogUpdated(workspaceId);
     return catalog;
   },
 
   async setSubagentModelBinding(
-    workspacePath: string | undefined,
+    workspaceId: string | undefined,
     bindingKey: string,
     target: ExternalSubagentModelBindingTarget | undefined,
     expectedSubagentGeneration: number,
@@ -1634,19 +1718,19 @@ export const externalSourcesAPI = {
   ) {
     const catalog = await invokeSnapshot('set_external_subagent_model_binding_command', {
       request: {
-        workspacePath: normalizeOptionalWorkspacePath(workspacePath),
+        workspaceId: normalizeOptionalWorkspaceId(workspaceId),
         bindingKey,
         target,
         expectedSubagentGeneration,
         expectedPreferenceRevision,
       },
     });
-    emitExternalAgentCatalogUpdated(workspacePath);
+    emitExternalAgentCatalogUpdated(workspaceId);
     return catalog;
   },
 
   async chooseSubagentConflict(
-    workspacePath: string | undefined,
+    workspaceId: string | undefined,
     conflictKey: string,
     candidateId: string,
     approveExternal: boolean,
@@ -1655,7 +1739,7 @@ export const externalSourcesAPI = {
   ) {
     const catalog = await invokeSnapshot('choose_external_subagent_conflict_command', {
       request: {
-        workspacePath: normalizeOptionalWorkspacePath(workspacePath),
+        workspaceId: normalizeOptionalWorkspaceId(workspaceId),
         conflictKey,
         candidateId,
         approveExternal,
@@ -1663,12 +1747,12 @@ export const externalSourcesAPI = {
         expectedPreferenceRevision,
       },
     });
-    emitExternalAgentCatalogUpdated(workspacePath);
+    emitExternalAgentCatalogUpdated(workspaceId);
     return catalog;
   },
 
   setMcpServerDecision(
-    workspacePath: string | undefined,
+    workspaceId: string | undefined,
     candidateId: string,
     decisionKey: string,
     approved: boolean,
@@ -1677,7 +1761,7 @@ export const externalSourcesAPI = {
   ) {
     return invokeSnapshot('set_external_mcp_server_decision_command', {
       request: {
-        workspacePath: normalizeOptionalWorkspacePath(workspacePath),
+        workspaceId: normalizeOptionalWorkspaceId(workspaceId),
         candidateId,
         decisionKey,
         approved,
@@ -1688,7 +1772,7 @@ export const externalSourcesAPI = {
   },
 
   setMcpServersEnabled(
-    workspacePath: string | undefined,
+    workspaceId: string | undefined,
     decisions: Array<{ candidateId: string; decisionKey: string }>,
     enabled: boolean,
     expectedMcpGeneration: number,
@@ -1696,7 +1780,7 @@ export const externalSourcesAPI = {
   ) {
     return invokeSnapshot('set_external_mcp_servers_enabled_command', {
       request: {
-        workspacePath: normalizeOptionalWorkspacePath(workspacePath),
+        workspaceId: normalizeOptionalWorkspaceId(workspaceId),
         decisions,
         enabled,
         expectedMcpGeneration,
@@ -1706,7 +1790,7 @@ export const externalSourcesAPI = {
   },
 
   chooseMcpConflict(
-    workspacePath: string | undefined,
+    workspaceId: string | undefined,
     conflictKey: string,
     candidateId: string,
     approveExternal: boolean,
@@ -1715,7 +1799,7 @@ export const externalSourcesAPI = {
   ) {
     return invokeSnapshot('choose_external_mcp_conflict_command', {
       request: {
-        workspacePath: normalizeOptionalWorkspacePath(workspacePath),
+        workspaceId: normalizeOptionalWorkspaceId(workspaceId),
         conflictKey,
         candidateId,
         approveExternal,
@@ -1726,14 +1810,14 @@ export const externalSourcesAPI = {
   },
 
   async updateIntegrationPolicy(
-    workspacePath: string | undefined,
+    workspaceId: string | undefined,
     mutation: ExternalIntegrationPolicyMutation,
   ) {
     const catalog = await invokeSnapshot(
       'update_external_integration_policy_command',
-      { request: { workspacePath: normalizeOptionalWorkspacePath(workspacePath), mutation } },
+      { request: { workspaceId: normalizeOptionalWorkspaceId(workspaceId), mutation } },
     );
-    emitExternalAgentCatalogUpdated(workspacePath);
+    emitExternalAgentCatalogUpdated(workspaceId);
     return catalog;
   },
 
@@ -1742,21 +1826,21 @@ export const externalSourcesAPI = {
    * about. The host owns this derivation so the desktop and the TUI cannot
    * disagree about what counts as new.
    */
-  async getEcosystemAwareness(workspacePath?: string): Promise<string[]> {
+  async getEcosystemAwareness(workspaceId?: string): Promise<string[]> {
     const response = await invokeExternalSourceCommand<{
       unacknowledgedEcosystemIds?: unknown;
     }>('get_external_ecosystem_awareness_command', {
-      request: { workspacePath: normalizeOptionalWorkspacePath(workspacePath) },
+      request: { workspaceId: normalizeOptionalWorkspaceId(workspaceId) },
     });
     return normalizeOptionalArray<string>(response.unacknowledgedEcosystemIds)
       .filter((ecosystemId): ecosystemId is string => typeof ecosystemId === 'string');
   },
 
   /** Clears the "new external application" hint for these ecosystems. */
-  acknowledgeEcosystems(workspacePath: string | undefined, ecosystemIds: string[]) {
+  acknowledgeEcosystems(workspaceId: string | undefined, ecosystemIds: string[]) {
     return invokeExternalSourceCommand<void>('acknowledge_external_ecosystems_command', {
       request: {
-        workspacePath: normalizeOptionalWorkspacePath(workspacePath),
+        workspaceId: normalizeOptionalWorkspaceId(workspaceId),
         ecosystemIds,
       },
     });

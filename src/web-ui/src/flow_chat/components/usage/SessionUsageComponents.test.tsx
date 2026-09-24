@@ -6,6 +6,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import type { SessionUsageReport } from '@/infrastructure/api/service-api/SessionAPI';
+import { AppearanceCompiler } from '@/infrastructure/appearance/compiler/AppearanceCompiler';
+import { AppearanceRegistry } from '@/infrastructure/appearance/registry/AppearanceRegistry';
+import { APPEARANCE_SCHEMA_VERSION, type AppearancePackage } from '@/infrastructure/appearance/types';
 import { globalEventBus } from '@/infrastructure/event-bus';
 import enFlowChat from '@/locales/en-US/flow-chat.json';
 import zhCnFlowChat from '@/locales/zh-CN/flow-chat.json';
@@ -14,8 +17,11 @@ import {
   FLOWCHAT_FOCUS_ITEM_EVENT,
   type FlowChatFocusItemRequest,
 } from '../../events/flowchatNavigation';
+import { flowChatStore } from '../../store/FlowChatStore';
+import type { FlowChatState, Session } from '../../types/flow-chat';
 import { SessionRuntimeStatusEntry } from './SessionRuntimeStatusEntry';
 import { SessionUsagePanel } from './SessionUsagePanel';
+import { sessionUsagePanelAppearanceDescriptor } from './appearance';
 import { SessionUsageReportCard } from './SessionUsageReportCard';
 import { USAGE_EXPORT_REDACT_PATHS_STORAGE_KEY } from './usageReportUtils';
 
@@ -842,7 +848,7 @@ describe('Session usage report UI components', () => {
     expect(refWarnings).toEqual([]);
   });
 
-  it('syncs path redaction between the chat card and detail panel', () => {
+  it('syncs path redaction between the chat card and detail panel', async () => {
     const report = usageReport({
       workspace: {
         kind: 'local',
@@ -869,10 +875,10 @@ describe('Session usage report UI components', () => {
 
     render(
       <>
-        <SessionUsageReportCard report={report} markdown="## Session Usage" />
+        <SessionUsageReportCard report={report} markdown="## Session Usage: D:/workspace/openbitfun/src/private/secret.ts" />
         <SessionUsagePanel
           report={report}
-          markdown="## Session Usage"
+          markdown="## Session Usage: D:/workspace/openbitfun/src/private/secret.ts"
           sessionId="session-1"
           workspacePath="D:/workspace/openbitfun"
           initialTab="files"
@@ -885,15 +891,25 @@ describe('Session usage report UI components', () => {
     ));
     expect(redactionInputs).toHaveLength(2);
     expect(redactionInputs.every(input => input.checked)).toBe(true);
+    expect(redactionInputs.every(input => input.labels?.length === 1)).toBe(true);
+    expect(redactionInputs.every(input => input.closest('label')?.getAttribute('data-appearance') === 'native')).toBe(true);
     expect(container.textContent).toContain('[redacted path]');
     expect(container.textContent).toContain('secret.ts');
     expect(container.textContent).not.toContain('D:/workspace/openbitfun');
     expect(container.textContent).not.toContain('src/private/secret.ts');
     expect(container.querySelector('[data-tooltip="[redacted path]/secret.ts"]')).not.toBeNull();
 
+    const copy = container.querySelector<HTMLButtonElement>('.session-usage-report-card button[aria-label="Copy Markdown"]');
+    expect(copy).not.toBeNull();
+    await act(async () => copy?.click());
+    expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith('## Session Usage: [redacted path]/[redacted path]/secret.ts');
+
+    const preferenceWrite = vi.spyOn(dom.window.Storage.prototype, 'setItem');
     act(() => {
-      redactionInputs[0]?.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+      redactionInputs[0]?.labels?.[0].click();
     });
+    expect(preferenceWrite).toHaveBeenCalledTimes(1);
+    expect(preferenceWrite).toHaveBeenLastCalledWith(USAGE_EXPORT_REDACT_PATHS_STORAGE_KEY, 'false');
 
     const updatedInputs = Array.from(container.querySelectorAll<HTMLInputElement>(
       `input[aria-label="Redact paths"]`
@@ -901,6 +917,13 @@ describe('Session usage report UI components', () => {
     expect(updatedInputs.every(input => input.checked)).toBe(false);
     expect(container.textContent).toContain('D:/workspace/openbitfun');
     expect(container.querySelector('[data-tooltip="src/private/secret.ts"]')).not.toBeNull();
+    await act(async () => copy?.click());
+    expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith('## Session Usage: D:/workspace/openbitfun/src/private/secret.ts');
+    act(() => updatedInputs[1]?.labels?.[0].click());
+    expect(updatedInputs.every(input => input.checked)).toBe(true);
+    expect(preferenceWrite).toHaveBeenCalledTimes(2);
+    expect(preferenceWrite).toHaveBeenLastCalledWith(USAGE_EXPORT_REDACT_PATHS_STORAGE_KEY, 'true');
+    preferenceWrite.mockRestore();
   });
 
   it('does not append a token unit when chat card model tokens are unavailable', () => {
@@ -1098,6 +1121,67 @@ describe('Session usage report UI components', () => {
     const errorsTab = container.querySelector<HTMLButtonElement>('#session-usage-tab-errors');
     expect(errorsTab?.getAttribute('aria-selected')).toBe('true');
     expect(dom.window.document.activeElement).toBe(errorsTab);
+
+    for (const [key, expected] of [
+      ['Home', 'overview'], ['ArrowLeft', 'slowest'], ['ArrowRight', 'overview'], ['End', 'slowest'],
+    ]) {
+      const event = new dom.window.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+      act(() => dom.window.document.activeElement?.dispatchEvent(event));
+      expect(event.defaultPrevented).toBe(true);
+      expect(dom.window.document.activeElement?.id).toBe(`session-usage-tab-${expected}`);
+      expect(container.querySelectorAll('[role="tab"][tabindex="0"]')).toHaveLength(1);
+      expect(container.querySelector('[role="tabpanel"]')?.getAttribute('aria-labelledby'))
+        .toBe(`session-usage-tab-${expected}`);
+    }
+  });
+
+  it('preserves initial-tab updates and saved appearance selectors on the native tabs', () => {
+    const legacyPackage: AppearancePackage = {
+      schema: 'openbitfun.appearance', schemaVersion: APPEARANCE_SCHEMA_VERSION,
+      id: 'test.usage-tabs', name: 'Usage tabs', version: '1.0.0', mode: 'dark',
+      components: { 'session-usage-panel': { parts: { tab: { contexts: [{
+        when: { facets: { tab: 'models' }, states: ['active'] },
+        style: { opacity: { kind: 'number', value: 0.6 } },
+      }] } } } },
+    };
+    const serialized = JSON.stringify(legacyPackage);
+    const restored = JSON.parse(serialized) as AppearancePackage;
+    const registry = new AppearanceRegistry().registerComponent(sessionUsagePanelAppearanceDescriptor);
+    const snapshot = new AppearanceCompiler(registry).compile(restored, 1);
+    expect(JSON.stringify(restored)).toBe(serialized);
+    document.documentElement.setAttribute('data-openbitfun-appearance', snapshot.id);
+    document.documentElement.setAttribute('data-openbitfun-appearance-revision', String(snapshot.revision));
+    const style = document.createElement('style');
+    style.textContent = snapshot.cssText;
+    document.head.appendChild(style);
+    const rule = Array.from(style.sheet!.cssRules).find(candidate =>
+      candidate instanceof dom.window.CSSStyleRule && candidate.style.opacity === '0.6',
+    ) as CSSStyleRule | undefined;
+    expect(rule).toBeDefined();
+
+    const report = usageReport();
+    render(<SessionUsagePanel report={report} initialTab="models" />);
+    const modelsTab = container.querySelector('#session-usage-tab-models');
+    expect(container.querySelector('[role="tablist"]')?.getAttribute('data-openbitfun-component')).toBe('tab-group');
+    expect(modelsTab?.getAttribute('data-openbitfun-part')).toBe('tab');
+    expect(document.querySelector(rule!.selectorText)).toBe(modelsTab);
+    render(<SessionUsagePanel report={report} initialTab="files" />);
+    expect(document.querySelector(rule!.selectorText)).toBeNull();
+    expect(container.querySelector('[role="tabpanel"]')?.id).toBe('session-usage-panel-files');
+    act(() => modelsTab?.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })));
+    expect(document.querySelector(rule!.selectorText)).toBe(modelsTab);
+  });
+
+  it('follows the shared tab direction in RTL layouts', () => {
+    render(<SessionUsagePanel report={usageReport()} />);
+    container.querySelectorAll<HTMLElement>('[role="tab"]').forEach(tab => { tab.style.direction = 'rtl'; });
+    const overviewTab = container.querySelector<HTMLButtonElement>('#session-usage-tab-overview')!;
+    act(() => {
+      overviewTab.focus();
+      overviewTab.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+    });
+    expect(dom.window.document.activeElement?.id).toBe('session-usage-tab-slowest');
+    expect(container.querySelector('#session-usage-tab-slowest')?.getAttribute('aria-selected')).toBe('true');
   });
 
   it('caps long usage tables and allows explicit expansion', () => {
@@ -1133,6 +1217,8 @@ describe('Session usage report UI components', () => {
 
     expect(container.querySelectorAll('tbody tr')).toHaveLength(55);
     expect(container.textContent).toContain('Tool 55');
+    act(() => toolsTab?.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true })));
+    expect(container.querySelectorAll('tbody tr')).toHaveLength(55);
   });
 
   it('links model tool and error aggregate rows to representative transcript anchors', () => {
@@ -1448,6 +1534,23 @@ describe('Session usage report UI components', () => {
   });
 
   it('opens snapshot-backed file diffs from the detail panel', async () => {
+    // Snapshot IO is routed by the session's workspace ID; the path is only the operand.
+    flowChatStore.setState((): FlowChatState => ({
+      sessions: new Map([['session-1', {
+        sessionId: 'session-1',
+        title: 'Session 1',
+        dialogTurns: [],
+        status: 'idle',
+        config: { agentType: 'Standard' },
+        createdAt: 1,
+        lastActiveAt: 1,
+        error: null,
+        sessionKind: 'normal',
+        workspaceId: 'workspace-1',
+        workspacePath: 'D:/workspace/openbitfun',
+      } as Session]]),
+      activeSessionId: 'session-1',
+    }));
     snapshotApiMocks.getOperationDiff.mockResolvedValue({
       filePath: 'D:/workspace/openbitfun/src/main.rs',
       originalContent: 'before',
@@ -1500,7 +1603,6 @@ describe('Session usage report UI components', () => {
       'session-1',
       'D:/workspace/openbitfun/src/main.rs',
       'operation-1',
-      'D:/workspace/openbitfun',
     );
     expect(tabUtilsMocks.createDiffEditorTab).toHaveBeenCalledWith(
       'D:/workspace/openbitfun/src/main.rs',
@@ -1515,8 +1617,10 @@ describe('Session usage report UI components', () => {
       {
         titleKind: 'diff',
         duplicateKeyPrefix: 'diff',
+        workspaceId: 'workspace-1',
       },
     );
+    flowChatStore.setState((): FlowChatState => ({ sessions: new Map(), activeSessionId: null }));
   });
 
   it('shows slowest spans in the detail panel', () => {

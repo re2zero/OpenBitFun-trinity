@@ -32,7 +32,7 @@ export const Empty = forwardRef<HTMLDivElement, EmptyProps>(function Empty({
   title,
   ...props
 }, ref) {
-  const media = icon ?? image ?? <Icon name="folder" size="lg" tone="muted" />;
+  const media = icon ?? image ?? <Icon name="folder" />;
   const footer = actions ?? children;
 
   return (
@@ -45,6 +45,7 @@ export const Empty = forwardRef<HTMLDivElement, EmptyProps>(function Empty({
     >
       <div
         className={styles.media}
+        data-openbitfun-icon-slot="true"
         data-openbitfun-part="media"
         data-size={imageSize}
       >

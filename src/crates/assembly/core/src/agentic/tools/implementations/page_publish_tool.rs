@@ -3,8 +3,8 @@
 
 use std::collections::HashMap;
 
-use crate::agentic::tools::account_login_capability::account_login_available;
 use crate::agentic::tools::framework::{PermissionIntent, Tool, ToolResult, ToolUseContext};
+use crate::agentic::tools::page_publish_host::page_account_available;
 use crate::agentic::tools::page_publish_host::{invoke_page_publish, PagePublishHostRequest};
 use crate::util::errors::{OpenBitFunError, OpenBitFunResult};
 use async_trait::async_trait;
@@ -163,7 +163,7 @@ Use PageDeploy only to switch an already-saved version_id (rollback / promote a 
     }
 
     async fn is_available_in_context(&self, _context: Option<&ToolUseContext>) -> bool {
-        account_login_available()
+        page_account_available().await
     }
 
     async fn call_impl(
@@ -171,7 +171,7 @@ Use PageDeploy only to switch an already-saved version_id (rollback / promote a 
         input: &Value,
         context: &ToolUseContext,
     ) -> OpenBitFunResult<Vec<ToolResult>> {
-        if !account_login_available() {
+        if !page_account_available().await {
             return Err(OpenBitFunError::tool(
                 "PagePublish requires a logged-in GitHub account".to_string(),
             ));
@@ -494,6 +494,7 @@ mod tests {
             "connection-1".to_string(),
             "Remote".to_string(),
             crate::service::remote_ssh::workspace_state::WorkspaceSessionIdentity {
+                workspace_kind: openbitfun_core_types::WorkspaceKind::Remote,
                 hostname: "remote.example".to_string(),
                 logical_workspace_path: "/srv/page".to_string(),
                 remote_connection_id: Some("connection-1".to_string()),

@@ -15,7 +15,7 @@ use tokio::sync::Semaphore;
 
 const BODY_MEMORY_BUDGET: usize = 512 * 1024 * 1024;
 const MAX_REQUESTS: usize = 2048;
-const MAX_RPC_BODY: usize = 48 * 1024 * 1024 + 64 * 1024;
+const MAX_API_BODY: usize = 48 * 1024 * 1024 + 64 * 1024;
 
 pub(crate) async fn admit(
     State(state): State<AppState>,
@@ -23,6 +23,18 @@ pub(crate) async fn admit(
     next: Next,
 ) -> Response {
     let path = request.uri().path();
+    // A retired version answers before anything else, including authentication:
+    // the client must learn that it has to update, not that its token expired.
+    // Static content stays served, so the page that explains the update loads.
+    if crate::retired_version::is_retired_request(path, request.headers()) {
+        return crate::retired_version::gone_response();
+    }
+    // Relay-stored session history is retired. Answer before authentication or
+    // body buffering: an older host retrying a multi-megabyte upload costs the
+    // relay nothing, and the reason is explicit rather than a quota error.
+    if crate::realtime::retired_session_history::is_retired_path(path) {
+        return crate::realtime::retired_session_history::gone_response();
+    }
     if !path.starts_with("/api/") {
         return next.run(request).await;
     }
@@ -62,7 +74,7 @@ pub(crate) async fn admit(
         let maximum = if path.starts_with("/api/auth/") {
             16 * 1024
         } else {
-            MAX_RPC_BODY
+            MAX_API_BODY
         };
         let declared = request
             .headers()
@@ -139,7 +151,7 @@ mod tests {
         >());
         let request = Request::builder()
             .method("POST")
-            .uri("/api/devices/desktop/rpc")
+            .uri("/v1/rpc/payloads")
             .body(body)
             .unwrap();
         let response =
@@ -148,6 +160,28 @@ mod tests {
                 .unwrap()
                 .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
+    }
+
+    #[tokio::test]
+    async fn retired_history_routes_are_answered_before_reading_unbounded_body() {
+        for path in ["/v1/sessions", "/v3/sessions/session/messages"] {
+            let body = Body::from_stream(futures_util::stream::pending::<
+                Result<axum::body::Bytes, std::io::Error>,
+            >());
+            let request = Request::builder()
+                .method("POST")
+                .uri(path)
+                .body(body)
+                .unwrap();
+            let response =
+                tokio::time::timeout(Duration::from_secs(1), router().await.oneshot(request))
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(response.status(), StatusCode::GONE);
+            assert_eq!(response.headers().get("cache-control").unwrap(), "no-store");
+        }
     }
 
     #[tokio::test]

@@ -1,7 +1,6 @@
 package com.openbitfun.mobile.core.feature.session
 
 import com.openbitfun.mobile.core.feature.connection.ConnectionPhase
-import com.openbitfun.mobile.core.feature.connection.ConnectionStatusPresenter
 
 /**
  * When the composer's two primary actions are available.
@@ -11,11 +10,13 @@ import com.openbitfun.mobile.core.feature.connection.ConnectionStatusPresenter
  * rejects the rest, and a rejection after the fact reads as a lost message.
  */
 public object ChatComposerPolicy {
+    public fun canStop(streaming: Boolean, requiresRemoteConnection: Boolean, phase: ConnectionPhase): Boolean =
+        streaming && (!requiresRemoteConnection || phase == ConnectionPhase.CONNECTED)
+
     /**
-     * Send needs something to send, a quiet turn, and — for a remote session —
-     * a reachable desktop. Reconnecting counts as reachable: a send during a
-     * blip queues rather than bouncing the user back to the connect screen,
-     * matching [ConnectionStatusPresenter.canReachSessions].
+     * Send needs something to send, no command in flight, and — for a remote session —
+     * a connected desktop. Navigation may retain an offline session, but that
+     * does not authorize commands against its last-known execution state.
      */
     public fun canSend(
         text: String,
@@ -26,7 +27,7 @@ public object ChatComposerPolicy {
     ): Boolean {
         val hasContent = text.trim().isNotEmpty() || attachmentCount > 0
         val remoteAvailable =
-            !requiresRemoteConnection || ConnectionStatusPresenter.canReachSessions(phase)
+            !requiresRemoteConnection || phase == ConnectionPhase.CONNECTED
         return hasContent && !busy && remoteAvailable
     }
 
@@ -44,8 +45,8 @@ public object ChatComposerPolicy {
      *
      * The composer has a single primary slot rather than a row of buttons, so
      * "which action" is a decision and not a layout detail — and it is the same
-     * decision on both clients. Ordering matters: a running turn outranks
-     * everything, because stopping it is the only control the user still has.
+     * decision on both clients. A remote draft can steer or queue behind a running
+     * turn; with no draft the same slot remains the stop control.
      */
     public fun primaryAction(
         text: String,
@@ -56,7 +57,7 @@ public object ChatComposerPolicy {
         phase: ConnectionPhase,
         showVoiceInput: Boolean,
     ): ComposerPrimaryAction {
-        if (streaming) return ComposerPrimaryAction.STOP
+        if (streaming && (!requiresRemoteConnection || (text.isBlank() && attachmentCount == 0))) return ComposerPrimaryAction.STOP
         if (text.trim().isNotEmpty() || attachmentCount > 0) {
             val sendable = canSend(text, attachmentCount, busy, requiresRemoteConnection, phase)
             return if (sendable) ComposerPrimaryAction.SEND else ComposerPrimaryAction.SEND_BLOCKED

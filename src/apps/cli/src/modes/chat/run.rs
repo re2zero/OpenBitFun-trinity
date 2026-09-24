@@ -117,6 +117,7 @@ fn context_compression_tool_event(
             ..
         } => Some(ToolEventData::Failed {
             identity: ToolEventIdentity::direct(compression_id, "ContextCompression"),
+            error_detail: None,
             error: error.clone(),
             duration_ms: None,
             queue_wait_ms: None,
@@ -472,15 +473,15 @@ impl ChatMode {
             )));
         }
         let (initial_external_sources, updates) = tokio::task::block_in_place(|| {
-            let workspace = std::path::PathBuf::from(self.agent.workspace_path_string());
+            let workspace = self.agent.workspace_id();
             let updates = if self.agent.is_remote_workspace() {
                 None
             } else {
                 rt_handle
                     .block_on(
-                        openbitfun_core::external_sources::subscribe_external_source_updates(Some(
-                            &workspace,
-                        )),
+                        openbitfun_core::external_sources::subscribe_external_source_updates(
+                            workspace.as_deref(),
+                        ),
                     )
                     .ok()
             };
@@ -494,7 +495,7 @@ impl ChatMode {
                     );
                 }
                 let snapshot = openbitfun_core::external_sources::external_source_snapshot(
-                    Some(&workspace),
+                    workspace.as_deref(),
                     false,
                 )
                 .await
@@ -590,7 +591,7 @@ impl ChatMode {
                     "The restored session uses fallback settings. Review them, then send the preserved input explicitly."
                         .to_string(),
                 ));
-            } else if draft.text.starts_with('/') {
+            } else if is_local_slash_command(&draft.text) {
                 // Slash commands will be handled in the main loop
                 chat_view.set_draft(draft);
             } else {

@@ -1,3 +1,10 @@
+import { HistoryScrollPreview } from './HistoryScrollPreview';
+import { ComposerSubmissionPreview } from './ComposerSubmissionPreview';
+import { DurableTimelinePreview } from './DurableTimelinePreview';
+import { DeviceSelectorPreview } from './DeviceSelectorPreview';
+import { CatalogRefreshPreview } from './CatalogRefreshPreview';
+import { WelcomeHome } from '../components/WelcomeHome';
+import { InteractionMailboxPreview } from './InteractionMailboxPreview';
 import { MobileDesignGeometry, MobileDesignTypography } from '../../generated/MobileDesignTokens';
 import {
   MobilePreviewMessage,
@@ -30,6 +37,27 @@ struct MobileDesignGallery {
   }
 
   build() {
+    if (AppStorage.get<string>('scenarioId') === 'history-scroll') {
+      HistoryScrollPreview()
+    } else if (AppStorage.get<string>('scenarioId') === 'durable-timeline') {
+      DurableTimelinePreview()
+    } else if (AppStorage.get<string>('scenarioId') === 'composer-submit') {
+      ComposerSubmissionPreview()
+    } else if ((AppStorage.get<string>('scenarioId') || '').startsWith('catalog-refresh')) {
+      CatalogRefreshPreview()
+    } else if ((AppStorage.get<string>('scenarioId') || '').startsWith('device-selector')) {
+      DeviceSelectorPreview()
+    } else if (AppStorage.get<string>('scenarioId') === 'welcome-home') {
+      WelcomeHome()
+    } else if ((AppStorage.get<string>('scenarioId') || '').startsWith('interaction-mailbox')) {
+      InteractionMailboxPreview()
+    } else {
+      this.ConversationPreview()
+    }
+  }
+
+  @Builder
+  private ConversationPreview() {
     Column() {
       this.PlatformLabel()
       ConversationHeader({

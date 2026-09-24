@@ -1,10 +1,5 @@
 import React from 'react';
-import { Icon, type IconName, type IconSource } from '@openbitfun/ui';
-import codingFootprintIcon from '@/assets/miniapps/catalog/coding-footprint.png';
-import dailyDivinationIcon from '@/assets/miniapps/catalog/daily-divination.png';
-import gomokuIcon from '@/assets/miniapps/catalog/gomoku.png';
-import pptLiveIcon from '@/assets/miniapps/catalog/ppt-live.png';
-import regexPlaygroundIcon from '@/assets/miniapps/catalog/regex-playground.png';
+import { Icon, type IconName, type IconSize, type IconSource } from '@openbitfun/ui';
 import codingFootprintShowcase from '@/assets/miniapps/showcases/coding-footprint.webp';
 import dailyDivinationShowcase from '@/assets/miniapps/showcases/daily-divination.webp';
 import gomokuShowcase from '@/assets/miniapps/showcases/gomoku.webp';
@@ -63,14 +58,6 @@ const MINI_APP_ICONS = {
   Wrench,
 } satisfies Record<string, LucideIcon>;
 
-const BUILTIN_MINI_APP_ICON_ASSETS: Readonly<Record<string, string>> = {
-  'builtin-coding-selfie': codingFootprintIcon,
-  'builtin-daily-divination': dailyDivinationIcon,
-  'builtin-gomoku': gomokuIcon,
-  'builtin-ppt-live': pptLiveIcon,
-  'builtin-regex-playground': regexPlaygroundIcon,
-};
-
 const BUILTIN_MINI_APP_SHOWCASE_ASSETS: Readonly<Record<string, string>> = {
   'builtin-coding-selfie': codingFootprintShowcase,
   'builtin-daily-divination': dailyDivinationShowcase,
@@ -79,15 +66,11 @@ const BUILTIN_MINI_APP_SHOWCASE_ASSETS: Readonly<Record<string, string>> = {
   'builtin-regex-playground': regexPlaygroundShowcase,
 };
 
-export function getMiniAppIconAsset(id: string): string | undefined {
-  return BUILTIN_MINI_APP_ICON_ASSETS[id];
-}
-
 export function getMiniAppShowcaseAsset(id: string): string | undefined {
   return BUILTIN_MINI_APP_SHOWCASE_ASSETS[id];
 }
 
-export function renderMiniAppIcon(name: string, size = 28): React.ReactNode {
+export function renderMiniAppIcon(name: string, size: number | IconSize = 28): React.ReactNode {
   const key = name
     .split('-')
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
@@ -98,11 +81,14 @@ export function renderMiniAppIcon(name: string, size = 28): React.ReactNode {
     ? { name: catalogName }
     : { glyph: LucideGlyph ?? Box };
 
+  const style = typeof size === 'number' ? { width: size, height: size } : undefined;
+  const iconSize: IconSize = typeof size === 'number' ? 'lg' : size;
+
   return (
     <Icon
       {...iconSource}
-      size="lg"
-      style={{ width: size, height: size }}
+      size={iconSize}
+      style={style}
     />
   );
 }

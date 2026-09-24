@@ -3,14 +3,23 @@
 use serde_json::{json, Value};
 
 use openbitfun_agent_runtime::sdk::{PermissionGrantKey, PermissionReply};
-use openbitfun_core::service::remote_ssh::workspace_state::resolve_workspace_session_identity;
+use openbitfun_core::agentic::workspace::WorkspaceBinding;
 use openbitfun_core::service::workspace::WorkspaceKind;
 
 use crate::peer_host::args::{get_string, request_value};
 use crate::peer_host::state::PeerHostState;
 
 fn permission_reply(request: &Value) -> Result<PermissionReply, String> {
-    match get_string(request, "reply")?.as_str() {
+    let reply = get_string(request, "reply")?;
+    if let Some(updated_input) = request.get("updatedInput").filter(|value| !value.is_null()) {
+        if reply != "once" || !updated_input.is_object() {
+            return Err("Edited input requires a one-time approval and an object".to_string());
+        }
+        return Ok(PermissionReply::OnceWithInput {
+            updated_input: updated_input.clone(),
+        });
+    }
+    match reply.as_str() {
         "once" => Ok(PermissionReply::Once),
         "always" => Ok(PermissionReply::Always),
         "reject" => Ok(PermissionReply::Reject {
@@ -41,20 +50,14 @@ async fn permission_project_id_for_workspace(
         .await
         .ok_or_else(|| format!("Workspace not found: {workspace_id}"))?;
     let is_remote = workspace.workspace_kind == WorkspaceKind::Remote;
-    let connection_id = workspace
-        .metadata
-        .get("connectionId")
-        .and_then(Value::as_str);
-    let ssh_host = workspace.metadata.get("sshHost").and_then(Value::as_str);
-    let identity = resolve_workspace_session_identity(
-        &workspace.root_path.to_string_lossy(),
-        connection_id,
-        ssh_host,
-    )
-    .await
-    .ok_or_else(|| format!("Workspace identity is unavailable: {workspace_id}"))?;
+    // The record already names the workspace; its persistence identity is a
+    // projection of that record, never a path lookup.
+    let binding = WorkspaceBinding::resolve(&workspace.id)
+        .await
+        .map_err(|error| format!("Workspace identity is unavailable: {workspace_id}: {error}"))?;
     openbitfun_core::agentic::tools::pipeline::permission_project_id_for_workspace_identity(
-        &identity, is_remote,
+        &binding.session_identity,
+        is_remote,
     )
     .map_err(|error| error.to_string())
 }
@@ -227,4 +230,131 @@ mod tests {
             100
         );
     }
+}
+
+/// Preserve Desktop's distinct persisted-session and exact-active-turn selectors.
+pub(crate) async fn session_permission_mode(
+    state: &PeerHostState,
+    args: &Value,
+    mutate: bool,
+    active_turn_only: bool,
+) -> Result<Value, String> {
+    use crate::peer_host::args::{get_string, optional_string};
+    use openbitfun_core::agentic::core::SessionState;
+
+    let request = request_value(args);
+    let session_id = get_string(request, "sessionId")?;
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        return Err("session_id is required".into());
+    }
+    let mode = parse_selector_mode(request)?;
+    let turn_id = optional_string(request, "turnId");
+    if active_turn_only && turn_id.is_none() {
+        return Err("turn_id is required".into());
+    }
+    if optional_string(request, "workspaceId").is_some()
+        || optional_string(request, "workspacePath").is_some()
+    {
+        super::session::ensure_coordinator_session(state, args).await?;
+    }
+    let manager = &state.compatibility;
+    let session = manager
+        .loaded_session_snapshot(session_id)
+        .map_err(|error| error.to_string())?
+        .ok_or("Session is not loaded")?;
+    let active_turn_id = turn_id.filter(|turn_id| matches!(
+        &session.state, SessionState::Processing { current_turn_id, .. } if current_turn_id == turn_id
+    ));
+    if mutate {
+        if active_turn_only {
+            let turn_id = active_turn_id
+                .as_deref()
+                .ok_or("Turn is no longer active for this session")?;
+            match mode {
+                Some(mode) => {
+                    if !manager.set_active_turn_permission_mode(session_id, turn_id, mode) {
+                        return Err("Turn is no longer active for this session".into());
+                    }
+                }
+                None => {
+                    manager.clear_active_turn_permission_mode(session_id, turn_id);
+                }
+            }
+        } else {
+            manager
+                .update_session_permission_mode(session_id, mode)
+                .await
+                .map_err(|e| e.to_string())?;
+            if let Some(turn_id) = optional_string(request, "turnId") {
+                manager.clear_active_turn_permission_mode(session_id, &turn_id);
+            }
+        }
+    }
+    Ok(serde_json::json!({
+        "mode": manager.session_permission_mode(session_id),
+        "turnMode": active_turn_id.as_deref().and_then(|turn| manager.active_turn_permission_mode(session_id, turn)),
+        "activeTurnId": active_turn_id,
+    }))
+}
+
+fn parse_selector_mode(
+    request: &Value,
+) -> Result<Option<openbitfun_runtime_ports::PermissionMode>, String> {
+    use openbitfun_runtime_ports::PermissionMode;
+    match request.get("mode") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) if value.trim().is_empty() => Ok(None),
+        Some(Value::String(value)) => Ok(Some(
+            PermissionMode::parse(value.trim())
+                .ok_or_else(|| format!("unsupported permission mode: {value}"))?,
+        )),
+        _ => return Err("Invalid permission mode".into()),
+    }
+}
+
+#[cfg(test)]
+mod selector_tests {
+    use super::*;
+    use openbitfun_runtime_ports::PermissionMode;
+
+    #[test]
+    fn legacy_and_current_selectors_preserve_clear_and_explicit_modes() {
+        for request in [
+            serde_json::json!({}),
+            serde_json::json!({"mode": null}),
+            serde_json::json!({"mode": " "}),
+        ] {
+            assert_eq!(parse_selector_mode(&request).unwrap(), None);
+        }
+        assert_eq!(
+            parse_selector_mode(&serde_json::json!({"mode": "full_access"})).unwrap(),
+            Some(PermissionMode::FullAccess)
+        );
+        assert_eq!(
+            parse_selector_mode(&serde_json::json!({"mode": "ask"})).unwrap(),
+            Some(PermissionMode::Ask)
+        );
+        for value in [
+            serde_json::json!("unknown-future-mode"),
+            serde_json::json!(false),
+            serde_json::json!({}),
+        ] {
+            assert!(parse_selector_mode(&serde_json::json!({"mode": value})).is_err());
+        }
+    }
+}
+
+/// Small live mailbox for reconnecting controllers; never reads transcript history.
+pub(crate) fn get_session_interaction_mailbox(
+    state: &PeerHostState,
+    args: &Value,
+) -> Result<Value, String> {
+    let session_id = get_string(request_value(args), "sessionId")?;
+    serde_json::to_value(
+        state
+            .agent_runtime
+            .session_interaction_snapshot(&session_id),
+    )
+    .map_err(|error| error.to_string())
 }

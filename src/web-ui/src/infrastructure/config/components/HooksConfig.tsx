@@ -6,6 +6,7 @@ import {
   Dialog,
   DialogBody,
   DialogClose,
+  DialogFooter,
   DialogHeader,
   DialogHeading,
   DialogTitle,
@@ -38,7 +39,6 @@ import {
 const log = createLogger('HooksConfig');
 
 const CODEX_HOOKS_DOC_URL = 'https://learn.chatgpt.com/docs/hooks';
-const IMPORTABLE_HOOK_ECOSYSTEMS = new Set(['claude-code', 'codex']);
 
 /** Enablement gates only. Hook declarations live in hooks.json. */
 interface AgentHooksConfigShape {
@@ -99,7 +99,7 @@ const HooksConfig: React.FC<HooksConfigProps> = ({ embedded = false }) => {
       configManager.getConfig<Partial<AgentHooksConfigShape>>('app.hooks'),
       remoteWorkspace
         ? Promise.resolve(null)
-        : externalHooksAPI.getImportSnapshot(workspacePath || undefined, false),
+        : externalHooksAPI.getImportSnapshot(workspace?.id, false),
     ]);
     if (!mountedRef.current || sequence !== requestSequence.current) return;
     if (configResult.status === 'fulfilled') {
@@ -116,7 +116,7 @@ const HooksConfig: React.FC<HooksConfigProps> = ({ embedded = false }) => {
       setImportError(t('imports.loadFailed'));
     }
     setLoading(false);
-  }, [remoteWorkspace, t, workspacePath]);
+  }, [remoteWorkspace, t, workspace?.id]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -134,7 +134,7 @@ const HooksConfig: React.FC<HooksConfigProps> = ({ embedded = false }) => {
     setImportError(null);
     try {
       const snapshot = await externalHooksAPI.getImportSnapshot(
-        workspacePath || undefined,
+        workspace?.id,
         true,
       );
       if (mountedRef.current && sequence === requestSequence.current) {
@@ -149,7 +149,7 @@ const HooksConfig: React.FC<HooksConfigProps> = ({ embedded = false }) => {
         setImportLoading(false);
       }
     }
-  }, [remoteWorkspace, t, workspacePath]);
+  }, [remoteWorkspace, t, workspace?.id]);
 
   const updateConfig = useCallback(
     async <K extends keyof AgentHooksConfigShape>(key: K, value: AgentHooksConfigShape[K]) => {
@@ -184,7 +184,7 @@ const HooksConfig: React.FC<HooksConfigProps> = ({ embedded = false }) => {
     setBusyKey(key);
     setPlanNotice(null);
     try {
-      const plan = await externalHooksAPI.planImport(workspacePath || undefined, source.key);
+      const plan = await externalHooksAPI.planImport(workspace?.id, source.key);
       if (!mountedRef.current) return;
       setReviewPlan(plan);
     } catch (error) {
@@ -194,14 +194,14 @@ const HooksConfig: React.FC<HooksConfigProps> = ({ embedded = false }) => {
     } finally {
       if (mountedRef.current) setBusyKey(null);
     }
-  }, [notifyError, t, workspacePath]);
+  }, [notifyError, t, workspace?.id]);
 
   const applyReviewedPlan = useCallback(async () => {
     if (!reviewPlan) return;
     setBusyKey('apply');
     try {
       const result = await externalHooksAPI.applyImport(
-        workspacePath || undefined,
+        workspace?.id,
         reviewPlan,
       );
       if (!mountedRef.current) return;
@@ -231,7 +231,7 @@ const HooksConfig: React.FC<HooksConfigProps> = ({ embedded = false }) => {
     } finally {
       if (mountedRef.current) setBusyKey(null);
     }
-  }, [config.enabled, notifyError, notifySuccess, reviewPlan, t, workspacePath]);
+  }, [config.enabled, notifyError, notifySuccess, reviewPlan, t, workspace?.id]);
 
   const mutateImport = useCallback(async (
     action: ExternalHookImportMutation,
@@ -255,14 +255,14 @@ const HooksConfig: React.FC<HooksConfigProps> = ({ embedded = false }) => {
       let next: ExternalHookImportSnapshot;
       try {
         next = await externalHooksAPI.mutateImport(
-          workspacePath || undefined,
+          workspace?.id,
           authoritative.revision,
           action,
         );
       } catch (error) {
         if ((error as { code?: string })?.code !== 'stale_revision') throw error;
         const refreshed = await externalHooksAPI.getImportSnapshot(
-          workspacePath || undefined,
+          workspace?.id,
           false,
         );
         if (!mountedRef.current) return;
@@ -282,7 +282,7 @@ const HooksConfig: React.FC<HooksConfigProps> = ({ embedded = false }) => {
     } finally {
       if (mountedRef.current) setBusyKey(null);
     }
-  }, [importSnapshot, notifyError, notifySuccess, t, workspacePath]);
+  }, [importSnapshot, notifyError, notifySuccess, t, workspace?.id]);
 
   const confirmMutation = useCallback(() => {
     if (!confirmation) return;
@@ -293,14 +293,6 @@ const HooksConfig: React.FC<HooksConfigProps> = ({ embedded = false }) => {
     void mutateImport(action);
   }, [confirmation, mutateImport]);
 
-  const availableSources = importSnapshot?.catalog.sources
-    .filter((source) => IMPORTABLE_HOOK_ECOSYSTEMS.has(source.ecosystemId))
-    .filter((source) => !importSnapshot.imports.some((item) => (
-      item.source.key.providerId === source.key.providerId
-      && item.source.key.sourceId === source.key.sourceId
-    ))) ?? [];
-  const discoveredSources = importSnapshot?.catalog.sources
-    .filter((source) => !IMPORTABLE_HOOK_ECOSYSTEMS.has(source.ecosystemId)) ?? [];
   const corruptDiagnostics = importSnapshot?.diagnostics.filter((diagnostic) => (
     diagnostic.code.startsWith('external_hook.import_store_corrupt.')
   )) ?? [];
@@ -370,39 +362,6 @@ const HooksConfig: React.FC<HooksConfigProps> = ({ embedded = false }) => {
           </ConfigPageRow>
         </ConfigPageSection>
 
-        {importSnapshot && !remoteWorkspace ? (
-          <ConfigPageSection title={t('discovery.title')} description={t('discovery.description')}>
-            {discoveredSources.map((source) => {
-              const entries = importSnapshot.catalog.entries.filter((entry) => (
-                entry.source.providerId === source.key.providerId && entry.source.sourceId === source.key.sourceId
-              ));
-              const provider = importSnapshot.catalog.providers.find((item) => item.providerId === source.key.providerId);
-              return (
-                <ConfigPageRow
-                  key={`${source.key.providerId}:${source.key.sourceId}`}
-                  label={provider?.displayName ?? source.ecosystemId}
-                  description={[
-                    source.locationHint,
-                    ...entries.map((entry) => `${entry.nativeEvent} · ${entry.nativeActivation === 'disabled'
-                      ? t('discovery.disabled') : entry.nativeActivation === 'unsupported'
-                        ? t('discovery.unsupported') : entry.projectionStatus === 'opaque'
-                          ? t('discovery.opaque') : t('discovery.nativeOnly')}`),
-                    ...(source.diagnostics ?? []).map((diagnostic) => diagnostic.message),
-                  ].join('\n')}
-                  multiline
-                >
-                  <span>{t('discovery.readOnly')}</span>
-                </ConfigPageRow>
-              );
-            })}
-            {importSnapshot.catalog.diagnostics.map((diagnostic, index) => (
-              <ConfigPageRow key={`${diagnostic.code}:${index}`} label={diagnostic.message} multiline>{null}</ConfigPageRow>
-            ))}
-            {discoveredSources.length === 0 && importSnapshot.catalog.diagnostics.length === 0 ? (
-              <ConfigPageRow label={importSnapshot.catalog.discoveryPending ? t('discovery.loading') : t('discovery.empty')} multiline>{null}</ConfigPageRow>
-            ) : null}
-          </ConfigPageSection>
-        ) : null}
 
         <ConfigPageSection title={t('locations.title')} description={t('locations.description')}>
           <ConfigPageRow
@@ -488,28 +447,6 @@ const HooksConfig: React.FC<HooksConfigProps> = ({ embedded = false }) => {
                 </ConfigPageRow>
               ))}
 
-              {availableSources.map((source) => {
-                  const key = `${source.key.providerId}:${source.key.sourceId}`;
-                  return (
-                    <ConfigPageRow
-                      key={key}
-                      label={source.displayName}
-                      description={source.locationHint}
-                      align="center"
-                    >
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        loading={busyKey === key}
-                        disabled={busyKey !== null || source.health === 'unavailable'}
-                        onClick={() => void previewImport(source)}
-                      >
-                        {t('imports.review')}
-                      </Button>
-                    </ConfigPageRow>
-                  );
-                })}
-
               {corruptDiagnostics.map((diagnostic) => {
                   const scope = diagnostic.code.endsWith('.user_global')
                     ? 'user_global'
@@ -535,7 +472,6 @@ const HooksConfig: React.FC<HooksConfigProps> = ({ embedded = false }) => {
                 })}
 
               {importSnapshot.imports.length === 0
-                && availableSources.length === 0
                 && corruptDiagnostics.length === 0 ? (
                   <ConfigPageRow
                     className="openbitfun-hooks-config__empty"
@@ -584,7 +520,7 @@ const HooksConfig: React.FC<HooksConfigProps> = ({ embedded = false }) => {
           </DialogHeading>
           <DialogClose />
         </DialogHeader>
-        <DialogBody inset="none">
+        <DialogBody>
         {reviewPlan ? (
           <div>
             {planNotice ? <p role="status">{planNotice}</p> : null}
@@ -613,6 +549,11 @@ const HooksConfig: React.FC<HooksConfigProps> = ({ embedded = false }) => {
                 {t('imports.skipped', { reason: skipped.reasonCode, count: skipped.count })}
               </p>
             ))}
+          </div>
+        ) : null}
+        </DialogBody>
+        {reviewPlan ? (
+          <DialogFooter separator>
             <Button
               variant="fill"
               disabled={busyKey === 'apply'}
@@ -630,9 +571,8 @@ const HooksConfig: React.FC<HooksConfigProps> = ({ embedded = false }) => {
             >
               {t(reviewUpdatesExistingImport ? 'imports.confirmUpdate' : 'imports.confirm')}
             </Button>
-          </div>
+          </DialogFooter>
         ) : null}
-              </DialogBody>
       </Dialog>
 
       <ConfirmDialog

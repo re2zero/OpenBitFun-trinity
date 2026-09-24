@@ -229,6 +229,7 @@ impl RemoteCommandRuntimeHost for CoreRemoteCommandRuntimeHost<'_> {
 
                 RemoteResponse::DeviceInfo {
                     device_name: None,
+                    workspace_id: workspace.as_ref().map(|facts| facts.workspace_id.clone()),
                     workspace_path: workspace.as_ref().map(|facts| facts.path.clone()),
                     workspace_kind: workspace
                         .as_ref()
@@ -256,6 +257,7 @@ impl RemoteCommandRuntimeHost for CoreRemoteCommandRuntimeHost<'_> {
                 handle_remote_workspace_command(
                     &host,
                     &RemoteCommand::SetWorkspace {
+                        workspace_id: None,
                         path: path.to_string_lossy().to_string(),
                         remote_connection_id: None,
                         remote_ssh_host: None,
@@ -267,6 +269,15 @@ impl RemoteCommandRuntimeHost for CoreRemoteCommandRuntimeHost<'_> {
                 message: "Unsupported device command".to_string(),
             },
         }
+    }
+
+    async fn manage_dialog_queue(
+        &self,
+        request: openbitfun_runtime_ports::DialogQueueRequest,
+    ) -> std::result::Result<openbitfun_runtime_ports::DialogQueueSnapshot, String> {
+        CoreServiceAgentRuntime::remote_dialog_host(self.dispatcher)?
+            .manage_dialog_queue(request)
+            .await
     }
 
     async fn submit_dialog(
@@ -446,6 +457,69 @@ mod tests {
         assert_eq!(receiver.await.unwrap().answers, answers);
     }
 
+    #[tokio::test]
+    async fn remote_question_interaction_stops_timeout_without_answering() {
+        use openbitfun_agent_runtime::user_questions::{
+            wait_for_user_question_response, PendingUserQuestion, UserQuestionWaitOutcome,
+        };
+        let manager = crate::agentic::tools::user_input_manager::get_user_input_manager();
+        let tool_id = format!("activity-{}", uuid::Uuid::new_v4());
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let registration = manager.register_question(
+            PendingUserQuestion::new(
+                &tool_id,
+                "remote-session",
+                None,
+                None,
+                serde_json::json!({"questions": []}),
+            ),
+            sender,
+        );
+        let bridge = RemoteServer::new([7; 32]);
+        let command: RemoteCommand = serde_json::from_value(serde_json::json!({
+            "cmd": "start_question_interaction", "session_id": "remote-session", "tool_id": tool_id
+        }))
+        .unwrap();
+        assert_eq!(
+            bridge.dispatch(&command).await,
+            RemoteResponse::InteractionAccepted {
+                action: "start_question_interaction".to_string(),
+                target_id: tool_id.clone(),
+            }
+        );
+        let wait = wait_for_user_question_response(
+            &registration,
+            receiver,
+            std::time::Duration::from_millis(1),
+        );
+        tokio::pin!(wait);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut wait)
+                .await
+                .is_err()
+        );
+        assert!(manager.has_pending(&tool_id));
+        assert!(matches!(
+            bridge
+                .dispatch(&RemoteCommand::StartQuestionInteraction {
+                    session_id: "other-session".to_string(),
+                    tool_id: tool_id.clone(),
+                })
+                .await,
+            RemoteResponse::Error { .. }
+        ));
+        assert_eq!(
+            bridge
+                .dispatch(&RemoteCommand::AnswerQuestion {
+                    tool_id,
+                    answers: serde_json::json!({"0": "Yes"}),
+                })
+                .await,
+            RemoteResponse::AnswerAccepted
+        );
+        assert!(matches!(wait.await, UserQuestionWaitOutcome::Answered(_)));
+    }
+
     #[test]
     fn core_service_agent_runtime_owner_maps_remote_image_context() {
         let metadata = serde_json::json!({ "source": "relay" });
@@ -586,6 +660,7 @@ mod tests {
         assert_eq!(cancel["turn_id"], "turn-1");
 
         let list = serde_json::to_value(RemoteCommand::ListSessions {
+            workspace_id: None,
             workspace_path: Some("/workspace/project".to_string()),
             remote_connection_id: None,
             remote_ssh_host: None,

@@ -1,6 +1,5 @@
-import { OverflowText, Button, Combobox, Icon, IconButton, Input, Listbox, ListboxEmpty, ListboxOption, Select, Switch, Textarea, Tooltip, type ComboboxOption, type SelectOption } from '@openbitfun/ui';
+import { createOverlayPortal, OverflowText, Button, Combobox, Icon, IconButton, Input, Listbox, ListboxEmpty, ListboxOption, Select, Switch, Textarea, Tooltip, type ComboboxOption, type SelectOption } from '@openbitfun/ui';
 import React, { useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { AlertTriangle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type {
@@ -398,7 +397,7 @@ export const ReasoningPresetEditor: React.FC<ReasoningPresetEditorProps> = ({
                       }}
                       size="sm"
                     />
-                    {showModelsDevSearchResults && createPortal(
+                    {showModelsDevSearchResults && createOverlayPortal(
                       <div
                         ref={modelsDevSearchPopoverRef}
                         className="openbitfun-reasoning-preset-editor__models-dev-search-results"
@@ -608,15 +607,14 @@ export const ReasoningPresetEditor: React.FC<ReasoningPresetEditorProps> = ({
                     data-openbitfun-component="reasoning-preset-editor"
                     data-openbitfun-part="presetSummary"
                   >
-                    <button
+                    <IconButton
                       type="button"
                       className="openbitfun-reasoning-preset-editor__row-toggle"
                       onClick={() => setExpandedPresetIndex(expanded ? null : presetIndex)}
                       aria-expanded={expanded}
                       aria-label={preset.label?.trim() || preset.id}
-                    >
-                      {expanded ? <Icon name="chevron-down" size="sm" /> : <Icon name="chevron-right" size="sm" />}
-                    </button>
+                      icon={expanded ? <Icon name="chevron-down" size="sm" /> : <Icon name="chevron-right" size="sm" />}
+                    />
                     <div className="openbitfun-reasoning-preset-editor__row-content">
                       {expanded ? (
                         <div className="openbitfun-reasoning-preset-editor__row-name-editor">

@@ -24,7 +24,19 @@ import AssistantAvatarPicker from './AssistantAvatarPicker';
 import AssistantQuickInput from './AssistantQuickInput';
 import { useNurseryStore } from '../nurseryStore';
 import './NurseryView.scss';
-import { ActionCard, OverflowText, Icon, IconButton, Input, PageHeader, ScrollArea, Spinner, Textarea, Tooltip } from '@openbitfun/ui';
+import {
+  ActionCard,
+  Card,
+  Icon,
+  IconButton,
+  Input,
+  OverflowText,
+  PageHeader,
+  ScrollArea,
+  Spinner,
+  Textarea,
+  Tooltip,
+} from '@openbitfun/ui';
 
 const log = createLogger('AssistantConfigPage');
 
@@ -119,7 +131,7 @@ const AssistantConfigPage: React.FC = () => {
     saveStatus: identitySaveStatus,
     updateField: updateIdentityField,
     reload: reloadIdentityDocument,
-  } = useAgentIdentityDocument(workspacePath);
+  } = useAgentIdentityDocument(workspace ? { id: workspace.id, rootPath: workspace.rootPath } : null);
 
   const displayIdentity = useMemo(() => {
     const api = workspace?.identity;
@@ -141,11 +153,13 @@ const AssistantConfigPage: React.FC = () => {
   const personaSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const personaPendingRef = useRef<{ file: PersonaDocFile; content: string } | null>(null);
 
+  const workspaceId = workspace?.id ?? '';
+
   const flushPersonaWrite = useCallback(async (file: PersonaDocFile, content: string) => {
-    if (!workspacePath) return;
+    if (!workspaceId || !workspacePath) return;
     const fullPath = personaDocFullPath(workspacePath, file);
     try {
-      await workspaceAPI.writeFileContent(workspacePath, fullPath, content);
+      await workspaceAPI.writeWorkspaceFile(workspaceId, fullPath, content);
       if (
         personaPendingRef.current?.file === file &&
         personaPendingRef.current?.content === content
@@ -160,7 +174,7 @@ const AssistantConfigPage: React.FC = () => {
       log.error('persona doc save', e);
       notificationService.error(t('nursery.assistant.personaDocSaveFailed'));
     }
-  }, [workspacePath, reloadIdentityDocument, t]);
+  }, [workspaceId, workspacePath, reloadIdentityDocument, t]);
 
   const flushPersonaWriteRef = useRef(flushPersonaWrite);
   flushPersonaWriteRef.current = flushPersonaWrite;
@@ -176,9 +190,9 @@ const AssistantConfigPage: React.FC = () => {
     setRightView('personaDoc');
     personaPendingRef.current = null;
 
-    if (!workspacePath) return;
+    if (!workspaceId || !workspacePath) return;
     const fullPath = personaDocFullPath(workspacePath, fileName);
-    workspaceAPI.readFileContent(fullPath)
+    workspaceAPI.readWorkspaceFile(workspaceId, fullPath)
       .then((content) => {
         setPersonaDoc((prev) => prev?.fileName === fileName ? {
           ...prev,
@@ -209,7 +223,7 @@ const AssistantConfigPage: React.FC = () => {
             : prev);
         }
       });
-  }, [personaDoc, workspacePath]);
+  }, [personaDoc, workspaceId, workspacePath]);
 
   const handlePersonaDocChange = useCallback((value: string) => {
     if (!personaDoc) return;
@@ -327,7 +341,7 @@ const AssistantConfigPage: React.FC = () => {
 
   const renderInfoPanel = () => (
     <div className="acp-right-info" data-openbitfun-component="assistant-config-page" data-openbitfun-part="details">
-      <div className="acp-right-shell">
+      <Card className="acp-right-shell" appearance="subtle" radius="md" clip>
         {/* Persona docs */}
         <div className="acp-section acp-section--nested">
           <div className="acp-section__head">
@@ -367,7 +381,7 @@ const AssistantConfigPage: React.FC = () => {
         {/* Scheduled tasks — title/toolbar live inside ScheduledJobsView */}
         <div className="acp-section acp-section--nested acp-section--schedule">
           <ScrollArea className="acp-section__schedule-body">
-            {!workspacePath ? (
+            {!workspace ? (
               <p className="acp-empty">{t('nursery.assistant.scheduledSessionsNoWorkspace')}</p>
             ) : (
               <Suspense
@@ -378,7 +392,6 @@ const AssistantConfigPage: React.FC = () => {
                 )}
               >
                 <ScheduledJobsView
-                  workspacePath={workspacePath}
                   workspaceId={workspace?.id}
                   workspaceKind={workspace?.workspaceKind}
                   assistantName={identityName}
@@ -388,7 +401,7 @@ const AssistantConfigPage: React.FC = () => {
             )}
           </ScrollArea>
         </div>
-      </div>
+      </Card>
     </div>
   );
 
@@ -404,7 +417,7 @@ const AssistantConfigPage: React.FC = () => {
     const usesSourceBodyEditor = bodyEditability.mode === 'unsafe';
     return (
       <div className="acp-right-info" data-openbitfun-component="assistant-config-page" data-openbitfun-part="details">
-        <div className="acp-right-shell acp-right-shell--editor">
+        <Card className="acp-right-shell acp-right-shell--editor" appearance="subtle" radius="md" clip>
           <div className="acp-persona-editor" data-openbitfun-component="assistant-config-page" data-openbitfun-part="editor">
             <div className="acp-persona-editor__head" data-openbitfun-component="assistant-config-page" data-openbitfun-part="editorHeader">
               <PageHeader
@@ -479,7 +492,7 @@ const AssistantConfigPage: React.FC = () => {
               )}
             </div>
           </div>
-        </div>
+        </Card>
       </div>
     );
   };
@@ -612,7 +625,7 @@ const AssistantConfigPage: React.FC = () => {
               presentation={{
                 kind: 'assistant',
                 assistant: {
-                  id: workspace?.assistantId || workspace?.id || workspacePath,
+                  id: workspace?.assistantId || workspace?.id || '',
                   name: identityName,
                   avatar: displayIdentity.avatar,
                   emoji: displayIdentity.emoji,

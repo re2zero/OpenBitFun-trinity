@@ -1,9 +1,14 @@
+import { TimeFormat } from '../../services/TimeFormat';
+import { InteractionMailboxState } from '../../model/InteractionMailbox';
+import { WorkspaceToolsState } from './WorkspaceToolsState';
 import {
+  SavedRuntimeConnection,
   AssistantEntry,
   ChatMessage,
   RecentWorkspaceEntry,
   RemoteModelCatalog,
   RemoteSession,
+  RemoteWorkspaceIdentity,
   SelectedImageAttachment,
   SessionSummary
 } from '../../model/RemoteModels';
@@ -17,6 +22,8 @@ import { ConversationCoreState } from './ConversationCoreState';
  */
 @ObservedV2
 export class RemotePageState {
+  @Trace interactionMailbox: InteractionMailboxState = new InteractionMailboxState();
+  readonly workspaceTools: WorkspaceToolsState = new WorkspaceToolsState();
   @Trace conversation: ConversationCoreState = new ConversationCoreState('code');
   @Trace desktopName: string = '';
   @Trace desktopId: string = '';
@@ -37,9 +44,15 @@ export class RemotePageState {
   @Trace showRemoteUrlInput: boolean = false;
   @Trace workspaceName: string = '';
   @Trace workspacePath: string = '';
+  /** Stable record ID of the active workspace; empty for pre-ID hosts. */
+  @Trace workspaceId: string = '';
+  @Trace workspaceConnectionId: string = '';
+  @Trace workspaceSshHost: string = '';
   @Trace workspaceBranch: string = '';
   @Trace workspaceKind: string = 'normal';
   @Trace assistantId: string = '';
+  @Trace savedConnections: SavedRuntimeConnection[] = [];
+  @Trace savedConnectionsTargetId: string = '';
   @Trace recentWorkspaces: RecentWorkspaceEntry[] = [];
   @Trace assistants: AssistantEntry[] = [];
   @Trace showWorkspacePicker: boolean = false;
@@ -52,6 +65,11 @@ export class RemotePageState {
   @Trace hasMoreSessions: boolean = false;
   @Trace isLoadingSessions: boolean = false;
   @Trace isLoadingConversation: boolean = false;
+  // Separate from isLoadingConversation, which means the session itself is not
+  // known yet and so blanks the header. Here the session is known and named;
+  // only its transcript is still on the way, and the header should keep saying
+  // which conversation the pane is about while the body says it is filling.
+  @Trace isLoadingTranscript: boolean = false;
   @Trace pendingSessionId: string = '';
   @Trace isConversationDismissed: boolean = false;
   @Trace sessionErrorText: string = '';
@@ -117,6 +135,11 @@ export class RemotePageState {
   }
 
   setControlTarget(type: string, deviceId: string, deviceName: string): void {
+    if (deviceId !== this.controlTargetDeviceId) {
+      this.workspaceTools.visible = false; this.workspaceTools.busy = false;
+      this.workspaceTools.entries = []; this.workspaceTools.content = '';
+      this.workspaceTools.output = ''; this.workspaceTools.terminalId = '';
+    }
     this.controlTargetType = type;
     this.controlTargetDeviceId = deviceId;
     this.controlTargetDeviceName = deviceName;
@@ -175,13 +198,32 @@ export class RemotePageState {
     workspacePath: string,
     assistantId: string,
     workspaceBranch: string = '',
-    workspaceKind: string = 'normal'
+    workspaceKind: string = 'normal',
+    remoteConnectionId: string = '',
+    remoteSshHost: string = '',
+    workspaceId: string = ''
   ): void {
     this.workspaceName = workspaceName;
     this.workspacePath = workspacePath;
+    this.workspaceConnectionId = remoteConnectionId;
+    this.workspaceSshHost = remoteSshHost;
+    this.workspaceId = workspaceId;
     this.assistantId = assistantId;
     this.workspaceBranch = workspaceBranch;
     this.workspaceKind = workspaceKind;
+  }
+
+  /**
+   * The active workspace as a reference. Empty strings from the page state
+   * become absent fields so the identity compares like catalog rows do.
+   */
+  workspaceIdentity(): RemoteWorkspaceIdentity {
+    return {
+      workspaceId: this.workspaceId.length > 0 ? this.workspaceId : undefined,
+      path: this.workspacePath,
+      remoteConnectionId: this.workspaceConnectionId.length > 0 ? this.workspaceConnectionId : undefined,
+      remoteSshHost: this.workspaceSshHost.length > 0 ? this.workspaceSshHost : undefined
+    };
   }
 
   setRecentWorkspaces(recentWorkspaces: RecentWorkspaceEntry[]): void {
@@ -212,12 +254,15 @@ export class RemotePageState {
   }
 
   setActiveSession(session: SessionSummary): void {
+    if (this.conversation.activeSession.sessionId !== session.sessionId) this.interactionMailbox = new InteractionMailboxState();
     this.conversation.setActiveSession(session);
   }
 
   clearActiveSession(): void {
+    this.interactionMailbox = new InteractionMailboxState();
     this.conversation.clearActiveSession();
     this.isLoadingConversation = false;
+    this.isLoadingTranscript = false;
     this.pendingSessionId = '';
     this.isConversationDismissed = false;
     this.setModelCatalog(RemoteUiState.emptyModelCatalog(), '');
@@ -241,6 +286,11 @@ export class RemotePageState {
 
   setHasMoreMessages(hasMoreMessages: boolean): void {
     this.conversation.setHasMoreMessages(hasMoreMessages);
+  }
+
+  setHistoryLoadState(loading: boolean, failed: boolean): void {
+    this.conversation.historyLoading = loading;
+    this.conversation.historyFailed = failed;
   }
 
   clearTimeline(): void {
@@ -299,6 +349,10 @@ export class RemotePageState {
     this.isLoadingConversation = loading;
   }
 
+  setTranscriptLoading(loading: boolean): void {
+    this.isLoadingTranscript = loading;
+  }
+
   setPendingSessionId(sessionId: string): void {
     this.pendingSessionId = sessionId;
   }
@@ -317,6 +371,7 @@ export class RemotePageState {
     this.hasMoreSessions = false;
     this.isLoadingSessions = false;
     this.isLoadingConversation = false;
+    this.isLoadingTranscript = false;
     this.pendingSessionId = '';
     this.isConversationDismissed = false;
     this.isLoadingHome = false;
@@ -326,10 +381,12 @@ export class RemotePageState {
 
   /** Clears every conversation-scoped value when its remote identity ends. */
   resetConversationContext(): void {
+    this.interactionMailbox = new InteractionMailboxState();
     this.conversation.reset();
     this.hasMoreSessions = false;
     this.isLoadingSessions = false;
     this.isLoadingConversation = false;
+    this.isLoadingTranscript = false;
     this.pendingSessionId = '';
     this.isConversationDismissed = false;
     this.isLoadingHome = false;
@@ -368,6 +425,29 @@ export class RemotePageState {
       return query.length === 0 || item.title.toLowerCase().indexOf(query) >= 0;
     });
     return this.visibleSessionsCache;
+  }
+
+  private recentHomeSource: RemoteSession[] | undefined = undefined;
+  private recentHomeCache: RemoteSession[] = [];
+
+  recentHomeSessions(): RemoteSession[] {
+    const source = this.conversation.sessions;
+    if (this.recentHomeSource === source) return this.recentHomeCache;
+    this.recentHomeSource = source;
+    this.recentHomeCache = source.filter((session: RemoteSession): boolean =>
+      session.id.trim().length > 0 && session.status !== 'archived')
+      .sort((left: RemoteSession, right: RemoteSession): number =>
+        this.recentSessionTime(right) - this.recentSessionTime(left))
+      .filter((session: RemoteSession, index: number, rows: RemoteSession[]): boolean =>
+        rows.findIndex((row: RemoteSession): boolean => row.id === session.id) === index).slice(0, 3);
+    return this.recentHomeCache;
+  }
+
+  private recentSessionTime(session: RemoteSession): number {
+    const updated = TimeFormat.timestampMs(session.updatedAt);
+    if (Number.isFinite(updated) && updated > 0) return updated;
+    const created = TimeFormat.timestampMs(session.createdAt);
+    return Number.isFinite(created) ? created : 0;
   }
 
   hasRunningActiveTurn(): boolean {

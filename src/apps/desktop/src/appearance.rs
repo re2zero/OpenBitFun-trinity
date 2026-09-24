@@ -318,6 +318,7 @@ impl AppearanceConfig {
         let startup_locale_json =
             serde_json::to_string(&startup_locale).unwrap_or_else(|_| "\"zh-CN\"".to_string());
         let show_startup_window_controls = !cfg!(target_os = "macos");
+        let native_sidebar_material = cfg!(any(target_os = "windows", target_os = "macos"));
         let startup_trace_id_json = serde_json::to_string(startup_trace_id)
             .unwrap_or_else(|_| "\"desktop-unknown\"".to_string());
         let bootstrap_log_level_json = serde_json::to_string(crate::logging::level_to_str(
@@ -370,6 +371,9 @@ impl AppearanceConfig {
                     root.setAttribute('data-color-scheme', '{appearance_mode}');
                     root.setAttribute('data-contrast', 'standard');
                     root.setAttribute('data-density', 'compact');
+                    if ({native_sidebar_material}) {{
+                        root.setAttribute('data-openbitfun-native-material', 'sidebar');
+                    }}
                     
                     root.style.setProperty('--openbitfun-color-surface-canvas', '{bg_primary}');
                     root.style.setProperty('--openbitfun-color-surface-panel', '{bg_secondary}');
@@ -380,10 +384,10 @@ impl AppearanceConfig {
                     root.style.setProperty('--openbitfun-color-content-primary', '{text_primary}');
                     root.style.setProperty('--openbitfun-color-content-muted', '{text_muted}');
                     root.style.setProperty('--openbitfun-color-accent-default', '{accent_color}');
-                    root.style.backgroundColor = '{bg_primary}';
+                    root.style.backgroundColor = {native_sidebar_material} ? 'transparent' : '{bg_primary}';
                     
                     if (document.body) {{
-                        document.body.style.backgroundColor = '{bg_primary}';
+                        document.body.style.backgroundColor = {native_sidebar_material} ? 'transparent' : '{bg_primary}';
                     }}
                     
                     return true;
@@ -514,6 +518,7 @@ pub fn create_main_window(
     frontend_workbench: Arc<crate::frontend_workbench::FrontendWorkbenchManager>,
 ) {
     let total_started_at = Instant::now();
+    let (startup_page_ready, mut startup_page_ready_rx) = tokio::sync::watch::channel(false);
     let bootstrap_config = AppearanceConfig::load_startup_bootstrap_config();
     let appearance = bootstrap_config.appearance.clone();
     let bg_color = appearance.to_tauri_color();
@@ -546,8 +551,36 @@ pub fn create_main_window(
 
     #[cfg(not(debug_assertions))]
     let materialization_workbench = Arc::clone(&frontend_workbench);
+    #[cfg(target_os = "macos")]
+    let builder = {
+        // Configure both Tao's native window and Wry's WebView. The builder's
+        // traffic_light_position setter only configures Wry, so native window
+        // lifecycle events otherwise restore the default button placement.
+        let config = tauri::utils::config::WindowConfig {
+            label: "main".into(),
+            url: main_url,
+            title_bar_style: tauri::TitleBarStyle::Overlay,
+            hidden_title: true,
+            // Native button center = inset + height / 2 - origin.y.
+            // AppKit's 16pt button at y=6 needs 20.5 for the 45px toolbar.
+            traffic_light_position: Some(tauri::utils::config::LogicalPosition {
+                x: 12.0,
+                y: 20.5,
+            }),
+            ..Default::default()
+        };
+        match tauri::WebviewWindowBuilder::from_config(app_handle, &config) {
+            Ok(builder) => builder,
+            Err(error) => {
+                error!("Failed to configure main window: {}", error);
+                return;
+            }
+        }
+    };
+    #[cfg(not(target_os = "macos"))]
+    let builder = tauri::WebviewWindowBuilder::new(app_handle, "main", main_url);
     #[allow(unused_mut)]
-    let mut builder = tauri::WebviewWindowBuilder::new(app_handle, "main", main_url)
+    let mut builder = builder
         .title("OpenBitFun")
         .inner_size(
             crate::MAIN_WINDOW_DEFAULT_WIDTH,
@@ -563,6 +596,9 @@ pub fn create_main_window(
         .on_page_load({
             let startup_trace_id = startup_trace_id.to_string();
             move |_window, payload| {
+                if matches!(payload.event(), PageLoadEvent::Finished) {
+                    let _ = startup_page_ready.send(true);
+                }
                 let event = match payload.event() {
                     PageLoadEvent::Started => "started",
                     PageLoadEvent::Finished => "finished",
@@ -580,6 +616,23 @@ pub fn create_main_window(
                 }
             }
         });
+
+    // The webview must be transparent for the OS material to reach the sidebar.
+    // Scene backgrounds and the startup tint remain owned by the frontend.
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    {
+        builder = builder
+            .transparent(true)
+            .background_color(tauri::window::Color(0, 0, 0, 0))
+            .effects(
+                tauri::window::EffectsBuilder::new()
+                    .effects([
+                        tauri::window::Effect::Acrylic,
+                        tauri::window::Effect::Sidebar,
+                    ])
+                    .build(),
+            );
+    }
 
     #[cfg(debug_assertions)]
     if !use_development_frontend() {
@@ -607,17 +660,6 @@ pub fn create_main_window(
     builder =
         builder.on_navigation(move |url| navigation_workbench.should_allow_main_navigation(url));
 
-    #[cfg(target_os = "macos")]
-    {
-        builder = builder
-            .decorations(true)
-            .title_bar_style(tauri::TitleBarStyle::Overlay)
-            // Match the 45px toolbar row (layout.toolbar.mdHeight) used by
-            // NavBar and SceneTopBar, including when the sidebar is collapsed.
-            .traffic_light_position(tauri::LogicalPosition::new(12.0, 22.5))
-            .hidden_title(true);
-    }
-
     #[cfg(target_os = "windows")]
     {
         builder = builder.decorations(false);
@@ -626,6 +668,10 @@ pub fn create_main_window(
     let build_started_at = Instant::now();
     match builder.build() {
         Ok(window) => {
+            #[cfg(target_os = "windows")]
+            if let Err(error) = crate::window_webview_geometry::install(&window) {
+                error!("Failed to install main WebView geometry protection: {error}");
+            }
             let reapply_maximized = crate::restore_main_window_state(&window);
             crate::webview_recovery::install(&window);
             startup_trace.record_elapsed_step("native_window", "webview_build", build_started_at);
@@ -645,12 +691,36 @@ pub fn create_main_window(
                 }
             }
 
-            show_main_window_for_startup(
-                &window,
-                total_started_at,
-                startup_trace,
-                reapply_maximized,
-            );
+            // A transparent window shown before the document loads exposes bare
+            // Acrylic: the frontend's startup tint does not exist yet. Keep the
+            // native background transparent and delay only the initial reveal.
+            let startup_trace = startup_trace.clone();
+            tauri::async_runtime::spawn(async move {
+                let ready = matches!(
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(10),
+                        startup_page_ready_rx.wait_for(|ready| *ready),
+                    )
+                    .await,
+                    Ok(Ok(_))
+                );
+                if !ready {
+                    // Keep a failed navigation observable instead of leaving an
+                    // invisible process; normal startup always waits for the page.
+                    warn!("Startup page did not finish loading before the window reveal watchdog");
+                }
+                let visible_window = window.clone();
+                if let Err(error) = window.run_on_main_thread(move || {
+                    show_main_window_for_startup(
+                        &visible_window,
+                        total_started_at,
+                        &startup_trace,
+                        reapply_maximized,
+                    );
+                }) {
+                    warn!("Failed to schedule main window startup reveal: {}", error);
+                }
+            });
         }
         Err(e) => {
             error!(
@@ -683,18 +753,18 @@ fn show_main_window_for_startup(
     let focus_started_at = Instant::now();
     if let Err(error) = window.set_focus() {
         warn!("Failed to focus main window during startup: {}", error);
-        return;
+    } else {
+        startup_trace.record_elapsed_step("native_window", "focus_window", focus_started_at);
+        debug!(
+            "Main window startup show step completed: step=focus duration_ms={} since_create_start_ms={}",
+            focus_started_at.elapsed().as_millis(),
+            total_started_at.elapsed().as_millis()
+        );
     }
-    startup_trace.record_elapsed_step("native_window", "focus_window", focus_started_at);
-    debug!(
-        "Main window startup show step completed: step=focus duration_ms={} since_create_start_ms={}",
-        focus_started_at.elapsed().as_millis(),
-        total_started_at.elapsed().as_millis()
-    );
 
     // Maximize only after the window is visible: maximizing a hidden
     // undecorated window on Windows is dropped on show and leaves a bogus
-    // normal-placement rect behind (see `main_window_restore_flags`).
+    // normal-placement rect behind (see `window_state_support`).
     if reapply_maximized {
         match window.is_maximized() {
             Ok(true) => {}
@@ -1024,6 +1094,15 @@ pub async fn hide_agent_companion_desktop_pet(app: tauri::AppHandle) -> Result<(
 pub async fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
     let total_started_at = Instant::now();
     if let Some(main_window) = app.get_webview_window("main") {
+        main_window
+            .unminimize()
+            .map_err(|error| error.to_string())?;
+        if let Err(error) = crate::window_state_support::repair_for_activation(&main_window) {
+            warn!(
+                "Failed to repair main window geometry during activation: {}",
+                error
+            );
+        }
         let step_started_at = Instant::now();
         main_window.show().map_err(|e| {
             error!("Failed to show main window: {}", e);

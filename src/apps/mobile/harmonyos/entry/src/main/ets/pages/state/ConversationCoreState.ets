@@ -1,3 +1,4 @@
+import { ComposerSubmission } from '../../model/ComposerSubmission';
 import {
   ChatMessage,
   RemoteModelCatalog,
@@ -23,6 +24,8 @@ export class ConversationCoreState {
   @Trace optimisticMessages: ChatMessage[] = [];
   @Trace activeTurnMessage: ChatMessage = RemoteUiState.emptyActiveTurn();
   @Trace hasMoreMessages: boolean = false;
+  @Trace historyLoading: boolean = false;
+  @Trace historyFailed: boolean = false;
   @Trace timelineItems: ObservableChatTimelineItem[] = [];
   @Trace timelineRevision: number = 0;
   @Trace isBusy: boolean = false;
@@ -32,6 +35,7 @@ export class ConversationCoreState {
   @Trace chatInput: string = '';
   @Trace selectedImages: SelectedImageAttachment[] = [];
   @Trace isVoiceListening: boolean = false;
+  private composerRevision: number = 0;
   private readonly defaultAgentType: string;
   private readonly timelineRevisionTracker: ChatTimelineRevisionTracker = new ChatTimelineRevisionTracker();
   private readonly timelineRowStore: ChatTimelineRowStore = new ChatTimelineRowStore();
@@ -46,16 +50,19 @@ export class ConversationCoreState {
   }
 
   setActiveSession(session: SessionSummary): void {
+    if (this.activeSession.sessionId !== session.sessionId) this.composerRevision++;
     this.activeSession = {
       sessionId: session.sessionId,
       title: session.title,
       workspacePath: session.workspacePath,
+      remoteConnectionId: session.remoteConnectionId,
       agentType: this.defaultAgentType === 'chat' ? 'chat' : session.agentType,
       initialTurnId: session.initialTurnId
     };
   }
 
   clearActiveSession(): void {
+    this.composerRevision++;
     this.activeSession = ConversationCoreState.emptySession(this.defaultAgentType);
     this.clearTimeline();
   }
@@ -86,6 +93,8 @@ export class ConversationCoreState {
     this.optimisticMessages = [];
     this.activeTurnMessage = RemoteUiState.emptyActiveTurn();
     this.hasMoreMessages = false;
+    this.historyLoading = false;
+    this.historyFailed = false;
     this.timelineItems = [];
     this.timelineRowStore.clear();
     this.timelineRevision = this.timelineRevisionTracker.reset();
@@ -105,24 +114,58 @@ export class ConversationCoreState {
   }
 
   setChatInput(chatInput: string): void {
+    if (this.chatInput === chatInput) return;
+    this.composerRevision++;
     this.chatInput = chatInput;
   }
 
   setSelectedImages(selectedImages: SelectedImageAttachment[]): void {
+    this.composerRevision++;
     this.selectedImages = selectedImages.slice();
   }
 
   addSelectedImages(selectedImages: SelectedImageAttachment[]): void {
+    this.composerRevision++;
     this.selectedImages = this.selectedImages.concat(selectedImages);
   }
 
   removeSelectedImage(imageId: string): void {
+    this.composerRevision++;
     this.selectedImages = this.selectedImages.filter((image: SelectedImageAttachment) => image.id !== imageId);
   }
 
   clearComposer(): void {
+    this.composerRevision++;
     this.chatInput = '';
     this.selectedImages = [];
+  }
+
+  /** Capture ownership before any await; later callbacks cannot consume a newer draft. */
+  prepareComposerSubmission(sessionId: string, text: string, images: SelectedImageAttachment[]): ComposerSubmission {
+    const originalText = this.chatInput;
+    const originalImages = this.selectedImages.slice();
+    const capturedRevision = this.composerRevision;
+    let committedRevision = -1;
+    let committed = false;
+    let finished = false;
+    return {
+      commit: (): void => {
+        if (finished || committed || this.composerRevision !== capturedRevision ||
+          this.activeSession.sessionId !== sessionId) return;
+        if (this.chatInput.trim() === text.trim()) this.setChatInput('');
+        this.setSelectedImages(this.selectedImages.filter((image: SelectedImageAttachment): boolean =>
+          !images.some((sent: SelectedImageAttachment): boolean => sent.id === image.id)));
+        committedRevision = this.composerRevision;
+        committed = true;
+      },
+      rollback: (): void => {
+        if (finished) return;
+        finished = true;
+        if (!committed || this.composerRevision !== committedRevision || this.activeSession.sessionId !== sessionId) return;
+        this.setChatInput(originalText);
+        this.setSelectedImages(originalImages);
+      }
+    };
   }
 
   /**

@@ -1,7 +1,9 @@
+import { contentUsageState, type ContentUsageState } from './ecosystemContentPresentation';
 import type { AcpClientInfo } from '@/infrastructure/api/service-api/ACPClientAPI';
 import type { ExternalSourceCatalogSnapshot } from '@/infrastructure/api/service-api/ExternalSourcesAPI';
 
 export type EcosystemProductId =
+  | 'cursor'
   | 'claude-code'
   | 'codex'
   | 'pi'
@@ -15,19 +17,12 @@ export type CompatibilityCapabilityId =
   | 'mcp'
   | 'runtime';
 
-export type EcosystemProductStatus =
-  | 'connected'
-  | 'detected'
-  | 'configured'
-  | 'available'
-  | 'development';
-
-export type EcosystemProductGroup = 'connected' | 'available' | 'other';
+export type EcosystemProductGroup = 'identified' | 'more' | 'other';
 
 export interface EcosystemProductSpec {
   id: EcosystemProductId;
   name: string;
-  ecosystemId?: string;
+  ecosystemId: string;
   acpClientId?: string;
   development?: boolean;
   searchTerms: readonly string[];
@@ -43,7 +38,6 @@ export interface CompatibilityCapabilityCounts {
 
 export interface EcosystemProductRuntime {
   spec: EcosystemProductSpec;
-  status: EcosystemProductStatus;
   group: EcosystemProductGroup;
   sources: ExternalSourceCatalogSnapshot['sources'];
   acpClients: AcpClientInfo[];
@@ -71,13 +65,14 @@ export type EcosystemImportItemKind =
   | 'skill'
   | 'mcp'
   | 'hook'
+  | 'instruction'
   | 'memory'
   | 'plugin'
   | 'pet';
 
-export type EcosystemCompatibilitySupport =
-  | 'adapted'
-  | 'notAdapted'
+export type EcosystemDiscoverySupport =
+  | 'supported'
+  | 'unsupported'
   | 'notApplicable';
 
 export type EcosystemCompatibilityDetection = 'catalog' | 'owner';
@@ -90,9 +85,9 @@ export interface EcosystemImportItem {
   sourceName: string;
   sourceLocation?: string;
   candidateId?: string;
-  support: EcosystemCompatibilitySupport;
+  discoverySupport: EcosystemDiscoverySupport;
+  usageState?: ContentUsageState;
   detection: EcosystemCompatibilityDetection;
-  nativeImportSupported: boolean;
   discovered: boolean;
 }
 
@@ -105,26 +100,29 @@ export const ECOSYSTEM_IMPORT_ITEM_KINDS: readonly EcosystemImportItemKind[] = [
   'skill',
   'mcp',
   'hook',
+  'instruction',
   'memory',
   'plugin',
   'pet',
 ];
 
 /**
- * Current product-to-OpenBitFun adaptation facts. These are deliberately explicit:
+ * Discovery coverage in this page, not import or runtime support. These are deliberately explicit:
  * a missing discovery result must not imply that every upstream product offers
  * every object type. Catalog-backed kinds are discovered by this page; Skill
- * and Hook reuse stays with their existing capability owners.
+ * and Hook discovery stays with their existing capability owners.
  */
-const PRODUCT_ADAPTED_KINDS = {
+const PRODUCT_DISCOVERY_KINDS = {
+  cursor: ['skill'],
   'claude-code': ['command', 'subagent', 'skill', 'mcp', 'hook'],
-  codex: ['subagent', 'skill', 'mcp', 'hook'],
+  codex: ['subagent', 'skill', 'mcp', 'hook', 'pet'],
   pi: ['skill', 'hook'],
-  dsh: ['skill', 'hook'],
+  dsh: ['skill', 'hook', 'mcp'],
   opencode: ['command', 'tool', 'subagent', 'skill', 'mcp', 'hook'],
 } as const satisfies Record<EcosystemProductId, readonly EcosystemImportItemKind[]>;
 
 const PRODUCT_NOT_APPLICABLE_KINDS = {
+  cursor: ECOSYSTEM_IMPORT_ITEM_KINDS.filter((kind) => kind !== 'skill'),
   'claude-code': ['tool', 'pet'],
   codex: ['command', 'tool'],
   pi: ['pet'],
@@ -132,17 +130,19 @@ const PRODUCT_NOT_APPLICABLE_KINDS = {
   opencode: ['pet'],
 } as const satisfies Record<EcosystemProductId, readonly EcosystemImportItemKind[]>;
 
-const OWNER_DETECTED_KINDS = new Set<EcosystemImportItemKind>(['skill', 'hook']);
+const OWNER_DETECTED_KINDS = new Set<EcosystemImportItemKind>(['skill', 'hook', 'instruction', 'pet']);
 
-export function ecosystemCompatibilitySupport(
+export function ecosystemDiscoverySupport(
   productId: EcosystemProductId,
   kind: EcosystemImportItemKind,
-): EcosystemCompatibilitySupport {
-  const adaptedKinds = PRODUCT_ADAPTED_KINDS[productId] as readonly EcosystemImportItemKind[];
-  if (adaptedKinds.includes(kind)) return 'adapted';
+): EcosystemDiscoverySupport {
+  // The instruction owner also reports shared workspace AGENTS documents.
+  if (kind === 'instruction' && productId !== 'cursor') return 'supported';
+  const discoveryKinds = PRODUCT_DISCOVERY_KINDS[productId] as readonly EcosystemImportItemKind[];
+  if (discoveryKinds.includes(kind)) return 'supported';
 
   const notApplicableKinds = PRODUCT_NOT_APPLICABLE_KINDS[productId] as readonly EcosystemImportItemKind[];
-  return notApplicableKinds.includes(kind) ? 'notApplicable' : 'notAdapted';
+  return notApplicableKinds.includes(kind) ? 'notApplicable' : 'unsupported';
 }
 
 /**
@@ -184,6 +184,7 @@ export const ECOSYSTEM_PRODUCT_SPECS: readonly EcosystemProductSpec[] = [
     acpClientId: 'opencode',
     searchTerms: ['open code', 'agent', 'command', 'tool', 'mcp', 'acp'],
   },
+  { id: 'cursor', name: 'Cursor', ecosystemId: 'cursor', searchTerms: ['.cursor', 'skills'] },
 ] as const;
 
 function sourcePairKey(providerId: string, sourceId: string): string {
@@ -207,6 +208,46 @@ function productSources(
 ): ExternalSourceCatalogSnapshot['sources'] {
   if (!snapshot || !ecosystemId) return [];
   return snapshot.sources.filter((source) => source.record.ecosystemId === ecosystemId);
+}
+
+export function catalogDiscoveryState(
+  snapshot: ExternalSourceCatalogSnapshot | null,
+  ecosystemId: string | undefined,
+  capabilityId: string,
+): 'checking' | 'notScanned' | 'discoveryDisabled' | 'discoveryUnavailable' | 'notDetected' {
+  if (!snapshot) return 'checking';
+  if (snapshot.discovery) {
+    if (snapshot.discovery.retainedKinds?.includes(capabilityId)) return 'discoveryUnavailable';
+    if (snapshot.discovery.discoverableCapabilities
+      && !snapshot.discovery.discoverableCapabilities[ecosystemId ?? '']?.includes(capabilityId)) return 'notScanned';
+    if (!snapshot.discovery.hasScanned) return snapshot.discovery.enabled ? 'checking' : 'notScanned';
+    if (snapshot.discoveryPending) return 'checking';
+    const failed = productSources(snapshot, ecosystemId).some((source) => (
+      ['unavailable', 'degraded'].includes(source.record.health)
+      && (!source.record.diagnostics?.length || source.record.diagnostics.some((diagnostic) =>
+        !diagnostic.assetKind || diagnostic.assetKind === 'source' || diagnostic.assetKind === capabilityId))
+    ));
+    const failedScan = snapshot.diagnostics?.some((diagnostic) =>
+      !diagnostic.assetKind || diagnostic.assetKind === 'source' || diagnostic.assetKind === capabilityId);
+    return failed || failedScan ? 'discoveryUnavailable' : 'notDetected';
+  }
+  const policy = snapshot.integrationPolicy;
+  if (policy?.status !== 'compatible') return 'discoveryUnavailable';
+  if (policy.effective?.enabled === false) return 'discoveryDisabled';
+  if (policy.effective?.enabled !== true) return 'discoveryUnavailable';
+  const access = ecosystemId
+    ? policy.effective.ecosystems?.[ecosystemId]?.capabilities?.[capabilityId]
+    : undefined;
+  if (access === 'disabled') return 'discoveryDisabled';
+  if (!access || !['discover_only', 'ask_before_use', 'auto'].includes(access)) {
+    return 'discoveryUnavailable';
+  }
+  if (snapshot.discoveryPending) return 'checking';
+  const failedSource = productSources(snapshot, ecosystemId).some((source) => (
+    ['unavailable', 'degraded'].includes(source.record.health)
+    && source.record.diagnostics?.some((diagnostic) => diagnostic.assetKind === capabilityId)
+  ));
+  return failedSource ? 'discoveryUnavailable' : 'notDetected';
 }
 
 function capabilityCounts(
@@ -247,24 +288,13 @@ function capabilityCounts(
   };
 }
 
-function runtimeStatus(
-  spec: EcosystemProductSpec,
-  sources: ExternalSourceCatalogSnapshot['sources'],
-  acpClients: AcpClientInfo[],
-): EcosystemProductStatus {
-  if (spec.development) return 'development';
-  if (acpClients.some((client) => client.status === 'running')) return 'connected';
-  if (sources.length > 0) return 'detected';
-  if (acpClients.some((client) => client.enabled)) return 'configured';
-  return 'available';
-}
-
-function runtimeGroup(status: EcosystemProductStatus): EcosystemProductGroup {
-  if (status === 'connected' || status === 'detected' || status === 'configured') {
-    return 'connected';
-  }
-  if (status === 'development') return 'other';
-  return 'available';
+function runtimeGroup(spec: EcosystemProductSpec, sources: EcosystemProductRuntime['sources'], clients: AcpClientInfo[]): EcosystemProductGroup {
+  if (spec.development) return 'other';
+  const identifiedSource = sources.some((source) => source.lifecycle !== 'removed'
+    && ['available', 'partial'].includes(source.record.health));
+  const configuredByUser = clients.some((client) => client.readonly === false
+    || client.status === 'running' || client.status === 'starting');
+  return identifiedSource || configuredByUser ? 'identified' : 'more';
 }
 
 function knownCapabilityId(value: string): value is Exclude<CompatibilityCapabilityId, 'runtime'> {
@@ -281,7 +311,7 @@ export function buildEcosystemProductRuntimes(
   return ECOSYSTEM_PRODUCT_SPECS.map((spec) => {
     const sources = productSources(snapshot, spec.ecosystemId);
     const descriptor = spec.ecosystemId
-      ? snapshot?.integrationPolicy.registeredEcosystems.find(
+      ? snapshot?.integrationPolicy?.registeredEcosystems?.find(
           (candidate) => candidate.ecosystemId === spec.ecosystemId,
         )
       : undefined;
@@ -297,17 +327,17 @@ export function buildEcosystemProductRuntimes(
     if (spec.acpClientId && !capabilityIds.includes('runtime')) {
       capabilityIds.push('runtime');
     }
-    const status = runtimeStatus(spec, sources, acpClients);
+    const counts = capabilityCounts(snapshot, sources, acpClients);
 
     return {
       spec,
-      status,
-      group: runtimeGroup(status),
+      group: totalDiscoveredAssets(counts) > 0
+        ? 'identified' : runtimeGroup(spec, sources, acpClients),
       sources,
       acpClients,
       acpClient,
       capabilityIds,
-      capabilityCounts: capabilityCounts(snapshot, sources, acpClients),
+      capabilityCounts: counts,
       adapterRevision: descriptor?.adapterRevision,
       sourceLocation: sources[0]?.record.location ?? acpClients[0]?.command,
       executionDomainId: sources[0]?.record.executionDomainId,
@@ -329,20 +359,39 @@ export function buildEcosystemImportItems(
       sourceLocation: match?.record.location,
     };
   };
+  // Only a host that explicitly advertises execution can attest to direct usability.
+  const usage = (source: { providerId: string; sourceId: string }, kind: string, state?: string): ContentUsageState => {
+    // The static discovery endpoint does not attest to runtime activation.
+    if (snapshot?.discovery) return 'unknown';
+    if (snapshot?.hostCapabilities?.canExecuteExternalAssets !== true) {
+      return snapshot?.hostCapabilities?.canExecuteExternalAssets === false ? 'runtimeUnavailable' : 'unknown';
+    }
+    const access = snapshot.integrationPolicy?.effective?.ecosystems?.[runtime.spec.ecosystemId]?.capabilities?.[kind];
+    if (access === 'disabled' || access === 'discover_only') return 'disabled';
+    if (access !== 'auto' && access !== 'ask_before_use') return 'unknown';
+    const lifecycle = itemSource(runtime.sources, source)?.lifecycle;
+    if (lifecycle === 'suppressed') return 'disabled';
+    if (lifecycle === 'removed' || lifecycle === 'unavailable') return 'runtimeUnavailable';
+    if (lifecycle === 'restricted') return 'blocked';
+    return contentUsageState(state);
+  };
   const items: EcosystemImportItem[] = [];
 
   for (const command of snapshot?.commands ?? []) {
     const source = command.definition.id.source;
     if (!belongsToProduct(source)) continue;
+    const conflict = snapshot?.commandConflicts?.find((entry) => entry.commandName === command.definition.name);
+    const commandUsage = usage(source, 'command', command.definition.availability?.state);
     items.push({
       id: `command:${command.candidateId ?? `${source.providerId}/${source.sourceId}:${command.definition.id.localId}`}`,
       kind: 'command',
       name: command.definition.name,
       description: command.definition.description,
+      usageState: commandUsage === 'available' && conflict
+        && (!command.candidateId || conflict.selectedCandidateId !== command.candidateId) ? 'conflict' : commandUsage,
       ...sourceFacts(source),
-      support: 'adapted',
+      discoverySupport: 'supported',
       detection: 'catalog',
-      nativeImportSupported: false,
       discovered: true,
     });
   }
@@ -355,10 +404,10 @@ export function buildEcosystemImportItems(
       kind: 'tool',
       name: tool.definition.name,
       description: tool.definition.descriptionPreview,
+      usageState: usage(source, 'tool', tool.activation?.state),
       ...sourceFacts(source),
-      support: 'adapted',
+      discoverySupport: 'supported',
       detection: 'catalog',
-      nativeImportSupported: false,
       discovered: true,
     });
   }
@@ -371,10 +420,10 @@ export function buildEcosystemImportItems(
       kind: 'subagent',
       name: agent.displayName,
       description: agent.description,
+      usageState: usage(source, 'subagent', agent.activationState?.state),
       ...sourceFacts(source),
-      support: 'adapted',
+      discoverySupport: 'supported',
       detection: 'catalog',
-      nativeImportSupported: false,
       discovered: true,
     });
   }
@@ -388,27 +437,25 @@ export function buildEcosystemImportItems(
       name: server.definition.name,
       ...sourceFacts(source),
       candidateId: server.candidateId,
-      support: 'adapted',
+      discoverySupport: 'supported',
       detection: 'catalog',
-      nativeImportSupported: true,
       discovered: true,
     });
   }
 
   for (const kind of ECOSYSTEM_IMPORT_ITEM_KINDS) {
     if (items.some((item) => item.kind === kind)) continue;
-    const support = ecosystemCompatibilitySupport(runtime.spec.id, kind);
+    const support = ecosystemDiscoverySupport(runtime.spec.id, kind);
     if (support === 'notApplicable') continue;
     items.push({
       id: `undetected:${kind}`,
       kind,
       name: kind,
       sourceName: runtime.spec.name,
-      support,
-      detection: support === 'adapted' && OWNER_DETECTED_KINDS.has(kind)
+      discoverySupport: support,
+      detection: support === 'supported' && OWNER_DETECTED_KINDS.has(kind)
         ? 'owner'
         : 'catalog',
-      nativeImportSupported: support === 'adapted' && kind === 'mcp',
       discovered: false,
     });
   }
@@ -422,16 +469,23 @@ export function buildEcosystemImportItems(
     skill: 5,
     mcp: 6,
     hook: 7,
-    memory: 8,
-    plugin: 9,
-    pet: 10,
+    instruction: 8,
+    memory: 9,
+    plugin: 10,
+    pet: 11,
   };
   return items.sort((left, right) => (
-    kindOrder[left.kind] - kindOrder[right.kind]
+    Number(right.discoverySupport === 'supported') - Number(left.discoverySupport === 'supported')
+    || kindOrder[left.kind] - kindOrder[right.kind]
     || left.name.localeCompare(right.name)
   ));
 }
 
 export function totalDiscoveredAssets(counts: CompatibilityCapabilityCounts): number {
   return counts.command + counts.tool + counts.subagent + counts.mcp;
+}
+
+/** Native subscription connections are separate from external credential discovery. */
+export function ecosystemAccountProvider(product: EcosystemProductId): 'codex' | 'opencode' | undefined {
+  return product === 'codex' || product === 'opencode' ? product : undefined;
 }

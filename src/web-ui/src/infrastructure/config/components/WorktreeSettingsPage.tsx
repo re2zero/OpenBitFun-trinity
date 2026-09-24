@@ -1,4 +1,6 @@
-import { OverflowText, Button, ConfirmDialog, Icon, IconButton, Input, NumberInput, Switch, Tooltip } from '@openbitfun/ui';
+import { workspaceManager } from '@/infrastructure/services/business/workspaceManager';
+import { resolveLegacySessionWorkspace } from '@/infrastructure/api/service-api/legacyWorkspaceCompatibility';
+import { OverflowText, Button, ConfirmDialog, Icon, IconButton, Input, NumberInput, StatusPill, Switch, Tooltip } from '@openbitfun/ui';
 import React, {
   useCallback,
   useEffect,
@@ -14,6 +16,7 @@ import { configAPI, worktreeAPI } from '@/infrastructure/api';
 import { sessionAPI } from '@/infrastructure/api/service-api/SessionAPI';
 import type {
   WorktreeCommandError,
+  WorktreeProjectLocator,
   WorktreeProjectSummary,
   WorktreeSessionSummary,
   WorktreeSettings,
@@ -50,6 +53,7 @@ const DEFAULT_SETTINGS: WorktreeSettings = {
 };
 
 interface DeleteTarget {
+  projectWorkspaceId?: string;
   projectWorkspacePath: string;
   worktree: WorktreeSummary;
 }
@@ -340,7 +344,10 @@ const WorktreeSettingsPage: React.FC = () => {
       const discardLocalWork =
         target.worktree.dirty || target.worktree.hasUnpublishedCommits;
       await worktreeAPI.remove(
-        target.projectWorkspacePath,
+        {
+          projectWorkspaceId: target.projectWorkspaceId,
+          projectWorkspacePath: target.projectWorkspacePath,
+        },
         target.worktree.worktreeId,
         createDeleteRequestId(),
         discardLocalWork,
@@ -397,13 +404,21 @@ const WorktreeSettingsPage: React.FC = () => {
   };
 
   const openAssociatedSession = useCallback(async (
-    projectWorkspacePath: string,
+    project: WorktreeProjectLocator,
     session: WorktreeSessionSummary,
   ) => {
     if (openingSessionId) return;
 
     setOpeningSessionId(session.sessionId);
     try {
+      // The session's own workspace ID is authoritative; the owning project ID
+      // covers persisted sessions recorded before per-session IDs. The path
+      // lookup is the legacy-compat boundary for pre-ID project catalogs.
+      const workspaceId = session.workspaceId
+        ?? project.projectWorkspaceId
+        ?? resolveLegacySessionWorkspace({ workspacePath: project.projectWorkspacePath },
+          [...workspaceManager.getState().openedWorkspaces.values()])?.id;
+      if (!workspaceId) throw new Error('Workspace ID is unavailable');
       if (session.archived) {
         const shouldRestore = await confirmWarning(
           t('management.sessions.restoreTitle'),
@@ -412,16 +427,16 @@ const WorktreeSettingsPage: React.FC = () => {
         if (!shouldRestore) {
           return;
         }
-        await sessionAPI.unarchiveSession(session.sessionId, projectWorkspacePath);
+        await sessionAPI.unarchiveSession(session.sessionId, workspaceId);
         await flowChatManager.refreshWorkspaceSessions({
-          rootPath: projectWorkspacePath,
+          id: workspaceId,
         });
       }
 
       let opened = await openAgentCompanionSession(session.sessionId);
       if (!opened) {
         await flowChatManager.refreshWorkspaceSessions({
-          rootPath: projectWorkspacePath,
+          id: workspaceId,
         });
         opened = await openAgentCompanionSession(session.sessionId);
       }
@@ -593,13 +608,21 @@ const WorktreeSettingsPage: React.FC = () => {
             <div className="openbitfun-worktree-settings__worktree-heading">
               <h5 className="openbitfun-worktree-settings__worktree-title"><OverflowText>{branchLabel}</OverflowText></h5>
               <div className="openbitfun-worktree-settings__metadata">
-                {worktree.lifecycle !== 'managed' && <span>{lifecycleLabel}</span>}
-                {worktree.dirty && <span>{t('management.state.dirty')}</span>}
-                {worktree.hasUnpublishedCommits && (
-                  <span>{t('management.state.unpublishedCommits')}</span>
+                {worktree.lifecycle !== 'managed' && (
+                  <StatusPill tone="neutral">{lifecycleLabel}</StatusPill>
                 )}
-                {worktree.locked && <span>{t('management.state.locked')}</span>}
-                {worktree.missing && <span>{t('management.state.missing')}</span>}
+                {worktree.dirty && (
+                  <StatusPill tone="warning">{t('management.state.dirty')}</StatusPill>
+                )}
+                {worktree.hasUnpublishedCommits && (
+                  <StatusPill tone="warning">{t('management.state.unpublishedCommits')}</StatusPill>
+                )}
+                {worktree.locked && (
+                  <StatusPill tone="danger">{t('management.state.locked')}</StatusPill>
+                )}
+                {worktree.missing && (
+                  <StatusPill tone="danger">{t('management.state.missing')}</StatusPill>
+                )}
               </div>
             </div>
             <code className="openbitfun-worktree-settings__path" title={worktree.path}><OverflowText>
@@ -611,7 +634,7 @@ const WorktreeSettingsPage: React.FC = () => {
                 title={sessionNames}
               >
                 <MessageSquareText size={13} aria-hidden />
-                <span>
+                <span className="openbitfun-worktree-settings__sessions-count">
                   {t('management.sessions.summary', {
                     count: worktree.associatedSessionCount,
                   })}
@@ -627,7 +650,7 @@ const WorktreeSettingsPage: React.FC = () => {
                         name: session.sessionName,
                       })}
                       onClick={() => void openAssociatedSession(
-                        project.projectWorkspacePath,
+                        project,
                         session,
                       )}
                     >
@@ -659,6 +682,7 @@ const WorktreeSettingsPage: React.FC = () => {
                 loading={deletingWorktreeId === worktree.worktreeId}
                 title={blockReason ?? undefined}
                 onClick={() => setDeleteTarget({
+                  projectWorkspaceId: project.projectWorkspaceId,
                   projectWorkspacePath: project.projectWorkspacePath,
                   worktree,
                 })}
@@ -701,7 +725,7 @@ const WorktreeSettingsPage: React.FC = () => {
       return (
         <ConfigEmptyState
           className="openbitfun-worktree-settings__empty"
-          icon={<FolderGit2 size={36} aria-hidden />}
+          icon={<FolderGit2 aria-hidden />}
           title={t('management.empty.title')}
           description={t('management.empty.description')}
         />

@@ -1,10 +1,35 @@
 import React, { act } from 'react';
+import { readdirSync, readFileSync } from 'node:fs';
+import path from 'node:path';
 import { createRoot, type Root } from 'react-dom/client';
 import { JSDOM } from 'jsdom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ContextMenu } from './ContextMenu';
 import type { ContextMenuItem } from './types';
+import { ContextMenuRenderer } from '../ContextMenuRenderer';
+import { useContextMenuStore } from '../../store/ContextMenuStore';
+
+const contextMenuSourceRoot = path.resolve(__dirname, '../..');
+
+function contextMenuSourceFiles(directory: string): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
+    const file = path.join(directory, entry.name);
+    if (entry.isDirectory()) return contextMenuSourceFiles(file);
+    return /\.tsx?$/.test(entry.name) && !/\.test\.tsx?$/.test(entry.name) ? [file] : [];
+  });
+}
+
+/** Icon names are strings until the renderer maps them, so every referenced name must resolve. */
+function referencedIconNames(): string[] {
+  const names = new Set<string>();
+  for (const file of contextMenuSourceFiles(contextMenuSourceRoot)) {
+    for (const match of readFileSync(file, 'utf8').matchAll(/\bicon:\s*'([^']+)'/g)) {
+      names.add(match[1]);
+    }
+  }
+  return Array.from(names).sort();
+}
 
 vi.mock('@/shared/utils/logger', () => ({
   createLogger: () => ({ error: vi.fn() }),
@@ -37,6 +62,7 @@ describe('ContextMenu presence', () => {
 
   afterEach(() => {
     act(() => root.unmount());
+    useContextMenuStore.getState().reset();
     vi.useRealTimers();
     dom.window.close();
   });
@@ -262,5 +288,80 @@ describe('ContextMenu presence', () => {
     expect(document.querySelector('[data-openbitfun-component="menu"][data-openbitfun-product-part="root"]')).not.toBeNull();
     expect(document.querySelector('[data-openbitfun-product-part="item"][data-openbitfun-state="disabled"]')?.getAttribute('aria-disabled')).toBe('true');
     expect(document.querySelector('[data-openbitfun-product-part="item"][data-openbitfun-state="submenu-active"]')?.getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('sizes the surface to its own rows within the shared menu bounds', () => {
+    act(() => root.render(<ContextMenu visible position={{ x: 20, y: 20 }} onClose={vi.fn()} items={[
+      { id: 'copy', label: 'Copy', icon: <svg />, shortcut: 'Ctrl+Shift+C' },
+    ]} />));
+    expect(document.querySelector('[data-openbitfun-component="menu"]')?.getAttribute('data-openbitfun-inline-size')).toBe('content');
+  });
+
+  it('resolves the file explorer terminal icon and forwards layout classes through product slots', () => {
+    useContextMenuStore.setState({
+      visible: true,
+      position: { x: 20, y: 20 },
+      items: [
+        { id: 'file-new-terminal', label: 'New terminal here', icon: 'Terminal' },
+        { id: 'file-paste', label: 'Paste', icon: 'Clipboard', shortcut: 'Ctrl+V' },
+        { id: 'file-new', label: 'New', icon: 'Plus', submenu: [{ id: 'file-new-file', label: 'New file', icon: 'FilePlus' }] },
+      ],
+    });
+    act(() => root.render(<ContextMenuRenderer />));
+    const terminal = document.querySelector('[data-menu-id="file-new-terminal"]')!;
+    expect(terminal.querySelector('[data-openbitfun-name="terminal"] svg')).not.toBeNull();
+    expect(terminal.querySelector('i.Terminal')).toBeNull();
+    const iconSlots = Array.from(document.querySelectorAll<HTMLElement>('[data-openbitfun-product-part="icon"]'));
+    expect(iconSlots).toHaveLength(3);
+    for (const slot of iconSlots) {
+      expect(slot.className).not.toBe('');
+      expect(slot.parentElement?.getAttribute('data-openbitfun-part')).toBe('leading');
+      expect(slot.querySelector('svg')).not.toBeNull();
+    }
+    expect(document.querySelector<HTMLElement>('[data-openbitfun-product-part="submenuArrow"]')?.className).toBeTruthy();
+  });
+
+  it('resolves every workspace terminal action icon', () => {
+    useContextMenuStore.setState({
+      visible: true,
+      position: { x: 20, y: 20 },
+      items: [
+        { id: 'stop', label: 'Stop', icon: 'Square' },
+        { id: 'configure', label: 'Save configuration', icon: 'Settings' },
+        { id: 'reveal-directory', label: 'Reveal working directory', icon: 'FolderOpen' },
+        { id: 'remove', label: 'Remove terminal', icon: 'Trash2', disabled: true },
+      ],
+    });
+
+    act(() => root.render(<ContextMenuRenderer />));
+
+    for (const id of ['stop', 'configure', 'reveal-directory', 'remove']) {
+      const item = document.querySelector(`[data-menu-id="${id}"]`)!;
+      expect(item.querySelector('svg')).not.toBeNull();
+      expect(item.querySelector('i')).toBeNull();
+    }
+    expect(document.querySelector('[data-menu-id="configure"] [data-openbitfun-name="gear"]')).not.toBeNull();
+    expect(document.querySelector('[data-menu-id="remove"] [data-openbitfun-name="delete"]')).not.toBeNull();
+  });
+
+  it('resolves every icon name referenced by menu providers and commands', () => {
+    const names = referencedIconNames();
+    expect(names).toContain('SelectAll');
+    expect(names.length).toBeGreaterThan(10);
+
+    useContextMenuStore.setState({
+      visible: true,
+      position: { x: 20, y: 20 },
+      items: names.map(name => ({ id: `icon-${name}`, label: name, icon: name })),
+    });
+
+    act(() => root.render(<ContextMenuRenderer />));
+
+    for (const name of names) {
+      const item = document.querySelector(`[data-menu-id="icon-${name}"]`);
+      expect(item, `unresolved menu item for icon ${name}`).not.toBeNull();
+      expect(item?.querySelector('svg'), `unresolved icon ${name}`).not.toBeNull();
+      expect(item?.querySelector('i'), `untranslated icon name ${name}`).toBeNull();
+    }
   });
 });

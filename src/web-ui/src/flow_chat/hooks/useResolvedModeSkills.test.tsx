@@ -4,6 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ModeSkillInfo } from '@/infrastructure/config/types';
 import { configAPI } from '@/infrastructure/api/service-api/ConfigAPI';
+import { globalEventBus } from '@/infrastructure/event-bus';
 import { useResolvedModeSkills } from './useResolvedModeSkills';
 
 vi.mock('@/infrastructure/api/service-api/ConfigAPI', () => ({
@@ -37,7 +38,7 @@ describe('useResolvedModeSkills', () => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     container = document.createElement('div');
     root = createRoot(container);
-    props = { enabled: true, surfaceEpoch: 1, modeId: 'agent', workspacePath: '/project' };
+    props = { enabled: true, surfaceEpoch: 1, modeId: 'agent', workspaceId: 'workspace-id' };
     requests.length = 0;
     vi.mocked(configAPI.getModeSkillScanReport).mockReset().mockImplementation(() => {
       const request = deferred();
@@ -67,7 +68,7 @@ describe('useResolvedModeSkills', () => {
   });
 
   it.each([
-    { workspacePath: '/different' },
+    { workspaceId: 'other-workspace-id' },
     { modeId: 'plan' },
     { connectionId: 'other-ssh-host' },
     { surfaceEpoch: 2 },
@@ -115,5 +116,35 @@ describe('useResolvedModeSkills', () => {
     await act(async () => requests[1].reject(new Error('offline')));
     expect(latest.skills).toEqual([]);
     expect(latest.failed).toBe(true);
+  });
+
+  it('invalidates pending policy when a Skill switch changes and ignores its late response', async () => {
+    await render();
+    await act(async () => globalEventBus.emit('mode:config:updated'));
+    expect(requests).toHaveLength(2);
+    const disabled = [{ ...skills[0], globallyEnabled: false, selectedForRuntime: false }];
+    await act(async () => requests[1].resolve(disabled));
+    await act(async () => requests[0].resolve(skills));
+    expect(latest.skills).toEqual(disabled);
+    await render({ enabled: false });
+    await act(async () => globalEventBus.emit('mode:config:updated'));
+    expect(latest.skills).toEqual([]);
+    expect(requests).toHaveLength(2);
+    await render({ enabled: true });
+    expect(requests).toHaveLength(3);
+  });
+
+  it('includes resolved external sources alongside native imported copies', async () => {
+    const external = ['claude-code', 'codex', 'cursor', 'opencode', 'agent-skills', 'deepseek-harness', 'pi'].map(sourceId => ({
+      name: sourceId, key: sourceId, sourceId, effectiveEnabled: true, selectedForRuntime: true,
+    } as ModeSkillInfo));
+    const imported = { ...skills[0], sourceId: 'openbitfun', importOrigin: { sourceId: 'codex' } } as ModeSkillInfo;
+    await render();
+    await act(async () => requests[0].resolve([...external, imported]));
+    expect(latest.skills).toEqual([...external, imported]);
+    await render({ enabled: false });
+    await render({ enabled: true });
+    await act(async () => requests[1].resolve(external));
+    expect(latest.skills).toEqual(external);
   });
 });

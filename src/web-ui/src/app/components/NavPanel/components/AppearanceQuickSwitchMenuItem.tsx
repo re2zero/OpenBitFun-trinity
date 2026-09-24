@@ -8,8 +8,7 @@ import React, {
   type KeyboardEvent,
   type RefObject,
 } from 'react';
-import { createPortal } from 'react-dom';
-import { OverflowText, Icon, Menu, MenuItem, MenuSeparator } from '@openbitfun/ui';
+import { createOverlayPortal, OverflowText, Icon, Menu, MenuItem, MenuSeparator } from '@openbitfun/ui';
 
 import {
   SYSTEM_APPEARANCE_ID,
@@ -234,10 +233,11 @@ const AppearanceQuickSwitchMenuItem: React.FC<AppearanceQuickSwitchMenuItemProps
         {t('nav.settingsMenu.theme')}
       </MenuItem>
 
-      {open && createPortal(
+      {open && createOverlayPortal(
         <Menu
           ref={submenuRef}
           className="openbitfun-nav-panel__appearance-submenu"
+          inlineSize="content"
           aria-label={t('nav.settingsMenu.theme')}
           data-placement={submenuLayout?.placement}
           data-testid="nav-settings-appearance-menu"

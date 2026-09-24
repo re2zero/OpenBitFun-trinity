@@ -71,9 +71,11 @@ describe('composer context track layout', () => {
     expect(branchPicker).toMatch(
       /branch-quick-switch__item \{[\s\S]*?min-height: var\(--openbitfun-control-height-sm\);/,
     );
-    expect(branchPicker).toMatch(
-      /branch-quick-switch__list \[data-openbitfun-part='list'\] \{[\s\S]*?gap: calc\(var\(--openbitfun-space-1\) \/ 2\);/,
-    );
+    for (const stylesheet of [workspaceStrip, branchPicker, targetPicker]) {
+      expect(stylesheet).not.toMatch(
+        /\[data-openbitfun-part='(?:list|section-items)'\][^{]*\{[^}]*\bgap:/,
+      );
+    }
     expect(targetPicker).toMatch(
       /&__option-row \{[\s\S]*?min-height: var\(--openbitfun-control-height-md\);/,
     );
@@ -218,8 +220,10 @@ describe('composer context track layout', () => {
 
     expect(component).toContain('contextBar={workspaceStrip}');
     expect(component).toContain('<ChatInputWorkspaceStrip');
+    // The composer is a panel of the transcript, so it takes the transcript
+    // content inset and not a second, narrower one of its own.
     expect(chatInput).toMatch(
-      /\.openbitfun-context-drop-zone\.openbitfun-chat-input-drop-zone \{[\s\S]*?padding: 0 var\(--openbitfun-space-2\);/,
+      /\.openbitfun-context-drop-zone\.openbitfun-chat-input-drop-zone \{[\s\S]*?padding: 0 var\(--openbitfun-control-flow-chat-content-padding-inline\);/,
     );
     expect(chatInput).toMatch(
       /\.openbitfun-context-drop-zone\.openbitfun-chat-input-drop-zone \{[\s\S]*?bottom: var\(--openbitfun-space-6\);/,
@@ -305,7 +309,7 @@ describe('composer context track layout', () => {
 
   it('places the compact Harness/main-Agent row inside the add menu', () => {
     const chatInput = readLocalFile('ChatInput.tsx');
-    const addMenuIndex = chatInput.indexOf('modeState.dropdownOpen && createPortal');
+    const addMenuIndex = chatInput.indexOf('modeState.dropdownOpen && createOverlayPortal');
     const harnessIndex = chatInput.indexOf('<HarnessProfileSelector');
     const agentBoostIndex = chatInput.indexOf('data-testid="chat-input-agent-boost"');
     const addMenuEndIndex = chatInput.indexOf('getAppearanceOverlayHost()', harnessIndex);
@@ -419,7 +423,7 @@ describe('composer context track layout', () => {
     expect(component).not.toContain("cloneBoxEl.classList.add('openbitfun-chat-input__box--capsule')");
   });
 
-  it('keeps a new session expanded until its first submission starts the session', () => {
+  it('keeps new workbench sessions expanded while compact conversations start collapsed', () => {
     const component = readLocalFile('ChatInput.tsx');
 
     expect(component).toContain(
@@ -432,10 +436,13 @@ describe('composer context track layout', () => {
       'const isNewSessionComposer = !effectiveTargetSessionStarted;',
     );
     expect(component).toContain(
-      'const [isMultiLine, setIsMultiLine] = useState(isNewSessionComposer);',
+      "const compactComposer = conversationScope?.presentation === 'compact';",
+    );
+    expect(component).toContain(
+      'const [isMultiLine, setIsMultiLine] = useState(compactComposer ? false : isNewSessionComposer);',
     );
     expect(component).toMatch(
-      /const measureIsMultiLine = useCallback[\s\S]*?if \(isNewSessionComposer\) \{\s*setIsMultiLine\(true\);\s*return;/,
+      /const measureIsMultiLine = useCallback[\s\S]*?if \(isNewSessionComposer && !compactComposer\) \{\s*setIsMultiLine\(true\);\s*return;/,
     );
     expect(component).toContain(
       'const harnessProfileLocked = effectiveTargetSessionStarted;',

@@ -26,11 +26,13 @@ enum MobileDesignColors {
     static let transparent = dynamic(light: 0x00000000, dark: 0x00000000)
     static let pageBg = dynamic(light: 0xFFFFFFFF, dark: 0xFF151514)
     static let pageBgFade = dynamic(light: 0x00FFFFFF, dark: 0x00151514)
+    static let pageBgOverlay = dynamic(light: 0xB8FFFFFF, dark: 0xB8151514)
     static let ink = dynamic(light: 0xFF171717, dark: 0xFFF4F3EF)
     static let muted = dynamic(light: 0xFF706F6A, dark: 0xFFAAA8A0)
     static let subtle = dynamic(light: 0xFFA5A39B, dark: 0xFF77756E)
     static let line = dynamic(light: 0xFFE9E7E2, dark: 0xFF363531)
     static let card = dynamic(light: 0xFFFFFFFF, dark: 0xFF252522)
+    static let cardOverlay = dynamic(light: 0xCCFFFFFF, dark: 0xCC252522)
     static let accent = dynamic(light: 0xFF111111, dark: 0xFF5B5954)
     static let fileLink = dynamic(light: 0xFF2563EB, dark: 0xFF60A5FA)
     static let primaryAction = dynamic(light: 0xFF111111, dark: 0xFF454540)
@@ -53,6 +55,15 @@ enum MobileDesignColors {
     static let floatingBorder = dynamic(light: 0x18000000, dark: 0x18000000)
     static let soft = dynamic(light: 0xFFF4F3F0, dark: 0xFF2D2C28)
     static let floatingPanelBg = dynamic(light: 0xFFF7F7F5, dark: 0xFF1E1E1C)
+    static let sidebarBg = dynamic(light: 0xFFF8F8F9, dark: 0xFF0E0E10)
+    static let sidebarBgFade = dynamic(light: 0x00F8F8F9, dark: 0x000E0E10)
+    static let sidebarRaised = dynamic(light: 0xFFFFFFFF, dark: 0xFF1C1C1F)
+    static let sidebarLine = dynamic(light: 0x14101A27, dark: 0x1FFFFFFF)
+    static let sidebarHover = dynamic(light: 0xFFF3F3F5, dark: 0x0FFFFFFF)
+    static let sidebarSelection = dynamic(light: 0x14000000, dark: 0x1FFFFFFF)
+    static let sidebarInk = dynamic(light: 0xCC000000, dark: 0xFFE8E8E8)
+    static let sidebarMuted = dynamic(light: 0x99000000, dark: 0xFFB0B0B0)
+    static let sidebarSubtle = dynamic(light: 0x66000000, dark: 0xFF858585)
     static let statusSuccess = dynamic(light: 0xFF27C46A, dark: 0xFF3BD47B)
     static let statusDanger = dynamic(light: 0xFFE04F4F, dark: 0xFFFF6B6B)
     static let codeLineNumber = dynamic(light: 0xFFAAA69D, dark: 0xFF77756E)
@@ -65,6 +76,12 @@ enum MobileDesignColors {
     static let codeConstant = dynamic(light: 0xFFA04444, dark: 0xFFE79A9A)
     static let codeProperty = dynamic(light: 0xFF466D78, dark: 0xFF9CC8D0)
     static let codeTargetBg = dynamic(light: 0xFFFFF1BE, dark: 0xFF5A4E24)
+    static let brandDot = dynamic(light: 0xFF16B9CE, dark: 0xFF16B9CE)
+    static let welcomeDock = dynamic(light: 0xFF171917, dark: 0xFF171917)
+    static let welcomeButton = dynamic(light: 0xFFFFFFFF, dark: 0xFFFFFFFF)
+    static let welcomeButtonLabel = dynamic(light: 0xFF171917, dark: 0xFF171917)
+    static let welcomeSecondary = dynamic(light: 0xFFB9BCB9, dark: 0xFFB9BCB9)
+    static let statusWarning = dynamic(light: 0xFFFF8C00, dark: 0xFFFF8C00)
 
     private static func dynamic(light: UInt32, dark: UInt32) -> Color {
         Color(uiColor: UIColor { traits in
@@ -99,6 +116,7 @@ enum MobileDesignTypography {
     static let labelLarge = MobileTypographyToken(size: 15, lineHeight: 20, weight: .medium, textStyle: .subheadline)
     static let labelMedium = MobileTypographyToken(size: 14, lineHeight: 18, weight: .medium, textStyle: .footnote)
     static let labelSmall = MobileTypographyToken(size: 12, lineHeight: 16, weight: .regular, textStyle: .caption1)
+    static let brandWordmark = MobileTypographyToken(size: 42, lineHeight: 56, weight: .medium, textStyle: .largeTitle)
 }
 
 enum MobileDesignGeometry {
@@ -108,6 +126,8 @@ enum MobileDesignGeometry {
     static let contentGutter: CGFloat = 16
     static let connectionStripHeight: CGFloat = 48
     static let timelineTopPadding: CGFloat = 22
+    static let conversationOverlaySideInset: CGFloat = 16
+    static let conversationEdgeFadeHeight: CGFloat = 28
     static let messageSpacing: CGFloat = 18
     static let messageBubbleMaxWidth: CGFloat = 276
     static let messageBubbleHorizontalPadding: CGFloat = 14
@@ -161,6 +181,27 @@ enum MobileDesignGeometry {
     static let modelListBottomPadding: CGFloat = 16
     static let modelEmptyAccountHeight: CGFloat = 80
     static let modelEditorHeight: CGFloat = 560
+    static let welcomeMaxWidth: CGFloat = 520
+    static let welcomeGutter: CGFloat = 25
+    static let welcomeHeaderHeight: CGFloat = 58
+    static let welcomeButtonHeight: CGFloat = 49
+    static let welcomeButtonGap: CGFloat = 11
+    static let welcomeDockRadius: CGFloat = 30
+    static let welcomeDockBottom: CGFloat = 39
+    static let welcomeMarkSize: CGFloat = 92
+    static let welcomeWordSize: CGFloat = 34
+    static let welcomeStageHeight: CGFloat = 220
+    static let welcomeHeaderWordSize: CGFloat = 17
+    static let recentHomeGutter: CGFloat = 24
+    static let recentHomeMarkSize: CGFloat = 132
+    static let recentHomeTitleSize: CGFloat = 25
+    static let recentHomeMaxWidth: CGFloat = 560
+    static let recentHomeRowPadding: CGFloat = 18
+    static let approvalCardRadius: CGFloat = 12
+    static let approvalCardPadding: CGFloat = 12
+    static let approvalCardGap: CGFloat = 8
+    static let approvalActionRadius: CGFloat = 8
+    static let approvalActionHeight: CGFloat = 36
 }
 
 enum MobileDesignBreakpoints {
@@ -172,4 +213,5 @@ enum MobileDesignBreakpoints {
 enum MobileDesignMotion {
     static let quick: CGFloat = 180
     static let structure: CGFloat = 220
+    static let startupBrand: CGFloat = 6800
 }

@@ -28,8 +28,15 @@ impl ChatMode {
             Ok(snapshot) if snapshot.logged_in => self.open_account_panel(chat_view, snapshot),
             Ok(_) => chat_view.show_login_form(),
             Err(error) => {
+                tracing::warn!(
+                    "Failed to load account: {}",
+                    crate::account::bounded_account_error(&error.to_string())
+                );
                 chat_view.show_login_form();
-                chat_view.login_form_set_error(format!("Failed to load account: {error}"));
+                chat_view.login_form_set_error(format!(
+                    "Failed to load account: {}",
+                    crate::account_guidance::account_failure_line(&error.to_string())
+                ));
             }
         }
         let _ = chat_state;
@@ -62,13 +69,28 @@ impl ChatMode {
                 });
                 use openbitfun_core::service::remote_connect::account_runtime::AccountLoginProgress;
                 match result {
-                    Ok(AccountLoginProgress::Authorization(authorization)) => chat_view.login_form_set_authorization(authorization),
-                    Ok(AccountLoginProgress::Waiting) => chat_view.login_form_set_status("Waiting for GitHub authorization. Complete it in your browser, then press Enter."),
+                    Ok(AccountLoginProgress::Authorization(authorization)) => {
+                        chat_view.login_form_set_authorization(authorization)
+                    }
+                    Ok(AccountLoginProgress::Waiting) => chat_view.login_form_set_status(
+                        "Waiting for sign-in. Complete it in your browser, then press Enter.",
+                    ),
                     Ok(AccountLoginProgress::Complete(login)) => {
-                        chat_state.add_system_message(crate::account::account_login_status_message(&login));
+                        chat_state.add_system_message(
+                            crate::account::account_login_status_message(&login),
+                        );
                         self.open_login_or_account_panel(chat_view, chat_state, rt_handle);
                     }
-                    Err(error) => chat_view.login_form_set_error(format!("Login failed: {error}")),
+                    Err(error) => {
+                        tracing::warn!(
+                            "Login failed: {}",
+                            crate::account::bounded_account_error(&error.to_string())
+                        );
+                        chat_view.login_form_set_error(format!(
+                            "Login failed: {}",
+                            crate::account_guidance::account_failure_line(&error.to_string())
+                        ));
+                    }
                 }
             }
             LoginFormAction::Logout => {
@@ -88,7 +110,14 @@ impl ChatMode {
                         chat_state.add_system_message("Logged out.".to_string());
                     }
                     Err(e) => {
-                        chat_view.login_form_set_error(format!("Logout failed: {e}"));
+                        tracing::warn!(
+                            "Logout failed: {}",
+                            crate::account::bounded_account_error(&e.to_string())
+                        );
+                        chat_view.login_form_set_error(format!(
+                            "Logout failed: {}",
+                            crate::account_guidance::account_failure_line(&e.to_string())
+                        ));
                     }
                 }
             }

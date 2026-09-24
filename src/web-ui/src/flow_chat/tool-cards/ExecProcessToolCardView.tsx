@@ -3,7 +3,6 @@ import { useTranslation } from 'react-i18next';
 import type { FlowToolItem } from '../types/flow-chat';
 import {
   LazyTerminalOutputRenderer,
-  type TerminalOutputRendererHandle,
 } from '@/tools/terminal/components/LazyTerminalOutputRenderer';
 import {
   CommandToolCard,
@@ -13,12 +12,12 @@ import { ToolCardCopyAction } from './ToolCardCopyAction';
 import { ToolTimeoutIndicator } from './ToolTimeoutIndicator';
 import { useCopyTextAction } from '../hooks/useCopyTextAction';
 import { useToolCardHeightContract } from './useToolCardHeightContract';
-import { useToolCardCompletionGracePeriod } from './useToolCardCompletionGracePeriod';
 import { formatSessionViewPreviewText } from '../utils/sessionViewPreview';
 
 const EXEC_COLLAPSED_STATUSES = new Set(['completed', 'cancelled', 'error', 'rejected']);
 const EXEC_OUTPUT_STREAMING_MAX_ROWS = 4;
 const EXEC_OUTPUT_EXPANDED_MAX_ROWS = 15;
+const EXEC_MINIMUM_EXPANDED_MS = 1000;
 
 export interface ExecProcessCardModel {
   kind: 'command' | 'stdin' | 'control';
@@ -50,24 +49,8 @@ function isCollapsedStatus(status: string): boolean {
   return EXEC_COLLAPSED_STATUSES.has(status);
 }
 
-function getInitialExpandedState(status: string): boolean {
-  return !isCollapsedStatus(status);
-}
-
-function getAutoExpandedStateForStatus(
-  status: string,
-  isLastItem: boolean | undefined,
-  keepTailPreview: boolean,
-): boolean | null {
-  if (isCollapsedStatus(status)) {
-    return isLastItem === true && keepTailPreview ? null : false;
-  }
-
-  if (status === 'preparing' || status === 'streaming' || status === 'running' || status === 'receiving') {
-    return true;
-  }
-
-  return null;
+function getInitialExpandedState(status: string, hasLiveOutput: boolean): boolean {
+  return !isCollapsedStatus(status) && (hasLiveOutput || status === 'pending_confirmation');
 }
 
 function isCancelledStatus(status: string): boolean {
@@ -110,7 +93,6 @@ export const ExecProcessToolCardView: React.FC<ExecProcessToolCardViewProps> = (
   toolItem,
   model,
   onExpand,
-  isLastItem,
 }) => {
   const { t } = useTranslation('flow-chat');
   const status = toolItem.status || 'pending';
@@ -129,23 +111,14 @@ export const ExecProcessToolCardView: React.FC<ExecProcessToolCardViewProps> = (
     ? 'toolCards.terminal.rejected'
     : 'toolCards.terminal.cancelled';
   const toolId = toolItem.id ?? toolItem.toolCall?.id;
+  const hasLiveOutput = liveOutput.length > 0;
 
-  const [isExpanded, setIsExpandedState] = useState(() => getInitialExpandedState(status));
+  const [isExpanded, setIsExpandedState] = useState(() => getInitialExpandedState(status, hasLiveOutput));
   const userToggledRef = useRef(false);
-  const outputRendererRef = useRef<TerminalOutputRendererHandle | null>(null);
+  const autoExpandedAtRef = useRef<number | null>(null);
   const { cardRootRef, applyExpandedState } = useToolCardHeightContract({
     toolId,
     toolName: toolItem.toolName,
-  });
-  const {
-    begin: beginCompletionPreview,
-    isActive: isCompletionPreviewActive,
-  } = useToolCardCompletionGracePeriod({
-    eligible:
-      isCollapsedStatus(status) &&
-      isLastItem === true &&
-      isExpanded &&
-      !userToggledRef.current,
   });
 
   const applyExecExpandedState = useCallback((nextExpanded: boolean) => {
@@ -166,22 +139,36 @@ export const ExecProcessToolCardView: React.FC<ExecProcessToolCardViewProps> = (
       return;
     }
 
-    const keepTailPreview = isCollapsedStatus(status) && beginCompletionPreview();
-    const nextExpanded = getAutoExpandedStateForStatus(status, isLastItem, keepTailPreview);
-    if (nextExpanded !== null) {
-      applyExecExpandedState(nextExpanded);
+    if (isRunning && hasLiveOutput) {
+      // Start once, including when mounting with output already available.
+      autoExpandedAtRef.current ??= Date.now();
+      applyExecExpandedState(true);
+    } else if (isCollapsedStatus(status)) {
+      const remainingMs = autoExpandedAtRef.current === null
+        ? 0
+        : EXEC_MINIMUM_EXPANDED_MS - (Date.now() - autoExpandedAtRef.current);
+      if (isExpanded && remainingMs > 0) {
+        const timer = setTimeout(() => {
+          if (!userToggledRef.current) {
+            applyExecExpandedState(false);
+          }
+        }, remainingMs);
+        return () => clearTimeout(timer);
+      }
+      applyExecExpandedState(false);
+    } else if (isRunning && autoExpandedAtRef.current === null) {
+      applyExecExpandedState(false);
     }
   }, [
     applyExecExpandedState,
-    beginCompletionPreview,
-    isCompletionPreviewActive,
-    isLastItem,
+    hasLiveOutput,
+    isExpanded,
+    isRunning,
     status,
   ]);
 
   const compactSettledPreview =
     isExpanded &&
-    isLastItem === true &&
     isCollapsedStatus(status) &&
     !userToggledRef.current;
   // Keep auto-managed completed cards on the compact preview through the
@@ -224,13 +211,9 @@ export const ExecProcessToolCardView: React.FC<ExecProcessToolCardViewProps> = (
     return '';
   }, [isRunning, liveOutput, model.resultOutput, status]);
 
-  const getVisibleOutputText = useCallback(() => {
-    return outputRendererRef.current?.getVisibleText() ?? getOutputText();
-  }, [getOutputText]);
-
   const renderCopyOutputButton = () => (
     <ToolCardCopyAction
-      getText={getVisibleOutputText}
+      getText={getOutputText}
       disabled={!getOutputText().trim()}
       tooltip={t('toolCards.execProcess.copyOutput')}
       copiedTooltip={t('toolCards.execProcess.outputCopied')}
@@ -313,7 +296,7 @@ export const ExecProcessToolCardView: React.FC<ExecProcessToolCardViewProps> = (
     }
   }
   footerItems.push(...footerMetadataItems.map((item, index) => (
-    model.kind === 'stdin' && index === 0
+    index === 0
       ? { ...item, pushToEnd: true }
       : item
   )));
@@ -340,7 +323,6 @@ export const ExecProcessToolCardView: React.FC<ExecProcessToolCardViewProps> = (
         onToggle={toggleExpanded}
         output={outputText ? (
           <LazyTerminalOutputRenderer
-            ref={outputRendererRef}
             content={outputText}
             maxRows={maxRows}
           />
