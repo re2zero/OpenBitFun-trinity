@@ -11,5 +11,7 @@ fn main() {
         .enable_all()
         .build()
         .expect("failed to build Tokio runtime");
-    runtime.block_on(openbitfun_desktop_lib::run());
+    // The runtime must outlive the Tauri event loop: startup code captured its
+    // handle, and run() only drives its async startup steps through the handle.
+    openbitfun_desktop_lib::run(runtime.handle().clone());
 }

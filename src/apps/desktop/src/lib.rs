@@ -11,7 +11,7 @@
 //! `Recv` → `Actions` → `Inner` → `Arc<Mutex<_>>` → `RecvStream` → hyper's
 //! `Incoming`), into the MCP remote transport, then out through roughly ten
 //! nested `async fn` bodies from `agentic::coordination::scheduler` to the
-//! `tokio::spawn` in `api::remote_connect_api`.
+//! `tauri::async_runtime::spawn` in `api::remote_connect_api`.
 //!
 //! Most of that depth is in third-party types, so `Box::pin`-ing one of our own
 //! futures does not collapse it; only erasing a mid-chain future to
@@ -407,9 +407,15 @@ fn get_startup_native_trace(
     state.snapshot()
 }
 
-/// Tauri application entry point
+/// Tauri application entry point.
+///
+/// The async startup steps run inside the runtime behind `handle`, but the
+/// Tauri event loop itself must own the main thread OUTSIDE any tokio runtime
+/// context: plugins that block on DBus (single-instance via zbus) lazily start
+/// their own blocking runtime on the calling thread, and tokio panics when a
+/// runtime is started on a thread that already drives one.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub async fn run() {
+pub fn run(handle: tokio::runtime::Handle) {
     let startup_started = Instant::now();
     let startup_trace_id = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -460,16 +466,17 @@ pub async fn run() {
     }
 
     let step_started = Instant::now();
-    if let Err(e) = openbitfun_core::service::config::initialize_global_config().await {
+    if let Err(e) = handle.block_on(openbitfun_core::service::config::initialize_global_config()) {
         log::error!("Failed to initialize global config service: {}", e);
         show_fatal_startup_error(&format!(
             "OpenBitFun could not initialize its configuration and cannot continue.\n\n{e}\n\nSee early-startup.log for details."
         ));
         return;
     }
-    if let Ok(config_service) = openbitfun_core::service::config::get_global_config_service().await
+    if let Ok(config_service) =
+        handle.block_on(openbitfun_core::service::config::get_global_config_service())
     {
-        for diagnostic in config_service.load_diagnostics().await {
+        for diagnostic in handle.block_on(config_service.load_diagnostics()) {
             log::warn!(
                 "Startup configuration diagnostic: code={}, path={}, recoverability={:?}",
                 diagnostic.code,
@@ -482,22 +489,23 @@ pub async fn run() {
     startup_trace.record_elapsed_step("native_pre_tauri", "initialize_global_config", step_started);
 
     let step_started = Instant::now();
-    match openbitfun_core::plugin_host::initialize_configured_plugin_host_with_log_file(
-        PLUGIN_HOST_LAUNCH_POLICY,
-        Some(session_log_dir.join("plugin-host.log")),
-    )
-    .await
-    {
+    match handle.block_on(
+        openbitfun_core::plugin_host::initialize_configured_plugin_host_with_log_file(
+            PLUGIN_HOST_LAUNCH_POLICY,
+            Some(session_log_dir.join("plugin-host.log")),
+        ),
+    ) {
         Ok(openbitfun_core::plugin_host::PluginHostStartup::Disabled) => {}
         Ok(status) => log::info!("Plugin host initialization completed: {:?}", status),
         Err(error) => {
             log::error!("Failed to initialize configured plugin host: {}", error);
-            openbitfun_core::plugin_host::report_configured_plugin_activation_failure(
-                "Desktop startup",
-                None,
-                error,
-            )
-            .await;
+            handle.block_on(
+                openbitfun_core::plugin_host::report_configured_plugin_activation_failure(
+                    "Desktop startup",
+                    None,
+                    error,
+                ),
+            );
         }
     }
     startup_timings.record_elapsed("initialize_plugin_host", step_started);
@@ -512,7 +520,7 @@ pub async fn run() {
         i18n_duration_ms,
         (startup_log_level, log_level_duration_ms),
         (ai_factory_result, ai_factory_duration_ms),
-    ) = {
+    ) = handle.block_on(async {
         use openbitfun_core::service::config::get_global_config_service;
         use openbitfun_core::service::i18n::initialize_global_i18n_service;
 
@@ -545,7 +553,7 @@ pub async fn run() {
         };
 
         tokio::join!(i18n_task, log_level_task, ai_factory_task)
-    };
+    });
 
     startup_timings.push_duration("initialize_global_i18n_service", i18n_duration_ms);
     startup_trace.record_step(
@@ -577,7 +585,7 @@ pub async fn run() {
 
     let step_started = Instant::now();
     let (coordinator, scheduler, event_queue, event_router, ai_client_factory, token_usage_service) =
-        match init_agentic_system().await {
+        match handle.block_on(init_agentic_system()) {
             Ok(state) => state,
             Err(e) => {
                 log::error!("Failed to initialize agentic system: {}", e);
@@ -588,7 +596,7 @@ pub async fn run() {
     startup_trace.record_elapsed_step("native_pre_tauri", "init_agentic_system", step_started);
 
     let step_started = Instant::now();
-    if let Err(e) = init_function_agents(ai_client_factory.clone()).await {
+    if let Err(e) = handle.block_on(init_function_agents(ai_client_factory.clone())) {
         log::error!("Failed to initialize function agents: {}", e);
         return;
     }
@@ -597,7 +605,7 @@ pub async fn run() {
 
     let step_started = Instant::now();
     let workspace_search_enabled =
-        openbitfun_core::service::search::workspace_search_feature_enabled().await;
+        handle.block_on(openbitfun_core::service::search::workspace_search_feature_enabled());
     startup_trace.record_elapsed_step(
         "native_pre_tauri",
         "workspace_search_feature_enabled",
@@ -612,7 +620,7 @@ pub async fn run() {
     );
 
     let step_started = Instant::now();
-    let app_state = match AppState::new_async(token_usage_service).await {
+    let app_state = match handle.block_on(AppState::new_async(token_usage_service)) {
         Ok(state) => state,
         Err(e) => {
             log::error!("Failed to initialize AppState: {}", e);
@@ -995,28 +1003,26 @@ pub async fn run() {
                 // `initialize_workspace_startup_state` command path.
                 const WORKSPACE_STARTUP_SNAPSHOT_TIMEOUT: std::time::Duration =
                     std::time::Duration::from_secs(4);
-                tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(async {
-                        match tokio::time::timeout(
-                            WORKSPACE_STARTUP_SNAPSHOT_TIMEOUT,
-                            prepare_workspace_startup_bootstrap_snapshot(
-                                &app_state,
-                                &app_handle,
-                                &startup_trace_state,
-                            ),
-                        )
-                        .await
-                        {
-                            Ok(snapshot) => snapshot,
-                            Err(_) => {
-                                log::warn!(
-                                    "Workspace startup bootstrap snapshot timed out after {:?}; frontend will fall back to the initialize_workspace_startup_state command",
-                                    WORKSPACE_STARTUP_SNAPSHOT_TIMEOUT
-                                );
-                                None
-                            }
+                tauri::async_runtime::block_on(async {
+                    match tokio::time::timeout(
+                        WORKSPACE_STARTUP_SNAPSHOT_TIMEOUT,
+                        prepare_workspace_startup_bootstrap_snapshot(
+                            &app_state,
+                            &app_handle,
+                            &startup_trace_state,
+                        ),
+                    )
+                    .await
+                    {
+                        Ok(snapshot) => snapshot,
+                        Err(_) => {
+                            log::warn!(
+                                "Workspace startup bootstrap snapshot timed out after {:?}; frontend will fall back to the initialize_workspace_startup_state command",
+                                WORKSPACE_STARTUP_SNAPSHOT_TIMEOUT
+                            );
+                            None
                         }
-                    })
+                    }
                 })
                 .and_then(|snapshot| {
                     serde_json::to_value(snapshot)
@@ -1082,7 +1088,7 @@ pub async fn run() {
                 let workspace_id = app_state.workspace_id.clone();
                 let macos_edit_menu_mode = app_state.macos_edit_menu_mode.clone();
 
-                tokio::spawn(async move {
+                tauri::async_runtime::spawn(async move {
                     let language = config_service
                         .get_config::<String>(Some("app.language"))
                         .await
@@ -1146,7 +1152,7 @@ pub async fn run() {
                     app.state();
                 let terminal_state_inner = api::terminal_api::TerminalState::new();
                 let app_handle_clone = app_handle.clone();
-                tokio::spawn(async move {
+                tauri::async_runtime::spawn(async move {
                     api::terminal_api::start_terminal_event_loop(
                         terminal_state_inner,
                         app_handle_clone,
@@ -2179,13 +2185,13 @@ async fn init_function_agents(ai_client_factory: Arc<AIClientFactory>) -> anyhow
 }
 
 fn init_mcp_servers(app_handle: tauri::AppHandle) {
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         let _ = app_handle;
     });
 }
 
 fn init_acp_clients(app_handle: tauri::AppHandle) {
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         let state: tauri::State<'_, api::AppState> = app_handle.state();
         if let Some(service) = state.acp_client_service.as_ref() {
             if let Err(error) = service.initialize_all().await {
@@ -2704,7 +2710,7 @@ fn start_event_loop_with_transport(
     transport: Arc<TauriTransportAdapter>,
     session_event_journal: Arc<SessionEventJournal>,
 ) {
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         event_loop_driver(event_queue, event_router, |event| {
             let transport = transport.clone();
             let session_event_journal = session_event_journal.clone();
@@ -2722,7 +2728,7 @@ fn init_services(app_handle: tauri::AppHandle, default_log_level: log::LevelFilt
     spawn_runtime_log_level_listener(default_log_level);
     spawn_workspace_search_feature_listener(app_handle.clone());
 
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         let transport = Arc::new(TauriTransportAdapter::new(app_handle.clone()));
         let emitter = create_event_emitter(transport);
         let workspace_identity_watch_service = {
@@ -2779,7 +2785,7 @@ async fn resolve_runtime_log_level(default_level: log::LevelFilter) -> log::Leve
 fn spawn_runtime_log_level_listener(default_level: log::LevelFilter) {
     use openbitfun_core::service::config::{subscribe_config_updates, ConfigUpdateEvent};
 
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         if let Some(mut receiver) = subscribe_config_updates() {
             loop {
                 match receiver.recv().await {
@@ -2847,7 +2853,7 @@ fn spawn_workspace_search_feature_listener(app_handle: tauri::AppHandle) {
     let workspace_id = app_state.workspace_id.clone();
     let workspace_service = app_state.workspace_service.clone();
 
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         let mut feature_enabled =
             openbitfun_core::service::search::workspace_search_feature_enabled().await;
 

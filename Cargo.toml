@@ -214,7 +214,8 @@ rusqlite = { version = "0.32", default-features = false }
 # Tauri (desktop only)
 tauri = { version = "2.11" }
 tauri-plugin-opener = "2.5"
-tauri-plugin-dialog = "2.7"
+tauri-plugin-dialog = { version = "2.7", default-features = false, features = ["xdg-portal"] }
+
 tauri-plugin-fs = "2.5"
 tauri-plugin-log = "2.8"
 tauri-plugin-autostart = "2.5"
