@@ -291,7 +291,7 @@ const CloudCard: React.FC<CloudCardProps> = ({ cloudStatus, busy, message, onAct
 };
 
 const TrinityScene: React.FC = () => {
-  const { t } = useI18n('common');
+  const { t } = useI18n(['common', 'shared']);
   const {
     currentWorkspace,
     assistantWorkspacesList,
@@ -796,7 +796,7 @@ const TrinityScene: React.FC = () => {
                         disabled={searching}
                         data-testid="trinity-memory-search"
                       >
-                        {t('trinity.memory.search')}
+                        {t('shared:tools.search')}
                       </Button>
                       {searchResults != null && (
                         <Button
