@@ -2829,7 +2829,8 @@ const ModelSettingsPage: React.FC = () => {
         <div className="openbitfun-model-settings__form openbitfun-model-settings__form--modal" data-openbitfun-component="model-settings" data-openbitfun-part="form">
           <div className="openbitfun-model-settings__form-content" data-openbitfun-component="model-settings" data-openbitfun-part="formBody">
             <ConfigPageSection
-              title={isProviderScopedEditing ? t('editProviderSubtitle') : t('editSubtitle')}
+              title={isProviderScopedEditing ? t('editProviderSettingsTitle') : t('editSettingsTitle')}
+              description={isProviderScopedEditing ? t('editProviderSubtitle') : t('editSubtitle')}
               className="openbitfun-model-settings__edit-section"
               fieldSurface="default"
             >
@@ -3128,6 +3129,7 @@ const ModelSettingsPage: React.FC = () => {
           {!authIsSubscription && (
             <ConfigPageSection
               title={t('advancedSettings.title')}
+              description={t('advancedSettings.description')}
               className="openbitfun-model-settings__edit-section"
               fieldSurface="default"
             >
@@ -3791,7 +3793,7 @@ const ModelSettingsPage: React.FC = () => {
           className="openbitfun-model-settings__models-section"
           bodySurface={false}
           title={tDefault('sections.providers')}
-          description={t('subtitle')}
+          description={t('providersDescription')}
           extra={(
             <Tooltip content={t('actions.addProvider')}>
               <IconButton

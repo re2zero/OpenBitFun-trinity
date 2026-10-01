@@ -15,8 +15,9 @@ mod host_message_queue;
 use host_message_queue::HostQueueState;
 
 use super::coordinator::{
-    session_storage_workspace_locator, ConversationCoordinator, DialogTriggerSource,
-    DialogTurnStopDisposition, HiddenSubagentExecutionRequest, SubagentResult,
+    ensure_session_accepts_conversation, session_storage_workspace_locator,
+    ConversationCoordinator, DialogTriggerSource, DialogTurnStopDisposition,
+    HiddenSubagentExecutionRequest, SubagentResult,
 };
 use super::turn_outcome::TurnOutcome;
 use super::turn_settlement::TurnSettlementRegistration;
@@ -321,7 +322,27 @@ impl DialogRoundInjectionSource for SchedulerRoundInjectionSource {
     }
 
     fn take_pending(&self, session_id: &str, turn_id: &str) -> Vec<RoundInjection> {
-        self.buffer.drain_for_turn(session_id, turn_id)
+        // Hold receipt state through the drain: promotion registers its receipt
+        // before publishing the injection. A racing promotion must never be
+        // mistaken for the turn-scoped SDK's legacy inline input.
+        let queue = self
+            .host_queue
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let managed = queue.pending_steering_ids(session_id, turn_id);
+        self.buffer
+            .drain_matching_for_turn(session_id, turn_id, |message| {
+                !managed.contains(&message.id)
+            })
+    }
+
+    fn should_yield_to_user_turn(&self, session_id: &str, turn_id: &str) -> bool {
+        !self
+            .host_queue
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .pending_steering_ids(session_id, turn_id)
+            .is_empty()
     }
 
     fn acknowledge_consumed(
@@ -1316,6 +1337,16 @@ impl DialogScheduler {
                 // The session is loaded and bound by ID; an omitted locator makes
                 // the coordinator reuse that binding instead of re-resolving a path.
                 queued_turn.workspace_path = None;
+            }
+        }
+        // The initial hidden-subagent invocation has its own admission path.
+        // All ordinary messages, including queued follow-ups, use one policy.
+        if !matches!(
+            &queued_turn.execution,
+            QueuedTurnExecution::HiddenSubagent(_)
+        ) {
+            if let Some(session) = self.session_manager.get_session(&session_id) {
+                ensure_session_accepts_conversation(&session)?;
             }
         }
         let state = self
@@ -2671,7 +2702,7 @@ impl DialogScheduler {
         mut outcome_rx: mpsc::UnboundedReceiver<(String, TurnOutcome)>,
     ) {
         while let Some((session_id, outcome)) = outcome_rx.recv().await {
-            let (active_turn, active_internal_turn, lifecycle_plan) = {
+            let (active_turn, active_internal_turn, lifecycle_plan, has_user_successor) = {
                 let _operation_guard = self.lock_session_operation(&session_id).await;
                 let Some(active_turn_result) = take_active_turn_for_outcome(
                     &self.active_turns,
@@ -2714,6 +2745,12 @@ impl DialogScheduler {
                 });
                 let lifecycle_plan =
                     resolve_turn_outcome_lifecycle_plan(&outcome, active_turn.is_some());
+                if active_turn.is_some() && lifecycle_plan.status == TurnOutcomeStatus::Completed {
+                    self.release_steering_turns(&session_id, outcome.turn_id());
+                }
+                // Include inputs already released by an earlier handoff. Each
+                // queued human turn takes priority over automatic goal follow-ups.
+                let has_user_successor = self.has_queued_host_message(&session_id);
                 let retired_injections = self
                     .host_queue
                     .lock()
@@ -2755,7 +2792,12 @@ impl DialogScheduler {
                         self.requeue_front(&session_id, turn);
                     }
                 }
-                (active_turn, active_internal_turn, lifecycle_plan)
+                (
+                    active_turn,
+                    active_internal_turn,
+                    lifecycle_plan,
+                    has_user_successor,
+                )
             };
             let status = lifecycle_plan.status;
             let queue_action = lifecycle_plan.queue_action;
@@ -2827,7 +2869,9 @@ impl DialogScheduler {
                                     outcome.turn_id(),
                                     active_turn.user_input(),
                                     active_turn.user_message_metadata(),
-                                    turn_completed,
+                                    // Account usage, but the accepted human turn
+                                    // replaces automatic goal continuation.
+                                    turn_completed && !has_user_successor,
                                 )
                                 .await
                             {
@@ -5079,6 +5123,52 @@ mod tests {
             .unwrap();
         assert_eq!(paused.tokens_used, 37);
         assert_eq!(paused.status, ThreadGoalStatus::Paused);
+    }
+
+    #[tokio::test]
+    async fn editing_a_paused_goal_puts_it_back_to_work() {
+        let (scheduler, sessions, _, root) = test_scheduler_with_persistence(true);
+        let session = "goal-edit";
+        mark_session_processing(&sessions, &root, session, "goal-turn").await;
+        let storage = sessions
+            .effective_session_storage_path(session)
+            .await
+            .unwrap();
+        scheduler
+            .coordinator
+            .create_thread_goal(session, &storage, "finish the work".into(), None)
+            .await
+            .unwrap();
+
+        // Saving the objective the goal already carries is a restart too: the user
+        // opened the edit dialog to put the goal back to work, so it must not come
+        // back as active-with-nothing-running.
+        scheduler
+            .coordinator
+            .set_thread_goal_status(session, &storage, ThreadGoalStatus::Paused)
+            .await
+            .unwrap();
+        let unchanged = scheduler
+            .coordinator
+            .update_thread_goal_objective(session, &storage, "finish the work".into())
+            .await
+            .unwrap();
+        assert_eq!(unchanged.status, ThreadGoalStatus::Active);
+
+        // A rewritten objective keeps the goal running instead of inheriting the
+        // pause it was edited from.
+        scheduler
+            .coordinator
+            .set_thread_goal_status(session, &storage, ThreadGoalStatus::Paused)
+            .await
+            .unwrap();
+        let edited = scheduler
+            .coordinator
+            .update_thread_goal_objective(session, &storage, "finish the rest".into())
+            .await
+            .unwrap();
+        assert_eq!(edited.status, ThreadGoalStatus::Active);
+        assert_eq!(edited.objective, "finish the rest");
     }
 
     #[tokio::test]

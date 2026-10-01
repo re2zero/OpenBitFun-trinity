@@ -576,6 +576,20 @@ pub struct BackgroundSubagentStartResult {
     pub agent_id: String,
 }
 
+/// User-facing admission must agree with delegated reuse. Fresh-only children
+/// execute their initial turn through the dedicated hidden-subagent route.
+pub(super) fn ensure_session_accepts_conversation(session: &Session) -> OpenBitFunResult<()> {
+    if session.kind == SessionKind::Subagent
+        && session.config.continuation_policy == SessionContinuationPolicy::FreshOnly
+    {
+        return Err(OpenBitFunError::Validation(
+            "subagent_follow_up_unsupported: this subagent session is fresh-only; start a new Task invocation"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn build_subagent_session_relationship(
     parent_info: Option<&SubagentParentInfo>,
     agent_type: &str,
@@ -3050,7 +3064,10 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         }
 
         if persistence_succeeded {
-            let status = if execution_result.success && execution_result.has_final_response {
+            let status = if execution_result.success
+                && (execution_result.has_final_response
+                    || execution_result.effective_finish_reason == "user_steering")
+            {
                 AgentTurnSettlementStatus::Completed
             } else {
                 AgentTurnSettlementStatus::Failed
@@ -3060,7 +3077,8 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
                 turn_id,
                 AgentTurnSettlementResult {
                     status,
-                    final_response: (status == AgentTurnSettlementStatus::Completed)
+                    final_response: (status == AgentTurnSettlementStatus::Completed
+                        && execution_result.has_final_response)
                         .then_some(final_response.clone()),
                     finish_reason: Some(execution_result.effective_finish_reason.clone()),
                 },
@@ -4939,15 +4957,22 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         session_id: &str,
         workspace_path: &Path,
     ) -> OpenBitFunResult<()> {
-        let _goal_guard = self.lock_thread_goal_operation(session_id).await;
+        let goal_guard = self.lock_thread_goal_operation(session_id).await;
         let storage_path = self
             .resolve_thread_goal_storage_path(session_id, workspace_path)
             .await?;
+        // Dropping the goal drops the work it started: capture its turn before the
+        // clear releases the goal-to-turn binding.
+        let goal_turn = self.goal_driven_turn_id(session_id);
         self.thread_goal_store()
             .clear_thread_goal(session_id, storage_path.as_path())
             .await?;
         self.thread_goal_runtime(session_id).clear_active_goal(None);
         self.emit_thread_goal_updated(session_id, None).await;
+        drop(goal_guard);
+        if let Some(turn_id) = goal_turn {
+            self.stop_goal_driven_turn(session_id, &turn_id).await;
+        }
         Ok(())
     }
 
@@ -4987,19 +5012,18 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
                     "cannot edit goal for session {session_id}: no goal exists"
                 ))
             })?;
-        let status = match existing.status {
-            ThreadGoalStatus::BudgetLimited | ThreadGoalStatus::Complete => {
-                Some(ThreadGoalStatus::Active)
-            }
-            _ => None,
-        };
+        // Editing the objective is an explicit goal action, not a status edit: the
+        // user is telling the goal what to work on next, so it runs again instead
+        // of staying parked on the status the edit was made from. A goal that was
+        // paused, blocked or over quota therefore comes back as active.
+        let resuming = thread_goal_status_is_resumable(existing.status);
         let result = self
             .thread_goal_store()
             .set_thread_goal(
                 session_id,
                 storage_path.as_path(),
                 Some(objective),
-                status,
+                Some(ThreadGoalStatus::Active),
                 None,
                 false,
             )
@@ -5011,9 +5035,24 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         self.emit_thread_goal_updated(session_id, Some(result.goal.clone()))
             .await;
         drop(goal_guard);
-        if objective_changed && result.goal.is_active() {
-            self.apply_objective_updated_steering(session_id, &result.goal)
-                .await;
+        // Saving the same text through the edit dialog is still the user asking for
+        // this goal to run, so a restarting edit delivers its steering either way.
+        if result.goal.is_active() && (objective_changed || resuming) {
+            if resuming {
+                // The edit restarts the goal, so it has to retire what stopped it:
+                // until the interrupted turn that paused the goal is abandoned, the
+                // objective steering below is parked and the active goal never moves.
+                self.release_superseded_interrupted_turn(session_id).await;
+                clear_thread_goal_continuation_abort(session_id);
+            }
+            // The restart is handed over in the background like resume: an idle
+            // session makes this steering admit the goal's next turn, and the user is
+            // waiting on the edit dialog, not on that turn being admitted.
+            self.schedule_thread_goal_steering(
+                session_id,
+                &result.goal,
+                AgentThreadGoalDeliveryKind::ObjectiveUpdated,
+            );
         }
         Ok(result.goal)
     }
@@ -5176,6 +5215,13 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             && previous
                 .as_ref()
                 .is_some_and(|goal| thread_goal_status_is_resumable(goal.status));
+        // Pausing has to stop the goal's turn. The status write below drops the
+        // goal-to-turn binding, so capture the turn it currently owns first.
+        let paused_goal_turn = if status == ThreadGoalStatus::Paused {
+            self.goal_driven_turn_id(session_id)
+        } else {
+            None
+        };
         let result = self
             .thread_goal_store()
             .set_thread_goal(
@@ -5195,9 +5241,19 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         self.emit_thread_goal_updated(session_id, Some(result.goal.clone()))
             .await;
         drop(goal_guard);
+        if let Some(turn_id) = paused_goal_turn {
+            self.stop_goal_driven_turn(session_id, &turn_id).await;
+        }
         if resuming && result.goal.is_active() {
+            // Resuming is explicit too: the interruption that paused the goal must
+            // not keep parking the steering that starts its next turn.
+            self.release_superseded_interrupted_turn(session_id).await;
             clear_thread_goal_continuation_abort(session_id);
-            self.schedule_thread_goal_resumed_steering(session_id, &result.goal);
+            self.schedule_thread_goal_steering(
+                session_id,
+                &result.goal,
+                AgentThreadGoalDeliveryKind::Resumed,
+            );
         }
         Ok(result.goal)
     }
@@ -5240,10 +5296,117 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
         }
     }
 
-    fn schedule_thread_goal_resumed_steering(&self, session_id: &str, goal: &ThreadGoal) {
+    /// The in-flight turn that is working toward the session's thread goal.
+    ///
+    /// The goal runtime only binds a goal to a turn while that goal is active, so
+    /// a bound turn that is also the session's current turn is exactly the work
+    /// the goal owns. Everything else in the session belongs to the user.
+    fn goal_driven_turn_id(&self, session_id: &str) -> Option<String> {
+        let (turn_id, _) = self.thread_goal_runtime(session_id).current_turn_usage()?;
+        if turn_id.is_empty() {
+            return None;
+        }
+        let session = self.session_manager.get_session(session_id)?;
+        match session.state {
+            SessionState::Processing {
+                current_turn_id, ..
+            } if current_turn_id == turn_id => Some(turn_id),
+            _ => None,
+        }
+    }
+
+    /// Stop the turn that is working toward a thread goal.
+    ///
+    /// Pausing or dropping a goal has to stop the work it started: the goal's own
+    /// turn keeps issuing rounds on the model and calling tools long after the
+    /// goal stopped being active, which reads as a paused or deleted goal that
+    /// keeps running. Only the goal's turn is stopped; an unrelated user turn in
+    /// the same session keeps running.
+    async fn stop_goal_driven_turn(&self, session_id: &str, turn_id: &str) {
+        info!(
+            "Stopping thread goal turn: session_id={}, turn_id={}",
+            session_id, turn_id
+        );
+        // `Cancelled` is the disposition for work the user stopped. It also ends
+        // the recoverable-interruption fence a goal turn would otherwise leave
+        // behind, which is what lets the next explicit goal activation start.
+        //
+        // Stopping a turn can pause the goal it belonged to, so this call reaches
+        // back into the goal status write. That cycle is real but shallow, so the
+        // future is boxed instead of letting the async state machine recurse.
+        let cancellation = Box::pin(self.cancel_dialog_turn(session_id, turn_id)).await;
+        if let Err(error) = cancellation {
+            warn!(
+                "Failed to stop thread goal turn: session_id={}, turn_id={}, error={}",
+                session_id, turn_id, error
+            );
+        }
+    }
+
+    /// Drop a dispatch hold an interrupted turn left on the session.
+    ///
+    /// An interrupted turn parks every submission that is not a user submission
+    /// until the user recovers or sends a new turn. A thread goal never submits a
+    /// user turn, so an explicit goal activation has to retire that fence first;
+    /// otherwise the goal is active with a kickoff that is parked forever.
+    async fn release_superseded_interrupted_turn(&self, session_id: &str) {
+        let holds_dispatch = match self
+            .session_manager
+            .latest_dialog_turn_holds_dispatch(session_id)
+            .await
+        {
+            Ok(holds_dispatch) => holds_dispatch,
+            Err(error) => {
+                warn!(
+                    "Failed to inspect the interrupted turn fence for a thread goal: session_id={}, error={}",
+                    session_id, error
+                );
+                return;
+            }
+        };
+        if !holds_dispatch {
+            return;
+        }
+        let interrupted_turn_id = self
+            .session_manager
+            .get_session(session_id)
+            .and_then(|session| session.dialog_turn_ids.last().cloned());
+        match self
+            .session_manager
+            .abandon_interrupted_dialog_turn(session_id, interrupted_turn_id.as_deref())
+            .await
+        {
+            Ok(Some(abandoned_turn_id)) => info!(
+                "Retired interrupted turn for thread goal activation: session_id={}, turn_id={}",
+                session_id, abandoned_turn_id
+            ),
+            Ok(None) => {}
+            Err(error) => warn!(
+                "Failed to retire interrupted turn for thread goal activation: session_id={}, error={}",
+                session_id, error
+            ),
+        }
+    }
+
+    /// Hand goal steering to the runtime without waiting for the delivery to finish.
+    ///
+    /// The runtime injects steering into a running turn, but an idle session makes
+    /// it admit the goal's next turn, which costs seconds on a large workspace. The
+    /// caller is an interactive command that already persisted the goal state, so it
+    /// must not block on turn admission; the delivery outcome is reported by log only.
+    fn schedule_thread_goal_steering(
+        &self,
+        session_id: &str,
+        goal: &ThreadGoal,
+        kind: AgentThreadGoalDeliveryKind,
+    ) {
         if !goal.is_active() {
             return;
         }
+        let kind_label = match kind {
+            AgentThreadGoalDeliveryKind::Resumed => "resumed",
+            AgentThreadGoalDeliveryKind::ObjectiveUpdated => "objective_updated",
+        };
         let agent_type = match self.session_manager.get_session(session_id) {
             Some(session) => {
                 let agent_type = session.agent_type.trim();
@@ -5277,8 +5440,8 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
                     Ok(runtime) => runtime,
                     Err(error) => {
                         warn!(
-                            "Agent runtime lifecycle delivery is not available; thread goal resume steering skipped: session_id={}, error={}",
-                            session_id, error
+                            "Agent runtime lifecycle delivery is not available; thread goal steering skipped: session_id={}, kind={}, error={}",
+                            session_id, kind_label, error
                         );
                         return;
                     }
@@ -5290,14 +5453,15 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
                     workspace_path,
                     remote_connection_id,
                     remote_ssh_host,
-                    kind: AgentThreadGoalDeliveryKind::Resumed,
+                    kind,
                     goal,
                 })
                 .await
             {
                 warn!(
-                    "Failed to deliver thread goal resume steering: session_id={}, error={}",
+                    "Failed to deliver thread goal steering: session_id={}, kind={}, error={}",
                     session_id,
+                    kind_label,
                     CoreServiceAgentRuntime::runtime_error_message(error)
                 );
             }
@@ -5413,6 +5577,10 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
             .get_thread_goal(&session_id, storage_path.as_path())
             .await?;
         let replace_existing = existing.is_some();
+        // An explicit goal supersedes a recoverable interruption: the objective
+        // steering below is not a user turn, so as long as that interrupted turn
+        // fences dispatch the goal would stay active with a parked kickoff.
+        self.release_superseded_interrupted_turn(&session_id).await;
         let goal = self
             .set_thread_goal_objective(
                 &session_id,
@@ -6039,6 +6207,7 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
                     .await?
             }
         };
+        ensure_session_accepts_conversation(&session)?;
         self.ensure_session_runtime_ownership(&session_id, None)?;
         let session_workspace = Self::build_workspace_binding(&session.config).await;
 
@@ -10319,6 +10488,7 @@ Update the persona files and delete BOOTSTRAP.md as soon as bootstrap is complet
                         .get_session(&session_id)
                         .and_then(|session| session.config.model_id.clone()),
                     focused_review_display_label: focused_review_display_label.clone(),
+                    continuation_policy: Some(continuation_policy),
                 })
                 .await;
             }
@@ -17434,6 +17604,87 @@ mod tests {
             Some("complete response".to_string())
         );
 
+        let events = coordinator.event_queue.dequeue_batch(10).await;
+        assert!(events.iter().any(|envelope| matches!(
+            &envelope.event,
+            AgenticEvent::SessionHistoryChanged {
+                session_id,
+                settled_turn_id: Some(settled_turn_id),
+            } if session_id == &session.session_id && settled_turn_id == &turn_id
+        )));
+        session_manager
+            .delete_session_by_id(&session.session_id)
+            .await
+            .expect("clean up persisted test session");
+    }
+
+    #[tokio::test]
+    async fn steering_handoff_settles_without_fabricating_a_final_response() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        crate::service::workspace::legacy_compat::register_local_fixture_blocking(workspace.path());
+        let (coordinator, session_manager) = test_persistent_coordinator();
+        let session = session_manager
+            .create_session(
+                "Durable completion".to_string(),
+                "Standard".to_string(),
+                SessionConfig {
+                    workspace_path: Some(workspace.path().to_string_lossy().into_owned()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("create session");
+        let turn_id = session_manager
+            .start_dialog_turn(
+                &session.session_id,
+                "Standard".to_string(),
+                "finish".to_string(),
+                Some("turn-durable-fence".to_string()),
+                None,
+                None,
+            )
+            .await
+            .expect("start turn");
+        let message = Message::assistant("complete response".to_string())
+            .with_turn_id(turn_id.clone())
+            .with_round_id("round-final".to_string());
+
+        ConversationCoordinator::persist_completed_dialog_turn(
+            coordinator.event_queue.as_ref(),
+            session_manager.as_ref(),
+            None,
+            &session.session_id,
+            &turn_id,
+            &ExecutionResult {
+                final_message: message.clone(),
+                total_rounds: 1,
+                success: true,
+                new_messages: vec![message],
+                finish_reason: FinishReason::Complete,
+                total_tools: 0,
+                duration_ms: 1,
+                partial_recovery_reason: None,
+                effective_finish_reason: "user_steering".to_string(),
+                has_final_response: false,
+            },
+            None,
+        )
+        .await;
+
+        assert_eq!(
+            session_manager
+                .turn_settlement_result(&session.session_id, &turn_id)
+                .and_then(|result| result.final_response),
+            None
+        );
+
+        assert_eq!(
+            session_manager
+                .turn_settlement_result(&session.session_id, &turn_id)
+                .unwrap()
+                .status,
+            AgentTurnSettlementStatus::Completed
+        );
         let events = coordinator.event_queue.dequeue_batch(10).await;
         assert!(events.iter().any(|envelope| matches!(
             &envelope.event,

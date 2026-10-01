@@ -20,8 +20,8 @@ import { resolveStorageTurnIndex } from '../../utils/flowChatTurnIdentity';
 const log = createLogger('PersistenceModule');
 const COALESCED_IMMEDIATE_SAVE_DELAY_MS = 500;
 
-function isTransientSession(session: { isTransient?: boolean } | undefined): boolean {
-  return session?.isTransient === true;
+function isTransientSession(session: { isTransient?: boolean; draft?: { phase: string } } | undefined): boolean {
+  return session?.isTransient === true || session?.draft?.phase === 'editing' || session?.draft?.phase === 'creating';
 }
 
 /**

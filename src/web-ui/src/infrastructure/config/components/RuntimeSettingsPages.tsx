@@ -1376,7 +1376,6 @@ const RuntimeSettingsPage: React.FC<RuntimeSettingsPageProps> = ({
           </ConfigPageRow>
           <ConfigPageRow
             label={tTools('config.subagentBatchPolicy.label')}
-            description={tTools('config.subagentBatchPolicy.desc')}
             align="center"
           >
             <div className="openbitfun-runtime-settings__row-control" data-openbitfun-component="runtime-settings" data-openbitfun-part="control">

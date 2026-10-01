@@ -1,4 +1,5 @@
-import { Check as LucideCheck, Copy as LucideCopy } from 'lucide-react';
+import { BoundedResourceCache } from '@/shared/utils/BoundedResourceCache';
+import { lazyWithRecovery } from '@/shared/utils/lazyWithRecovery';
 import { useResourceFileAccess, type ResourceFileAccess } from '@/infrastructure/api/ResourceFileContext';
 /**
  * Markdown component
@@ -7,8 +8,9 @@ import { useResourceFileAccess, type ResourceFileAccess } from '@/infrastructure
 
 import React, { useState, useMemo, useCallback, useEffect, useLayoutEffect, useRef, useSyncExternalStore, Component, type ReactNode } from 'react';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
-import { Tooltip } from '@openbitfun/ui';
+import { Icon, IconButton, Tooltip } from '@openbitfun/ui';
 import remarkGfm from 'remark-gfm';
+import { remarkCachedParse } from './markdownParseCache';
 import { remarkAutolinkBoundaries } from './remarkAutolinkBoundaries';
 import { remarkStreamingTableLinks } from './remarkStreamingTableLinks';
 import rehypeRaw from 'rehype-raw';
@@ -17,6 +19,7 @@ import { visit } from 'unist-util-visit';
 import { i18nService } from '@/infrastructure/i18n';
 import { MermaidBlock } from './MermaidBlock';
 import { AsyncPrismSyntaxHighlighter } from './AsyncPrismSyntaxHighlighter';
+import { MarkdownCodeBody } from './MarkdownCodeBody';
 import { buildMarkdownPrismStyle } from './markdownPrismTheme';
 import { globalAPI, systemAPI, workspaceAPI } from '@/infrastructure/api';
 import { getPrismLanguageFromAlias } from '@/infrastructure/language-detection';
@@ -47,8 +50,8 @@ const FILE_LINK_PREFIX = 'file://';
 const CANVAS_LINK_PREFIX = 'openbitfun-canvas://';
 const WORKSPACE_FOLDER_PLACEHOLDER = '{{workspaceFolder}}';
 
-const MarkdownMathRenderer = React.lazy(() => import('./MarkdownMathRenderer'));
-const ThinkingMarkdown = React.lazy(() => import('./ThinkingMarkdown'));
+const MarkdownMathRenderer = lazyWithRecovery(() => import('./MarkdownMathRenderer'));
+const ThinkingMarkdown = lazyWithRecovery(() => import('./ThinkingMarkdown'));
 const InlineFragment = ({ children }: { children?: ReactNode }) => <>{children}</>;
 
 function markdownUrlTransform(value: string, key?: string): string {
@@ -253,7 +256,7 @@ const EDITOR_OPENABLE_BASENAMES = new Set([
   'readme.txt',
 ]);
 
-const localImageDataUrlCache = new Map<string, string>();
+const localImageDataUrlCache = new BoundedResourceCache<string, string>(24 * 1024 * 1024);
 const localImageRequestCache = new Map<string, Promise<string>>();
 
 const sanitizeSchema = {
@@ -519,7 +522,7 @@ async function getLocalImageDataUrl(
       : await workspaceAPI.readFileContent(localPath, 'base64', owner.remoteConnectionId);
     scope.assertCurrent('read markdown image');
     const dataUrl = `data:${getMimeType(localPath)};base64,${base64Content}`;
-    localImageDataUrlCache.set(cacheKey, dataUrl);
+    localImageDataUrlCache.set(cacheKey, dataUrl, (cacheKey.length + dataUrl.length) * 2);
     localImageRequestCache.delete(requestKey);
     return dataUrl;
   })().catch((error) => {
@@ -793,68 +796,31 @@ export interface FlowCodeBlockFallbackProps {
   language: string;
   bodyStyle: React.CSSProperties;
   codeTagStyle: React.CSSProperties;
-  gutterColor: string;
 }
 
 /**
- * Lightweight, stable line-numbered code renderer used for thinking at all
- * times, and for response Markdown while streaming. Its layout matches the
- * `react-syntax-highlighter` `showLineNumbers` output: a fixed-width inline
- * line-number column followed by the line content, separated visually by the
- * same padding. This keeps the code block from visibly jumping when streaming
- * completes and the heavy Prism highlighter takes over.
+ * Lightweight code renderer for thinking and streaming responses. Both this
+ * path and Prism omit line numbers so the code starts at the header's inset.
  */
 const CodeBlockFallback: React.FC<FlowCodeBlockFallbackProps> = ({
   code,
   language,
   bodyStyle,
   codeTagStyle,
-  gutterColor,
 }) => {
-  const lineCount = code.length === 0 ? 1 : code.split('\n').length;
-  let gutterText = '';
-  for (let i = 1; i <= lineCount; i++) {
-    gutterText += i === lineCount ? `${i}` : `${i}\n`;
-  }
-
   return (
     <pre
-      className={`language-${language} code-block-fallback code-block-fallback--linenumbers`}
+      className={`language-${language} code-block-fallback`}
       style={bodyStyle}
       data-openbitfun-component="markdown"
       data-openbitfun-part="codePre"
     >
       <code
-        style={{ ...codeTagStyle, display: 'flex' }}
+        style={codeTagStyle}
         data-openbitfun-component="markdown"
         data-openbitfun-part="codeContent"
       >
-        <span
-          aria-hidden="true"
-          style={{
-            flex: 'none',
-            display: 'block',
-            minWidth: '3em',
-            paddingRight: '1em',
-            textAlign: 'right',
-            fontStyle: 'italic',
-            color: gutterColor,
-            userSelect: 'none',
-            whiteSpace: 'pre',
-          }}
-        >
-          {gutterText}
-        </span>
-        <span
-          style={{
-            flex: 1,
-            minWidth: 0,
-            display: 'block',
-            whiteSpace: 'pre',
-          }}
-        >
-          {code}
-        </span>
+        {code}
       </code>
     </pre>
   );
@@ -862,29 +828,38 @@ const CodeBlockFallback: React.FC<FlowCodeBlockFallbackProps> = ({
 
 const CopyButton: React.FC<{ code: string }> = ({ code }) => {
   const [copied, setCopied] = useState(false);
+  const resetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const label = copied ? translateMarkdownLabel('markdown.copySuccess') : translateMarkdownLabel('markdown.copyCode');
+
+  useEffect(() => () => {
+    if (resetTimer.current !== null) clearTimeout(resetTimer.current);
+  }, []);
 
   const handleCopy = async () => {
     try {
       await navigator.clipboard.writeText(code);
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      if (resetTimer.current !== null) clearTimeout(resetTimer.current);
+      resetTimer.current = setTimeout(() => {
+        setCopied(false);
+        resetTimer.current = null;
+      }, 2000);
     } catch (error) {
       log.warn('Failed to copy code', { error });
     }
   };
 
   return (
-    <button 
-      className={`copy-button${copied ? ' copy-success' : ''}`}
-      onClick={handleCopy}
-      title={copied ? translateMarkdownLabel('markdown.copySuccess') : translateMarkdownLabel('markdown.copyCode')}
-    >
-      {copied ? (
-        <LucideCheck width="16" height="16" stroke="currentColor" aria-hidden="true" />
-      ) : (
-        <LucideCopy width="16" height="16" stroke="currentColor" aria-hidden="true" />
-      )}
-    </button>
+    <Tooltip content={label}>
+      <IconButton
+        className={`copy-button${copied ? ' copy-success' : ''}`}
+        aria-label={label}
+        icon={<Icon name={copied ? 'check-line' : 'duplicate'} />}
+        onClick={handleCopy}
+        size="sm"
+        variant="quiet"
+      />
+    </Tooltip>
   );
 };
 
@@ -917,8 +892,9 @@ function useLiveValueRef<T>(value: T): React.MutableRefObject<T> {
   return ref;
 }
 
-const MarkdownSurface = React.memo<MarkdownRendererProps & { thinking?: boolean }>(({
+const MarkdownSurface = React.memo<MarkdownRendererProps & { thinking?: boolean; singleLinePreview?: boolean }>(({
   thinking = false,
+  singleLinePreview = false,
   content, 
   sourceRange,
   workspaceId,
@@ -1344,26 +1320,20 @@ const MarkdownSurface = React.memo<MarkdownRendererProps & { thinking?: boolean 
       const normalizedLang = getPrismLanguageFromAlias(language);
       const codeBodyStyle: React.CSSProperties = {
         margin: 0,
-        borderRadius: '0 0 8px 8px',
-        fontSize: 'var(--openbitfun-type-code-md-font-size)',
-        lineHeight: 'var(--openbitfun-type-code-md-line-height)',
+        borderRadius: 0,
       };
       const codeTagStyle: React.CSSProperties = {
-        fontFamily: 'var(--openbitfun-type-code-md-font-family)',
-        fontWeight: 'var(--openbitfun-type-code-md-font-weight)',
+        fontFamily: 'inherit',
+        fontWeight: 'inherit',
         color: syntaxThemeRef.current['code[class*="language-"]']?.color,
       };
-      // Prism's line-number nodes use the comment token, applied after
-      // lineNumberStyle. Reuse that final color in the fallback as well.
-      const gutterColor = syntaxThemeRef.current.comment.color as string;
-
       return (
         <div className={`code-block-wrapper${hasMultipleLines ? '' : ' code-block-wrapper--single-line'}`} data-openbitfun-component="markdown" data-openbitfun-part="codeBlock" data-openbitfun-state={streaming ? 'streaming' : undefined}>
           <div className="code-block-toolbar" data-openbitfun-component="markdown" data-openbitfun-part="codeToolbar">
             <span className="code-block-lang">{formatCodeLanguageLabel(normalizedLang)}</span>
             <CopyButton code={code} />
           </div>
-          <div className="code-block-body" data-openbitfun-component="markdown" data-openbitfun-part="codeBody">
+          <MarkdownCodeBody>
             {/* Thinking must never mount a syntax highlighter, even after completion
                 or reopening. Bulk highlighting caused measured completion stalls;
                 keep this lightweight path independent of streaming state. */}
@@ -1373,23 +1343,14 @@ const MarkdownSurface = React.memo<MarkdownRendererProps & { thinking?: boolean 
                 language={normalizedLang}
                 bodyStyle={codeBodyStyle}
                 codeTagStyle={codeTagStyle}
-                gutterColor={gutterColor}
               />
             ) : (
               <AsyncPrismSyntaxHighlighter
                 language={normalizedLang}
                 style={syntaxThemeRef.current}
-                showLineNumbers={true}
+                showLineNumbers={false}
                 customStyle={codeBodyStyle}
                 codeTagProps={{ style: codeTagStyle }}
-                lineNumberStyle={{
-                  color: gutterColor,
-                  fontStyle: 'italic',
-                  paddingRight: '1em',
-                  textAlign: 'right',
-                  userSelect: 'none',
-                  minWidth: '3em'
-                }}
                 preferFallback={streaming}
                 fallback={CodeBlockFallback}
                 fallbackProps={{
@@ -1397,14 +1358,13 @@ const MarkdownSurface = React.memo<MarkdownRendererProps & { thinking?: boolean 
                   language: normalizedLang,
                   bodyStyle: codeBodyStyle,
                   codeTagStyle,
-                  gutterColor,
                 }}
                 traceContext={traceContextRef.current}
               >
                 {code}
               </AsyncPrismSyntaxHighlighter>
             )}
-          </div>
+          </MarkdownCodeBody>
         </div>
       );
     },
@@ -1484,13 +1444,6 @@ const MarkdownSurface = React.memo<MarkdownRendererProps & { thinking?: boolean 
                 lineRange,
               )}
               type="button"
-              style={{
-                cursor: 'pointer',
-                textDecoration: 'underline',
-                background: 'none',
-                border: 'none',
-                font: 'inherit'
-              }}
             >
               {children}
             </button>
@@ -1531,13 +1484,6 @@ const MarkdownSurface = React.memo<MarkdownRendererProps & { thinking?: boolean 
               }
             }}
             type="button"
-            style={{
-              cursor: 'pointer',
-              textDecoration: 'underline',
-              background: 'none',
-              border: 'none',
-              font: 'inherit',
-            }}
           >
             {children}
           </button>
@@ -1588,13 +1534,6 @@ const MarkdownSurface = React.memo<MarkdownRendererProps & { thinking?: boolean 
               }
             }}
             type="button"
-            style={{ 
-              cursor: 'pointer',
-              textDecoration: 'underline',
-              background: 'none',
-              border: 'none',
-              font: 'inherit'
-            }}
           >
             {children}
           </button>
@@ -1624,7 +1563,6 @@ const MarkdownSurface = React.memo<MarkdownRendererProps & { thinking?: boolean 
               }
             }}
             onContextMenu={(e) => handleWebLinkContextMenu(e, hrefValue)}
-            style={{ cursor: 'pointer', textDecoration: 'underline' }}
           >
             {children}
           </a>
@@ -1651,7 +1589,6 @@ const MarkdownSurface = React.memo<MarkdownRendererProps & { thinking?: boolean 
               target?.focus({ preventScroll: true });
             }
           }}
-          style={{ cursor: 'pointer' }}
         >
           {children}
         </a>
@@ -1811,7 +1748,7 @@ const MarkdownSurface = React.memo<MarkdownRendererProps & { thinking?: boolean 
   }, [components, isStreaming]);
   const basicMarkdownRenderer = (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm, [remarkStreamingTableLinks, { isStreaming }], remarkAutolinkBoundaries, remarkAutolinkInternalLinks]}
+      remarkPlugins={[remarkGfm, ...(!isStreaming ? [remarkCachedParse] : []), [remarkStreamingTableLinks, { isStreaming }], remarkAutolinkBoundaries, remarkAutolinkInternalLinks]}
       rehypePlugins={[rehypeRaw, [rehypeSanitize, sanitizeSchema], [rehypeSourceRange, sourceRange]]}
       urlTransform={markdownUrlTransform}
       components={components}
@@ -1834,7 +1771,7 @@ const MarkdownSurface = React.memo<MarkdownRendererProps & { thinking?: boolean 
       )}
       <MarkdownErrorBoundary fallbackContent={sourceRange ? markdownContent.slice(sourceRange.start, sourceRange.end) : markdownContent}>
         {thinking ? (
-          <React.Suspense fallback={contentStr}>
+          <React.Suspense fallback={<span data-markdown-pending="true">{contentStr}</span>}>
             <ThinkingMarkdown
               content={contentStr}
               isStreaming={isStreaming}
@@ -1843,6 +1780,7 @@ const MarkdownSurface = React.memo<MarkdownRendererProps & { thinking?: boolean 
               urlTransform={markdownUrlTransform}
               renderFragment={renderThinkingFragment}
               environment={thinkingEnvironment}
+              singleLinePreview={singleLinePreview}
             />
           </React.Suspense>
         ) : shouldUseMathRenderer ? (
@@ -1868,4 +1806,7 @@ const MarkdownSurface = React.memo<MarkdownRendererProps & { thinking?: boolean 
 export const MarkdownRenderer = React.memo<MarkdownRendererProps>(props => <MarkdownSurface {...props} />);
 
 /** Deliberately opt in only from the thinking surface, never from response bodies. */
-export const ThinkingMarkdownRenderer = React.memo<Omit<MarkdownRendererProps, 'sourceRange'>>(props => <MarkdownSurface {...props} thinking />);
+export const ThinkingMarkdownRenderer = React.memo<Omit<MarkdownRendererProps, 'sourceRange'> & {
+  /** Inline streaming preview; the full tree remains available for expansion. */
+  singleLinePreview?: boolean;
+}>(props => <MarkdownSurface {...props} thinking />);

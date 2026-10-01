@@ -1,4 +1,5 @@
 import { computerUseControlAppearanceDescriptor } from '@/app/components/ComputerUseControlCard.appearance';
+import { splitViewAppearanceDescriptor } from '@/infrastructure/design-system/SplitView.appearance';
 import { confirmDialogAppearanceDescriptor } from '@/infrastructure/confirm-dialog';
 import { inputDialogAppearanceDescriptor } from '@/app/components/InputDialog/appearance';
 import { windowControlsAppearanceDescriptor } from '@/app/components/WindowControls/appearance';
@@ -160,7 +161,7 @@ import { canvasTabAppearanceDescriptor } from '@/app/components/panels/content-c
 import { canvasTabBarAppearanceDescriptor } from '@/app/components/panels/content-canvas/tab-bar/TabBar.appearance';
 import { chatInputWorkspaceStripAppearanceDescriptor } from '@/flow_chat/components/ChatInputWorkspaceStrip.appearance';
 import { codePreviewAppearanceDescriptor } from '@/flow_chat/components/CodePreview.appearance';
-import { exploreGroupAppearanceDescriptor } from '@/flow_chat/components/modern/ExploreGroupRenderer.appearance';
+import { contextLoadGroupAppearanceDescriptor, exploreGroupAppearanceDescriptor, fileEditGroupAppearanceDescriptor, interfaceObservationGroupAppearanceDescriptor, shellGroupAppearanceDescriptor } from '@/flow_chat/components/modern/ExploreGroupRenderer.appearance';
 import { pendingQueuePanelAppearanceDescriptor } from '@/flow_chat/components/PendingQueuePanel.appearance';
 import { subagentProjectionAppearanceDescriptor } from '@/flow_chat/components/subagent/SubagentProjectionView.appearance';
 import { threadGoalDialogsAppearanceDescriptor } from '@/flow_chat/components/thread-goal/ThreadGoalDialogs.appearance';
@@ -256,6 +257,7 @@ import { AppearanceRegistry } from './AppearanceRegistry';
 
 export function createDefaultAppearanceRegistry(): AppearanceRegistry {
   return new AppearanceRegistry()
+    .registerComponent(splitViewAppearanceDescriptor)
     .registerComponent(confirmDialogAppearanceDescriptor)
     .registerComponent(inputDialogAppearanceDescriptor)
     .registerComponent(windowControlsAppearanceDescriptor)
@@ -421,6 +423,10 @@ export function createDefaultAppearanceRegistry(): AppearanceRegistry {
     .registerComponent(chatInputWorkspaceStripAppearanceDescriptor)
     .registerComponent(codePreviewAppearanceDescriptor)
     .registerComponent(exploreGroupAppearanceDescriptor)
+    .registerComponent(contextLoadGroupAppearanceDescriptor)
+    .registerComponent(fileEditGroupAppearanceDescriptor)
+    .registerComponent(shellGroupAppearanceDescriptor)
+    .registerComponent(interfaceObservationGroupAppearanceDescriptor)
     .registerComponent(pendingQueuePanelAppearanceDescriptor)
     .registerComponent(subagentProjectionAppearanceDescriptor)
     .registerComponent(threadGoalDialogsAppearanceDescriptor)
