@@ -2168,6 +2168,15 @@
       "engineStopped": "同步引擎未运行（重启认知引擎后接管）",
       "unavailable": "云端记忆状态不可用（daemon 可能未启用云同步）。"
     },
+    "morning": {
+      "title": "晨报",
+      "overnight": "昨夜整理（{{date}}）",
+      "thoughts": "昨夜的想法（{{count}}）",
+      "urges": "未竟之事（{{count}}）",
+      "unavailable": "暂时取不到晨报。",
+      "notifyTitle": "{{name}} 的晨报",
+      "notifyBody": "她为你准备好了今天的晨报。"
+    },
     "personaShort": {
       "dolores": "多洛丽丝",
       "arnold": "阿诺德",

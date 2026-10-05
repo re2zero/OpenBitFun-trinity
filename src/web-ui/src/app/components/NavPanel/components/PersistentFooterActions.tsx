@@ -31,6 +31,7 @@ import { useSettingsStore } from '@/app/scenes/settings/settingsStore';
 import { PeerConnectionStatus } from '@/infrastructure/peer-device/PeerConnectionStatus';
 import DeviceStatusControl from './DeviceStatusControl';
 import TrinityStatusControl from './TrinityStatusControl';
+import { useTrinityMorningReport } from '@/app/scenes/trinity/useTrinityMorningReport';
 import TrinityStatusPanel from './TrinityStatusPanel';
 import AppearanceQuickSwitchMenuItem from './AppearanceQuickSwitchMenuItem';
 import { UpdateIndicator } from '@/infrastructure/update/UpdateIndicator';
@@ -60,6 +61,9 @@ const PersistentFooterActions: React.FC = () => {
     gap: 6,
   });
   const hasAppUpdate = useHasAppUpdate();
+  // Morning-report notification: gates on the derived awake phase, fires at
+  // most once per day inside the morning window (no daemon polling added).
+  useTrinityMorningReport();
   const updateVersion = useUpdateInstallStore(state => state.downloadVersion ?? state.availableUpdate?.latestVersion);
   const [showRemoteConnect, setShowRemoteConnect] = useState(false);
   const [remoteInitialGroup, setRemoteInitialGroup] = useState<'network' | 'bot' | 'account' | undefined>(undefined);

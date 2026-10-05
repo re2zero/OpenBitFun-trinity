@@ -141,6 +141,18 @@ pub async fn trinity_awaken(
     forward("ceremony.awaken", request).await
 }
 
+// ── Morning report ──────────────────────────────────────────────
+
+/// Today's morning report (T7): first pull of the day lazily generates it;
+/// the daemon keeps it idempotent per calendar date.
+#[tauri::command]
+pub async fn trinity_morning_report(
+    _state: State<'_, crate::api::app_state::AppState>,
+    request: Option<TrinityRequest>,
+) -> Result<Value, String> {
+    forward("morning.report", request).await
+}
+
 // ── Cognitive engine LLM config ─────────────────────────────────
 
 /// Read the cognitive engine LLM configuration.

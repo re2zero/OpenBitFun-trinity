@@ -1728,6 +1728,7 @@ pub fn run(handle: tokio::runtime::Handle) {
             api::trinity_api::trinity_forget_memory,
             api::trinity_api::trinity_reinforce_memory,
             api::trinity_api::trinity_awaken,
+            api::trinity_api::trinity_morning_report,
             api::trinity_api::trinity_cloud_status,
             api::trinity_api::trinity_cloud_signup,
             api::trinity_api::trinity_cloud_login,

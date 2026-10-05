@@ -290,6 +290,85 @@ const CloudCard: React.FC<CloudCardProps> = ({ cloudStatus, busy, message, onAct
   );
 };
 
+// ── Morning report card (awake only, leads the column) ──────────
+
+/**
+ * She tidies up overnight and leaves this for the morning: her greeting (the
+ * overnight recap plus today's care), the thoughts the consolidation pass
+ * produced, and yesterday's unfinished urges. First pull of the day lazily
+ * generates the report daemon-side; the card reads the shared store so the
+ * notification scheduler and this card fetch it exactly once.
+ */
+const MorningReportCard: React.FC = () => {
+  const { t } = useI18n('common');
+  const report = useTrinityStore(s => s.morningReport);
+  const loadMorning = useTrinityStore(s => s.loadMorning);
+  const [loading, setLoading] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      await loadMorning();
+    } finally {
+      setLoading(false);
+    }
+  }, [loadMorning]);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const thoughts = report?.thoughts ?? [];
+  const urges = report?.urges ?? [];
+
+  return (
+    <Card appearance="raised" padding="md" gap="sm" className="openbitfun-trinity-scene__morning">
+      <CardHeader
+        contentAlign="center"
+        title={<h2>{t('trinity.morning.title')}</h2>}
+      />
+      <CardBody>
+        {report?.greeting && (
+          <p className="openbitfun-trinity-scene__morning-greeting" data-testid="trinity-morning-greeting">
+            {report.greeting}
+          </p>
+        )}
+        {report?.sleep_date && (
+          <p className="openbitfun-trinity-scene__morning-meta">
+            {t('trinity.morning.overnight', { date: report.sleep_date })}
+          </p>
+        )}
+        {loading && <Spinner size="sm" />}
+        {!loading && report == null && (
+          <p className="openbitfun-trinity-scene__morning-empty">{t('trinity.morning.unavailable')}</p>
+        )}
+        {thoughts.length > 0 && (
+          <div className="openbitfun-trinity-scene__morning-section">
+            <h3>{t('trinity.morning.thoughts', { count: thoughts.length })}</h3>
+            <ul className="openbitfun-trinity-scene__morning-list">
+              {thoughts.map((thought, index) => (
+                <li key={thought.id ?? `t-${index}`}>
+                  <OverflowText>{thought.content}</OverflowText>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {urges.length > 0 && (
+          <div className="openbitfun-trinity-scene__morning-section">
+            <h3>{t('trinity.morning.urges', { count: urges.length })}</h3>
+            <ul className="openbitfun-trinity-scene__morning-list">
+              {urges.map((urge, index) => (
+                <li key={`u-${index}`}>
+                  <OverflowText>{urge}</OverflowText>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </CardBody>
+    </Card>
+  );
+};
+
 const TrinityScene: React.FC = () => {
   const { t } = useI18n(['common', 'shared']);
   const {
@@ -304,6 +383,7 @@ const TrinityScene: React.FC = () => {
   const identity = useTrinityStore(s => s.identity);
   const cloudStatus = useTrinityStore(s => s.cloudStatus);
   const loadCloud = useTrinityStore(s => s.loadCloud);
+  const loadMorning = useTrinityStore(s => s.loadMorning);
 
   const [memories, setMemories] = useState<TrinityMemoryEntry[]>([]);
   const [memoriesLoading, setMemoriesLoading] = useState(false);
@@ -608,7 +688,7 @@ const TrinityScene: React.FC = () => {
                 variant="outline"
                 size="sm"
                 leadingIcon={<Icon name="refresh" size="sm" />}
-                onClick={() => { void loadMemories(); void loadHistory(); void loadCloud(); void loadFramework(); }}
+                onClick={() => { void loadMemories(); void loadHistory(); void loadCloud(); void loadFramework(); void loadMorning(); }}
                 data-testid="trinity-scene-refresh"
               >
                 {t('trinity.scene.refresh')}
@@ -679,9 +759,12 @@ const TrinityScene: React.FC = () => {
 
           {phase === 'awake' && psi && (
             <>
-              {/* Cloud memory leads the console: it is the action surface
-                  (sign up / log in / key ceremony / sync / backup / restore),
-                  the rest of the column reports live state. */}
+              {/* The morning report leads the column: it is today's hook —
+                  she worked while you slept. Cloud memory follows as the
+                  action surface (sign up / key ceremony / sync), the rest of
+                  the column reports live state. */}
+              <MorningReportCard />
+
               <CloudCard
                 cloudStatus={cloudStatus}
                 busy={cloudBusy}

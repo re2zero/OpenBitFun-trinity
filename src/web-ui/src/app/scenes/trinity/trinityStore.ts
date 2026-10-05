@@ -73,6 +73,31 @@ export interface TrinityCloudStatus {
   [key: string]: unknown;
 }
 
+/** One last-night thought inside the morning report. */
+export interface TrinityMorningThought {
+  id?: string;
+  content?: string;
+  kind?: string;
+  layer?: string;
+  strength?: number;
+  timestamp?: number;
+}
+
+/** Raw `morning.report` payload — she tidies up overnight and writes this. */
+export interface TrinityMorningReport {
+  /** Local calendar date (YYYY-MM-DD), the per-day idempotency key. */
+  date?: string;
+  generated_at?: number;
+  /** Referenced overnight consolidation report; null = none in the last 36h. */
+  sleep_date?: string | null;
+  /** Morning prose: greeting + one-line overnight recap + today's care. */
+  greeting?: string;
+  care_need?: string | null;
+  care_deficit?: number | null;
+  thoughts?: TrinityMorningThought[];
+  urges?: string[];
+}
+
 interface TrinityState {
   conn: TrinityConn;
   awakened: boolean;
@@ -84,9 +109,14 @@ interface TrinityState {
   identity: TrinityIdentity | null;
   psi: TrinityCognitiveState | null;
   cloudStatus: TrinityCloudStatus | null;
+  morningReport: TrinityMorningReport | null;
   lastUpdatedAt: number | null;
   refresh: () => Promise<void>;
   loadCloud: () => Promise<void>;
+  /** Pull today's morning report (first pull of the day generates it).
+   *  Resolves null when the daemon is unreachable; a previously loaded
+   *  report stays in the store — it is still today's. */
+  loadMorning: () => Promise<TrinityMorningReport | null>;
   markAwakenedLocally: () => void;
 }
 
@@ -97,6 +127,7 @@ export const useTrinityStore = create<TrinityState>((set) => ({
   identity: null,
   psi: null,
   cloudStatus: null,
+  morningReport: null,
   lastUpdatedAt: null,
 
   refresh: async () => {
@@ -131,6 +162,16 @@ export const useTrinityStore = create<TrinityState>((set) => ({
       set({ cloudStatus: (await trinityAPI.cloudStatus()) ?? null });
     } catch {
       set({ cloudStatus: null });
+    }
+  },
+
+  loadMorning: async () => {
+    try {
+      const report = await trinityAPI.morningReport();
+      if (report != null) set({ morningReport: report });
+      return report ?? null;
+    } catch {
+      return null;
     }
   },
 

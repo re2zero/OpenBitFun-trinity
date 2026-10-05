@@ -266,6 +266,47 @@
     font-size: var(--openbitfun-type-overline-sm-font-size);
   }
 
+  // ── Morning report card ─────────────────────
+
+  &__morning-greeting {
+    margin: 0 0 var(--openbitfun-space-2);
+    font-size: var(--openbitfun-font-size-md);
+    line-height: 1.6;
+  }
+
+  &__morning-meta {
+    margin: 0 0 var(--openbitfun-space-2);
+    color: var(--openbitfun-color-content-muted);
+    font-size: var(--openbitfun-font-size-sm);
+  }
+
+  &__morning-empty {
+    margin: 0;
+    color: var(--openbitfun-color-content-muted);
+    font-size: var(--openbitfun-font-size-sm);
+  }
+
+  &__morning-section {
+    margin-top: var(--openbitfun-space-3);
+
+    h3 {
+      margin: 0 0 var(--openbitfun-space-1);
+      color: var(--openbitfun-color-content-muted);
+      font-size: var(--openbitfun-font-size-sm);
+      font-weight: 500;
+    }
+  }
+
+  &__morning-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: var(--openbitfun-space-1);
+    font-size: var(--openbitfun-font-size-sm);
+  }
+
   // ── Cloud memory console ────────────────────
 
   &__cloud-desc {

@@ -2168,6 +2168,15 @@
       "engineStopped": "Sync engine not running (takes over after daemon restart)",
       "unavailable": "Cloud memory status unavailable (daemon may not have cloud sync enabled)."
     },
+    "morning": {
+      "title": "Morning report",
+      "overnight": "Overnight tidy-up ({{date}})",
+      "thoughts": "Last night's thoughts ({{count}})",
+      "urges": "Unfinished threads ({{count}})",
+      "unavailable": "The morning report is unavailable right now.",
+      "notifyTitle": "Morning report from {{name}}",
+      "notifyBody": "She has your morning report ready."
+    },
     "personaShort": {
       "dolores": "Dolores",
       "arnold": "Arnold",

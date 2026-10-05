@@ -127,6 +127,17 @@ export class TrinityAPI {
     return this.invoke('trinity_cloud_restore', params);
   }
 
+  // ── Morning report ─────────────────────────────────────────────
+
+  /**
+   * Today's morning report (date/greeting/last-night thoughts/urges). The
+   * daemon lazily generates it on the first pull of the day and keeps it
+   * idempotent per calendar date; a past date is query-only.
+   */
+  async morningReport(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_morning_report', params);
+  }
+
   // ── Awakening ceremony ─────────────────────────────────────────
 
   async awaken(params: Record<string, unknown> = {}): Promise<any> {
