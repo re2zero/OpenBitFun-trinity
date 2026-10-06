@@ -16,12 +16,14 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Button, Card, CardBody, CardHeader, Icon, OverflowText, ScrollArea, Spinner } from '@openbitfun/ui';
-import { Brain, CloudUpload, ShieldCheck } from 'lucide-react';
+import { Brain, CloudUpload, Download, PencilLine, ShieldCheck, Upload } from 'lucide-react';
 import { useI18n } from '@/infrastructure/i18n/hooks/useI18n';
 import { useWorkspaceContext } from '@/infrastructure/contexts/WorkspaceContext';
 import { trinityAPI, workspaceAPI } from '@/infrastructure/api';
-import { confirmDanger } from '@/infrastructure/confirm-dialog';
+import { confirmDanger, confirmWarning } from '@/infrastructure/confirm-dialog';
+import { useNotification } from '@/shared/notification-system';
 import OnboardingWizard from '@/app/scenes/onboarding/OnboardingWizard';
+import { exportFileName, parseBeingIdMismatch } from './memoryTransfer';
 import { flowChatManager } from '@/flow_chat/services/FlowChatManager';
 import { openMainSession } from '@/flow_chat/services/sessionActivation';
 import { flowChatSessionConfigForWorkspace } from '@/app/utils/projectSessionWorkspace';
@@ -371,6 +373,7 @@ const MorningReportCard: React.FC = () => {
 
 const TrinityScene: React.FC = () => {
   const { t } = useI18n(['common', 'shared']);
+  const { success, error: notifyError } = useNotification();
   const {
     assistantWorkspacesList,
     primaryAssistantWorkspaceId,
@@ -406,6 +409,12 @@ const TrinityScene: React.FC = () => {
   const [addContent, setAddContent] = useState('');
   const [addProject, setAddProject] = useState('');
   const [adding, setAdding] = useState(false);
+
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editContent, setEditContent] = useState('');
+  const [editSaving, setEditSaving] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
 
   const emotion = psi?.emotion?.valence;
   const focus = psi?.focus;
@@ -575,6 +584,109 @@ const TrinityScene: React.FC = () => {
       /* daemon may be offline; timeline stays as-is */
     }
   }, [forgetPendingId, loadMemories]);
+
+  // ── Correct (T9): an edit is memorize with target_id → daemon-side
+  // correct_memory — the original stays as provenance, the node is a new
+  // version, and the op propagates to other ends via the existing op-log.
+
+  const handleEditStart = useCallback((entry: TrinityMemoryEntry) => {
+    setEditingId(entry.id ?? null);
+    setEditContent(entry.content ?? '');
+  }, []);
+
+  const handleEditCancel = useCallback(() => {
+    setEditingId(null);
+    setEditContent('');
+  }, []);
+
+  const handleEditSave = useCallback(async () => {
+    const id = editingId;
+    const content = editContent.trim();
+    if (!id || !content || editSaving) return;
+    setEditSaving(true);
+    try {
+      const result = await trinityAPI.memorize({ content, target_id: id });
+      setEditingId(null);
+      setEditContent('');
+      if (result?.corrected) {
+        success(t('trinity.memory.edited'));
+      } else {
+        notifyError(t('trinity.memory.editNotFound'));
+      }
+      await loadMemories();
+    } catch (err) {
+      notifyError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setEditSaving(false);
+    }
+  }, [editContent, editingId, editSaving, loadMemories, notifyError, success, t]);
+
+  // ── Export / import (T10 RPCs): the host file dialogs pick the path, the
+  // daemon reads/writes the trinity-graph container. A cross-identity import
+  // (being_id mismatch) is retried only behind an explicit confirmation.
+
+  const handleExport = useCallback(async () => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const { save } = await import('@tauri-apps/plugin-dialog');
+      const path = await save({ defaultPath: exportFileName(), filters: [{ name: 'JSON', extensions: ['json'] }] });
+      if (!path) return;
+      const result = await trinityAPI.memoryExport({ path });
+      success(t('trinity.memory.exportDone', {
+        nodes: result?.nodes ?? 0,
+        triples: result?.triples ?? 0,
+        path,
+      }));
+    } catch (err) {
+      notifyError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExporting(false);
+    }
+  }, [exporting, notifyError, success, t]);
+
+  const importFromPath = useCallback(async (path: string, confirmBeingId: boolean) => {
+    const result = await trinityAPI.memoryImport({
+      path,
+      ...(confirmBeingId ? { confirm_being_id: true } : {}),
+    });
+    success(t('trinity.memory.importDone', { added: result?.added ?? 0 }));
+    await loadMemories();
+  }, [loadMemories, success, t]);
+
+  const handleImport = useCallback(async () => {
+    if (importing) return;
+    setImporting(true);
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const selection = await open({ multiple: false, filters: [{ name: 'JSON', extensions: ['json'] }] });
+      const path = typeof selection === 'string' ? selection : null;
+      if (!path) return;
+      try {
+        await importFromPath(path, false);
+      } catch (firstError) {
+        const mismatch = parseBeingIdMismatch(firstError);
+        if (!mismatch) throw firstError;
+        const confirmed = await confirmWarning(
+          t('trinity.memory.importConfirmTitle'),
+          t('trinity.memory.importConfirmMessage', {
+            container: mismatch.containerId,
+            local: mismatch.localId,
+          }),
+          {
+            confirmText: t('trinity.memory.importConfirm'),
+            cancelText: t('actions.cancel'),
+          },
+        );
+        if (!confirmed) return;
+        await importFromPath(path, true);
+      }
+    } catch (err) {
+      notifyError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setImporting(false);
+    }
+  }, [importFromPath, importing, notifyError, t]);
 
   const runCloudAction = useCallback(async (key: string, action: () => Promise<unknown>) => {
     setCloudBusy(key);
@@ -887,15 +999,37 @@ const TrinityScene: React.FC = () => {
                         </Button>
                       )}
                     </form>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      leadingIcon={<Icon name="plus" size="sm" />}
-                      onClick={() => setAddOpen(value => !value)}
-                      data-testid="trinity-memory-add-toggle"
-                    >
-                      {t('trinity.memory.addMemory')}
-                    </Button>
+                    <div className="openbitfun-trinity-scene__toolbar-actions">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        leadingIcon={<Icon name="plus" size="sm" />}
+                        onClick={() => setAddOpen(value => !value)}
+                        data-testid="trinity-memory-add-toggle"
+                      >
+                        {t('trinity.memory.addMemory')}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        leadingIcon={<Icon glyph={Download} size="sm" />}
+                        onClick={() => { void handleExport(); }}
+                        disabled={exporting}
+                        data-testid="trinity-memory-export"
+                      >
+                        {t('trinity.memory.export')}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        leadingIcon={<Icon glyph={Upload} size="sm" />}
+                        onClick={() => { void handleImport(); }}
+                        disabled={importing}
+                        data-testid="trinity-memory-import"
+                      >
+                        {t('trinity.memory.import')}
+                      </Button>
+                    </div>
                   </div>
 
                   {addOpen && (
@@ -952,6 +1086,7 @@ const TrinityScene: React.FC = () => {
                       {shownMemories.map((entry, index) => {
                         const time = formatMemoryTime(entry);
                         const forgetArmed = entry.id != null && forgetPendingId === entry.id;
+                        const editing = entry.id != null && editingId === entry.id;
                         return (
                           <li className="openbitfun-trinity-scene__memory-item" key={entry.id ?? `r-${index}`}>
                             {entry.kind && (
@@ -965,9 +1100,44 @@ const TrinityScene: React.FC = () => {
                                 {entry.layer}
                               </span>
                             )}
-                            <OverflowText className="openbitfun-trinity-scene__memory-content">
-                              {entry.content}
-                            </OverflowText>
+                            {editing ? (
+                              <form
+                                className="openbitfun-trinity-scene__add-form"
+                                onSubmit={(event) => { event.preventDefault(); void handleEditSave(); }}
+                              >
+                                <textarea
+                                  className="openbitfun-config-input"
+                                  rows={3}
+                                  value={editContent}
+                                  autoFocus
+                                  onChange={(event) => setEditContent(event.target.value)}
+                                  data-testid="trinity-memory-edit-content"
+                                />
+                                <div className="openbitfun-trinity-scene__add-row">
+                                  <Button
+                                    variant="primary"
+                                    size="sm"
+                                    type="submit"
+                                    disabled={editSaving || !editContent.trim()}
+                                    data-testid="trinity-memory-edit-save"
+                                  >
+                                    {editSaving ? t('trinity.memory.editSaving') : t('trinity.memory.editSave')}
+                                  </Button>
+                                  <Button
+                                    variant="text"
+                                    size="sm"
+                                    onClick={handleEditCancel}
+                                    data-testid="trinity-memory-edit-cancel"
+                                  >
+                                    {t('actions.cancel')}
+                                  </Button>
+                                </div>
+                              </form>
+                            ) : (
+                              <OverflowText className="openbitfun-trinity-scene__memory-content">
+                                {entry.content}
+                              </OverflowText>
+                            )}
                             {typeof entry.strength === 'number' && (
                               <span className="openbitfun-trinity-scene__memory-strength">
                                 {formatPercent(entry.strength)}
@@ -976,8 +1146,18 @@ const TrinityScene: React.FC = () => {
                             {time && (
                               <span className="openbitfun-trinity-scene__memory-time">{time}</span>
                             )}
-                            {entry.id != null && (
+                            {entry.id != null && !editing && (
                               <span className="openbitfun-trinity-scene__memory-actions">
+                                <button
+                                  type="button"
+                                  className="openbitfun-trinity-scene__memory-action"
+                                  onClick={() => handleEditStart(entry)}
+                                  aria-label={t('shared:tools.edit')}
+                                  title={t('shared:tools.edit')}
+                                  data-testid="trinity-memory-edit"
+                                >
+                                  <Icon glyph={PencilLine} size="sm" />
+                                </button>
                                 <button
                                   type="button"
                                   className="openbitfun-trinity-scene__memory-action"

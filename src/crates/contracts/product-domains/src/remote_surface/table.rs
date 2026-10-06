@@ -766,6 +766,8 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("trinity_llm_set_config",                                     Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
     op("trinity_llm_test_connection",                                Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
     op("trinity_memorize",                                           Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
+    op("trinity_memory_export",                                      Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
+    op("trinity_memory_import",                                      Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
     op("trinity_memory_stats",                                       Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
     op("trinity_memory_timeline",                                    Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
     op("trinity_recall_memory",                                      Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),

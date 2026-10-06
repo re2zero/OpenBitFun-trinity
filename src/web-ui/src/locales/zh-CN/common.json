@@ -2097,7 +2097,18 @@
       "loadEarlier": "加载更早",
       "noMore": "已到最早",
       "searchResults": "搜索结果",
-      "noSearchResults": "没有匹配的记忆。"
+      "noSearchResults": "没有匹配的记忆。",
+      "editSave": "保存修正",
+      "editSaving": "保存中…",
+      "edited": "修正已生效。",
+      "editNotFound": "原记忆已不存在（可能已被遗忘）。",
+      "export": "导出",
+      "exportDone": "已导出 {{nodes}} 条记忆、{{triples}} 条关联 → {{path}}",
+      "import": "导入",
+      "importDone": "已导入，新增 {{added}} 条记忆。",
+      "importConfirmTitle": "跨身份记忆迁移",
+      "importConfirmMessage": "这个记忆容器属于「{{container}}」，而本机认知体是「{{local}}」。合并会把另一段人生的记忆迁入本机。确认继续？",
+      "importConfirm": "确认合并"
     },
     "status": {
       "title": "认知状态",
@@ -2135,7 +2146,7 @@
       },
       "awaken": "觉醒",
       "awakening": "觉醒中…",
-      "memoryTimeline": "记忆时间线",
+      "memoryTimeline": "她的日记",
       "noMemories": "暂无记忆。",
       "trend": "认知趋势",
       "awakenFailed": "觉醒失败：{{message}}",

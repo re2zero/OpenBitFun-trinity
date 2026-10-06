@@ -21,9 +21,7 @@ pub struct TrinityRequest {
 
 /// Forward one call to the daemon; `params` defaults to `{}`.
 async fn forward(method: &str, request: Option<TrinityRequest>) -> Result<Value, String> {
-    let params = request
-        .map(|r| r.params)
-        .unwrap_or_else(|| json!({}));
+    let params = request.map(|r| r.params).unwrap_or_else(|| json!({}));
     TrinityBackend::global().call(method, params).await
 }
 
@@ -128,6 +126,26 @@ pub async fn trinity_reinforce_memory(
     request: Option<TrinityRequest>,
 ) -> Result<Value, String> {
     forward("reinforce_memory", request).await
+}
+
+/// Export the whole MindGraph as a trinity-graph container (F5/T10). The
+/// caller supplies the destination path from a host save dialog.
+#[tauri::command]
+pub async fn trinity_memory_export(
+    _state: State<'_, crate::api::app_state::AppState>,
+    request: Option<TrinityRequest>,
+) -> Result<Value, String> {
+    forward("memory.export", request).await
+}
+
+/// Import a trinity-graph container (F5/T10 restore / device migration).
+/// A being_id mismatch needs `confirm_being_id: true` on the retry.
+#[tauri::command]
+pub async fn trinity_memory_import(
+    _state: State<'_, crate::api::app_state::AppState>,
+    request: Option<TrinityRequest>,
+) -> Result<Value, String> {
+    forward("memory.import", request).await
 }
 
 // ── Awakening ceremony ──────────────────────────────────────────

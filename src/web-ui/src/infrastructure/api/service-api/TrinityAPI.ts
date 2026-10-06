@@ -97,6 +97,23 @@ export class TrinityAPI {
     return this.invoke('trinity_reinforce_memory', params);
   }
 
+  /**
+   * Export the whole MindGraph as a trinity-graph container (F5/T10). The
+   * path comes from a host save dialog; the daemon writes the file.
+   */
+  async memoryExport(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_memory_export', params);
+  }
+
+  /**
+   * Import a trinity-graph container (F5/T10). A being_id mismatch is
+   * rejected with both ids in the error; retry with confirm_being_id: true
+   * after explicit user confirmation.
+   */
+  async memoryImport(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_memory_import', params);
+  }
+
   // ── Cloud memory ───────────────────────────────────────────────
 
   async cloudStatus(params: Record<string, unknown> = {}): Promise<any> {

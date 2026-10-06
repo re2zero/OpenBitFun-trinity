@@ -2097,7 +2097,18 @@
       "loadEarlier": "載入更早",
       "noMore": "已到最早",
       "searchResults": "搜尋結果",
-      "noSearchResults": "沒有符合的記憶。"
+      "noSearchResults": "沒有符合的記憶。",
+      "editSave": "儲存修正",
+      "editSaving": "儲存中…",
+      "edited": "修正已生效。",
+      "editNotFound": "原記憶已不存在（可能已被遺忘）。",
+      "export": "匯出",
+      "exportDone": "已匯出 {{nodes}} 條記憶、{{triples}} 條關聯 → {{path}}",
+      "import": "匯入",
+      "importDone": "已匯入，新增 {{added}} 條記憶。",
+      "importConfirmTitle": "跨身份記憶遷移",
+      "importConfirmMessage": "這個記憶容器屬於「{{container}}」，而本機認知體是「{{local}}」。合併會把另一段人生的記憶遷入本機。確認繼續？",
+      "importConfirm": "確認合併"
     },
     "status": {
       "title": "銀月認知狀態",
@@ -2135,7 +2146,7 @@
       },
       "awaken": "覺醒",
       "awakening": "覺醒中…",
-      "memoryTimeline": "記憶時間線",
+      "memoryTimeline": "她的日記",
       "noMemories": "暫無記憶。",
       "trend": "認知趨勢",
       "awakenFailed": "覺醒失敗：{{message}}",
