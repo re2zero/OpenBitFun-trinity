@@ -3,7 +3,7 @@
  *
  * Phase-gated (see the Trinity repo cognitive UI design doc):
  * - offline: identity header + "engine disconnected" hint only
- * - dormant: awakening card only (opens the shared TrinityAwakenDialog) —
+ * - dormant: awakening card only (opens the full-screen onboarding wizard) —
  *   memory and cloud consoles are meaningless before the being exists
  * - awake:   cloud-memory card first (the action surface: signup/login → key
  *   ceremony → sync/backup/restore), then the cognitive-state card (emotion
@@ -21,7 +21,7 @@ import { useI18n } from '@/infrastructure/i18n/hooks/useI18n';
 import { useWorkspaceContext } from '@/infrastructure/contexts/WorkspaceContext';
 import { trinityAPI, workspaceAPI } from '@/infrastructure/api';
 import { confirmDanger } from '@/infrastructure/confirm-dialog';
-import TrinityAwakenDialog from '@/app/components/TrinityAwakenGate/TrinityAwakenDialog';
+import OnboardingWizard from '@/app/scenes/onboarding/OnboardingWizard';
 import { flowChatManager } from '@/flow_chat/services/FlowChatManager';
 import { openMainSession } from '@/flow_chat/services/sessionActivation';
 import { flowChatSessionConfigForWorkspace } from '@/app/utils/projectSessionWorkspace';
@@ -372,7 +372,6 @@ const MorningReportCard: React.FC = () => {
 const TrinityScene: React.FC = () => {
   const { t } = useI18n(['common', 'shared']);
   const {
-    currentWorkspace,
     assistantWorkspacesList,
     primaryAssistantWorkspaceId,
     ensureCognitiveBeingAssistant,
@@ -394,7 +393,7 @@ const TrinityScene: React.FC = () => {
   const [cloudMessage, setCloudMessage] = useState<string | null>(null);
   const [framework, setFramework] = useState<CognitiveFrameworkInfo | null>(null);
 
-  const [awakenDialogOpen, setAwakenDialogOpen] = useState(false);
+  const [awakenWizardOpen, setAwakenWizardOpen] = useState(false);
   const [forgetPendingId, setForgetPendingId] = useState<string | null>(null);
   const [creatingIdentity, setCreatingIdentity] = useState(false);
   const [createIdentityError, setCreateIdentityError] = useState<string | null>(null);
@@ -421,10 +420,6 @@ const TrinityScene: React.FC = () => {
   const identityName = being?.name || identity?.name || t('trinity.being.title');
   const beingOwner = being?.userName || identity?.user_name;
   const persona = being?.persona || identity?.persona;
-  // Persona files only make sense inside the Trinity assistant workspace.
-  const awakenWorkspacePath = currentWorkspace?.assistantId === 'trinity'
-    ? currentWorkspace.rootPath
-    : undefined;
   const shouldCreateIdentity = needsCognitiveIdentity(
     phase,
     assistantWorkspacesList,
@@ -716,7 +711,7 @@ const TrinityScene: React.FC = () => {
                 <Button
                   variant="primary"
                   leadingIcon={<Icon name="spark" size="sm" />}
-                  onClick={() => setAwakenDialogOpen(true)}
+                  onClick={() => setAwakenWizardOpen(true)}
                   data-testid="trinity-scene-awaken"
                 >
                   {t('trinity.scene.awaken')}
@@ -1039,10 +1034,9 @@ const TrinityScene: React.FC = () => {
         </div>
       </ScrollArea>
 
-      <TrinityAwakenDialog
-        open={awakenDialogOpen}
-        onClose={() => setAwakenDialogOpen(false)}
-        workspacePath={awakenWorkspacePath}
+      <OnboardingWizard
+        open={awakenWizardOpen}
+        onClose={() => setAwakenWizardOpen(false)}
       />
     </div>
   );

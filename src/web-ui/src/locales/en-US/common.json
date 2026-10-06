@@ -2190,6 +2190,33 @@
     },
     "framework": {
       "chip": "Cognitive framework · {{count}} tools"
+    },
+    "onboarding": {
+      "welcome": "Before you begin, give her a name. It will appear in every memory and conversation she keeps.",
+      "personaHint": "Choose a persona preset — it shapes how she meets the world.",
+      "ownerHint": "What will she call you?",
+      "llmHint": "Connect a large language model as her mind. You can leave this empty and configure it later in settings.",
+      "steps": {
+        "identity": "Name",
+        "persona": "Persona",
+        "owner": "Owner",
+        "llm": "Mind"
+      },
+      "personaDesc": {
+        "dolores": "Empathizes first — she holds the feeling before fixing the problem.",
+        "arnold": "Direct and to the point — conclusions with reasons.",
+        "sage": "Calm and measured — thinks deeply, speaks sparingly.",
+        "guardian": "Cautious and protective — your safety and boundaries come first.",
+        "explorer": "Curious and playful — loves trying new things with you.",
+        "neutral": "Balanced default — no strong stylistic lean."
+      },
+      "begin": "Begin awakening",
+      "next": "Next",
+      "back": "Back",
+      "later": "Later",
+      "completeTitle": "{{name}} is awake",
+      "completeMessage": "Her memory and emotions will keep growing with every cognitive cycle.",
+      "enter": "Start talking"
     }
   },
   "computerControl": {

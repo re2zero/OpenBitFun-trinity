@@ -84,6 +84,7 @@ import { terminalAppearanceDescriptor } from '@/app/scenes/terminal/appearance';
 import { aboutDialogAppearanceDescriptor } from '@/app/components/AboutDialog/appearance';
 import { navPanelAppearanceDescriptor } from '@/app/components/NavPanel/appearance';
 import { trinityAwakenAppearanceDescriptor } from '@/app/components/TrinityAwakenGate/appearance';
+import { trinityLlmFieldsAppearanceDescriptor } from '@/infrastructure/config/components/TrinityLlmFields.appearance';
 import { trinityAppearanceDescriptor } from '@/app/scenes/trinity/appearance';
 import { sessionsSectionAppearanceDescriptor } from '@/app/components/NavPanel/sections/sessions/appearance';
 import { deviceOverviewAppearanceDescriptor } from '@/app/components/NavPanel/components/DeviceStatusControl.appearance';
@@ -358,6 +359,7 @@ export function createDefaultAppearanceRegistry(): AppearanceRegistry {
     .registerComponent(aboutDialogAppearanceDescriptor)
     .registerComponent(navPanelAppearanceDescriptor)
     .registerComponent(trinityAwakenAppearanceDescriptor)
+    .registerComponent(trinityLlmFieldsAppearanceDescriptor)
     .registerComponent(sessionsSectionAppearanceDescriptor)
     .registerComponent(contentCanvasAppearanceDescriptor)
     .registerComponent(filesPanelAppearanceDescriptor)

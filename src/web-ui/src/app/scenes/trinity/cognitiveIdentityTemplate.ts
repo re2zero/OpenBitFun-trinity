@@ -3,7 +3,7 @@
  * written into the Trinity assistant workspace.
  *
  * Two callers share this module:
- * - the awakening ceremony (`TrinityAwakenDialog`)
+ * - the awakening ceremony (`OnboardingWizard`)
  * - the "create identity" recovery action on the Trinity scene
  *
  * Content is "generic workspace templates + cognitive-being delta": the same

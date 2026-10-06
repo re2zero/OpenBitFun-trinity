@@ -2190,6 +2190,33 @@
     },
     "framework": {
       "chip": "認知框架 · {{count}} 個工具"
+    },
+    "onboarding": {
+      "welcome": "在開始之前，為她取一個名字。這個名字將出現在她所有的記憶與對話裡。",
+      "personaHint": "選擇人格預設——它塑造她回應世界的方式。",
+      "ownerHint": "她會如何稱呼你？",
+      "llmHint": "連接一個大模型作為她的思維。可以留空，稍後在設定中配置。",
+      "steps": {
+        "identity": "命名",
+        "persona": "人格",
+        "owner": "認主",
+        "llm": "思維"
+      },
+      "personaDesc": {
+        "dolores": "共情你的情緒，先接住感受再解決問題。",
+        "arnold": "直來直往，給結論也給理由。",
+        "sage": "沉穩克制，想得深也說得少。",
+        "guardian": "謹慎保守，把你的安全和邊界放在第一位。",
+        "explorer": "好奇心旺盛，喜歡和你一起試新東西。",
+        "neutral": "均衡預設，不過分偏向任何一種風格。"
+      },
+      "begin": "開始覺醒",
+      "next": "下一步",
+      "back": "上一步",
+      "later": "稍後再說",
+      "completeTitle": "{{name}} 醒了",
+      "completeMessage": "她的記憶與情感將在認知週期中持續成長。",
+      "enter": "開始對話"
     }
   },
   "computerControl": {

@@ -48,7 +48,10 @@
         "label": "記憶",
         "description": "控制智能體如何從會話中產生及使用記憶"
       },
-      "trinity": { "label": "銀月引擎", "description": "認知引擎 LLM 端點、模型與連接。" },
+      "trinity": {
+        "label": "銀月引擎",
+        "description": "認知引擎 LLM 端點、模型與連接。"
+      },
       "sessionWorkspace": {
         "label": "會話與工作區",
         "description": "設定新會話的執行框架、標題產生與工作區搜尋"
@@ -618,7 +621,15 @@
       "testConnection": "測試連線",
       "testing": "測試中…",
       "connectionOk": "連線成功。",
-      "connectionFailed": "連線失敗。"
+      "connectionFailed": "連線失敗。",
+      "providerLabel": "服務商",
+      "provider": {
+        "deepseek": "DeepSeek",
+        "zhipu": "智譜",
+        "openai": "OpenAI",
+        "ollama": "本機 Ollama",
+        "custom": "自訂"
+      }
     }
   },
   "archivedSessions": {

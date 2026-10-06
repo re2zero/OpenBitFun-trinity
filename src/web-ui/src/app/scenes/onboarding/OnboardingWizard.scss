@@ -1,0 +1,178 @@
+.openbitfun-trinity-onboarding {
+  align-items: center;
+  background: var(--openbitfun-color-overlay-scrim);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  position: fixed;
+  // Same layer as the splash screen: the wizard is "before the app".
+  z-index: 999999;
+
+  &__card {
+    background: var(--openbitfun-color-surface-raised);
+    border-radius: var(--openbitfun-radius-lg);
+    box-shadow: var(--openbitfun-shadow-overlay);
+    display: flex;
+    flex-direction: column;
+    gap: var(--openbitfun-space-4);
+    max-width: 40rem;
+    max-height: 90vh;
+    overflow: auto;
+    padding: var(--openbitfun-space-6);
+    width: min(40rem, 92vw);
+  }
+
+  &__header {
+    align-items: center;
+    display: flex;
+    gap: var(--openbitfun-space-3);
+    justify-content: space-between;
+  }
+
+  &__title {
+    font-size: var(--openbitfun-type-heading-dialog-font-size);
+    margin: 0;
+  }
+
+  &__dismiss {
+    background: transparent;
+    border: none;
+    color: var(--openbitfun-color-content-muted);
+    cursor: pointer;
+    font-size: var(--openbitfun-type-label-sm-font-size);
+
+    &:hover {
+      color: var(--openbitfun-color-content-primary);
+    }
+  }
+
+  &__steps {
+    display: flex;
+    gap: var(--openbitfun-space-2);
+    list-style: none;
+    margin: 0;
+    padding: 0;
+
+    li {
+      border-radius: var(--openbitfun-radius-pill);
+      color: var(--openbitfun-color-content-muted);
+      font-size: var(--openbitfun-type-label-sm-font-size);
+      padding: var(--openbitfun-space-1) var(--openbitfun-space-3);
+
+      &.is-done {
+        color: var(--openbitfun-color-status-success-content);
+      }
+
+      &.is-current {
+        background: var(--openbitfun-color-surface-subtle);
+        color: var(--openbitfun-color-accent-default);
+      }
+    }
+  }
+
+  &__body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--openbitfun-space-3);
+
+    &--complete {
+      align-items: center;
+      padding: var(--openbitfun-space-6) 0;
+      text-align: center;
+    }
+  }
+
+  &__hint {
+    color: var(--openbitfun-color-content-muted);
+    font-size: var(--openbitfun-type-body-sm-font-size);
+    margin: 0;
+  }
+
+  &__field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--openbitfun-space-1);
+
+    span {
+      color: var(--openbitfun-color-content-muted);
+      font-size: var(--openbitfun-type-label-sm-font-size);
+    }
+  }
+
+  &__personas {
+    display: grid;
+    gap: var(--openbitfun-space-3);
+    grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
+  }
+
+  &__persona {
+    background: transparent;
+    border: 1px solid var(--openbitfun-color-border-default);
+    border-radius: var(--openbitfun-radius-md);
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: var(--openbitfun-space-1);
+    padding: var(--openbitfun-space-3);
+    text-align: left;
+
+    &:hover {
+      border-color: var(--openbitfun-color-border-strong);
+    }
+
+    &.is-active {
+      border-color: var(--openbitfun-color-accent-default);
+    }
+  }
+
+  &__persona-name {
+    color: var(--openbitfun-color-content-primary);
+    font-size: var(--openbitfun-type-label-md-font-size);
+  }
+
+  &__persona-desc {
+    color: var(--openbitfun-color-content-muted);
+    font-size: var(--openbitfun-type-meta-font-size);
+  }
+
+  &__spark {
+    color: var(--openbitfun-color-accent-default);
+    animation: openbitfun-trinity-onboarding-rise 1.2s ease-out;
+  }
+
+  &__complete-title {
+    font-size: var(--openbitfun-type-heading-dialog-font-size);
+    margin: 0;
+  }
+
+  &__complete-message {
+    color: var(--openbitfun-color-content-muted);
+    font-size: var(--openbitfun-type-body-sm-font-size);
+    margin: 0;
+  }
+
+  &__error {
+    color: var(--openbitfun-color-status-danger-content);
+    font-size: var(--openbitfun-type-body-sm-font-size);
+    margin: 0;
+    word-break: break-word;
+  }
+
+  &__footer {
+    display: flex;
+    gap: var(--openbitfun-space-3);
+    justify-content: flex-end;
+  }
+}
+
+@keyframes openbitfun-trinity-onboarding-rise {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

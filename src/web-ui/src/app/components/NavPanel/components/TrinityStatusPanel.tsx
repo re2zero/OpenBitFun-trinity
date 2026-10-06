@@ -3,8 +3,8 @@
  *
  * Phase-aware quick glance (see the Trinity repo cognitive UI design doc):
  * - offline: identity header + "engine disconnected" hint only
- * - dormant: awakening guidance + single CTA that opens the shared
- *   TrinityAwakenDialog (no inline ceremony logic)
+ * - dormant: awakening guidance + single CTA that opens the full-screen
+ *   onboarding wizard (no inline ceremony logic)
  * - awake:   emotion hero + need bars (percentages at one decimal place)
  *            + cloud-sync glance line + "open full panel" action
  *
@@ -26,7 +26,7 @@ import {
   needState,
   NEED_KEYS,
 } from '@/app/scenes/trinity/trinityDisplay';
-import TrinityAwakenDialog from '@/app/components/TrinityAwakenGate/TrinityAwakenDialog';
+import OnboardingWizard from '@/app/scenes/onboarding/OnboardingWizard';
 
 /** Poll interval while the panel is open; closed panel polls nowhere. */
 const OPEN_POLL_INTERVAL_MS = 5000;
@@ -44,7 +44,7 @@ const TrinityStatusPanel: React.FC<TrinityStatusPanelProps> = ({ open, onOpenCha
   const cloudStatus = useTrinityStore(s => s.cloudStatus);
   const loadCloud = useTrinityStore(s => s.loadCloud);
 
-  const [awakenDialogOpen, setAwakenDialogOpen] = useState(false);
+  const [awakenWizardOpen, setAwakenDialogOpen] = useState(false);
 
   useTrinityAutoRefresh(open ? OPEN_POLL_INTERVAL_MS : null);
 
@@ -200,8 +200,8 @@ const TrinityStatusPanel: React.FC<TrinityStatusPanelProps> = ({ open, onOpenCha
         </Button>
       </div>
 
-      <TrinityAwakenDialog
-        open={awakenDialogOpen}
+      <OnboardingWizard
+        open={awakenWizardOpen}
         onClose={() => setAwakenDialogOpen(false)}
       />
     </div>
