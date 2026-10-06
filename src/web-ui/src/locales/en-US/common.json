@@ -2097,7 +2097,18 @@
       "loadEarlier": "Load earlier",
       "noMore": "Beginning reached",
       "searchResults": "Search results",
-      "noSearchResults": "No matching memories."
+      "noSearchResults": "No matching memories.",
+      "editSave": "Save correction",
+      "editSaving": "Saving…",
+      "edited": "Correction applied.",
+      "editNotFound": "The original memory no longer exists (it may have been forgotten).",
+      "export": "Export",
+      "exportDone": "Exported {{nodes}} memories and {{triples}} associations → {{path}}",
+      "import": "Import",
+      "importDone": "Import finished — {{added}} memories added.",
+      "importConfirmTitle": "Cross-identity memory import",
+      "importConfirmMessage": "This memory container belongs to \"{{container}}\" while this machine's being is \"{{local}}\". Merging brings another life's memories into this being. Continue?",
+      "importConfirm": "Merge anyway"
     },
     "status": {
       "title": "Trinity Cognitive State",
@@ -2135,7 +2146,7 @@
       },
       "awaken": "Awaken",
       "awakening": "Awakening…",
-      "memoryTimeline": "Memory timeline",
+      "memoryTimeline": "Her diary",
       "noMemories": "No memories yet.",
       "trend": "Cognitive trend",
       "awakenFailed": "Awakening failed: {{message}}",

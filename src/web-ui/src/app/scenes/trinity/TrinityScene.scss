@@ -389,6 +389,13 @@
     margin-bottom: var(--openbitfun-space-3);
   }
 
+  &__toolbar-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--openbitfun-space-2);
+  }
+
   &__search {
     display: flex;
     flex: 1 1 auto;
