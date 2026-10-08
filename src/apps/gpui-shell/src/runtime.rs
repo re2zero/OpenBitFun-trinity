@@ -15,7 +15,12 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Result};
-use openbitfun_agent_runtime::sdk::AgentRuntime;
+use gpui::SharedString;
+use openbitfun_agent_runtime::sdk::{
+    AgentDialogTurnExecution, AgentDialogTurnRequest, AgentRuntime, AgentSessionCreateRequest,
+    AgentSessionRestoreRequest, AgentTurnCancellationRequest, SessionState, SessionTranscript,
+    SessionTranscriptRequest,
+};
 use openbitfun_core::agentic::system::{
     init_agentic_system_for_profile_with_runtime_ownership, select_agentic_system_profile,
 };
@@ -23,21 +28,29 @@ use openbitfun_core::infrastructure::ai::AIClientFactory;
 use openbitfun_core::infrastructure::try_get_path_manager_arc;
 use openbitfun_core::product_assembly::{DeliveryProfile, ProductAssembler, ProductAssemblyInput};
 use openbitfun_core::product_runtime::{
-    CoreProductAgentRuntime, CoreProductEventQueueOwner, CoreRuntimeServicesProvider,
-    build_local_runtime_services, ensure_product_dialog_scheduler,
+    build_local_runtime_services, ensure_product_dialog_scheduler, CoreProductAgentRuntime,
+    CoreProductEventQueueOwner, CoreRuntimeServicesProvider,
 };
 use openbitfun_core::runtime_ownership::{CoreRuntimeOwnership, RuntimeDeployment};
 use openbitfun_core::service::config::{get_app_language, initialize_global_config};
 use openbitfun_core::service::i18n::LocaleId;
 use openbitfun_core::service::workspace::{
-    WorkspaceInfo, WorkspaceService, get_global_workspace_service, set_global_workspace_service,
+    get_global_workspace_service, set_global_workspace_service, WorkspaceInfo, WorkspaceService,
 };
-use openbitfun_runtime_ports::{AgentSessionListRequest, AgentSessionSummary};
+use openbitfun_events::{AgenticEvent, ToolEventData};
+use openbitfun_runtime_ports::{
+    AgentSessionListRequest, AgentSessionSummary, AgentSubmissionSource, DialogSubmissionPolicy,
+    TranscriptContent, TranscriptMessage,
+};
 use tokio::sync::mpsc;
 
 /// Matches the CLI interactive buffer (`RUNTIME_EVENT_BUFFER`).
 const RUNTIME_EVENT_BUFFER: usize = 256;
 const ENTRYPOINT: &str = "gpui-shell";
+/// Same default agent the CLI startup page resolves from `behavior.default_agent`.
+const DEFAULT_AGENT_TYPE: &str = "Standard";
+/// Tool card payload previews stay short; full values live in the runtime.
+const TOOL_DETAIL_LIMIT: usize = 400;
 
 static RUNTIME_HANDLE: OnceLock<RuntimeHandle> = OnceLock::new();
 
@@ -47,7 +60,10 @@ pub(crate) fn runtime_handle() -> Option<&'static RuntimeHandle> {
 }
 
 /// One-way notifications from the embedded runtime into the shell UI.
+// Turn ids ride along on turn events for the M5 permission/steering work;
+// the M4 view keys everything on session ids and round ids.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub(crate) enum RuntimeEvent {
     /// Active locale resolved from the shared config (`app.language`).
     Locale(LocaleId),
@@ -59,6 +75,80 @@ pub(crate) enum RuntimeEvent {
     SessionsFailed(String),
     /// Bootstrap failed; the shell stays degraded with the error shown.
     Failed(String),
+    /// A session was created or restored and its transcript is ready.
+    SessionOpened(OpenedSession),
+    /// Opening (creating or restoring) a session failed.
+    SessionOpenFailed(String),
+    /// A submitted dialog turn was accepted by the runtime.
+    TurnAccepted { session_id: String, turn_id: String },
+    /// Submitting a message failed; the turn never started.
+    SendFailed { session_id: String, error: String },
+    /// A dialog turn started executing (busy marker for the open session).
+    TurnStarted { session_id: String, turn_id: String },
+    /// Streaming assistant text for the open session.
+    TextChunk {
+        session_id: String,
+        turn_id: String,
+        round_id: String,
+        text: String,
+    },
+    /// Tool lifecycle update; upserted by the tool id in the open session.
+    ToolUpdate { session_id: String, card: ToolCard },
+    /// A dialog turn reached a terminal state.
+    TurnFinished {
+        session_id: String,
+        error: Option<String>,
+    },
+    /// The authoritative history changed (undo/restore/repair); reload it.
+    HistoryChanged { session_id: String },
+}
+
+/// A session ready to be shown in the chat pane.
+#[derive(Debug)]
+pub(crate) struct OpenedSession {
+    pub session_id: String,
+    pub name: String,
+    pub agent_type: String,
+    pub entries: Vec<ChatEntry>,
+    /// The session was mid-turn when opened; live events continue to arrive.
+    pub busy: bool,
+}
+
+/// Chat transcript entry as rendered by the shell.
+#[derive(Debug, Clone)]
+pub(crate) enum ChatEntry {
+    User {
+        text: String,
+    },
+    /// Assistant markdown (streamed chunks accumulate into one entry per
+    /// model round, keyed by `round_id`).
+    Assistant {
+        round_id: String,
+        text: String,
+    },
+    Tool(ToolCard),
+    /// Turn-level failures, cancellations, and system errors.
+    Notice {
+        text: String,
+    },
+}
+
+/// Tool invocation card state; `key` doubles as the stable element id.
+#[derive(Debug, Clone)]
+pub(crate) struct ToolCard {
+    pub key: SharedString,
+    pub tool_name: String,
+    pub status: ToolStatus,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolStatus {
+    Running,
+    WaitingConfirm,
+    Done,
+    Failed,
+    Cancelled,
 }
 
 /// Process-lifetime handle to the embedded runtime, safe to hold from UI code.
@@ -100,6 +190,504 @@ impl RuntimeHandle {
                 }
             }
         });
+    }
+
+    /// Creates a new durable session for the shell workspace.
+    pub(crate) fn create_session(&self, tx: mpsc::UnboundedSender<RuntimeEvent>) {
+        let runtime = self.agent_runtime.clone();
+        let workspace_path = self.workspace.root_path.to_string_lossy().to_string();
+        let workspace_id = Some(self.workspace.id.clone());
+        self.tokio.spawn(async move {
+            let request = AgentSessionCreateRequest {
+                session_name: default_session_name(),
+                agent_type: DEFAULT_AGENT_TYPE.to_string(),
+                agent_route_key: None,
+                workspace_path: Some(workspace_path.clone()),
+                project_workspace_path: None,
+                execution_target: None,
+                workspace_id,
+                remote_connection_id: None,
+                remote_ssh_host: None,
+                model_id: None,
+                metadata: Default::default(),
+            };
+            match runtime.create_session(request).await {
+                Ok(created) => {
+                    tracing::info!(
+                        "Created session {} ({})",
+                        created.session_id,
+                        created.agent_type
+                    );
+                    emit_opened(
+                        &runtime,
+                        created.session_id,
+                        created.session_name,
+                        created.agent_type,
+                        false,
+                        tx,
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    let message = error.into_message();
+                    tracing::error!("Failed to create session: {message}");
+                    let _ = tx.send(RuntimeEvent::SessionOpenFailed(message));
+                }
+            }
+        });
+    }
+
+    /// Restores a persisted session into the runtime and reads its transcript.
+    pub(crate) fn open_session(&self, session_id: String, tx: mpsc::UnboundedSender<RuntimeEvent>) {
+        let runtime = self.agent_runtime.clone();
+        let workspace_id = Some(self.workspace.id.clone());
+        let workspace_path = self.workspace.root_path.to_string_lossy().to_string();
+        self.tokio.spawn(async move {
+            let request = AgentSessionRestoreRequest {
+                workspace_id,
+                workspace_path,
+                session_id: session_id.clone(),
+                include_internal: false,
+                remote_connection_id: None,
+                remote_ssh_host: None,
+            };
+            match runtime.restore_session(request).await {
+                Ok(restored) => {
+                    let busy = matches!(restored.state, SessionState::Processing { .. });
+                    tracing::info!(
+                        "Restored session {} (busy={busy})",
+                        restored.session.session_id
+                    );
+                    emit_opened(
+                        &runtime,
+                        restored.session.session_id,
+                        restored.session.session_name,
+                        restored.session.agent_type,
+                        busy,
+                        tx,
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    let message = error.into_message();
+                    tracing::error!("Failed to restore session {session_id}: {message}");
+                    let _ = tx.send(RuntimeEvent::SessionOpenFailed(message));
+                }
+            }
+        });
+    }
+
+    /// Submits one dialog turn; streaming output arrives through the event pump.
+    pub(crate) fn send_message(
+        &self,
+        session_id: String,
+        message: String,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+    ) {
+        let runtime = self.agent_runtime.clone();
+        let workspace_path = self.workspace.root_path.to_string_lossy().to_string();
+        let workspace_id = Some(self.workspace.id.clone());
+        self.tokio.spawn(async move {
+            let turn_id = uuid::Uuid::new_v4().to_string();
+            // Ask semantics: the metadata stays empty so the turn inherits the
+            // persisted approval preference (same as the CLI interactive
+            // default); M5 wires the explicit approval surface on top.
+            let request = AgentDialogTurnRequest {
+                session_id: session_id.clone(),
+                message,
+                output_schema: None,
+                original_message: None,
+                turn_id: Some(turn_id.clone()),
+                execution: AgentDialogTurnExecution::Standard,
+                agent_type: DEFAULT_AGENT_TYPE.to_string(),
+                workspace_path: Some(workspace_path),
+                workspace_id,
+                remote_connection_id: None,
+                remote_ssh_host: None,
+                policy: DialogSubmissionPolicy::for_source(AgentSubmissionSource::Cli),
+                reply_route: None,
+                prepended_reminders: Vec::new(),
+                attachments: Vec::new(),
+                metadata: Default::default(),
+            };
+            match runtime.submit_dialog_turn(request).await {
+                Ok(_) => {
+                    let _ = tx.send(RuntimeEvent::TurnAccepted {
+                        session_id,
+                        turn_id,
+                    });
+                }
+                Err(error) => {
+                    let message = error.into_message();
+                    tracing::error!("Failed to submit turn: {message}");
+                    let _ = tx.send(RuntimeEvent::SendFailed {
+                        session_id,
+                        error: message,
+                    });
+                }
+            }
+        });
+    }
+
+    /// Requests cancellation of the session's current turn. The terminal
+    /// state arrives as a [`RuntimeEvent::TurnFinished`] through the pump.
+    pub(crate) fn cancel_turn(&self, session_id: String) {
+        let runtime = self.agent_runtime.clone();
+        self.tokio.spawn(async move {
+            let request = AgentTurnCancellationRequest {
+                session_id,
+                turn_id: None,
+                source: Some(AgentSubmissionSource::Cli),
+                requester_session_id: None,
+                reason: Some("user requested cancellation from the GPUI shell".to_string()),
+                wait_timeout_ms: None,
+                cancel_descendants: true,
+            };
+            match runtime.cancel_turn(request).await {
+                Ok(_) => tracing::info!("Turn cancellation accepted"),
+                Err(error) => tracing::error!(
+                    "Failed to request turn cancellation: {}",
+                    error.into_message()
+                ),
+            }
+        });
+    }
+
+    /// Re-reads the transcript of an already-restored session after
+    /// [`RuntimeEvent::HistoryChanged`]; arrives as [`RuntimeEvent::SessionOpened`].
+    pub(crate) fn reload_transcript(
+        &self,
+        session_id: String,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+    ) {
+        let runtime = self.agent_runtime.clone();
+        self.tokio.spawn(async move {
+            // The session is already loaded in this process; only the
+            // projection is stale. Name/agent facts come from the summary list
+            // snapshot the UI already holds, so reuse the last-known values
+            // through the transcript-only path below.
+            let transcript = match runtime
+                .read_session_transcript(SessionTranscriptRequest {
+                    session_id: session_id.clone(),
+                    turn_id: None,
+                })
+                .await
+            {
+                Ok(transcript) => transcript,
+                Err(error) => {
+                    tracing::warn!(
+                        "Failed to reload session transcript: {}",
+                        error.into_message()
+                    );
+                    SessionTranscript {
+                        session_id: session_id.clone(),
+                        messages: Vec::new(),
+                    }
+                }
+            };
+            let entries: Vec<ChatEntry> = transcript.messages.iter().map(convert_message).collect();
+            let _ = tx.send(RuntimeEvent::SessionOpened(OpenedSession {
+                session_id,
+                // Reload keeps the current pane title; the list refresh on turn
+                // settlement picks up any rename.
+                name: String::new(),
+                agent_type: String::new(),
+                entries,
+                busy: false,
+            }));
+        });
+    }
+}
+
+/// Reads the transcript for `session_id` and reports it as an opened session.
+/// Chunks streamed between the transcript read and this call are dropped —
+/// the shell accepts that small gap for sessions opened mid-turn (same as the
+/// CLI, which re-attaches to the live stream without replaying history).
+async fn emit_opened(
+    runtime: &AgentRuntime,
+    session_id: String,
+    name: String,
+    agent_type: String,
+    busy: bool,
+    tx: mpsc::UnboundedSender<RuntimeEvent>,
+) {
+    let transcript = match runtime
+        .read_session_transcript(SessionTranscriptRequest {
+            session_id: session_id.clone(),
+            turn_id: None,
+        })
+        .await
+    {
+        Ok(transcript) => transcript,
+        Err(error) => {
+            tracing::warn!(
+                "Failed to read session transcript: {}",
+                error.into_message()
+            );
+            SessionTranscript {
+                session_id: session_id.clone(),
+                messages: Vec::new(),
+            }
+        }
+    };
+    let entries: Vec<ChatEntry> = transcript.messages.iter().map(convert_message).collect();
+    let _ = tx.send(RuntimeEvent::SessionOpened(OpenedSession {
+        session_id,
+        name,
+        agent_type,
+        entries,
+        busy,
+    }));
+}
+
+/// Converts one persisted transcript message into shell chat entries.
+/// Mixed assistant messages keep their order: text first, then tool calls
+/// (result details arrive in their own `ToolResult` messages).
+fn convert_message(message: &TranscriptMessage) -> ChatEntry {
+    match &message.content {
+        TranscriptContent::Text(text) => match message.role.as_str() {
+            "assistant" => ChatEntry::Assistant {
+                round_id: message.turn_id.clone().unwrap_or_default(),
+                text: text.clone(),
+            },
+            _ => ChatEntry::User { text: text.clone() },
+        },
+        TranscriptContent::Multimodal { text, image_count } => {
+            let mut text = text.clone();
+            if *image_count > 0 {
+                text.push_str(&format!("\n\n[{image_count} image(s) attached]"));
+            }
+            ChatEntry::User { text }
+        }
+        TranscriptContent::ToolResult {
+            tool_id,
+            tool_name,
+            result,
+            is_error,
+            ..
+        } => ChatEntry::Tool(ToolCard {
+            key: SharedString::from(format!("tool-{tool_id}")),
+            tool_name: tool_name.clone(),
+            status: if *is_error {
+                ToolStatus::Failed
+            } else {
+                ToolStatus::Done
+            },
+            detail: truncate_detail(&result.to_string()),
+        }),
+        TranscriptContent::Mixed {
+            text, tool_calls, ..
+        } => {
+            // Historical Mixed messages collapse into an assistant entry plus
+            // one Done card per call; per-call results land in ToolResult
+            // entries and refresh the same keyed cards when they follow.
+            if let Some(card) = tool_calls.first().map(|call| {
+                ChatEntry::Tool(ToolCard {
+                    key: SharedString::from(format!("tool-{}", call.tool_id)),
+                    tool_name: call.tool_name.clone(),
+                    status: ToolStatus::Done,
+                    detail: truncate_detail(&call.arguments.to_string()),
+                })
+            }) {
+                if text.trim().is_empty() {
+                    return card;
+                }
+            }
+            ChatEntry::Assistant {
+                round_id: message.turn_id.clone().unwrap_or_default(),
+                text: text.clone(),
+            }
+        }
+    }
+}
+
+fn truncate_detail(value: &str) -> String {
+    if value.chars().count() <= TOOL_DETAIL_LIMIT {
+        value.to_string()
+    } else {
+        let truncated: String = value.chars().take(TOOL_DETAIL_LIMIT).collect();
+        format!("{truncated}…")
+    }
+}
+
+/// Subscribes to the runtime event broadcast once and forwards translated
+/// events to the UI for the process lifetime.
+pub(crate) fn spawn_event_pump(
+    tokio: tokio::runtime::Handle,
+    tx: mpsc::UnboundedSender<RuntimeEvent>,
+) {
+    tokio.spawn(async move {
+        let Some(handle) = runtime_handle() else {
+            tracing::error!("Event pump skipped: runtime handle missing");
+            return;
+        };
+        let mut rx = match handle.agent_runtime.subscribe_events() {
+            Ok(rx) => rx,
+            Err(error) => {
+                tracing::error!(
+                    "Failed to subscribe to runtime events: {}",
+                    error.into_message()
+                );
+                return;
+            }
+        };
+        tracing::info!("Runtime event pump attached");
+        loop {
+            match rx.recv().await {
+                Ok(envelope) => {
+                    for event in translate_event(envelope.event) {
+                        let _ = tx.send(event);
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!("Runtime event pump lagged; {skipped} events dropped");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    tracing::info!("Runtime event source closed");
+                    break;
+                }
+            }
+        }
+    });
+}
+
+/// Maps runtime events onto the shell's view-facing event set. Everything the
+/// chat pane cannot render (token usage, compression, round diagnostics,
+/// subagent-internal sessions) is dropped here with a debug trace.
+fn translate_event(event: AgenticEvent) -> Vec<RuntimeEvent> {
+    match event {
+        AgenticEvent::DialogTurnStarted {
+            session_id,
+            turn_id,
+            ..
+        } => vec![RuntimeEvent::TurnStarted {
+            session_id,
+            turn_id,
+        }],
+        AgenticEvent::TextChunk {
+            session_id,
+            turn_id,
+            round_id,
+            text,
+            ..
+        } => vec![RuntimeEvent::TextChunk {
+            session_id,
+            turn_id,
+            round_id,
+            text,
+        }],
+        AgenticEvent::ToolEvent {
+            session_id,
+            tool_event,
+            ..
+        } => vec![RuntimeEvent::ToolUpdate {
+            session_id,
+            card: convert_tool_event(tool_event),
+        }],
+        AgenticEvent::DialogTurnCompleted {
+            session_id,
+            success,
+            ..
+        } => vec![RuntimeEvent::TurnFinished {
+            session_id,
+            error: match success {
+                Some(false) => Some("turn completed unsuccessfully".to_string()),
+                _ => None,
+            },
+        }],
+        AgenticEvent::DialogTurnFailed {
+            session_id, error, ..
+        } => vec![RuntimeEvent::TurnFinished {
+            session_id,
+            error: Some(error),
+        }],
+        AgenticEvent::DialogTurnCancelled { session_id, .. }
+        | AgenticEvent::DialogTurnInterrupted { session_id, .. } => {
+            vec![RuntimeEvent::TurnFinished {
+                session_id,
+                error: None,
+            }]
+        }
+        AgenticEvent::SessionHistoryChanged { session_id, .. } => {
+            vec![RuntimeEvent::HistoryChanged { session_id }]
+        }
+        AgenticEvent::SystemError {
+            session_id: Some(session_id),
+            error,
+            ..
+        } => vec![RuntimeEvent::TurnFinished {
+            session_id,
+            error: Some(error),
+        }],
+        other => {
+            tracing::debug!("Dropping runtime event for UI: {:?}", other.session_id());
+            Vec::new()
+        }
+    }
+}
+
+/// Collapses the tool lifecycle onto the four card states the shell renders.
+fn convert_tool_event(event: ToolEventData) -> ToolCard {
+    let (tool_id, tool_name) = {
+        let identity = event.identity();
+        (identity.tool_id.clone(), identity.tool_name.clone())
+    };
+    let key = SharedString::from(format!("tool-{tool_id}"));
+    match event {
+        ToolEventData::Started { params, .. } => ToolCard {
+            key,
+            tool_name,
+            status: ToolStatus::Running,
+            detail: truncate_detail(&params.to_string()),
+        },
+        ToolEventData::Progress { message, .. } => ToolCard {
+            key,
+            tool_name,
+            status: ToolStatus::Running,
+            detail: truncate_detail(&message),
+        },
+        ToolEventData::ConfirmationNeeded { params, .. } => ToolCard {
+            key,
+            tool_name,
+            status: ToolStatus::WaitingConfirm,
+            detail: truncate_detail(&params.to_string()),
+        },
+        ToolEventData::Rejected { .. } => ToolCard {
+            key,
+            tool_name,
+            status: ToolStatus::Cancelled,
+            detail: String::new(),
+        },
+        ToolEventData::Completed { result, .. } => ToolCard {
+            key,
+            tool_name,
+            status: ToolStatus::Done,
+            detail: truncate_detail(&result.to_string()),
+        },
+        ToolEventData::Failed { error, .. } => ToolCard {
+            key,
+            tool_name,
+            status: ToolStatus::Failed,
+            detail: truncate_detail(&error),
+        },
+        ToolEventData::Cancelled { reason, .. } => ToolCard {
+            key,
+            tool_name,
+            status: ToolStatus::Cancelled,
+            detail: truncate_detail(&reason),
+        },
+        ToolEventData::EarlyDetected { .. }
+        | ToolEventData::ParamsPartial { .. }
+        | ToolEventData::Queued { .. }
+        | ToolEventData::Waiting { .. }
+        | ToolEventData::Streaming { .. }
+        | ToolEventData::StreamChunk { .. }
+        | ToolEventData::Confirmed { .. } => ToolCard {
+            key,
+            tool_name,
+            status: ToolStatus::Running,
+            detail: String::new(),
+        },
     }
 }
 
@@ -213,6 +801,9 @@ async fn bootstrap(tx: mpsc::UnboundedSender<RuntimeEvent>) -> Result<()> {
     let _ = tx.send(RuntimeEvent::Ready);
     tracing::info!("Embedded runtime ready");
 
+    // Attach before any session work so turn events for sessions opened later
+    // are always visible to the pump.
+    spawn_event_pump(tokio::runtime::Handle::current(), tx.clone());
     if let Some(handle) = runtime_handle() {
         handle.reload_sessions(tx);
     }
@@ -240,6 +831,13 @@ async fn register_local_workspace_record(path: PathBuf) -> Result<WorkspaceInfo>
         .map_err(|error| anyhow::anyhow!(error.to_string()))
 }
 
+fn default_session_name() -> String {
+    format!(
+        "GPUI Session - {}",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+    )
+}
+
 /// Most recent first; stable on the session id for identical timestamps.
 pub(crate) fn sort_sessions(sessions: &mut [AgentSessionSummary]) {
     sessions.sort_by(|a, b| {
@@ -263,6 +861,7 @@ pub(crate) fn format_last_active(last_active_at_ms: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openbitfun_events::ToolEventIdentity;
 
     fn summary(id: &str, last_active_at_ms: u64) -> AgentSessionSummary {
         AgentSessionSummary {
@@ -301,5 +900,181 @@ mod tests {
         assert_eq!(format_last_active(0).len(), 16);
         assert!(format_last_active(0).contains(':'));
         assert_eq!(format_last_active(i64::MAX as u64), "");
+    }
+
+    fn message(role: &str, content: TranscriptContent) -> TranscriptMessage {
+        TranscriptMessage {
+            id: None,
+            role: role.to_string(),
+            turn_id: Some("turn-1".to_string()),
+            timestamp_ms: None,
+            content,
+        }
+    }
+
+    #[test]
+    fn transcript_converts_roles_and_tool_results() {
+        let user = convert_message(&message(
+            "user",
+            TranscriptContent::Text("hello".to_string()),
+        ));
+        assert!(matches!(user, ChatEntry::User { .. }));
+
+        let assistant = convert_message(&message(
+            "assistant",
+            TranscriptContent::Text("**done**".to_string()),
+        ));
+        assert!(matches!(assistant, ChatEntry::Assistant { .. }));
+
+        let non_user_text_stays_user = convert_message(&message(
+            "system",
+            TranscriptContent::Text("note".to_string()),
+        ));
+        assert!(matches!(non_user_text_stays_user, ChatEntry::User { .. }));
+
+        let tool = convert_message(&message(
+            "tool",
+            TranscriptContent::ToolResult {
+                tool_id: "t1".to_string(),
+                tool_name: "Read".to_string(),
+                effective_tool_name: None,
+                result: serde_json::json!({"ok": true}),
+                is_error: false,
+            },
+        ));
+        match tool {
+            ChatEntry::Tool(card) => {
+                assert_eq!(card.tool_name, "Read");
+                assert_eq!(card.status, ToolStatus::Done);
+                assert!(card.detail.contains("ok"));
+            }
+            other => panic!("expected tool card, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn multimodal_and_mixed_transcripts_convert() {
+        let images = convert_message(&message(
+            "user",
+            TranscriptContent::Multimodal {
+                text: "see this".to_string(),
+                image_count: 2,
+            },
+        ));
+        match images {
+            ChatEntry::User { text } => assert!(text.contains("[2 image(s) attached]")),
+            other => panic!("expected user entry, got {other:?}"),
+        }
+
+        let empty_text_mixed = convert_message(&message(
+            "assistant",
+            TranscriptContent::Mixed {
+                reasoning_content: None,
+                text: String::new(),
+                tool_calls: vec![openbitfun_runtime_ports::TranscriptToolCall {
+                    tool_id: "t9".to_string(),
+                    tool_name: "Bash".to_string(),
+                    arguments: serde_json::json!({"cmd": "ls"}),
+                }],
+            },
+        ));
+        match empty_text_mixed {
+            ChatEntry::Tool(card) => {
+                assert_eq!(card.status, ToolStatus::Done);
+                assert!(card.detail.contains("ls"));
+            }
+            other => panic!("expected tool card for text-less mixed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tool_events_collapse_onto_card_states() {
+        let id = ToolEventIdentity::direct("id-1", "Bash");
+        let started = convert_tool_event(ToolEventData::Started {
+            identity: id.clone(),
+            params: serde_json::json!({"command": "ls"}),
+            timeout_seconds: None,
+        });
+        assert_eq!(started.status, ToolStatus::Running);
+        assert!(started.detail.contains("ls"));
+
+        let confirm = convert_tool_event(ToolEventData::ConfirmationNeeded {
+            identity: id.clone(),
+            params: serde_json::json!({}),
+            timeout_at: None,
+        });
+        assert_eq!(confirm.status, ToolStatus::WaitingConfirm);
+
+        let done = convert_tool_event(ToolEventData::Completed {
+            identity: id.clone(),
+            result: serde_json::json!("out"),
+            result_for_assistant: None,
+            image_attachments: None,
+            duration_ms: 5,
+            queue_wait_ms: None,
+            preflight_ms: None,
+            confirmation_wait_ms: None,
+            execution_ms: None,
+        });
+        assert_eq!(done.status, ToolStatus::Done);
+
+        let failed = convert_tool_event(ToolEventData::Failed {
+            identity: id.clone(),
+            error: "boom".to_string(),
+            error_detail: None,
+            duration_ms: None,
+            queue_wait_ms: None,
+            preflight_ms: None,
+            confirmation_wait_ms: None,
+            execution_ms: None,
+        });
+        assert_eq!(failed.status, ToolStatus::Failed);
+        assert_eq!(failed.detail, "boom");
+
+        let queued = convert_tool_event(ToolEventData::Queued {
+            identity: id,
+            position: 1,
+        });
+        assert_eq!(queued.status, ToolStatus::Running);
+    }
+
+    #[test]
+    fn detail_preview_is_truncated_with_ellipsis() {
+        let long = "x".repeat(TOOL_DETAIL_LIMIT + 10);
+        let truncated = truncate_detail(&long);
+        assert_eq!(truncated.chars().count(), TOOL_DETAIL_LIMIT + 1);
+        assert!(truncated.ends_with('…'));
+    }
+
+    #[test]
+    fn translated_events_cover_the_chat_surface() {
+        use openbitfun_events::AgenticEvent;
+        let started = translate_event(AgenticEvent::DialogTurnStarted {
+            session_id: "s1".to_string(),
+            turn_id: "t1".to_string(),
+            turn_index: 0,
+            user_input: "hi".to_string(),
+            original_user_input: None,
+            user_message_metadata: None,
+        });
+        assert!(matches!(
+            started.as_slice(),
+            [RuntimeEvent::TurnStarted { session_id, .. }] if session_id == "s1"
+        ));
+
+        let dropped = translate_event(AgenticEvent::TokenUsageUpdated {
+            session_id: "s1".to_string(),
+            turn_id: "t1".to_string(),
+            model_config_id: "m".to_string(),
+            effective_model_name: "m".to_string(),
+            input_tokens: 1,
+            output_tokens: None,
+            total_tokens: 1,
+            max_context_tokens: None,
+            is_subagent: false,
+            cached_tokens: None,
+            token_details: None,
+        });
+        assert!(dropped.is_empty());
     }
 }

@@ -158,10 +158,7 @@ time-years-ago = { $count } { $count ->
 } ago
 
 # ==================== GPUI Shell ====================
-gpui-shell-subtitle = Theme and i18n verification
-gpui-shell-input-query-placeholder = IME single-line input (preedit here)
-gpui-shell-input-draft-placeholder = IME multi-line input (compose across lines)
-gpui-shell-ping = Ping
+gpui-shell-subtitle = Native GPUI frontend
 gpui-shell-theme = Theme
 gpui-shell-language = Language
 gpui-shell-status-starting = Starting OpenBitFun runtime…
@@ -170,6 +167,18 @@ gpui-shell-status-failed = Runtime failed: { $error }
 gpui-shell-sessions-title = Sessions
 gpui-shell-sessions-empty = No sessions in this workspace yet. Start one in the CLI or desktop app, then reload.
 gpui-shell-sessions-reload = Reload
+gpui-shell-sessions-new = New session
+gpui-shell-chat-empty = Pick a session on the left, or create a new one.
+gpui-shell-chat-input-placeholder = Type a message to send to the agent…
+gpui-shell-chat-send = Send
+gpui-shell-chat-stop = Stop
+gpui-shell-chat-busy = Responding…
+gpui-shell-chat-submitting = Submitting…
+gpui-shell-tool-running = Executing
+gpui-shell-tool-waiting = Awaiting approval
+gpui-shell-tool-done = Finished
+gpui-shell-tool-failed = Errored
+gpui-shell-tool-cancelled = Aborted
 gpui-shell-session-turns = { $count ->
   [one] 1 turn
   *[other] { $count } turns

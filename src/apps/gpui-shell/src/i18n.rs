@@ -15,9 +15,6 @@ use openbitfun_core::service::i18n::{
 pub(crate) struct ShellText {
     pub locale: LocaleId,
     pub subtitle: String,
-    pub query_placeholder: String,
-    pub draft_placeholder: String,
-    pub ping: String,
     pub theme: String,
     pub language: String,
     pub status_starting: String,
@@ -25,6 +22,18 @@ pub(crate) struct ShellText {
     pub sessions_title: String,
     pub sessions_empty: String,
     pub sessions_reload: String,
+    pub sessions_new: String,
+    pub chat_empty: String,
+    pub chat_input_placeholder: String,
+    pub chat_send: String,
+    pub chat_stop: String,
+    pub chat_busy: String,
+    pub chat_submitting: String,
+    pub tool_running: String,
+    pub tool_waiting: String,
+    pub tool_done: String,
+    pub tool_failed: String,
+    pub tool_cancelled: String,
 }
 
 impl Global for ShellText {}
@@ -106,10 +115,7 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         tracing::warn!("i18n service unavailable, keeping English fallback copy");
         return ShellText {
             locale,
-            subtitle: "Theme and i18n verification".to_string(),
-            query_placeholder: "IME single-line input (preedit here)".to_string(),
-            draft_placeholder: "IME multi-line input (compose across lines)".to_string(),
-            ping: "Ping".to_string(),
+            subtitle: "GPUI native frontend".to_string(),
             theme: "Theme".to_string(),
             language: "Language".to_string(),
             status_starting: "Starting OpenBitFun runtime…".to_string(),
@@ -117,6 +123,18 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
             sessions_title: "Sessions".to_string(),
             sessions_empty: "No sessions in this workspace yet.".to_string(),
             sessions_reload: "Reload".to_string(),
+            sessions_new: "New session".to_string(),
+            chat_empty: "Pick a session on the left, or create a new one.".to_string(),
+            chat_input_placeholder: "Type a message to send to the agent…".to_string(),
+            chat_send: "Send".to_string(),
+            chat_stop: "Stop".to_string(),
+            chat_busy: "Responding…".to_string(),
+            chat_submitting: "Submitting…".to_string(),
+            tool_running: "Running".to_string(),
+            tool_waiting: "Waiting for approval".to_string(),
+            tool_done: "Done".to_string(),
+            tool_failed: "Failed".to_string(),
+            tool_cancelled: "Cancelled".to_string(),
         };
     };
 
@@ -127,9 +145,6 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
     ShellText {
         locale,
         subtitle: service.t("gpui-shell-subtitle").await,
-        query_placeholder: service.t("gpui-shell-input-query-placeholder").await,
-        draft_placeholder: service.t("gpui-shell-input-draft-placeholder").await,
-        ping: service.t("gpui-shell-ping").await,
         theme: service.t("gpui-shell-theme").await,
         language: service.t("gpui-shell-language").await,
         status_starting: service.t("gpui-shell-status-starting").await,
@@ -137,6 +152,18 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         sessions_title: service.t("gpui-shell-sessions-title").await,
         sessions_empty: service.t("gpui-shell-sessions-empty").await,
         sessions_reload: service.t("gpui-shell-sessions-reload").await,
+        sessions_new: service.t("gpui-shell-sessions-new").await,
+        chat_empty: service.t("gpui-shell-chat-empty").await,
+        chat_input_placeholder: service.t("gpui-shell-chat-input-placeholder").await,
+        chat_send: service.t("gpui-shell-chat-send").await,
+        chat_stop: service.t("gpui-shell-chat-stop").await,
+        chat_busy: service.t("gpui-shell-chat-busy").await,
+        chat_submitting: service.t("gpui-shell-chat-submitting").await,
+        tool_running: service.t("gpui-shell-tool-running").await,
+        tool_waiting: service.t("gpui-shell-tool-waiting").await,
+        tool_done: service.t("gpui-shell-tool-done").await,
+        tool_failed: service.t("gpui-shell-tool-failed").await,
+        tool_cancelled: service.t("gpui-shell-tool-cancelled").await,
     }
 }
 

@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use gpui::{App, SharedString};
+use gpui_component::highlighter::{HighlightThemeStyle, SyntaxColors};
 use gpui_component::theme::{Theme, ThemeConfig, ThemeConfigColors, ThemeMode};
 use serde::Deserialize;
 
@@ -174,8 +175,43 @@ fn build_config(id: &'static str, json: &str) -> Result<ThemeConfig, String> {
             ThemeMode::Light
         },
         colors,
+        // Syntax highlighting (M4 renderers): the markdown/diff presentation
+        // keys stay on the CLI/owner surfaces — the shell's markdown view
+        // derives its styles from the semantic colors above.
+        highlight: build_highlight_style(&file, dark),
         ..Default::default()
     })
+}
+
+/// Maps the preset's `syntax*` color keys onto the highlighter style consumed
+/// by the markdown/code renderer. `ThemeStyle` fields are private to the
+/// component crate, so the style is built through its serde (Zed-compatible)
+/// shape; unparsable presets degrade to the component defaults.
+fn build_highlight_style(file: &PresetFile, dark: bool) -> Option<HighlightThemeStyle> {
+    let token = |key: &str| -> serde_json::Value {
+        match resolved_color(file, key, dark) {
+            Some(hex) => serde_json::json!({ "color": hex }),
+            None => serde_json::Value::Null,
+        }
+    };
+    let syntax: SyntaxColors = serde_json::from_value(serde_json::json!({
+        "comment": token("syntaxComment"),
+        "keyword": token("syntaxKeyword"),
+        "function": token("syntaxFunction"),
+        "variable": token("syntaxVariable"),
+        "string": token("syntaxString"),
+        "number": token("syntaxNumber"),
+        "type": token("syntaxType"),
+        "operator": token("syntaxOperator"),
+        "punctuation": token("syntaxPunctuation"),
+    }))
+    .ok()?;
+    serde_json::from_value(serde_json::json!({
+        "editor.background": resolved_color(file, "backgroundPanel", dark),
+        "editor.foreground": resolved_color(file, "text", dark),
+        "syntax": syntax,
+    }))
+    .ok()
 }
 
 fn resolved_color(file: &PresetFile, key: &str, dark: bool) -> Option<String> {
@@ -290,5 +326,53 @@ mod tests {
                 .expect("variant must parse");
         assert_eq!(resolve_color(&value, true).as_deref(), Some("#101010"));
         assert_eq!(resolve_color(&value, false).as_deref(), Some("#eeeeee"));
+    }
+
+    #[test]
+    fn preset_syntax_keys_map_into_highlight_style() {
+        let config = build_config(
+            "test-syntax",
+            r##"{"theme": {
+                "primary": "#60a5fa", "secondary": "#8b5cf6", "accent": "#8b5cf6",
+                "error": "#ef4444", "warning": "#f59e0b", "success": "#34d399", "info": "#a1a1aa",
+                "text": "#e7ecf3", "background": "#0e0e10", "backgroundPanel": "#1c1c1f",
+                "backgroundElement": "#252528", "border": "#3b3b40", "borderActive": "#60a5fa",
+                "syntaxComment": "#6a737d", "syntaxKeyword": "#c792ea",
+                "syntaxFunction": "#7dcfff", "syntaxVariable": "#7dcfff",
+                "syntaxString": "#a5e844", "syntaxNumber": "#f78c6c",
+                "syntaxType": "#ffc777", "syntaxOperator": "#c792ea",
+                "syntaxPunctuation": "#e7ecf3"
+            }}"##,
+        )
+        .expect("preset must parse");
+
+        let highlight = config.highlight.expect("syntax keys must map");
+        // ThemeStyle fields are private to the component crate; assert through
+        // its serde shape (Hsla serializes with the alpha channel).
+        let comment = serde_json::to_value(highlight.syntax.comment.expect("comment mapped"))
+            .expect("comment serializes");
+        assert_eq!(comment["color"], "#6a737dff");
+        let keyword = serde_json::to_value(highlight.syntax.keyword.expect("keyword mapped"))
+            .expect("keyword serializes");
+        assert_eq!(keyword["color"], "#c792eaff");
+        assert!(highlight.syntax.string.is_some());
+    }
+
+    #[test]
+    fn preset_without_syntax_keys_has_no_highlight_style() {
+        let config = build_config(
+            "test-no-syntax",
+            r##"{"theme": {
+                "primary": "#60a5fa", "secondary": "#8b5cf6", "accent": "#8b5cf6",
+                "error": "#ef4444", "warning": "#f59e0b", "success": "#34d399", "info": "#a1a1aa",
+                "text": "#e7ecf3", "background": "#0e0e10", "backgroundPanel": "#1c1c1f",
+                "backgroundElement": "#252528", "border": "#3b3b40", "borderActive": "#60a5fa"
+            }}"##,
+        )
+        .expect("preset must parse");
+        // Editor colors still map; only the syntax palette stays empty, which
+        // keeps the component defaults for unstyled tokens.
+        let highlight = config.highlight.expect("editor colors always map");
+        assert!(highlight.syntax.keyword.is_none());
     }
 }

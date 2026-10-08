@@ -8370,12 +8370,14 @@ dependencies = [
  "gpui-component",
  "openbitfun-agent-runtime",
  "openbitfun-core",
+ "openbitfun-events",
  "openbitfun-runtime-ports",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
