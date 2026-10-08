@@ -3,8 +3,8 @@ mod runtime;
 mod theme;
 
 use gpui::{
-    div, point, prelude::*, px, size, App, Application, Bounds, Context, Entity, Global,
-    ScrollHandle, SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
+    div, prelude::*, px, size, App, Application, Bounds, Context, Entity, Global, ScrollHandle,
+    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 use gpui_component::{
     button::{Button, ButtonVariant, ButtonVariants},
@@ -171,12 +171,10 @@ impl ShellWindow {
         }
     }
 
-    /// Keeps the chat pane pinned to the newest content (best effort: the
-    /// offset uses the previous frame's layout, which trails one frame behind
-    /// fast streams but never scrolls the wrong way).
+    /// Keeps the chat pane pinned to the newest content; the flag is consumed
+    /// by the next scroll layout pass, so appends land in view exactly.
     fn scroll_chat_to_bottom(&self) {
-        let bottom = self.chat_scroll.max_offset().height;
-        self.chat_scroll.set_offset(point(px(0.), bottom));
+        self.chat_scroll.scroll_to_bottom();
     }
 
     fn apply_runtime_event(
@@ -234,11 +232,14 @@ impl ShellWindow {
             RuntimeEvent::TurnAccepted {
                 session_id,
                 turn_id: _,
+                message,
             } => {
                 if let Some(chat) = self.chat.as_mut() {
                     if chat.matches(&session_id) {
                         chat.submitting = false;
                         chat.busy = true;
+                        chat.entries.push(ChatEntry::User { text: message });
+                        self.scroll_chat_to_bottom();
                     }
                 }
             }
@@ -689,7 +690,7 @@ impl ShellWindow {
             .flex_row()
             .gap_2()
             .items_end()
-            .child(Input::new(&self.draft).w_full().h(px(COMPOSER_HEIGHT)))
+            .child(Input::new(&self.draft).flex_1().h(px(COMPOSER_HEIGHT)))
             .child(if busy {
                 Button::new("chat-stop")
                     .label(text.chat_stop.clone())
@@ -873,7 +874,11 @@ fn main() {
 
     // Process-lifetime tokio runtime: core services are async (config, i18n,
     // runtime bootstrap, session store) while the GPUI main loop is not.
+    // Agent execution exceeds the default worker stack in debug builds, same
+    // as the CLI (`src/apps/cli/src/main.rs` uses 16MiB for the same reason);
+    // runtime threads do not inherit the spawning thread's stack size.
     let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
+        .thread_stack_size(16 * 1024 * 1024)
         .enable_all()
         .build()
         .expect("failed to build tokio runtime");

@@ -79,8 +79,13 @@ pub(crate) enum RuntimeEvent {
     SessionOpened(OpenedSession),
     /// Opening (creating or restoring) a session failed.
     SessionOpenFailed(String),
-    /// A submitted dialog turn was accepted by the runtime.
-    TurnAccepted { session_id: String, turn_id: String },
+    /// A submitted dialog turn was accepted by the runtime; the shell shows
+    /// the submitted message on this event (the composer clears on click).
+    TurnAccepted {
+        session_id: String,
+        turn_id: String,
+        message: String,
+    },
     /// Submitting a message failed; the turn never started.
     SendFailed { session_id: String, error: String },
     /// A dialog turn started executing (busy marker for the open session).
@@ -289,17 +294,25 @@ impl RuntimeHandle {
         let workspace_id = Some(self.workspace.id.clone());
         self.tokio.spawn(async move {
             let turn_id = uuid::Uuid::new_v4().to_string();
+            // The turn carries the session's own agent; the default only
+            // covers sessions that predate agent recording.
+            let agent_type = runtime
+                .resolve_session_agent_type(&session_id)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| DEFAULT_AGENT_TYPE.to_string());
             // Ask semantics: the metadata stays empty so the turn inherits the
             // persisted approval preference (same as the CLI interactive
             // default); M5 wires the explicit approval surface on top.
             let request = AgentDialogTurnRequest {
                 session_id: session_id.clone(),
-                message,
+                message: message.clone(),
                 output_schema: None,
                 original_message: None,
                 turn_id: Some(turn_id.clone()),
                 execution: AgentDialogTurnExecution::Standard,
-                agent_type: DEFAULT_AGENT_TYPE.to_string(),
+                agent_type,
                 workspace_path: Some(workspace_path),
                 workspace_id,
                 remote_connection_id: None,
@@ -315,6 +328,7 @@ impl RuntimeHandle {
                     let _ = tx.send(RuntimeEvent::TurnAccepted {
                         session_id,
                         turn_id,
+                        message,
                     });
                 }
                 Err(error) => {
@@ -502,6 +516,7 @@ fn convert_message(message: &TranscriptMessage) -> ChatEntry {
 }
 
 fn truncate_detail(value: &str) -> String {
+    let value = value.trim();
     if value.chars().count() <= TOOL_DETAIL_LIMIT {
         value.to_string()
     } else {
