@@ -858,9 +858,15 @@ const RESOLVED_THIRD_PARTY_CAPABILITY_POLICIES = new Map([
   ['image', {
     versionPrefix: '0.25.',
     ignoredVersionPrefixes: ['0.24.'],
-    // macOS clipboard support currently adds TIFF through arboard. The other
-    // formats are the codecs selected by reviewed OpenBitFun owners.
-    allowedFeatures: new Set(['bmp', 'gif', 'jpeg', 'png', 'tiff', 'webp']),
+    // macOS clipboard support currently adds TIFF through arboard. The base
+    // formats are the codecs selected by reviewed OpenBitFun owners. gpui
+    // 0.2.2 declares `image` with default features enabled and cannot be
+    // narrowed from our manifests, so its meta-features and remaining default
+    // codecs enter the resolved union through that reviewed owner.
+    allowedFeatures: new Set([
+      'avif', 'bmp', 'dds', 'default', 'default-formats', 'exr', 'ff', 'gif',
+      'hdr', 'ico', 'jpeg', 'png', 'pnm', 'qoi', 'rayon', 'tga', 'tiff', 'webp',
+    ]),
   }],
 ]);
 

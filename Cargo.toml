@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "src/apps/cli",
+    "src/apps/gpui-shell",
     "src/apps/sdk-host",
     "src/apps/desktop",
     "src/apps/data-migrator",
@@ -304,6 +305,12 @@ russh-keys = "0.45"
 shellexpand = "3"
 ssh_config = "0.1"
 rustls = { version = "0.23", default-features = false }
+
+# GPUI desktop shell (experimental native frontend in src/apps/gpui-shell).
+# Exact pins: gpui-component 0.5.1 is the last release built against official
+# gpui ^0.2.x; 0.6.0+ moved to the longbridge gpui-pre line (incompatible).
+gpui = { version = "=0.2.2", default-features = false, features = ["x11", "wayland", "font-kit"] }
+gpui-component = "=0.5.1"
 
 [patch.crates-io]
 # Keep Socket.IO on the product-owned ring provider; see the patch note.

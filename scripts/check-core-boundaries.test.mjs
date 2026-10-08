@@ -3237,7 +3237,7 @@ test('resolved third-party feature unions reject global capability regressions',
 
   const mutated = structuredClone(validRecords);
   mutated[0].features.push('https', 'vendored-openssl');
-  mutated[2].features.push('exr');
+  mutated[2].features.push('unreviewed-codec');
   mutated[3].features.push('https', 'openssl-sys', 'vendored-openssl');
   mutated.push({
     name: 'image',
@@ -3249,7 +3249,7 @@ test('resolved third-party feature unions reject global capability regressions',
     { root: TEST_ROOT },
   ).map((violation) => violation.message).join('\n');
   assert.match(messages, /resolved git2.*https, vendored-openssl/);
-  assert.match(messages, /resolved image 0\.25\.10.*exr/);
+  assert.match(messages, /resolved image 0\.25\.10.*unreviewed-codec/);
   assert.match(messages, /resolved libgit2-sys.*https, openssl-sys, vendored-openssl/);
   assert.match(messages, /resolved image 0\.26\.0 uses an unreviewed version family/);
 });

@@ -1,0 +1,18 @@
+[package]
+name = "openbitfun-gpui-shell"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "OpenBitFun GPUI desktop shell (experimental native frontend)"
+
+[dependencies]
+gpui = { workspace = true }
+gpui-component = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true
