@@ -8,9 +8,36 @@ description = "OpenBitFun GPUI desktop shell (experimental native frontend)"
 [dependencies]
 gpui = { workspace = true }
 gpui-component = { workspace = true }
-openbitfun-core = { path = "../../crates/assembly/core", features = ["i18n-runtime"] }
+openbitfun-core = { path = "../../crates/assembly/core", features = [
+    "i18n-runtime",
+    # Embedded runtime closure, aligned with `src/apps/cli/Cargo.toml` (PLAN M3):
+    # the reviewed CLI owner-feature closure plus the Code Agent atomic tool
+    # owners. Do not replace with `product-full`.
+    "agent-runtime",
+    "product-search",
+    "document-read",
+    "subscription-auth",
+    "remote-connect",
+    "external-sources",
+    "plugin-runtime",
+    "opencode-plugin-host",
+    "ssh-remote",
+    "tools-pages",
+    "tools-basic",
+    "tools-git",
+    "tools-mcp",
+    "tools-browser-web",
+    "tools-computer-use",
+    "tools-image-analysis",
+    "tools-agent-control",
+] }
+openbitfun-agent-runtime = { path = "../../crates/execution/agent-runtime", features = ["agent-runtime"] }
+openbitfun-runtime-ports = { path = "../../crates/contracts/runtime-ports", features = ["agent-api"] }
+anyhow = { workspace = true }
+chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 

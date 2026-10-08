@@ -164,3 +164,13 @@ gpui-shell-input-draft-placeholder = IME multi-line input (compose across lines)
 gpui-shell-ping = Ping
 gpui-shell-theme = Theme
 gpui-shell-language = Language
+gpui-shell-status-starting = Starting OpenBitFun runtime…
+gpui-shell-status-ready = Runtime ready
+gpui-shell-status-failed = Runtime failed: { $error }
+gpui-shell-sessions-title = Sessions
+gpui-shell-sessions-empty = No sessions in this workspace yet. Start one in the CLI or desktop app, then reload.
+gpui-shell-sessions-reload = Reload
+gpui-shell-session-turns = { $count ->
+  [one] 1 turn
+  *[other] { $count } turns
+}

@@ -8364,11 +8364,16 @@ dependencies = [
 name = "openbitfun-gpui-shell"
 version = "1.0.3"
 dependencies = [
+ "anyhow",
+ "chrono",
  "gpui",
  "gpui-component",
+ "openbitfun-agent-runtime",
  "openbitfun-core",
+ "openbitfun-runtime-ports",
  "serde",
  "serde_json",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]

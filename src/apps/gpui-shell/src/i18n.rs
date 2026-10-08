@@ -7,7 +7,7 @@
 
 use gpui::{App, Global};
 use openbitfun_core::service::i18n::{
-    get_global_i18n_service, initialize_global_i18n_service, LocaleId,
+    get_global_i18n_service, initialize_global_i18n_service, LocaleId, TranslationArgs,
 };
 
 /// Translated shell copy for the active locale.
@@ -20,6 +20,11 @@ pub(crate) struct ShellText {
     pub ping: String,
     pub theme: String,
     pub language: String,
+    pub status_starting: String,
+    pub status_ready: String,
+    pub sessions_title: String,
+    pub sessions_empty: String,
+    pub sessions_reload: String,
 }
 
 impl Global for ShellText {}
@@ -54,8 +59,8 @@ pub(crate) fn next_locale(locale: LocaleId) -> LocaleId {
     }
 }
 
-/// Initial locale from the session environment; no config service is wired
-/// before M3, so `$LANG` is the only signal available.
+/// Initial locale from the session environment; the runtime bootstrap refines
+/// it to the configured `app.language` once the config service is up.
 fn locale_from_env() -> LocaleId {
     let lang = std::env::var("LANG")
         .unwrap_or_default()
@@ -69,6 +74,33 @@ fn locale_from_env() -> LocaleId {
     }
 }
 
+/// Resolves the localized runtime-failure line for one concrete error.
+pub(crate) fn failed_status(error: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-status-failed",
+        TranslationArgs::new().with_string("error", error),
+        cx,
+    )
+}
+
+/// Resolves the localized turn-count label for one session row.
+pub(crate) fn turns_label(turn_count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-session-turns",
+        TranslationArgs::new().with_number("count", turn_count as f64),
+        cx,
+    )
+}
+
+fn resolve_with(key: &str, args: TranslationArgs, cx: &App) -> String {
+    cx.background_executor().block(async move {
+        match get_global_i18n_service().await {
+            Some(service) => service.t_with(key, args).await,
+            None => key.to_string(),
+        }
+    })
+}
+
 async fn fetch_text(locale: LocaleId) -> ShellText {
     let Some(service) = get_global_i18n_service().await else {
         tracing::warn!("i18n service unavailable, keeping English fallback copy");
@@ -80,6 +112,11 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
             ping: "Ping".to_string(),
             theme: "Theme".to_string(),
             language: "Language".to_string(),
+            status_starting: "Starting OpenBitFun runtime…".to_string(),
+            status_ready: "Runtime ready".to_string(),
+            sessions_title: "Sessions".to_string(),
+            sessions_empty: "No sessions in this workspace yet.".to_string(),
+            sessions_reload: "Reload".to_string(),
         };
     };
 
@@ -95,6 +132,11 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         ping: service.t("gpui-shell-ping").await,
         theme: service.t("gpui-shell-theme").await,
         language: service.t("gpui-shell-language").await,
+        status_starting: service.t("gpui-shell-status-starting").await,
+        status_ready: service.t("gpui-shell-status-ready").await,
+        sessions_title: service.t("gpui-shell-sessions-title").await,
+        sessions_empty: service.t("gpui-shell-sessions-empty").await,
+        sessions_reload: service.t("gpui-shell-sessions-reload").await,
     }
 }
 
