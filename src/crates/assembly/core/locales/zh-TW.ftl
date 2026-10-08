@@ -135,3 +135,11 @@ time-days-ago = { $count } 天前
 time-weeks-ago = { $count } 周前
 time-months-ago = { $count } 月前
 time-years-ago = { $count } 年前
+
+# ==================== GPUI Shell ====================
+gpui-shell-subtitle = 主題與多語言驗證
+gpui-shell-input-query-placeholder = IME 單行輸入（在此體驗預編輯）
+gpui-shell-input-draft-placeholder = IME 多行輸入（跨行組合）
+gpui-shell-ping = 測試
+gpui-shell-theme = 主題
+gpui-shell-language = 語言

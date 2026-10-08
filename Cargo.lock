@@ -8366,6 +8366,9 @@ version = "1.0.3"
 dependencies = [
  "gpui",
  "gpui-component",
+ "openbitfun-core",
+ "serde",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
 ]

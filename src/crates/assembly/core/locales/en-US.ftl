@@ -156,3 +156,11 @@ time-years-ago = { $count } { $count ->
     [one] year
    *[other] years
 } ago
+
+# ==================== GPUI Shell ====================
+gpui-shell-subtitle = Theme and i18n verification
+gpui-shell-input-query-placeholder = IME single-line input (preedit here)
+gpui-shell-input-draft-placeholder = IME multi-line input (compose across lines)
+gpui-shell-ping = Ping
+gpui-shell-theme = Theme
+gpui-shell-language = Language
