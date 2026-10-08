@@ -3,8 +3,9 @@ mod runtime;
 mod theme;
 
 use gpui::{
-    div, prelude::*, px, size, App, Application, Bounds, Context, Entity, Global, ScrollHandle,
-    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
+    div, list, prelude::*, px, size, App, Application, Bounds, Context, Entity, Global,
+    ListAlignment, ListOffset, ListState, SharedString, TitlebarOptions, Window, WindowBounds,
+    WindowOptions,
 };
 use gpui_component::{
     button::{Button, ButtonVariant, ButtonVariants},
@@ -24,6 +25,9 @@ use crate::theme::{ThemePreset, DEFAULT_PRESET_ID};
 const SESSION_PANE_WIDTH: f32 = 300.;
 /// Composer height; explicit pixels because `rows()` does not size in 0.5.1.
 const COMPOSER_HEIGHT: f32 = 88.;
+/// Extra content rendered beyond the visible chat area so scrolling does not
+/// pop unmeasured items into view.
+const CHAT_OVERDRAW: f32 = 256.;
 
 /// App-global shell state: theme presets from the CLI palette plus the active
 /// selection. Lives outside `ShellWindow` so button handlers can reach it.
@@ -70,7 +74,9 @@ impl ChatView {
 
     /// Streaming chunks accumulate into one assistant entry per model round;
     /// rounds arrive contiguously, so comparing against the tail is enough.
-    fn append_chunk(&mut self, round_id: &str, text: &str) {
+    /// Returns `true` when a new entry was pushed (as opposed to growing the
+    /// tail entry in place), so the caller can sync the virtualized list.
+    fn append_chunk(&mut self, round_id: &str, text: &str) -> bool {
         if let Some(ChatEntry::Assistant {
             round_id: tail_round,
             text: tail_text,
@@ -78,23 +84,25 @@ impl ChatView {
         {
             if *tail_round == round_id {
                 tail_text.push_str(text);
-                return;
+                return false;
             }
         }
         self.entries.push(ChatEntry::Assistant {
             round_id: round_id.to_string(),
             text: text.to_string(),
         });
+        true
     }
 
     /// Upserts the tool card keyed by tool id; empty details never overwrite
-    /// collected ones (lifecycle events carry them unevenly).
-    fn upsert_tool(&mut self, card: ToolCard) {
-        if let Some(entry) = self
-            .entries
-            .iter_mut()
-            .find(|entry| matches!(entry, ChatEntry::Tool(existing) if existing.key == card.key))
-        {
+    /// collected ones (lifecycle events carry them unevenly). Returns the
+    /// index of an existing card that changed in place, or `None` when the
+    /// card was appended.
+    fn upsert_tool(&mut self, card: ToolCard) -> Option<usize> {
+        let existing = self.entries.iter_mut().enumerate().find(
+            |(_, entry)| matches!(entry, ChatEntry::Tool(existing) if existing.key == card.key),
+        );
+        if let Some((index, entry)) = existing {
             let ChatEntry::Tool(existing) = entry else {
                 unreachable!("find matched a tool entry");
             };
@@ -102,8 +110,10 @@ impl ChatView {
             if !card.detail.is_empty() {
                 existing.detail = card.detail;
             }
+            Some(index)
         } else {
             self.entries.push(ChatEntry::Tool(card));
+            None
         }
     }
 }
@@ -115,7 +125,9 @@ struct ShellWindow {
     list_error: Option<String>,
     chat: Option<ChatView>,
     chat_error: Option<String>,
-    chat_scroll: ScrollHandle,
+    /// Virtualized transcript list state; item counts are kept in sync with
+    /// `chat.entries` through the `list_sync_*` helpers.
+    chat_list: ListState,
     event_tx: mpsc::UnboundedSender<RuntimeEvent>,
 }
 
@@ -140,7 +152,7 @@ impl ShellWindow {
             list_error: None,
             chat: None,
             chat_error: None,
-            chat_scroll: ScrollHandle::new(),
+            chat_list: ListState::new(0, ListAlignment::Bottom, px(CHAT_OVERDRAW)),
             event_tx,
         }
     }
@@ -171,10 +183,51 @@ impl ShellWindow {
         }
     }
 
-    /// Keeps the chat pane pinned to the newest content; the flag is consumed
-    /// by the next scroll layout pass, so appends land in view exactly.
-    fn scroll_chat_to_bottom(&self) {
-        self.chat_scroll.scroll_to_bottom();
+    /// Entry count grew by one: register the new item as unmeasured and keep
+    /// the newest content in view, matching the previous scroll-to-bottom
+    /// behavior for appends.
+    fn list_sync_append(&mut self) {
+        let count = self.entry_count();
+        self.chat_list.splice(appended_range(count), 1);
+        self.scroll_list_to_bottom();
+    }
+
+    /// The tail entry changed in place (streaming chunk or tool-card update);
+    /// its cached height is stale until the list re-measures it.
+    fn list_sync_tail_changed(&mut self) {
+        let count = self.entry_count();
+        if count > 0 {
+            self.chat_list.splice(tail_changed_range(count), 1);
+        }
+        self.scroll_list_to_bottom();
+    }
+
+    /// An entry below the tail changed in place (tool lifecycle upserts land
+    /// on cards created earlier in the turn).
+    fn list_sync_item_changed(&mut self, index: usize) {
+        self.chat_list.splice(index..index + 1, 1);
+    }
+
+    /// The transcript was replaced wholesale (session opened or reloaded);
+    /// resetting also drops the logical scroll top, which pins the
+    /// bottom-aligned list to the newest content.
+    fn list_sync_reset(&mut self) {
+        self.chat_list.reset(self.entry_count());
+    }
+
+    fn scroll_list_to_bottom(&mut self) {
+        // Out-of-range item indices are clamped to the end by `scroll_to`.
+        self.chat_list.scroll_to(ListOffset {
+            item_ix: self.entry_count(),
+            offset_in_item: px(0.),
+        });
+    }
+
+    fn entry_count(&self) -> usize {
+        self.chat
+            .as_ref()
+            .map(|chat| chat.entries.len())
+            .unwrap_or(0)
     }
 
     fn apply_runtime_event(
@@ -223,7 +276,7 @@ impl ShellWindow {
                         });
                     }
                 }
-                self.scroll_chat_to_bottom();
+                self.list_sync_reset();
                 tracing::info!("Session transcript ready in chat pane");
             }
             RuntimeEvent::SessionOpenFailed(error) => {
@@ -239,7 +292,7 @@ impl ShellWindow {
                         chat.submitting = false;
                         chat.busy = true;
                         chat.entries.push(ChatEntry::User { text: message });
-                        self.scroll_chat_to_bottom();
+                        self.list_sync_append();
                     }
                 }
             }
@@ -252,6 +305,7 @@ impl ShellWindow {
                         chat.entries.push(ChatEntry::Notice {
                             text: i18n::failed_status(&error, cx),
                         });
+                        self.list_sync_append();
                     }
                 }
             }
@@ -271,16 +325,21 @@ impl ShellWindow {
             } => {
                 if let Some(chat) = self.chat.as_mut() {
                     if chat.matches(&session_id) {
-                        chat.append_chunk(&round_id, &text);
-                        self.scroll_chat_to_bottom();
+                        if chat.append_chunk(&round_id, &text) {
+                            self.list_sync_append();
+                        } else {
+                            self.list_sync_tail_changed();
+                        }
                     }
                 }
             }
             RuntimeEvent::ToolUpdate { session_id, card } => {
                 if let Some(chat) = self.chat.as_mut() {
                     if chat.matches(&session_id) {
-                        chat.upsert_tool(card);
-                        self.scroll_chat_to_bottom();
+                        match chat.upsert_tool(card) {
+                            None => self.list_sync_append(),
+                            Some(index) => self.list_sync_item_changed(index),
+                        }
                     }
                 }
             }
@@ -293,6 +352,7 @@ impl ShellWindow {
                             chat.entries.push(ChatEntry::Notice {
                                 text: i18n::failed_status(&error, cx),
                             });
+                            self.list_sync_append();
                         }
                     }
                 }
@@ -519,157 +579,198 @@ impl ShellWindow {
             )
             .child(theme_row)
     }
+}
 
-    fn tool_status_label<'a>(&self, status: ToolStatus, text: &'a ShellText) -> &'a str {
-        match status {
-            ToolStatus::Running => &text.tool_running,
-            ToolStatus::WaitingConfirm => &text.tool_waiting,
-            ToolStatus::Done => &text.tool_done,
-            ToolStatus::Failed => &text.tool_failed,
-            ToolStatus::Cancelled => &text.tool_cancelled,
-        }
+/// `list` splice range registering one new item at the end of a transcript of
+/// `count` entries (the range is empty; the item is inserted past the end).
+fn appended_range(count: usize) -> std::ops::Range<usize> {
+    count.saturating_sub(1)..count.saturating_sub(1)
+}
+
+/// `list` splice range invalidating the cached height of a transcript tail
+/// that changed in place.
+fn tail_changed_range(count: usize) -> std::ops::Range<usize> {
+    (count - 1)..count
+}
+
+fn tool_status_label<'a>(status: ToolStatus, text: &'a ShellText) -> &'a str {
+    match status {
+        ToolStatus::Running => &text.tool_running,
+        ToolStatus::WaitingConfirm => &text.tool_waiting,
+        ToolStatus::Done => &text.tool_done,
+        ToolStatus::Failed => &text.tool_failed,
+        ToolStatus::Cancelled => &text.tool_cancelled,
     }
+}
 
-    fn render_entries(
-        &self,
-        text: &ShellText,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> gpui::Stateful<gpui::Div> {
-        let mut entries = div()
-            .id("chat-entries")
-            .flex()
-            .flex_col()
-            .flex_1()
-            .min_h_0()
-            .gap_3()
-            .p_2()
-            .overflow_y_scroll()
-            .track_scroll(&self.chat_scroll);
-        let Some(chat) = self.chat.as_ref() else {
-            return entries.child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(text.chat_empty.clone()),
-            );
-        };
-
-        for (index, entry) in chat.entries.iter().enumerate() {
-            match entry {
-                ChatEntry::User { text: body } => {
-                    entries = entries.child(
-                        div().flex().justify_end().child(
-                            div()
-                                .max_w(px(480.))
-                                .bg(cx.theme().muted)
-                                .rounded(cx.theme().radius)
-                                .px_2()
-                                .py_1()
-                                .child(body.clone()),
-                        ),
-                    )
-                }
-                ChatEntry::Assistant { text: body, .. } => {
-                    entries = entries.child(
-                        div()
-                            .id(SharedString::from(format!("entry-{index}")))
-                            .min_w_0()
-                            .text_sm()
-                            .child(
-                                TextView::markdown(
-                                    SharedString::from(format!("entry-{index}-md")),
-                                    body.clone(),
-                                    window,
-                                    cx,
-                                )
-                                .selectable(true),
-                            ),
-                    )
-                }
-                ChatEntry::Tool(card) => {
-                    entries = entries.child(self.render_tool_card(card, text, cx))
-                }
-                ChatEntry::Notice { text: body } => {
-                    entries = entries.child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().danger)
-                            .child(body.clone()),
-                    )
-                }
-            }
-        }
-        if chat.busy || chat.submitting {
-            let label = if chat.submitting {
-                &text.chat_submitting
-            } else {
-                &text.chat_busy
-            };
-            entries = entries.child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(label.clone()),
-            );
-        }
-        entries
-    }
-
-    fn render_tool_card(
-        &self,
-        card: &ToolCard,
-        text: &ShellText,
-        cx: &mut Context<Self>,
-    ) -> gpui::Div {
-        let status_color = match card.status {
-            ToolStatus::Running | ToolStatus::WaitingConfirm => cx.theme().warning,
-            ToolStatus::Done => cx.theme().success,
-            ToolStatus::Failed | ToolStatus::Cancelled => cx.theme().danger,
-        };
-        let status_label = self.tool_status_label(card.status, text);
-        let mut row = div()
-            .v_flex()
-            .gap_0p5()
-            .min_w_0()
-            .border_1()
-            .border_color(cx.theme().border)
-            .rounded(cx.theme().radius)
+/// One transcript entry as a list item. The gutter padding (`px_2`) and the
+/// trailing gap (`pb_3`) are part of the item because gpui's `list` has no
+/// inter-item gap support.
+fn render_chat_item(
+    entry: &ChatEntry,
+    text: &ShellText,
+    window: &mut Window,
+    cx: &mut App,
+) -> gpui::AnyElement {
+    match entry {
+        ChatEntry::User { text: body } => div()
+            .w_full()
             .px_2()
-            .py_1()
+            .pb_3()
+            .flex()
+            .justify_end()
             .child(
                 div()
-                    .flex()
-                    .flex_row()
-                    .gap_2()
-                    .items_center()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().foreground)
-                            .child(card.tool_name.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(status_color)
-                            .child(status_label.to_string()),
-                    ),
-            );
-        if !card.detail.is_empty() {
-            row = row.child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .truncate()
-                    .child(card.detail.clone()),
-            );
+                    .max_w(px(480.))
+                    .bg(cx.theme().muted)
+                    .rounded(cx.theme().radius)
+                    .px_2()
+                    .py_1()
+                    .child(body.clone()),
+            )
+            .into_any_element(),
+        ChatEntry::Assistant { text: body, .. } => div()
+            .w_full()
+            .min_w_0()
+            .px_2()
+            .pb_3()
+            .text_sm()
+            .child(
+                TextView::markdown(
+                    SharedString::from(format!("entry-{}-md", markdown_id_key(body))),
+                    body.clone(),
+                    window,
+                    cx,
+                )
+                .selectable(true),
+            )
+            .into_any_element(),
+        ChatEntry::Tool(card) => div()
+            .w_full()
+            .px_2()
+            .pb_3()
+            .child(render_tool_card(card, text, cx))
+            .into_any_element(),
+        ChatEntry::Notice { text: body } => div()
+            .w_full()
+            .px_2()
+            .pb_3()
+            .text_sm()
+            .text_color(cx.theme().danger)
+            .child(body.clone())
+            .into_any_element(),
+    }
+}
+
+/// Stable per-content markdown element id: transcript indices shift when
+/// history reloads swap the entries vec, and a reused id pointing at new
+/// content would briefly show the previous parse while the worker catches up.
+fn markdown_id_key(body: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(body, &mut hasher);
+    std::hash::Hasher::finish(&hasher)
+}
+
+fn render_tool_card(card: &ToolCard, text: &ShellText, cx: &App) -> gpui::Div {
+    let status_color = match card.status {
+        ToolStatus::Running | ToolStatus::WaitingConfirm => cx.theme().warning,
+        ToolStatus::Done => cx.theme().success,
+        ToolStatus::Failed | ToolStatus::Cancelled => cx.theme().danger,
+    };
+    let status_label = tool_status_label(card.status, text);
+    let mut row = div()
+        .v_flex()
+        .gap_0p5()
+        .min_w_0()
+        .border_1()
+        .border_color(cx.theme().border)
+        .rounded(cx.theme().radius)
+        .px_2()
+        .py_1()
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .gap_2()
+                .items_center()
+                .min_w_0()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().foreground)
+                        .child(card.tool_name.clone()),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(status_color)
+                        .child(status_label.to_string()),
+                ),
+        );
+    if !card.detail.is_empty() {
+        row = row.child(
+            div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .truncate()
+                .child(card.detail.clone()),
+        );
+    }
+    row
+}
+
+impl ShellWindow {
+    /// The virtualized transcript: gpui's native `list` element keeps measured
+    /// per-item heights in a sum tree and only renders the visible range plus
+    /// overdraw, so a 1k-message transcript neither re-parses off-screen
+    /// markdown nor re-renders it per frame. Bottom alignment pins the view to
+    /// the newest content until the user scrolls up.
+    fn render_chat_area(&self, text: &ShellText, cx: &mut Context<Self>) -> gpui::AnyElement {
+        if self.chat.is_none() {
+            return div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_color(cx.theme().muted_foreground)
+                .child(text.chat_empty.clone())
+                .into_any_element();
         }
-        row
+        let this = cx.entity();
+        let text = text.clone();
+        list(self.chat_list.clone(), move |index, window, cx| {
+            let entry = this
+                .read(cx)
+                .chat
+                .as_ref()
+                .and_then(|chat| chat.entries.get(index))
+                .cloned();
+            match entry {
+                Some(entry) => render_chat_item(&entry, &text, window, cx),
+                // List-state item counts are synced on the same mutation that
+                // grows `entries`, so an out-of-range index cannot persist.
+                None => div().into_any_element(),
+            }
+        })
+        .flex_1()
+        .min_h_0()
+        .pt_2()
+        .pb_2()
+        .into_any_element()
+    }
+
+    /// Streaming indicator rendered as a fixed row between the transcript and
+    /// the composer (list items are reserved for transcript entries).
+    fn busy_label(&self, text: &ShellText) -> Option<String> {
+        let chat = self.chat.as_ref()?;
+        if chat.submitting {
+            Some(text.chat_submitting.clone())
+        } else if chat.busy {
+            Some(text.chat_busy.clone())
+        } else {
+            None
+        }
     }
 
     fn render_composer(&self, text: &ShellText, cx: &mut Context<Self>) -> gpui::Div {
@@ -727,8 +828,9 @@ impl ShellWindow {
 }
 
 impl Render for ShellWindow {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let text: ShellText = i18n::current(cx);
+        let chat_area = self.render_chat_area(&text, cx);
 
         div()
             .size_full()
@@ -785,7 +887,17 @@ impl Render for ShellWindow {
                                     div().text_sm().text_color(cx.theme().danger).child(error),
                                 )
                             })
-                            .child(self.render_entries(&text, window, cx))
+                            .child(chat_area)
+                            .when_some(self.busy_label(&text), |this, label| {
+                                this.child(
+                                    div()
+                                        .px_2()
+                                        .pb_1()
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(label),
+                                )
+                            })
                             .child(self.render_composer(&text, cx)),
                     ),
             )
@@ -937,4 +1049,232 @@ fn main() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::ToolStatus;
+    use openbitfun_core::service::i18n::LocaleId;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    fn chat_with(entries: Vec<ChatEntry>) -> ChatView {
+        ChatView {
+            session_id: "session".into(),
+            name: "name".into(),
+            agent_type: "Standard".into(),
+            entries,
+            busy: false,
+            submitting: false,
+        }
+    }
+
+    #[test]
+    fn append_chunk_reports_tail_growth_vs_new_entry() {
+        let mut chat = chat_with(Vec::new());
+        assert!(chat.append_chunk("round-1", "hello "));
+        assert!(!chat.append_chunk("round-1", "world"));
+        assert!(chat.append_chunk("round-2", "next round"));
+        assert_eq!(chat.entries.len(), 2);
+    }
+
+    #[test]
+    fn upsert_tool_reports_changed_index_or_append() {
+        let card = |key: &'static str| ToolCard {
+            key: SharedString::from(key),
+            tool_name: "read_file".into(),
+            status: ToolStatus::Running,
+            detail: String::new(),
+        };
+        let mut chat = chat_with(Vec::new());
+        assert!(chat.upsert_tool(card("tool-1")).is_none());
+        assert!(chat.upsert_tool(card("tool-2")).is_none());
+        assert_eq!(chat.upsert_tool(card("tool-1")), Some(0));
+        assert!(chat.upsert_tool(card("tool-3")).is_none());
+        assert_eq!(chat.entries.len(), 3);
+    }
+
+    #[test]
+    fn list_sync_ranges_match_entry_counts() {
+        assert_eq!(appended_range(0), 0..0);
+        assert_eq!(appended_range(3), 2..2);
+        assert_eq!(tail_changed_range(1), 0..1);
+        assert_eq!(tail_changed_range(40), 39..40);
+    }
+
+    /// A harness view mirroring `ShellWindow::render_chat_area` so the test
+    /// exercises the same list construction and item renderer.
+    struct TranscriptListHarness {
+        state: ListState,
+        entries: Rc<Vec<ChatEntry>>,
+        render_count: Rc<Cell<usize>>,
+        text: ShellText,
+    }
+
+    impl Render for TranscriptListHarness {
+        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let this = cx.entity();
+            let render_count = self.render_count.clone();
+            let text = self.text.clone();
+            list(self.state.clone(), move |index, window, cx| {
+                render_count.set(render_count.get() + 1);
+                match this.read(cx).entries.get(index).cloned() {
+                    Some(entry) => render_chat_item(&entry, &text, window, cx),
+                    None => div().into_any_element(),
+                }
+            })
+            .w(px(800.))
+            .h(px(600.))
+        }
+    }
+
+    fn sample_shell_text() -> ShellText {
+        ShellText {
+            locale: LocaleId::EnUS,
+            subtitle: String::new(),
+            theme: String::new(),
+            language: String::new(),
+            status_starting: String::new(),
+            status_ready: String::new(),
+            sessions_title: String::new(),
+            sessions_empty: String::new(),
+            sessions_reload: String::new(),
+            sessions_new: String::new(),
+            chat_empty: String::new(),
+            chat_input_placeholder: String::new(),
+            chat_send: String::new(),
+            chat_stop: String::new(),
+            chat_busy: String::new(),
+            chat_submitting: String::new(),
+            tool_running: "Running".into(),
+            tool_waiting: "Waiting".into(),
+            tool_done: "Done".into(),
+            tool_failed: "Failed".into(),
+            tool_cancelled: "Cancelled".into(),
+        }
+    }
+
+    /// Alternating user/assistant pairs with markdown of varying length, plus
+    /// a fenced code block every tenth round.
+    fn stress_entries(rounds: usize) -> Vec<ChatEntry> {
+        let mut entries = Vec::with_capacity(rounds * 2);
+        for index in 0..rounds {
+            entries.push(ChatEntry::User {
+                text: format!("Stress round {index}: please explain item {index}."),
+            });
+            let paragraph = format!(
+                "Answer **{index}** with a [link](https://example.com/{index}) and `inline code`.\n\n\
+                 - first point for round {index}\n- second point with a longer line of text that wraps\n\n\
+                 | column a | column b |\n|---|---|\n| {index} | value |"
+            );
+            let body = if index % 10 == 0 {
+                format!(
+                    "{paragraph}\n\n```rust\nfn round_{index}() -> usize {{\n    {index} * 2\n}}\n```"
+                )
+            } else {
+                paragraph
+            };
+            entries.push(ChatEntry::Assistant {
+                round_id: format!("round-{index}"),
+                text: body,
+            });
+        }
+        entries
+    }
+
+    #[gpui::test]
+    fn transcript_list_renders_visible_range_only(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| gpui_component::init(cx));
+
+        const ROUNDS: usize = 500;
+        let entries = Rc::new(stress_entries(ROUNDS));
+        let render_count: Rc<Cell<usize>> = Default::default();
+        let state = ListState::new(entries.len(), ListAlignment::Bottom, px(CHAT_OVERDRAW));
+        let text = sample_shell_text();
+
+        let window = cx.add_empty_window();
+        let draw_frame = |window: &mut gpui::VisualTestContext,
+                          state: &ListState,
+                          entries: &Rc<Vec<ChatEntry>>,
+                          render_count: &Rc<Cell<usize>>|
+         -> std::time::Duration {
+            render_count.set(0);
+            let state = state.clone();
+            let entries = entries.clone();
+            let render_count = render_count.clone();
+            let text = sample_shell_text();
+            let started = std::time::Instant::now();
+            window.draw(
+                gpui::point(px(0.), px(0.)),
+                size(px(800.), px(600.)),
+                move |_, cx| {
+                    cx.new(|_| TranscriptListHarness {
+                        state,
+                        entries,
+                        render_count,
+                        text,
+                    })
+                },
+            );
+            started.elapsed()
+        };
+
+        // Transcript restore: the first frame must neither render nor measure
+        // all 1k entries (markdown parse only happens for rendered items).
+        let elapsed = draw_frame(window, &state, &entries, &render_count);
+        let restored = render_count.get();
+        assert!(
+            restored < 100,
+            "restore rendered {restored} of {} entries in one frame",
+            entries.len()
+        );
+
+        // Sweep the whole list top to bottom; every frame stays bounded and
+        // the list keeps tracking the bottom-pinned offset.
+        let mut max_per_frame = 0usize;
+        let mut total = std::time::Duration::ZERO;
+        let steps = 60;
+        for _ in 0..steps {
+            state.scroll_by(px(1000.));
+            window.run_until_parked();
+            let elapsed = draw_frame(window, &state, &entries, &render_count);
+            max_per_frame = max_per_frame.max(render_count.get());
+            total += elapsed;
+        }
+        assert!(
+            max_per_frame < 100,
+            "a scroll frame rendered {max_per_frame} entries"
+        );
+        let average_us = total.as_micros() / steps as u128;
+        println!(
+            "transcript sweep: {} entries, {steps} frames, max {max_per_frame} rendered/frame, \
+             {average_us} us average frame layout",
+            entries.len()
+        );
+
+        // Streaming growth on top of the restored transcript keeps item
+        // accounting exact.
+        let mut grown = entries.as_ref().clone();
+        for round in 0..5 {
+            grown.push(ChatEntry::User {
+                text: format!("live round {round}"),
+            });
+            state.splice(appended_range(grown.len()), 1);
+            grown.push(ChatEntry::Assistant {
+                round_id: format!("live-{round}"),
+                text: "streamed **markdown** body.\n\n- item\n- item".to_string(),
+            });
+            state.splice(appended_range(grown.len()), 1);
+            state.splice(tail_changed_range(grown.len()), 1);
+        }
+        assert_eq!(state.item_count(), grown.len());
+        let entries = Rc::new(grown);
+        draw_frame(window, &state, &entries, &render_count);
+        assert!(
+            render_count.get() < 100,
+            "post-growth frame rendered {} entries",
+            render_count.get()
+        );
+    }
 }

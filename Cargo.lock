@@ -8372,6 +8372,7 @@ dependencies = [
  "openbitfun-core",
  "openbitfun-events",
  "openbitfun-runtime-ports",
+ "openbitfun-services-core",
  "serde",
  "serde_json",
  "tokio",

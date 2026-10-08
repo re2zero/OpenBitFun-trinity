@@ -45,6 +45,10 @@ tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
+# Test fixture only (`examples/seed_session.rs` stress-test seeder): writes
+# sessions through the sanctioned offline import store instead of hand-crafted
+# storage files.
+openbitfun-services-core = { path = "../../crates/services/services-core" }
 
 [lints]
 workspace = true
