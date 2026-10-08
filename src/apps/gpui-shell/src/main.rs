@@ -1,10 +1,35 @@
 use gpui::{
-    div, prelude::*, App, Application, Context, SharedString, TitlebarOptions, Window,
+    div, prelude::*, px, App, Application, Context, Entity, SharedString, TitlebarOptions, Window,
     WindowOptions,
 };
-use gpui_component::{button::Button, ActiveTheme, Root};
+use gpui_component::{
+    button::Button,
+    input::{Input, InputState},
+    ActiveTheme, Root,
+};
 
-struct ShellWindow;
+struct ShellWindow {
+    query: Entity<InputState>,
+    draft: Entity<InputState>,
+}
+
+impl ShellWindow {
+    fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let query = cx.new(|cx| {
+            let state =
+                InputState::new(window, cx).placeholder("IME single-line input (preedit here)");
+            state.focus(window, cx);
+            state
+        });
+        let draft = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("IME multi-line input (compose across lines)")
+                .multi_line(true)
+                .rows(6)
+        });
+        Self { query, draft }
+    }
+}
 
 impl Render for ShellWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -12,13 +37,13 @@ impl Render for ShellWindow {
             .size_full()
             .flex()
             .flex_col()
-            .items_center()
-            .justify_center()
             .gap_2()
+            .p_4()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .child("OpenBitFun GPUI Shell")
-            .child("M0 skeleton window: the GPUI frontend is alive.")
+            .child("OpenBitFun GPUI Shell - M1 IME verification")
+            .child(Input::new(&self.query).w_full())
+            .child(Input::new(&self.draft).w_full().h(px(140.)))
             .child(Button::new("ping").label("Ping").on_click(|_, _, _| {
                 tracing::info!("Shell ping button clicked");
             }))
@@ -49,7 +74,7 @@ fn main() {
                 ..Default::default()
             },
             |window, cx| {
-                let view = cx.new(|_| ShellWindow);
+                let view = cx.new(|cx| ShellWindow::new(window, cx));
                 cx.new(|cx| Root::new(view, window, cx))
             },
         );
