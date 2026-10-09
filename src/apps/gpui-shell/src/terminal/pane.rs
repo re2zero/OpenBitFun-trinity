@@ -181,6 +181,19 @@ impl TerminalPane {
             PtyMsg::Started(id) => {
                 self.pty_id = Some(id);
                 self.needs_focus = true;
+                // The panel may have reflowed the grid before the pty reported
+                // its id (the first paint can beat `create_process`), in which
+                // case `resize_if_needed` had no pty to talk to. Push the
+                // current size so the child's winsize matches the grid instead
+                // of staying at the 80x24 spawn default.
+                let (cols, rows) = (self.cols, self.rows);
+                let service = self.service.clone();
+                let tokio = self.tokio.clone();
+                tokio.spawn(async move {
+                    if let Err(err) = service.resize(id, cols, rows).await {
+                        tracing::warn!("Failed to apply the initial pty size: {}", err);
+                    }
+                });
             }
             PtyMsg::Data(data) => {
                 if std::env::var_os("OPENBITFUN_TERMINAL_TRACE").is_some() {
@@ -634,44 +647,63 @@ impl Render for TerminalPane {
             )
             .on_key_down(cx.listener(Self::on_key_down))
             .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
-            .child(div().size_full().child(canvas(
-                move |bounds, window, cx| {
-                    // Measure the monospace cell, then reflow the grid
-                    // to the panel's real size (window resizes land
-                    // here on every frame).
-                    let font = gpui_kit::font(MONO_FONT);
-                    let shaped = window.text_system().shape_line(
-                        SharedString::from("M"),
-                        px(FONT_SIZE),
-                        &[gpui_kit::TextRun {
-                            len: 1,
-                            font,
-                            color: gpui_kit::black(),
-                            background_color: None,
-                            underline: None,
-                            strikethrough: None,
-                        }],
-                        None,
-                    );
-                    let metrics = GridMetrics {
-                        cell_w: shaped.width,
-                        cell_h: px(LINE_HEIGHT),
-                    };
-                    let cols =
-                        ((bounds.size.width / metrics.cell_w).floor() as u16).clamp(MIN_COLS, 500);
-                    let rows =
-                        ((bounds.size.height / metrics.cell_h).floor() as u16).clamp(MIN_ROWS, 200);
-                    entity.update(cx, |pane, cx| {
-                        pane.cell_w = metrics.cell_w;
-                        pane.cell_h = metrics.cell_h;
-                        pane.resize_if_needed(cols, rows, cx);
-                    });
-                    metrics
-                },
-                move |bounds, metrics, window, cx| {
-                    paint_grid(&entity_for_paint, bounds, &metrics, window, cx)
-                },
-            )))
+            .child(
+                div().size_full().child(
+                    canvas(
+                        move |bounds, window, cx| {
+                            // Measure the monospace cell, then reflow the grid
+                            // to the panel's real size (window resizes land
+                            // here on every frame).
+                            let font = gpui_kit::font(MONO_FONT);
+                            let shaped = window.text_system().shape_line(
+                                SharedString::from("M"),
+                                px(FONT_SIZE),
+                                &[gpui_kit::TextRun {
+                                    len: 1,
+                                    font,
+                                    color: gpui_kit::black(),
+                                    background_color: None,
+                                    underline: None,
+                                    strikethrough: None,
+                                }],
+                                None,
+                            );
+                            let metrics = GridMetrics {
+                                cell_w: shaped.width,
+                                cell_h: px(LINE_HEIGHT),
+                            };
+                            let cols = ((bounds.size.width / metrics.cell_w).floor() as u16)
+                                .clamp(MIN_COLS, 500);
+                            let rows = ((bounds.size.height / metrics.cell_h).floor() as u16)
+                                .clamp(MIN_ROWS, 200);
+                            if std::env::var_os("OPENBITFUN_TERMINAL_TRACE").is_some() {
+                                tracing::debug!(
+                                    "terminal canvas bounds {:?} cell {:?} -> {}x{}",
+                                    bounds.size,
+                                    (metrics.cell_w, metrics.cell_h),
+                                    cols,
+                                    rows
+                                );
+                            }
+                            entity.update(cx, |pane, cx| {
+                                pane.cell_w = metrics.cell_w;
+                                pane.cell_h = metrics.cell_h;
+                                pane.resize_if_needed(cols, rows, cx);
+                            });
+                            metrics
+                        },
+                        move |bounds, metrics, window, cx| {
+                            paint_grid(&entity_for_paint, bounds, &metrics, window, cx)
+                        },
+                    )
+                    // A bare `canvas` requests an auto layout with no
+                    // children, so it would measure 0 tall and the grid
+                    // would clamp to `MIN_ROWS` forever (reproduced
+                    // 2026-10-09: 1180x0 bounds, `stty size` stuck at 6
+                    // rows, terminal content overflowing the panel).
+                    .size_full(),
+                ),
+            )
             .when_some(error, |this, error| {
                 this.child(
                     div()

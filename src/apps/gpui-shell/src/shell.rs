@@ -252,6 +252,10 @@ struct ShellWindow {
     /// and dropped when the panel closes.
     terminal: Option<Entity<TerminalPane>>,
     terminal_open: bool,
+    /// One-shot automation hook (`OPENBITFUN_GPUI_TERMINAL_AUTOOPEN`): opens
+    /// the panel once the runtime is ready, so a screenshot run can inspect
+    /// the pane without synthesizing input events.
+    terminal_auto_open: bool,
 }
 
 impl ShellWindow {
@@ -280,6 +284,7 @@ impl ShellWindow {
             permission_dialog_open: false,
             terminal: None,
             terminal_open: false,
+            terminal_auto_open: std::env::var_os("OPENBITFUN_GPUI_TERMINAL_AUTOOPEN").is_some(),
         }
     }
 
@@ -541,16 +546,25 @@ impl ShellWindow {
     /// Opens or closes the built-in terminal panel. First open creates the
     /// pane (and its PTY); close shuts the PTY down and drops the pane.
     fn toggle_terminal_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.terminal_open = !self.terminal_open;
         if self.terminal_open {
-            if self.terminal.is_none() {
-                let tokio = runtime::runtime_handle()
-                    .map(|handle| handle.tokio_handle())
-                    .expect("runtime handle ready when terminal opens");
-                self.terminal = Some(cx.new(|cx| TerminalPane::new(tokio, window, cx)));
+            self.terminal_open = false;
+            if let Some(pane) = self.terminal.take() {
+                pane.update(cx, |pane, _| pane.close());
             }
-        } else if let Some(pane) = self.terminal.take() {
-            pane.update(cx, |pane, _| pane.close());
+        } else {
+            self.open_terminal_panel(window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Opens the terminal panel, creating the pane (and its PTY) on first use.
+    fn open_terminal_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.terminal_open = true;
+        if self.terminal.is_none() {
+            let tokio = runtime::runtime_handle()
+                .map(|handle| handle.tokio_handle())
+                .expect("runtime handle ready when terminal opens");
+            self.terminal = Some(cx.new(|cx| TerminalPane::new(tokio, window, cx)));
         }
         cx.notify();
     }
@@ -1150,8 +1164,14 @@ fn permission_footer(
 }
 
 impl Render for ShellWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let text: ShellText = i18n::current(cx);
+        // Automation hook: open the terminal panel once, when the runtime can
+        // supply a tokio handle for the pane's PTY.
+        if self.terminal_auto_open && matches!(self.phase, RuntimePhase::Ready) {
+            self.terminal_auto_open = false;
+            self.open_terminal_panel(window, cx);
+        }
         let chat_area = self.render_chat_area(&text, cx);
 
         div()
