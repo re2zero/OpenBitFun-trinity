@@ -122,9 +122,9 @@
 - **已有先例可照抄的壳内模式**：ConfigService 落盘桥（`settings.rs`）、端口 clone 进 runtime handle
   （`git.rs`）、事件泵 + 翻译（`runtime.rs`）、模态队列（权限对话框）。
 
-## 3. 缺口分级（建议，待公子拍板）
+## 3. 缺口分级（已拍板，2026-10-09：P0 立项为里程碑 M11）
 
-**P0 — 默认切换的最小集**（不补则无法作为日常主入口；均为"端口现成、壳侧装配"类）：
+**P0 — 默认切换的最小集**（不补则无法作为日常主入口；均为"端口现成、壳侧装配"类；**2026-10-09 公子拍板：立为里程碑 M11 开工**）：
 
 1. **工作区打开/新建/最近工作区**（已支持列表见 §2 第 8 行）；
 2. **模型 / Provider 选择**（含 models 设置页最小版）；
@@ -166,12 +166,12 @@
 | 方案 | 内容 | 评价 |
 |---|---|---|
 | M-A 并列发布 | 两个包并存、两个 `.desktop` 入口，用户自行选择启动；默认仍是 Tauri | 现状即可维持；零新机制；"默认"未改变 |
-| **M-B 产品定义增 GUI 宿主选择（推荐目标形态）** | 产品定义 desktop member 增加"默认 GUI 宿主"引用（= 蓝图 C1 的已注册 shell/layout 选择切片）；打包 adapter 据此决定桌面入口/默认包指向哪个二进制；未注册 ID / 能力冲突构建失败 | 与蓝图一致（§7 明示 GUI 可由产品定义选"已注册 shell/layout"）；需要真实消费者（build adapter + 打包脚本消费者），是本项的主要工作量。**现状锚点**（2026-10-09 复核）：schema v1 只收已消费字段且 `additionalProperties: false`（`products/schemas/product-definition.schema.json`）、默认产品 `products/openbitfun/product.jsonc`、解析器 `scripts/product-customization/resolver.mjs`、现有 desktop 消费者 `scripts/desktop-tauri-build.mjs:322-327`（覆盖 `productName` / `mainBinaryName` / `identifier`）、校验入口 `pnpm run product:check` / `product:test`。M-B 落地 = schema + resolver + 定义文件（含 fixtures）+ adapter 消费方 + 测试 |
+| **M-B 产品定义增 GUI 宿主选择（已选定，2026-10-09 公子拍板）** | 产品定义 desktop member 增加"默认 GUI 宿主"引用（= 蓝图 C1 的已注册 shell/layout 选择切片）；打包 adapter 据此决定桌面入口/默认包指向哪个二进制；未注册 ID / 能力冲突构建失败 | 与蓝图一致（§7 明示 GUI 可由产品定义选"已注册 shell/layout"）；需要真实消费者（build adapter + 打包脚本消费者），是本项的主要工作量。**现状锚点**（2026-10-09 复核）：schema v1 只收已消费字段且 `additionalProperties: false`（`products/schemas/product-definition.schema.json`）、默认产品 `products/openbitfun/product.jsonc`、解析器 `scripts/product-customization/resolver.mjs`、现有 desktop 消费者 `scripts/desktop-tauri-build.mjs:322-327`（覆盖 `productName` / `mainBinaryName` / `identifier`）、校验入口 `pnpm run product:check` / `product:test`。M-B 落地 = schema + resolver + 定义文件（含 fixtures）+ adapter 消费方 + 测试 |
 | M-C 运行时选择器 | 同一启动器按用户配置选二进制 | 与蓝图 §2 冲突（用户配置不得改变交付形态）；不建议作为产品级默认机制；至多作为 M-A 上述两位用户的便捷 UX |
 
 ### 4.3 切换退出条件（建议）
 
-默认切换动作需要同时满足（切换本身必须公子拍板，D6 / D19）：
+默认切换动作需要同时满足（切换本身必须公子拍板，D6 / D19；**机制已选定 M-B、P0 已立项 M11**，切换动作仍待 P0 闭合后的终审拍板）：
 
 1. §3 P0 清单闭合且逐条有真机证据；
 2. 机制落地 = M-B（或在 M-B 未就绪时以 M-A 形式"并列发布 + 用户文档"，此时默认不变）；
@@ -184,8 +184,8 @@
 （与现有 `cli` / `relay` 并列一行；该脚本的 `asset()` 会强制要求发布资产目录里同时存在
 `openbitfun-gpui-shell-<version>-<target>.tar.gz` 与其 `.sha256`，打包脚本已产出）+ 发布工作流产物 +
 可选 minisign 签名（CLI 先例：`.sha256.sig` / `.sig` 存在即自动写入 `sha256SigUrl` / `sigUrl`）。
-建议：**默认未切换前不占用产品发布通道**，维持显式
-`--update-manifest` 源；拍板切换时同批完成 feed + 签名（`sigUrl` 从 warn 升级为校验）。
+**已拍板（2026-10-09 公子）**：默认未切换前不占用产品发布通道，维持显式
+`--update-manifest` 源；**拍板切换时同批完成 feed + 签名**（`sigUrl` 从 warn 升级为校验），作为切换动作的组成部分。
 
 ## 5. 方法学与刷新
 
@@ -206,4 +206,5 @@
 | 日期 | 变更 |
 |---|---|
 | 2026-10-09 | 首个基线（M10 第 1 会话）：704 命令域统计、19 场景矩阵、P0/P1/P2 分级、M-A/B/C 机制设计 |
+| 2026-10-09 | **三项拍板（M10 收口，公子亲手选定）**：① P0 立项为里程碑 M11（验收于开工时冻结）；② feed 维持显式 `--update-manifest`，切换拍板时同批接入 + minisign；③ 机制 = M-B（落地为里程碑 M12）。切换动作本身待 P0 闭合后终审 |
 | 2026-10-09 | 整固复核（M10 第 2 会话，仅文档）：①逐条复核 §2「可低成本补」6 行 —— SDK 方法族（第 2/3/5/18 行）、端口、core 服务全部真实存在，无一虚标；②修正证据措辞 4 处：第 4 行改为「拖放/剪贴板走 gpui-pre 原生（XDND / wl_data_device / `ClipboardItem::new_image`）＋图片落盘助手为 desktop-local」、第 5 行补「装配已通」的直接证据（`build_with_event_source` 注入 `AgentInteractionResponsePort`）、第 8 行改为「切工作区 = 运行时重装配」（ownership 与 local services 启动即固化）并标出 `current workspace` 共享指针的跨壳耦合、§2.2 修正「多数端口是能力标记（无方法）」并把文件/工作区能力指向 core 服务；③补证据锚点：第 3 行补 catalog 三个 core 函数、第 17 行补 `scheduled-jobs` 已在闭包、第 18 行补 `InsightsService` 五个方法；④第 32 行补「通知可走 gpui-pre 原生 `show_system_notification`」；⑤§2.1 application 分类修正为 7 页（补 `terminal`，壳已覆盖其 4 个共享键）、去掉不存在的独立「appearance pack」页；⑥抽查「缺」档三行的证据锚点（第 15 行 `service/worktree` 生命周期、第 21 行 `McpManager` 家族、第 39 行 `service/snapshot`），去掉对标记端口的引用；⑦第 9 / 11 行同样把「端口现成」改为指向 core 服务（`FileSystemService` / `WorkspaceSearchService`）；⑧§4.2 / §4.4 补落地锚点：M-B 的 schema/resolver/adapter/校验入口逐文件点名，feed 接入点名 `generate-linux-binaries-manifest.mjs` 的 `gpuiShell` 资产键及其 `asset()` 存在性约束 |
