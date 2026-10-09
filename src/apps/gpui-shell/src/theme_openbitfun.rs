@@ -33,33 +33,20 @@ pub(crate) const LIGHT_PRESET_ID: &str = "theme-openbitfun-light";
 /// palette with a warning, mirroring the CLI preset loader.
 pub(crate) fn load() -> Vec<ThemePreset> {
     [
-        (
-            DARK_PRESET_ID,
-            "openbitfun-dark",
-            DARK_TOKENS,
-            ThemeMode::Dark,
-        ),
-        (
-            LIGHT_PRESET_ID,
-            "openbitfun-light",
-            LIGHT_TOKENS,
-            ThemeMode::Light,
-        ),
+        (DARK_PRESET_ID, DARK_TOKENS, ThemeMode::Dark),
+        (LIGHT_PRESET_ID, LIGHT_TOKENS, ThemeMode::Light),
     ]
     .into_iter()
-    .filter_map(
-        |(id, label, json, mode)| match build_config(id, mode, json) {
-            Ok(config) => Some(ThemePreset {
-                id,
-                label,
-                config: Rc::new(config),
-            }),
-            Err(err) => {
-                tracing::warn!("Skipping theme-openbitfun palette {}: {}", id, err);
-                None
-            }
-        },
-    )
+    .filter_map(|(id, json, mode)| match build_config(id, mode, json) {
+        Ok(config) => Some(ThemePreset {
+            id,
+            config: Rc::new(config),
+        }),
+        Err(err) => {
+            tracing::warn!("Skipping theme-openbitfun palette {}: {}", id, err);
+            None
+        }
+    })
     .collect()
 }
 

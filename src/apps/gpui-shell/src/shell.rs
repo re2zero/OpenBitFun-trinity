@@ -1,11 +1,10 @@
-use crate::{i18n, runtime, theme};
+use crate::{i18n, runtime, settings, theme};
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     bubble::{Bubble, BubbleVariant},
-    button::{Button, ButtonVariant, ButtonVariants, DropdownButton},
+    button::{Button, ButtonVariant, ButtonVariants},
     input::{Textarea, TextareaState},
-    menu::PopupMenuItem,
     message::MessageAlignment,
     message_scroller::{MessageScroller, MessageScrollerState},
     sidebar::{Sidebar, SidebarFooter, SidebarGroup, SidebarItem},
@@ -13,17 +12,19 @@ use gpui_kit::component::{
     ActiveTheme, Collapsible, Disableable, Sizable, StyledExt, TitleBar, WindowExt,
 };
 use gpui_kit::{
-    div, point, prelude::*, px, size, App, Bounds, Context, ElementId, Entity, Global,
-    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
+    div, point, prelude::*, px, size, App, Bounds, Context, ElementId, Entity, SharedString,
+    TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 use openbitfun_agent_runtime::sdk::{PermissionReply, PermissionRequest};
 use openbitfun_runtime_ports::AgentSessionSummary;
 use tokio::sync::mpsc;
 
+use crate::assets::ShellAssets;
+use crate::git::GitPanel;
 use crate::i18n::ShellText;
 use crate::runtime::{ChatEntry, RuntimeEvent, ToolCard, ToolStatus};
 use crate::terminal::pane::TerminalPane;
-use crate::theme::{ThemePreset, DEFAULT_PRESET_ID};
+use crate::theme::{ShellState, DEFAULT_PRESET_ID};
 
 /// Width of the navigation sidebar, matching the web-ui desktop shell.
 const SESSION_PANE_WIDTH: f32 = 300.;
@@ -36,14 +37,15 @@ const USER_BUBBLE_MAX_WIDTH: f32 = 480.;
 /// docked composer row jump while streaming text is typed.
 const COMPOSER_HEIGHT: f32 = 88.;
 
-/// App-global shell state: theme presets from the CLI palette plus the active
-/// selection. Lives outside `ShellWindow` so button handlers can reach it.
-struct ShellState {
-    presets: Vec<ThemePreset>,
-    active_preset: usize,
+/// Which surface the main content area shows.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MainView {
+    Chat,
+    /// The settings page (component-library `Settings` container).
+    Settings,
+    /// Workspace changes (git status + self-drawn diff).
+    Git,
 }
-
-impl Global for ShellState {}
 
 /// Lifecycle of the embedded runtime, mirrored into the status line.
 #[derive(Clone)]
@@ -256,6 +258,16 @@ struct ShellWindow {
     /// the panel once the runtime is ready, so a screenshot run can inspect
     /// the pane without synthesizing input events.
     terminal_auto_open: bool,
+    /// Main content surface; sidebar interactions and the title-bar buttons
+    /// switch it.
+    main_view: MainView,
+    /// Workspace changes panel (M8): created when the view opens, dropped when
+    /// it closes so the snapshot is refetched on the next open.
+    git: Option<Entity<GitPanel>>,
+    /// One-shot automation hooks for the settings page and the changes view,
+    /// mirroring `OPENBITFUN_GPUI_TERMINAL_AUTOOPEN`.
+    settings_auto_open: bool,
+    git_auto_open: bool,
 }
 
 impl ShellWindow {
@@ -285,6 +297,10 @@ impl ShellWindow {
             terminal: None,
             terminal_open: false,
             terminal_auto_open: std::env::var_os("OPENBITFUN_GPUI_TERMINAL_AUTOOPEN").is_some(),
+            main_view: MainView::Chat,
+            git: None,
+            settings_auto_open: std::env::var_os("OPENBITFUN_GPUI_SETTINGS_AUTOOPEN").is_some(),
+            git_auto_open: std::env::var_os("OPENBITFUN_GPUI_GIT_AUTOOPEN").is_some(),
         }
     }
 
@@ -365,10 +381,22 @@ impl ShellWindow {
         cx: &mut Context<Self>,
     ) {
         match event {
-            RuntimeEvent::Locale(locale) => {
+            RuntimeEvent::Config(config) => {
+                let config = *config;
+                let locale = config.language;
+                cx.set_global(config.clone());
                 i18n::load_locale(locale, cx);
                 let text = i18n::current(cx);
                 self.apply_locale(&text, window, cx);
+                // The persisted appearance drives the shell theme; ids without
+                // a shell palette keep the current theme and warn.
+                if settings::apply_appearance(&config.appearance, window.appearance(), cx).is_none()
+                {
+                    tracing::warn!(
+                        "Persisted appearance {} has no shell palette; keeping the current theme",
+                        config.appearance
+                    );
+                }
             }
             RuntimeEvent::Ready => {
                 self.phase = RuntimePhase::Ready;
@@ -386,6 +414,9 @@ impl ShellWindow {
             }
             RuntimeEvent::SessionOpened(opened) => {
                 self.chat_error = None;
+                // Opening a session is a chat action: leave the settings or
+                // changes surface and show the transcript.
+                self.main_view = MainView::Chat;
                 match self.chat.as_mut() {
                     // Transcript reload for the open session keeps the pane title.
                     Some(chat) if chat.matches(&opened.session_id) => {
@@ -569,6 +600,27 @@ impl ShellWindow {
         cx.notify();
     }
 
+    /// Shows the settings page in the main area. The page owns its own
+    /// sidebar; the session sidebar stays where it is.
+    fn open_settings_view(&mut self, cx: &mut Context<Self>) {
+        self.main_view = MainView::Settings;
+        cx.notify();
+    }
+
+    /// Opens the changes view (creating the panel, which fetches the workspace
+    /// diff snapshot) or returns to the chat when it is already showing.
+    fn toggle_git_view(&mut self, cx: &mut Context<Self>) {
+        if self.main_view == MainView::Git {
+            self.main_view = MainView::Chat;
+            // Drop the panel with the view so the next open refetches.
+            self.git = None;
+        } else {
+            self.main_view = MainView::Git;
+            self.git = Some(cx.new(GitPanel::new));
+        }
+        cx.notify();
+    }
+
     fn render_status_line(&self, text: &ShellText, cx: &mut Context<Self>) -> gpui_kit::Div {
         match &self.phase {
             RuntimePhase::Starting => div()
@@ -660,65 +712,76 @@ impl ShellWindow {
                         .items_center()
                         .justify_between()
                         .gap_2()
-                        .child(self.render_status_line(text, cx))
-                        .child(self.render_settings_menu(text, cx)),
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(self.render_status_line(text, cx)),
+                        )
+                        .child(self.render_footer_actions(text, cx)),
                 ),
             )
     }
 
-    /// The settings dropdown: theme presets in a submenu, locale toggle below.
-    fn render_settings_menu(&self, text: &ShellText, cx: &mut Context<Self>) -> DropdownButton {
-        let active_preset = cx.global::<ShellState>().active_preset;
-        let presets: Vec<(usize, String)> = cx
-            .global::<ShellState>()
-            .presets
-            .iter()
-            .enumerate()
-            .map(|(index, preset)| (index, preset.label.to_string()))
-            .collect();
-        let theme_label = text.theme.clone();
-        let language_label = text.language.clone();
-        let locale_label = text.locale.as_str().to_string();
-        let settings_label = text.settings.clone();
-
-        DropdownButton::new("sidebar-settings")
-            .button(
-                Button::new("settings-trigger")
-                    .icon(IconName::Settings)
+    /// Footer actions: the surface toggles live here, not in the title bar. On
+    /// Linux with client-side decorations the component title bar paints an
+    /// absolute right-click window-menu overlay above its children, which
+    /// swallows hover and clicks for every element inside it
+    /// (gpui-component 0.7.1, reproduced on Xvfb 2026-10-09: sidebar buttons
+    /// react, title-bar buttons never do). The sidebar footer is always
+    /// visible and receives input; the active toggle keeps a raised variant.
+    fn render_footer_actions(&self, text: &ShellText, cx: &mut Context<Self>) -> gpui_kit::Div {
+        let active_variant = |active: bool| {
+            if active {
+                ButtonVariant::Secondary
+            } else {
+                ButtonVariant::Ghost
+            }
+        };
+        div()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap_1()
+            .child(
+                Button::new("footer-changes")
+                    .icon(IconName::GitBranch)
                     .small()
-                    .with_variant(ButtonVariant::Ghost)
-                    .tooltip(settings_label),
+                    .with_variant(active_variant(self.main_view == MainView::Git))
+                    .tooltip(text.git_title.clone())
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_git_view(cx))),
             )
-            .dropdown_menu(move |menu, window, cx| {
-                menu.submenu(theme_label.clone(), window, cx, {
-                    let presets = presets.clone();
-                    move |menu, _, cx| {
-                        let mut menu = menu;
-                        for (index, label) in &presets {
-                            let preset = {
-                                let state = cx.global_mut::<ShellState>();
-                                state.presets[*index].clone()
-                            };
-                            let active = *index == active_preset;
-                            menu = menu.item(
-                                PopupMenuItem::new(label.clone())
-                                    .checked(active)
-                                    .on_click(move |_, _, cx| preset.apply(cx)),
-                            );
-                        }
-                        menu
-                    }
-                })
-                .separator()
-                .item(
-                    PopupMenuItem::new(format!("{}: {}", language_label, locale_label))
-                        .icon(IconName::Languages)
-                        .on_click(|_, _, cx| {
-                            let next = i18n::next_locale(i18n::current(cx).locale);
-                            i18n::load_locale(next, cx);
-                        }),
-                )
-            })
+            .child(
+                Button::new("footer-terminal")
+                    .icon(IconName::SquareTerminal)
+                    .small()
+                    .with_variant(active_variant(self.terminal_open))
+                    .tooltip(text.terminal_title.clone())
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.toggle_terminal_panel(window, cx)),
+                    ),
+            )
+            .child(self.render_settings_button(text, cx))
+    }
+
+    /// The settings entry: theme and language moved into the settings page
+    /// (M8), so the footer keeps a single button.
+    fn render_settings_button(&self, text: &ShellText, cx: &mut Context<Self>) -> Button {
+        Button::new("sidebar-settings")
+            .icon(IconName::Settings)
+            .small()
+            .with_variant(active_variant_settings(self.main_view))
+            .tooltip(text.settings_open.clone())
+            .on_click(cx.listener(|this, _, _, cx| this.open_settings_view(cx)))
+    }
+}
+
+/// The settings button keeps a raised variant while its page is showing.
+fn active_variant_settings(view: MainView) -> ButtonVariant {
+    if view == MainView::Settings {
+        ButtonVariant::Secondary
+    } else {
+        ButtonVariant::Ghost
     }
 }
 
@@ -1166,13 +1229,38 @@ fn permission_footer(
 impl Render for ShellWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let text: ShellText = i18n::current(cx);
-        // Automation hook: open the terminal panel once, when the runtime can
-        // supply a tokio handle for the pane's PTY.
-        if self.terminal_auto_open && matches!(self.phase, RuntimePhase::Ready) {
-            self.terminal_auto_open = false;
-            self.open_terminal_panel(window, cx);
+        // Automation hooks: open one surface once the runtime is ready, so a
+        // screenshot run can inspect it without synthesizing input events.
+        if matches!(self.phase, RuntimePhase::Ready) {
+            if self.terminal_auto_open {
+                self.terminal_auto_open = false;
+                self.open_terminal_panel(window, cx);
+            }
+            if self.settings_auto_open {
+                self.settings_auto_open = false;
+                self.open_settings_view(cx);
+            }
+            if self.git_auto_open {
+                self.git_auto_open = false;
+                if self.main_view != MainView::Git {
+                    self.toggle_git_view(cx);
+                }
+            }
         }
-        let chat_area = self.render_chat_area(&text, cx);
+
+        let main_area = match self.main_view {
+            MainView::Settings => settings::render_page(&text, cx),
+            MainView::Git => match self.git.clone() {
+                Some(panel) => div()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .child(panel)
+                    .into_any_element(),
+                None => div().into_any_element(),
+            },
+            MainView::Chat => self.render_chat_column(&text, cx),
+        };
 
         div()
             .size_full()
@@ -1198,16 +1286,6 @@ impl Render for ShellWindow {
                                         .text_color(cx.theme().muted_foreground)
                                         .child(text.subtitle.clone()),
                                 ),
-                        )
-                        .child(
-                            Button::new("terminal-toggle")
-                                .icon(IconName::SquareTerminal)
-                                .small()
-                                .with_variant(ButtonVariant::Ghost)
-                                .tooltip(text.terminal_title.clone())
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.toggle_terminal_panel(window, cx)
-                                })),
                         ),
                 ),
             )
@@ -1219,38 +1297,7 @@ impl Render for ShellWindow {
                     .flex_row()
                     .min_w_0()
                     .child(self.render_sidebar(&text, cx))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_h_0()
-                            .min_w_0()
-                            .v_flex()
-                            .child(self.render_chat_header(&text, cx))
-                            .when_some(self.chat_error.clone(), |this, error| {
-                                this.child(
-                                    div()
-                                        .mx_4()
-                                        .text_sm()
-                                        .text_color(cx.theme().danger)
-                                        .child(error),
-                                )
-                            })
-                            .child(chat_area)
-                            .when_some(self.busy_label(&text), |this, label| {
-                                this.child(
-                                    div()
-                                        .w_full()
-                                        .max_w(px(READING_COLUMN_WIDTH))
-                                        .mx_auto()
-                                        .px_4()
-                                        .pb_1()
-                                        .text_sm()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(label),
-                                )
-                            })
-                            .child(self.render_composer(&text, cx)),
-                    ),
+                    .child(div().flex_1().min_h_0().min_w_0().flex().child(main_area)),
             )
             .when(self.terminal_open, |this| {
                 this.child(self.render_terminal_panel(&text, cx))
@@ -1311,6 +1358,42 @@ impl ShellWindow {
                 Some(pane) => div().flex_1().min_h_0().child(pane).into_any_element(),
                 None => div().flex_1().min_h_0().into_any_element(),
             })
+            .into_any_element()
+    }
+
+    /// The chat surface: session header, transcript, busy marker, composer.
+    fn render_chat_column(&self, text: &ShellText, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        let chat_area = self.render_chat_area(text, cx);
+        div()
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .v_flex()
+            .child(self.render_chat_header(text, cx))
+            .when_some(self.chat_error.clone(), |this, error| {
+                this.child(
+                    div()
+                        .mx_4()
+                        .text_sm()
+                        .text_color(cx.theme().danger)
+                        .child(error),
+                )
+            })
+            .child(chat_area)
+            .when_some(self.busy_label(text), |this, label| {
+                this.child(
+                    div()
+                        .w_full()
+                        .max_w(px(READING_COLUMN_WIDTH))
+                        .mx_auto()
+                        .px_4()
+                        .pb_1()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(label),
+                )
+            })
+            .child(self.render_composer(text, cx))
             .into_any_element()
     }
 
@@ -1403,7 +1486,7 @@ pub fn launch_main_window(tokio_handle: tokio::runtime::Handle) {
     let view_event_tx = event_tx.clone();
 
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(ShellAssets)
         .run(move |cx: &mut App| {
             gpui_kit::init(cx);
 
@@ -1421,6 +1504,12 @@ pub fn launch_main_window(tokio_handle: tokio::runtime::Handle) {
             });
 
             i18n::init(cx);
+
+            // Mirror the shell defaults until the bootstrap snapshot arrives;
+            // the settings page renders against this global from the first
+            // frame.
+            let locale = i18n::current(cx).locale;
+            cx.set_global(settings::ShellConfig::startup_default(locale));
 
             runtime::spawn_bootstrap(tokio_handle, event_tx);
 
@@ -1534,41 +1623,7 @@ mod tests {
     }
 
     fn sample_shell_text() -> ShellText {
-        ShellText {
-            locale: LocaleId::EnUS,
-            subtitle: String::new(),
-            theme: String::new(),
-            language: String::new(),
-            status_starting: String::new(),
-            status_ready: String::new(),
-            sessions_title: String::new(),
-            sessions_empty: String::new(),
-            sessions_reload: String::new(),
-            sessions_new: String::new(),
-            chat_empty: String::new(),
-            chat_input_placeholder: String::new(),
-            chat_jump_latest: String::new(),
-            settings: String::new(),
-            chat_send: String::new(),
-            chat_stop: String::new(),
-            chat_busy: String::new(),
-            chat_submitting: String::new(),
-            tool_running: "Running".into(),
-            tool_waiting: "Waiting".into(),
-            tool_done: "Done".into(),
-            tool_failed: "Failed".into(),
-            tool_cancelled: "Cancelled".into(),
-            permission_title: "Permission required".into(),
-            permission_resources: "Resources".into(),
-            permission_project: "Project".into(),
-            permission_risk: "Risk".into(),
-            permission_allow_once: "Allow once".into(),
-            permission_allow_always: "Always allow".into(),
-            permission_deny: "Deny".into(),
-            terminal_title: "Terminal".into(),
-            terminal_close: "Close terminal".into(),
-            terminal_exited: "process exited".into(),
-        }
+        crate::i18n::fallback_text(LocaleId::EnUS)
     }
 
     fn permission_item(request_id: &str) -> PermissionPromptItem {
@@ -1755,5 +1810,69 @@ mod tests {
             "post-growth frame rendered {} entries",
             render_count.get()
         );
+    }
+
+    /// The settings page must build against the shell globals (theme, shell
+    /// config mirror, locale copy) without a live runtime.
+    #[gpui_kit::test]
+    fn settings_page_renders_headlessly(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            let presets = theme::load_presets();
+            let active = presets
+                .iter()
+                .position(|preset| preset.id == DEFAULT_PRESET_ID)
+                .unwrap_or(0);
+            if let Some(preset) = presets.get(active) {
+                preset.apply(cx);
+            }
+            cx.set_global(ShellState {
+                presets,
+                active_preset: active,
+            });
+            cx.set_global(settings::ShellConfig::startup_default(
+                openbitfun_core::service::i18n::LocaleId::ZhCN,
+            ));
+        });
+        let window = cx.add_empty_window();
+        let text = sample_shell_text();
+        window.draw(
+            point(px(0.), px(0.)),
+            size(px(900.), px(600.)),
+            move |_, cx| {
+                // The page must render inside a view: the component library
+                // asks the window for the current view id during layout.
+                cx.new(|_| SettingsHarness { text }).into_any_element()
+            },
+        );
+        window.run_until_parked();
+    }
+
+    struct SettingsHarness {
+        text: ShellText,
+    }
+
+    impl Render for SettingsHarness {
+        fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            settings::render_page(&self.text, cx)
+        }
+    }
+
+    /// The changes view must render its failure state (no runtime attached in
+    /// tests) instead of panicking on the missing git port.
+    #[gpui_kit::test]
+    fn git_panel_renders_without_a_runtime(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(sample_shell_text());
+        });
+        let panel = cx.new(GitPanel::new);
+        let window = cx.add_empty_window();
+        window.draw(
+            point(px(0.), px(0.)),
+            size(px(900.), px(600.)),
+            move |_, _| panel.into_any_element(),
+        );
+        window.run_until_parked();
     }
 }

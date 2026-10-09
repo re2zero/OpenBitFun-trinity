@@ -32,15 +32,16 @@ use openbitfun_core::product_runtime::{
     CoreProductEventQueueOwner, CoreRuntimeServicesProvider,
 };
 use openbitfun_core::runtime_ownership::{CoreRuntimeOwnership, RuntimeDeployment};
-use openbitfun_core::service::config::{get_app_language, initialize_global_config};
-use openbitfun_core::service::i18n::LocaleId;
+use openbitfun_core::service::config::{
+    get_app_language, get_global_config_service, initialize_global_config, types::GlobalConfig,
+};
 use openbitfun_core::service::workspace::{
     get_global_workspace_service, set_global_workspace_service, WorkspaceInfo, WorkspaceService,
 };
 use openbitfun_events::{AgenticEvent, ToolEventData};
 use openbitfun_runtime_ports::{
     AgentSessionListRequest, AgentSessionSummary, AgentSubmissionSource, DialogSubmissionPolicy,
-    TranscriptContent, TranscriptMessage,
+    GitPort, TranscriptContent, TranscriptMessage,
 };
 use tokio::sync::mpsc;
 
@@ -65,8 +66,11 @@ pub(crate) fn runtime_handle() -> Option<&'static RuntimeHandle> {
 #[derive(Debug)]
 #[allow(dead_code)]
 pub(crate) enum RuntimeEvent {
-    /// Active locale resolved from the shared config (`app.language`).
-    Locale(LocaleId),
+    /// Shared-configuration snapshot (`app.language`, `appearance.selection`,
+    /// tool permissions) read once at bootstrap. Replaces the earlier
+    /// locale-only event: the shell applies language, theme, and the settings
+    /// page mirror from it.
+    Config(Box<crate::settings::ShellConfig>),
     /// Embedded runtime assembled successfully; sessions may be loaded.
     Ready,
     /// Session list snapshot (workspace-scoped, read-only).
@@ -172,6 +176,9 @@ pub(crate) struct RuntimeHandle {
     agent_runtime: AgentRuntime,
     workspace: WorkspaceInfo,
     tokio: tokio::runtime::Handle,
+    /// Workspace-level git port from the local runtime services (M8 changes
+    /// view); `None` when the assembly did not register one.
+    git: Option<Arc<dyn GitPort>>,
     // Keeps the runtime event source attached for the process lifetime.
     _event_queue_owner: CoreProductEventQueueOwner,
 }
@@ -186,6 +193,12 @@ impl RuntimeHandle {
     /// terminal pane's PTY pump and writes).
     pub(crate) fn tokio_handle(&self) -> tokio::runtime::Handle {
         self.tokio.clone()
+    }
+
+    /// Workspace-level git port (M8 changes view), when the assembly
+    /// registered one.
+    pub(crate) fn git(&self) -> Option<Arc<dyn GitPort>> {
+        self.git.clone()
     }
 
     /// Requests a fresh read-only session snapshot; the result arrives as a
@@ -842,10 +855,29 @@ async fn bootstrap(tx: mpsc::UnboundedSender<RuntimeEvent>) -> Result<()> {
         .map_err(|error| anyhow::anyhow!("Failed to initialize global config service: {error}"))?;
     tracing::info!("Global config service initialized");
 
-    // M3 i18n upgrade: the shared config owns the shell locale (`app.language`)
-    // instead of the `$LANG` fallback used before the config service existed.
+    // The shared config owns the shell locale (`app.language`), the theme
+    // (`appearance.selection`), and the tool permission policy. Read one
+    // snapshot; the UI thread applies it (theme and locale need gpui state).
+    // A failed read keeps the shell on its defaults instead of blocking the
+    // bootstrap.
+    match get_global_config_service().await {
+        Ok(service) => match service.get_config::<GlobalConfig>(None).await {
+            Ok(config) => {
+                let _ = tx.send(RuntimeEvent::Config(Box::new(
+                    crate::settings::ShellConfig::from_global(&config),
+                )));
+            }
+            Err(error) => tracing::warn!("Failed to read settings snapshot: {}", error),
+        },
+        Err(error) => tracing::warn!(
+            "Config service unavailable for settings snapshot: {}",
+            error
+        ),
+    }
+    // Locale from the config for any consumer that runs before the snapshot
+    // is applied on the UI thread (same source, same fallback).
     let locale = get_app_language().await;
-    let _ = tx.send(RuntimeEvent::Locale(locale));
+    tracing::debug!("Bootstrap locale resolved: {}", locale.as_str());
 
     let workspace_root = std::env::current_dir().context("Failed to read current directory")?;
     let path_manager =
@@ -894,6 +926,18 @@ async fn bootstrap(tx: mpsc::UnboundedSender<RuntimeEvent>) -> Result<()> {
     let scheduler = ensure_product_dialog_scheduler(&agentic_system);
     let (_, services) = build_local_runtime_services(&workspace.root_path, RUNTIME_EVENT_BUFFER)
         .context("Failed to build local runtime services")?;
+    // M8: keep the workspace git port for the changes view before the runtime
+    // consumes the rest of the service set. The port is registered by the same
+    // local provider that serves the agent's git tools.
+    let git_port = services.git.clone();
+    tracing::info!(
+        "Workspace git port: {}",
+        if git_port.is_some() {
+            "available"
+        } else {
+            "unavailable"
+        }
+    );
     let parts = ProductAssembler::new()
         .assemble(ProductAssemblyInput::new(DeliveryProfile::Cli, services))
         .context("Failed to assemble GPUI shell product runtime")?;
@@ -920,6 +964,7 @@ async fn bootstrap(tx: mpsc::UnboundedSender<RuntimeEvent>) -> Result<()> {
         agent_runtime,
         workspace,
         tokio: tokio::runtime::Handle::current(),
+        git: git_port,
         _event_queue_owner: event_queue_owner,
     };
     let _ = RUNTIME_HANDLE.set(handle);

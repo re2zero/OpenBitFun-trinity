@@ -18,7 +18,6 @@ use serde::Deserialize;
 #[derive(Debug, Clone)]
 pub(crate) struct ThemePreset {
     pub id: &'static str,
-    pub label: &'static str,
     pub(crate) config: Rc<ThemeConfig>,
 }
 
@@ -45,6 +44,33 @@ impl ThemePreset {
 /// Preset applied on the first frame: the design-system dark palette, with
 /// the CLI presets below kept as the compatibility source.
 pub(crate) const DEFAULT_PRESET_ID: &str = crate::theme_openbitfun::DARK_PRESET_ID;
+
+/// App-global theme state: the parsed presets and the active selection. Lives
+/// outside `ShellWindow` so button handlers, the settings page, and the
+/// bootstrap can reach it with just `&mut App`.
+pub(crate) struct ShellState {
+    pub(crate) presets: Vec<ThemePreset>,
+    pub(crate) active_preset: usize,
+}
+
+impl gpui_kit::Global for ShellState {}
+
+/// Applies a preset by id. Returns `false` when no loaded preset carries that
+/// id (the caller decides how to degrade).
+pub(crate) fn apply_by_id(preset_id: &str, cx: &mut App) -> bool {
+    let Some(index) = cx
+        .global::<ShellState>()
+        .presets
+        .iter()
+        .position(|preset| preset.id == preset_id)
+    else {
+        return false;
+    };
+    let preset = cx.global::<ShellState>().presets[index].clone();
+    cx.global_mut::<ShellState>().active_preset = index;
+    preset.apply(cx);
+    true
+}
 
 static PRESET_FILES: &[(&str, &str)] = &[
     (
@@ -85,7 +111,6 @@ pub(crate) fn load_presets() -> Vec<ThemePreset> {
             .filter_map(|(id, json)| match build_config(id, json) {
                 Ok(config) => Some(ThemePreset {
                     id,
-                    label: id.strip_prefix("openbitfun-").unwrap_or(id),
                     config: Rc::new(config),
                 }),
                 Err(err) => {
@@ -286,9 +311,6 @@ mod tests {
         assert!(presets
             .first()
             .is_some_and(|preset| preset.id == crate::theme_openbitfun::DARK_PRESET_ID));
-        for preset in &presets {
-            assert!(preset.label.len() < preset.id.len());
-        }
     }
 
     #[test]

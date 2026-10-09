@@ -26,7 +26,6 @@ pub(crate) struct ShellText {
     pub chat_empty: String,
     pub chat_input_placeholder: String,
     pub chat_jump_latest: String,
-    pub settings: String,
     pub chat_send: String,
     pub chat_stop: String,
     pub chat_busy: String,
@@ -46,6 +45,30 @@ pub(crate) struct ShellText {
     pub terminal_title: String,
     pub terminal_close: String,
     pub terminal_exited: String,
+    pub settings_open: String,
+    pub settings_appearance: String,
+    pub settings_permissions: String,
+    pub settings_language_description: String,
+    pub settings_theme_description: String,
+    pub settings_theme_system: String,
+    pub settings_theme_unsupported: String,
+    pub settings_policy: String,
+    pub settings_policy_description: String,
+    pub settings_policy_ask: String,
+    pub settings_policy_full_access: String,
+    pub settings_auto_approve: String,
+    pub settings_auto_approve_description: String,
+    pub git_title: String,
+    pub git_refresh: String,
+    pub git_loading: String,
+    pub git_empty: String,
+    pub git_binary: String,
+    pub git_too_large: String,
+    pub git_truncated: String,
+    pub git_staged: String,
+    pub git_unstaged: String,
+    pub git_untracked: String,
+    pub git_select: String,
 }
 
 impl Global for ShellText {}
@@ -64,20 +87,24 @@ pub(crate) fn init(cx: &mut App) {
 pub(crate) fn load_locale(locale: LocaleId, cx: &mut App) {
     let text = cx.foreground_executor().block_on(fetch_text(locale));
     cx.set_global(text);
+    // The component library keeps its own copy (settings page navigation,
+    // list search placeholders, dialog defaults); point it at the same locale.
+    gpui_kit::component::set_locale(component_locale(locale));
     cx.refresh_windows();
     tracing::info!("Shell locale loaded: {}", locale.as_str());
 }
 
-pub(crate) fn current(cx: &App) -> ShellText {
-    cx.global::<ShellText>().clone()
+/// Maps the shell locale onto the component library's locale ids.
+fn component_locale(locale: LocaleId) -> &'static str {
+    match locale {
+        LocaleId::ZhCN => "zh-CN",
+        LocaleId::ZhTW => "zh-TW",
+        LocaleId::EnUS => "en",
+    }
 }
 
-pub(crate) fn next_locale(locale: LocaleId) -> LocaleId {
-    match locale {
-        LocaleId::ZhCN => LocaleId::ZhTW,
-        LocaleId::ZhTW => LocaleId::EnUS,
-        LocaleId::EnUS => LocaleId::ZhCN,
-    }
+pub(crate) fn current(cx: &App) -> ShellText {
+    cx.global::<ShellText>().clone()
 }
 
 /// Initial locale from the session environment; the runtime bootstrap refines
@@ -113,6 +140,15 @@ pub(crate) fn turns_label(turn_count: usize, cx: &App) -> String {
     )
 }
 
+/// Resolves the localized workspace-diff failure line for one concrete error.
+pub(crate) fn git_failed(error: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-git-failed",
+        TranslationArgs::new().with_string("error", error),
+        cx,
+    )
+}
+
 /// Resolves the localized subagent attribution line for one permission
 /// request; composed once when the request arrives, never on the render path.
 pub(crate) fn permission_subagent_label(subagent_type: &str, cx: &App) -> String {
@@ -132,44 +168,77 @@ fn resolve_with(key: &str, args: TranslationArgs, cx: &App) -> String {
     })
 }
 
+/// English copy used when the i18n service is unavailable; also the base for
+/// test fixtures that only care about a few fields.
+pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
+    ShellText {
+        locale,
+        subtitle: "GPUI native frontend".to_string(),
+        theme: "Theme".to_string(),
+        language: "Language".to_string(),
+        status_starting: "Starting OpenBitFun runtime…".to_string(),
+        status_ready: "Runtime ready".to_string(),
+        sessions_title: "Sessions".to_string(),
+        sessions_empty: "No sessions in this workspace yet.".to_string(),
+        sessions_reload: "Reload".to_string(),
+        sessions_new: "New session".to_string(),
+        chat_empty: "Pick a session on the left, or create a new one.".to_string(),
+        chat_input_placeholder: "Type a message to send to the agent…".to_string(),
+        chat_jump_latest: "Jump to latest".to_string(),
+        chat_send: "Send".to_string(),
+        chat_stop: "Stop".to_string(),
+        chat_busy: "Responding…".to_string(),
+        chat_submitting: "Submitting…".to_string(),
+        tool_running: "Running".to_string(),
+        tool_waiting: "Waiting for approval".to_string(),
+        tool_done: "Done".to_string(),
+        tool_failed: "Failed".to_string(),
+        tool_cancelled: "Cancelled".to_string(),
+        permission_title: "Permission required".to_string(),
+        permission_resources: "Resources".to_string(),
+        permission_project: "Project".to_string(),
+        permission_risk: "Risk".to_string(),
+        permission_allow_once: "Allow once".to_string(),
+        permission_allow_always: "Always allow".to_string(),
+        permission_deny: "Deny".to_string(),
+        terminal_title: "Terminal".to_string(),
+        terminal_close: "Close terminal".to_string(),
+        terminal_exited: "process exited".to_string(),
+        settings_open: "Open settings".to_string(),
+        settings_appearance: "Appearance".to_string(),
+        settings_permissions: "Permissions".to_string(),
+        settings_language_description: "Interface language for the shell and desktop app."
+            .to_string(),
+        settings_theme_description: "Color palette, shared with the desktop appearance setting."
+            .to_string(),
+        settings_theme_system: "Follow system".to_string(),
+        settings_theme_unsupported: "unsupported".to_string(),
+        settings_policy: "Permission policy".to_string(),
+        settings_policy_description: "Ask prompts before tools run; full access allows every call."
+            .to_string(),
+        settings_policy_ask: "Ask".to_string(),
+        settings_policy_full_access: "Full access".to_string(),
+        settings_auto_approve: "Auto-approve requests".to_string(),
+        settings_auto_approve_description:
+            "Answer interactive approval requests automatically (Ask policy only).".to_string(),
+        git_title: "Changes".to_string(),
+        git_refresh: "Refresh".to_string(),
+        git_loading: "Loading changes…".to_string(),
+        git_empty: "No workspace changes.".to_string(),
+        git_binary: "Binary file — diff not shown".to_string(),
+        git_too_large: "Diff too large to display".to_string(),
+        git_truncated: "Some files are not listed (snapshot truncated).".to_string(),
+        git_staged: "staged".to_string(),
+        git_unstaged: "unstaged".to_string(),
+        git_untracked: "untracked".to_string(),
+        git_select: "Select a file to see its diff.".to_string(),
+    }
+}
+
 async fn fetch_text(locale: LocaleId) -> ShellText {
     let Some(service) = get_global_i18n_service().await else {
         tracing::warn!("i18n service unavailable, keeping English fallback copy");
-        return ShellText {
-            locale,
-            subtitle: "GPUI native frontend".to_string(),
-            theme: "Theme".to_string(),
-            language: "Language".to_string(),
-            status_starting: "Starting OpenBitFun runtime…".to_string(),
-            status_ready: "Runtime ready".to_string(),
-            sessions_title: "Sessions".to_string(),
-            sessions_empty: "No sessions in this workspace yet.".to_string(),
-            sessions_reload: "Reload".to_string(),
-            sessions_new: "New session".to_string(),
-            chat_empty: "Pick a session on the left, or create a new one.".to_string(),
-            chat_input_placeholder: "Type a message to send to the agent…".to_string(),
-            chat_jump_latest: "Jump to latest".to_string(),
-            settings: "Settings".to_string(),
-            chat_send: "Send".to_string(),
-            chat_stop: "Stop".to_string(),
-            chat_busy: "Responding…".to_string(),
-            chat_submitting: "Submitting…".to_string(),
-            tool_running: "Running".to_string(),
-            tool_waiting: "Waiting for approval".to_string(),
-            tool_done: "Done".to_string(),
-            tool_failed: "Failed".to_string(),
-            tool_cancelled: "Cancelled".to_string(),
-            permission_title: "Permission required".to_string(),
-            permission_resources: "Resources".to_string(),
-            permission_project: "Project".to_string(),
-            permission_risk: "Risk".to_string(),
-            permission_allow_once: "Allow once".to_string(),
-            permission_allow_always: "Always allow".to_string(),
-            permission_deny: "Deny".to_string(),
-            terminal_title: "Terminal".to_string(),
-            terminal_close: "Close terminal".to_string(),
-            terminal_exited: "process exited".to_string(),
-        };
+        return fallback_text(locale);
     };
 
     service.set_locale(locale).await.unwrap_or_else(|err| {
@@ -190,7 +259,6 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         chat_empty: service.t("gpui-shell-chat-empty").await,
         chat_input_placeholder: service.t("gpui-shell-chat-input-placeholder").await,
         chat_jump_latest: service.t("gpui-shell-chat-jump-latest").await,
-        settings: service.t("gpui-shell-settings").await,
         chat_send: service.t("gpui-shell-chat-send").await,
         chat_stop: service.t("gpui-shell-chat-stop").await,
         chat_busy: service.t("gpui-shell-chat-busy").await,
@@ -210,19 +278,36 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         terminal_title: service.t("gpui-shell-terminal-title").await,
         terminal_close: service.t("gpui-shell-terminal-close").await,
         terminal_exited: service.t("gpui-shell-terminal-exited").await,
+        settings_open: service.t("gpui-shell-settings-open").await,
+        settings_appearance: service.t("gpui-shell-settings-appearance").await,
+        settings_permissions: service.t("gpui-shell-settings-permissions").await,
+        settings_language_description: service.t("gpui-shell-settings-language-desc").await,
+        settings_theme_description: service.t("gpui-shell-settings-theme-desc").await,
+        settings_theme_system: service.t("gpui-shell-settings-theme-system").await,
+        settings_theme_unsupported: service.t("gpui-shell-settings-theme-unsupported").await,
+        settings_policy: service.t("gpui-shell-settings-policy").await,
+        settings_policy_description: service.t("gpui-shell-settings-policy-desc").await,
+        settings_policy_ask: service.t("gpui-shell-settings-policy-ask").await,
+        settings_policy_full_access: service.t("gpui-shell-settings-policy-full-access").await,
+        settings_auto_approve: service.t("gpui-shell-settings-auto-approve").await,
+        settings_auto_approve_description: service.t("gpui-shell-settings-auto-approve-desc").await,
+        git_title: service.t("gpui-shell-git-title").await,
+        git_refresh: service.t("gpui-shell-git-refresh").await,
+        git_loading: service.t("gpui-shell-git-loading").await,
+        git_empty: service.t("gpui-shell-git-empty").await,
+        git_binary: service.t("gpui-shell-git-binary").await,
+        git_too_large: service.t("gpui-shell-git-too-large").await,
+        git_truncated: service.t("gpui-shell-git-truncated").await,
+        git_staged: service.t("gpui-shell-git-staged").await,
+        git_unstaged: service.t("gpui-shell-git-unstaged").await,
+        git_untracked: service.t("gpui-shell-git-untracked").await,
+        git_select: service.t("gpui-shell-git-select").await,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn locale_cycles_through_supported_locales() {
-        assert_eq!(next_locale(LocaleId::ZhCN), LocaleId::ZhTW);
-        assert_eq!(next_locale(LocaleId::ZhTW), LocaleId::EnUS);
-        assert_eq!(next_locale(LocaleId::EnUS), LocaleId::ZhCN);
-    }
 
     #[test]
     fn env_locale_detection() {

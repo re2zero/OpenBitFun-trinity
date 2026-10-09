@@ -471,7 +471,9 @@ export const capabilityContractDependencyRules = [
         capabilityEdge(['agent-api', 'permission', 'workspace-ports']),
       ])],
       ['openbitfun-gpui-shell', capabilityConsumer([
-        capabilityEdge(['agent-api']),
+        // `git-port`: the shell's changes view reads the workspace diff
+        // snapshot (M8).
+        capabilityEdge(['agent-api', 'git-port']),
       ])],
       ['openbitfun-opencode-adapter', capabilityConsumer([
         capabilityEdge(['hook-function-runtime', 'plugin-runtime']),
