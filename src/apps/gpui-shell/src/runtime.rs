@@ -17,9 +17,11 @@ use std::sync::{Arc, OnceLock};
 use anyhow::{Context, Result};
 use gpui_kit::SharedString;
 use openbitfun_agent_runtime::sdk::{
-    AgentDialogTurnExecution, AgentDialogTurnRequest, AgentRuntime, AgentSessionCreateRequest,
-    AgentSessionRestoreRequest, AgentTurnCancellationRequest, PermissionReply, PermissionRequest,
-    PermissionRequestEvent, SessionState, SessionTranscript, SessionTranscriptRequest,
+    AgentDialogTurnExecution, AgentDialogTurnRequest, AgentRuntime,
+    AgentSessionArchiveStateRequest, AgentSessionCreateRequest, AgentSessionDeleteRequest,
+    AgentSessionModelUpdateRequest, AgentSessionRenameRequest, AgentSessionRestoreRequest,
+    AgentTurnCancellationRequest, PermissionReply, PermissionRequest, PermissionRequestEvent,
+    SessionState, SessionTranscript, SessionTranscriptRequest,
 };
 use openbitfun_core::agentic::system::{
     init_agentic_system_for_profile_with_runtime_ownership, select_agentic_system_profile,
@@ -28,8 +30,8 @@ use openbitfun_core::infrastructure::ai::AIClientFactory;
 use openbitfun_core::infrastructure::try_get_path_manager_arc;
 use openbitfun_core::product_assembly::{DeliveryProfile, ProductAssembler, ProductAssemblyInput};
 use openbitfun_core::product_runtime::{
-    build_local_runtime_services, ensure_product_dialog_scheduler, CoreProductAgentRuntime,
-    CoreProductEventQueueOwner, CoreRuntimeServicesProvider,
+    build_local_runtime_services, ensure_product_dialog_scheduler, CoreAgentRuntimeCompatibility,
+    CoreProductAgentRuntime, CoreProductEventQueueOwner, CoreRuntimeServicesProvider,
 };
 use openbitfun_core::runtime_ownership::{CoreRuntimeOwnership, RuntimeDeployment};
 use openbitfun_core::service::config::{
@@ -43,6 +45,7 @@ use openbitfun_runtime_ports::{
     AgentSessionListRequest, AgentSessionSummary, AgentSubmissionSource, DialogSubmissionPolicy,
     GitPort, TranscriptContent, TranscriptMessage,
 };
+use openbitfun_services_core::session::SessionStatus;
 use tokio::sync::mpsc;
 
 /// Matches the CLI interactive buffer (`RUNTIME_EVENT_BUFFER`).
@@ -74,7 +77,7 @@ pub(crate) enum RuntimeEvent {
     /// Embedded runtime assembled successfully; sessions may be loaded.
     Ready,
     /// Session list snapshot (workspace-scoped, read-only).
-    Sessions(Vec<AgentSessionSummary>),
+    Sessions(Vec<SessionListRow>),
     /// Reload failed while the runtime itself stays usable.
     SessionsFailed(String),
     /// Bootstrap failed; the shell stays degraded with the error shown.
@@ -121,7 +124,63 @@ pub(crate) enum RuntimeEvent {
     /// Full pending-request snapshot replacing the queue, sent when the
     /// permission broadcast lags so no ask can be stranded unanswered.
     PermissionSnapshot(Vec<PermissionRequest>),
+    /// A session rename was applied by the runtime; adopt the new name.
+    SessionRenamed { session_id: String, name: String },
+    /// A session was deleted; the chat pane must close when it shows it.
+    SessionDeleted { session_id: String },
+    /// A session action (rename / archive / delete / model change) failed;
+    /// surfaced as a shell notice line, never silently dropped.
+    SessionActionFailed { message: String },
+    /// A session's model selector was updated successfully.
+    SessionModelChanged {
+        session_id: String,
+        model_id: String,
+    },
+    /// Configured-model catalog for the pickers (session header + models
+    /// settings page); sent once after bootstrap.
+    ModelCatalog(Vec<ModelChoice>),
 }
+
+/// One session list row: the runtime summary plus its persisted archive state.
+/// The summary DTO carries no archive flag, so the bootstrap-side metadata read
+/// supplies it (the sidebar filters archived sessions out by default).
+#[derive(Debug)]
+pub(crate) struct SessionListRow {
+    pub summary: AgentSessionSummary,
+    pub archived: bool,
+}
+
+/// One model from the shared catalog, pre-shaped for the pickers.
+#[derive(Debug, Clone)]
+pub(crate) struct ModelChoice {
+    pub id: String,
+    pub name: String,
+    pub provider: String,
+    pub enabled: bool,
+}
+
+impl ModelChoice {
+    /// Display label: model name plus its provider, so duplicates across
+    /// providers stay distinguishable.
+    pub(crate) fn label(&self) -> String {
+        if self.provider.is_empty() {
+            self.name.clone()
+        } else {
+            format!("{} · {}", self.name, self.provider)
+        }
+    }
+}
+
+/// Configured-model catalog as a gpui global: written once from
+/// [`RuntimeEvent::ModelCatalog`], read by the chat-header picker and the
+/// models settings page.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ModelCatalog {
+    pub loaded: bool,
+    pub models: Vec<ModelChoice>,
+}
+
+impl gpui_kit::Global for ModelCatalog {}
 
 /// A session ready to be shown in the chat pane.
 #[derive(Debug)]
@@ -129,6 +188,8 @@ pub(crate) struct OpenedSession {
     pub session_id: String,
     pub name: String,
     pub agent_type: String,
+    /// The session's model selector, when the runtime recorded one.
+    pub model_id: Option<String>,
     pub entries: Vec<ChatEntry>,
     /// The session was mid-turn when opened; live events continue to arrive.
     pub busy: bool,
@@ -174,6 +235,10 @@ pub(crate) enum ToolStatus {
 /// Process-lifetime handle to the embedded runtime, safe to hold from UI code.
 pub(crate) struct RuntimeHandle {
     agent_runtime: AgentRuntime,
+    /// Coordinator-backed compatibility owner (M11): persistence-level session
+    /// metadata, which the runtime ports do not expose (archive state, for
+    /// example, is absent from `AgentSessionSummary`).
+    compat: CoreAgentRuntimeCompatibility,
     workspace: WorkspaceInfo,
     tokio: tokio::runtime::Handle,
     /// Workspace-level git port from the local runtime services (M8 changes
@@ -201,37 +266,297 @@ impl RuntimeHandle {
         self.git.clone()
     }
 
-    /// Requests a fresh read-only session snapshot; the result arrives as a
+    /// Requests a fresh session snapshot; the result arrives as a
     /// [`RuntimeEvent::Sessions`] (or [`RuntimeEvent::SessionsFailed`]).
+    /// Archive state comes from the persisted metadata in the same pass, so
+    /// the sidebar can hide archived sessions instead of inventing a local
+    /// flag that the desktop side would not see.
     pub(crate) fn reload_sessions(&self, tx: mpsc::UnboundedSender<RuntimeEvent>) {
-        let request = AgentSessionListRequest {
-            workspace_id: Some(self.workspace.id.clone()),
-            workspace_path: String::new(),
-            remote_connection_id: None,
-            remote_ssh_host: None,
-        };
+        spawn_session_reload(
+            self.agent_runtime.clone(),
+            self.compat.clone(),
+            self.workspace.clone(),
+            self.tokio.clone(),
+            tx,
+        );
+    }
+
+    /// Renames one session; a successful call reports
+    /// [`RuntimeEvent::SessionRenamed`] and refreshes the list.
+    pub(crate) fn rename_session(
+        &self,
+        session_id: String,
+        name: String,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+    ) {
         let runtime = self.agent_runtime.clone();
+        let workspace_id = Some(self.workspace.id.clone());
+        let handle = self.clone_handle_after_action();
         self.tokio.spawn(async move {
-            match runtime.list_sessions(request).await {
-                Ok(mut sessions) => {
-                    sort_sessions(&mut sessions);
-                    tracing::info!("Session list loaded: {} sessions", sessions.len());
-                    let _ = tx.send(RuntimeEvent::Sessions(sessions));
+            let request = AgentSessionRenameRequest {
+                workspace_id,
+                workspace_path: String::new(),
+                session_id: session_id.clone(),
+                session_name: name.clone(),
+                remote_connection_id: None,
+                remote_ssh_host: None,
+            };
+            match runtime.rename_session(request).await {
+                Ok(()) => {
+                    tracing::info!("Renamed session {session_id}");
+                    let _ = tx.send(RuntimeEvent::SessionRenamed { session_id, name });
+                    handle.reload_sessions(tx);
                 }
                 Err(error) => {
                     let message = error.into_message();
-                    tracing::error!("Failed to list sessions: {message}");
-                    let _ = tx.send(RuntimeEvent::SessionsFailed(message));
+                    tracing::error!("Failed to rename session {session_id}: {message}");
+                    let _ = tx.send(RuntimeEvent::SessionActionFailed {
+                        message: format!("rename: {message}"),
+                    });
                 }
             }
         });
     }
 
+    /// Sets one session's persisted archive state; refreshes the list so the
+    /// row appears or disappears according to the same source the desktop
+    /// reads.
+    pub(crate) fn set_session_archived(
+        &self,
+        session_id: String,
+        archived: bool,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+    ) {
+        let runtime = self.agent_runtime.clone();
+        let workspace_id = Some(self.workspace.id.clone());
+        let handle = self.clone_handle_after_action();
+        self.tokio.spawn(async move {
+            let request = AgentSessionArchiveStateRequest {
+                workspace_id,
+                workspace_path: String::new(),
+                session_id: session_id.clone(),
+                archived,
+                remote_connection_id: None,
+                remote_ssh_host: None,
+            };
+            match runtime.set_session_archived(request).await {
+                Ok(()) => {
+                    tracing::info!("Session {session_id} archived={archived}");
+                    handle.reload_sessions(tx);
+                }
+                Err(error) => {
+                    let message = error.into_message();
+                    tracing::error!(
+                        "Failed to set archive state for session {session_id}: {message}"
+                    );
+                    let _ = tx.send(RuntimeEvent::SessionActionFailed {
+                        message: format!("archive: {message}"),
+                    });
+                }
+            }
+        });
+    }
+
+    /// Deletes one session and reports it so the chat pane can close.
+    pub(crate) fn delete_session(
+        &self,
+        session_id: String,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+    ) {
+        let runtime = self.agent_runtime.clone();
+        let workspace_id = Some(self.workspace.id.clone());
+        let handle = self.clone_handle_after_action();
+        self.tokio.spawn(async move {
+            let request = AgentSessionDeleteRequest {
+                workspace_id,
+                workspace_path: String::new(),
+                session_id: session_id.clone(),
+                remote_connection_id: None,
+                remote_ssh_host: None,
+            };
+            match runtime.delete_session(request).await {
+                Ok(()) => {
+                    tracing::info!("Deleted session {session_id}");
+                    let _ = tx.send(RuntimeEvent::SessionDeleted {
+                        session_id: session_id.clone(),
+                    });
+                    handle.reload_sessions(tx);
+                }
+                Err(error) => {
+                    let message = error.into_message();
+                    tracing::error!("Failed to delete session {session_id}: {message}");
+                    let _ = tx.send(RuntimeEvent::SessionActionFailed {
+                        message: format!("delete: {message}"),
+                    });
+                }
+            }
+        });
+    }
+
+    /// Updates one session's model selector (model only; the reasoning preset
+    /// stays whatever the session already recorded, matching the desktop's
+    /// model-only path).
+    pub(crate) fn update_session_model(
+        &self,
+        session_id: String,
+        model_id: String,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+    ) {
+        let runtime = self.agent_runtime.clone();
+        let handle = self.clone_handle_after_action();
+        self.tokio.spawn(async move {
+            let request = AgentSessionModelUpdateRequest {
+                session_id: session_id.clone(),
+                model_id: model_id.clone(),
+            };
+            match runtime.update_session_model(request).await {
+                Ok(()) => {
+                    tracing::info!("Session {session_id} model set to {model_id}");
+                    let _ = tx.send(RuntimeEvent::SessionModelChanged {
+                        session_id,
+                        model_id,
+                    });
+                    handle.reload_sessions(tx);
+                }
+                Err(error) => {
+                    let message = error.into_message();
+                    tracing::error!("Failed to update model for session {session_id}: {message}");
+                    let _ = tx.send(RuntimeEvent::SessionActionFailed {
+                        message: format!("model: {message}"),
+                    });
+                }
+            }
+        });
+    }
+
+    /// Loads the configured-model catalog for the pickers. Read once at
+    /// bootstrap; the runtime owns refresh through the same core path the
+    /// desktop models page uses.
+    pub(crate) fn reload_model_catalog(&self, tx: mpsc::UnboundedSender<RuntimeEvent>) {
+        self.tokio.spawn(async move {
+            match openbitfun_core::get_remote_model_catalog().await {
+                Ok(catalog) => {
+                    let models = catalog
+                        .models
+                        .into_iter()
+                        .map(|model| ModelChoice {
+                            id: model.id,
+                            name: model.name,
+                            provider: model.provider,
+                            enabled: model.enabled,
+                        })
+                        .collect::<Vec<_>>();
+                    tracing::info!("Model catalog loaded: {} models", models.len());
+                    let _ = tx.send(RuntimeEvent::ModelCatalog(models));
+                }
+                Err(error) => {
+                    tracing::warn!("Failed to load model catalog: {error}");
+                    let _ = tx.send(RuntimeEvent::ModelCatalog(Vec::new()));
+                }
+            }
+        });
+    }
+
+    /// A short-lived handle clone for follow-up work inside a spawned task
+    /// (`reload_sessions` needs the workspace + tokio facts only).
+    fn clone_handle_after_action(&self) -> RuntimeHandleLite {
+        RuntimeHandleLite {
+            agent_runtime: self.agent_runtime.clone(),
+            compat: self.compat.clone(),
+            workspace: self.workspace.clone(),
+            tokio: self.tokio.clone(),
+        }
+    }
+}
+
+/// The subset of [`RuntimeHandle`] a post-action reload needs. Spawned action
+/// tasks take this instead of the whole process-lifetime handle, because the
+/// handle itself is owned by the `OnceLock` global.
+struct RuntimeHandleLite {
+    agent_runtime: AgentRuntime,
+    compat: CoreAgentRuntimeCompatibility,
+    workspace: WorkspaceInfo,
+    tokio: tokio::runtime::Handle,
+}
+
+impl RuntimeHandleLite {
+    fn reload_sessions(&self, tx: mpsc::UnboundedSender<RuntimeEvent>) {
+        spawn_session_reload(
+            self.agent_runtime.clone(),
+            self.compat.clone(),
+            self.workspace.clone(),
+            self.tokio.clone(),
+            tx,
+        );
+    }
+}
+
+/// Spawns one session-list read: runtime summaries plus the persisted archive
+/// flags the summary DTO omits.
+fn spawn_session_reload(
+    runtime: AgentRuntime,
+    compat: CoreAgentRuntimeCompatibility,
+    workspace: WorkspaceInfo,
+    tokio: tokio::runtime::Handle,
+    tx: mpsc::UnboundedSender<RuntimeEvent>,
+) {
+    let request = AgentSessionListRequest {
+        workspace_id: Some(workspace.id.clone()),
+        workspace_path: String::new(),
+        remote_connection_id: None,
+        remote_ssh_host: None,
+    };
+    tokio.spawn(async move {
+        let archived = archived_session_ids(&compat, &workspace.root_path).await;
+        match runtime.list_sessions(request).await {
+            Ok(mut sessions) => {
+                sort_sessions(&mut sessions);
+                let rows = sessions
+                    .into_iter()
+                    .map(|summary| SessionListRow {
+                        archived: archived.contains(&summary.session_id),
+                        summary,
+                    })
+                    .collect::<Vec<_>>();
+                tracing::info!("Session list loaded: {} sessions", rows.len());
+                let _ = tx.send(RuntimeEvent::Sessions(rows));
+            }
+            Err(error) => {
+                let message = error.into_message();
+                tracing::error!("Failed to list sessions: {message}");
+                let _ = tx.send(RuntimeEvent::SessionsFailed(message));
+            }
+        }
+    });
+}
+
+/// Persisted ids of archived sessions for one workspace. A failed metadata
+/// read degrades to "nothing is archived" with an explicit warning: the list
+/// then shows every session rather than hiding rows on a guess.
+async fn archived_session_ids(
+    compat: &CoreAgentRuntimeCompatibility,
+    workspace_root: &std::path::Path,
+) -> std::collections::HashSet<String> {
+    match compat.list_persisted_sessions(workspace_root).await {
+        Ok(metadatas) => metadatas
+            .into_iter()
+            .filter(|metadata| matches!(metadata.status, SessionStatus::Archived))
+            .map(|metadata| metadata.session_id)
+            .collect(),
+        Err(error) => {
+            tracing::warn!("Failed to read session archive states: {error}");
+            std::collections::HashSet::new()
+        }
+    }
+}
+
+impl RuntimeHandle {
     /// Creates a new durable session for the shell workspace.
     pub(crate) fn create_session(&self, tx: mpsc::UnboundedSender<RuntimeEvent>) {
         let runtime = self.agent_runtime.clone();
         let workspace_path = self.workspace.root_path.to_string_lossy().to_string();
         let workspace_id = Some(self.workspace.id.clone());
+        let handle = self.clone_handle_after_action();
         self.tokio.spawn(async move {
             let request = AgentSessionCreateRequest {
                 session_name: default_session_name(),
@@ -258,10 +583,14 @@ impl RuntimeHandle {
                         created.session_id,
                         created.session_name,
                         created.agent_type,
+                        created.model_id,
                         false,
-                        tx,
+                        tx.clone(),
                     )
                     .await;
+                    // The fresh session belongs in the sidebar right away, not
+                    // only after its first turn settles.
+                    handle.reload_sessions(tx);
                 }
                 Err(error) => {
                     let message = error.into_message();
@@ -298,6 +627,7 @@ impl RuntimeHandle {
                         restored.session.session_id,
                         restored.session.session_name,
                         restored.session.agent_type,
+                        restored.session.model_id,
                         busy,
                         tx,
                     )
@@ -453,6 +783,7 @@ impl RuntimeHandle {
                 // settlement picks up any rename.
                 name: String::new(),
                 agent_type: String::new(),
+                model_id: None,
                 entries,
                 busy: false,
             }));
@@ -469,6 +800,7 @@ async fn emit_opened(
     session_id: String,
     name: String,
     agent_type: String,
+    model_id: Option<String>,
     busy: bool,
     tx: mpsc::UnboundedSender<RuntimeEvent>,
 ) {
@@ -496,6 +828,7 @@ async fn emit_opened(
         session_id,
         name,
         agent_type,
+        model_id,
         entries,
         busy,
     }));
@@ -924,6 +1257,10 @@ async fn bootstrap(tx: mpsc::UnboundedSender<RuntimeEvent>) -> Result<()> {
     );
 
     let scheduler = ensure_product_dialog_scheduler(&agentic_system);
+    // Persistence-level session facts (archive state) for the sidebar; the
+    // runtime ports surface no archive flag on session summaries.
+    let compatibility =
+        CoreAgentRuntimeCompatibility::build(agentic_system.coordinator.clone(), scheduler.clone());
     let (_, services) = build_local_runtime_services(&workspace.root_path, RUNTIME_EVENT_BUFFER)
         .context("Failed to build local runtime services")?;
     // M8: keep the workspace git port for the changes view before the runtime
@@ -962,6 +1299,7 @@ async fn bootstrap(tx: mpsc::UnboundedSender<RuntimeEvent>) -> Result<()> {
 
     let handle = RuntimeHandle {
         agent_runtime,
+        compat: compatibility,
         workspace,
         tokio: tokio::runtime::Handle::current(),
         git: git_port,
@@ -978,6 +1316,7 @@ async fn bootstrap(tx: mpsc::UnboundedSender<RuntimeEvent>) -> Result<()> {
     spawn_permission_pump(tokio::runtime::Handle::current(), tx.clone());
     if let Some(handle) = runtime_handle() {
         handle.reload_sessions(tx.clone());
+        handle.reload_model_catalog(tx.clone());
         match handle.agent_runtime.pending_permission_requests() {
             Ok(requests) if !requests.is_empty() => {
                 tracing::info!("{} permission requests pending at startup", requests.len());
@@ -1111,6 +1450,18 @@ mod tests {
         assert_eq!(format_last_active(0).len(), 16);
         assert!(format_last_active(0).contains(':'));
         assert_eq!(format_last_active(i64::MAX as u64), "");
+    }
+
+    #[test]
+    fn model_choice_labels_stay_distinguishable_across_providers() {
+        let choice = |provider: &str| ModelChoice {
+            id: "model-a".into(),
+            name: "Model A".into(),
+            provider: provider.into(),
+            enabled: true,
+        };
+        assert_eq!(choice("Provider X").label(), "Model A · Provider X");
+        assert_eq!(choice("").label(), "Model A");
     }
 
     fn message(role: &str, content: TranscriptContent) -> TranscriptMessage {

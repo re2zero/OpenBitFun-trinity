@@ -5,7 +5,8 @@ use gpui_kit::component::resizable::{resizable_panel, v_resizable, ResizableStat
 use gpui_kit::component::{
     bubble::{Bubble, BubbleVariant},
     button::{Button, ButtonVariant, ButtonVariants},
-    input::{Textarea, TextareaState},
+    input::{Input, InputState, Textarea, TextareaState},
+    menu::{DropdownMenu, PopupMenuItem},
     message::MessageAlignment,
     message_scroller::{MessageScroller, MessageScrollerState},
     sidebar::{Sidebar, SidebarFooter, SidebarGroup, SidebarItem},
@@ -13,11 +14,10 @@ use gpui_kit::component::{
     ActiveTheme, Collapsible, Disableable, Sizable, StyledExt, TitleBar, WindowExt,
 };
 use gpui_kit::{
-    div, point, prelude::*, px, size, App, Bounds, Context, ElementId, Entity, Pixels,
-    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
+    div, point, prelude::*, px, size, Anchor, App, Bounds, Context, ElementId, Entity, Pixels,
+    SharedString, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions,
 };
 use openbitfun_agent_runtime::sdk::{PermissionReply, PermissionRequest};
-use openbitfun_runtime_ports::AgentSessionSummary;
 use tokio::sync::mpsc;
 
 use crate::assets::ShellAssets;
@@ -66,6 +66,9 @@ struct SessionRow {
     id: String,
     name: String,
     metadata: String,
+    /// Persisted archive state (from the session metadata store, not a local
+    /// flag): archived rows are hidden until the "show archived" toggle is on.
+    archived: bool,
 }
 
 /// One open session in the chat pane.
@@ -73,6 +76,8 @@ struct ChatView {
     session_id: String,
     name: String,
     agent_type: String,
+    /// The session's current model selector; `None` means the runtime default.
+    model_id: Option<String>,
     entries: Vec<ChatEntry>,
     /// A turn is executing (streaming or tool calls in flight).
     busy: bool,
@@ -159,6 +164,9 @@ enum SidebarEntry {
         row: SessionRow,
         open: bool,
         tx: mpsc::UnboundedSender<RuntimeEvent>,
+        /// The shell view, so the row menu can drive dialogs and actions
+        /// (row rendering runs outside the view's own context).
+        view: WeakEntity<ShellWindow>,
     },
     Muted(SharedString),
     Danger(SharedString),
@@ -183,18 +191,33 @@ impl SidebarItem for SidebarEntry {
     ) -> impl IntoElement {
         let _id = id.into();
         match self {
-            SidebarEntry::Session { row, open, tx } => {
-                let SessionRow { id, name, metadata } = row;
+            SidebarEntry::Session {
+                row,
+                open,
+                tx,
+                view,
+            } => {
+                let SessionRow {
+                    id,
+                    name,
+                    metadata,
+                    archived,
+                } = row;
+                let open_id = id.clone();
+                let menu =
+                    session_row_menu(id.clone(), name.clone(), archived, view.clone(), tx.clone());
                 div()
-                    .id(SharedString::from(format!("session-{}", id)))
+                    .id(SharedString::from(format!("session-{id}")))
                     .on_click(move |_, _, _| {
                         if let Some(handle) = runtime::runtime_handle() {
-                            handle.open_session(id.clone(), tx.clone());
+                            handle.open_session(open_id.clone(), tx.clone());
                         }
                     })
                     .cursor_pointer()
-                    .v_flex()
-                    .gap_0p5()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
                     .min_w_0()
                     .p_2()
                     .rounded(cx.theme().radius)
@@ -204,17 +227,26 @@ impl SidebarItem for SidebarEntry {
                     })
                     .child(
                         div()
-                            .text_color(cx.theme().sidebar_foreground)
-                            .truncate()
-                            .child(name),
+                            .flex_1()
+                            .min_w_0()
+                            .v_flex()
+                            .gap_0p5()
+                            .when(archived, |this| this.opacity(0.6))
+                            .child(
+                                div()
+                                    .text_color(cx.theme().sidebar_foreground)
+                                    .truncate()
+                                    .child(name),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .truncate()
+                                    .child(metadata),
+                            ),
                     )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .truncate()
-                            .child(metadata),
-                    )
+                    .child(menu)
                     .into_any_element()
             }
             SidebarEntry::Muted(text) => div()
@@ -229,6 +261,61 @@ impl SidebarItem for SidebarEntry {
                 .into_any_element(),
         }
     }
+}
+
+/// Per-row actions menu: rename, archive toggle, delete. A Button (whose press
+/// stops propagation) keeps the row's own click-to-open handler from firing
+/// when the menu trigger is used.
+fn session_row_menu(
+    session_id: String,
+    name: String,
+    archived: bool,
+    view: WeakEntity<ShellWindow>,
+    tx: mpsc::UnboundedSender<RuntimeEvent>,
+) -> gpui_kit::AnyElement {
+    let rename_action = {
+        let view = view.clone();
+        let session_id = session_id.clone();
+        let name = name.clone();
+        move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
+            open_rename_dialog(view.clone(), session_id.clone(), name.clone(), window, cx);
+        }
+    };
+    let archive_action = {
+        let session_id = session_id.clone();
+        let tx = tx.clone();
+        move |_: &gpui_kit::ClickEvent, _window: &mut Window, _cx: &mut App| {
+            if let Some(handle) = runtime::runtime_handle() {
+                handle.set_session_archived(session_id.clone(), !archived, tx.clone());
+            }
+        }
+    };
+    let delete_action = {
+        let view = view.clone();
+        let session_id = session_id.clone();
+        let name = name.clone();
+        move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
+            open_delete_dialog(view.clone(), session_id.clone(), name.clone(), window, cx);
+        }
+    };
+    Button::new(SharedString::from(format!("session-menu-{session_id}")))
+        .icon(IconName::Ellipsis)
+        .small()
+        .with_variant(ButtonVariant::Ghost)
+        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _window, cx| {
+            let text = i18n::current(cx);
+            let archive_label = if archived {
+                text.session_unarchive.clone()
+            } else {
+                text.session_archive.clone()
+            };
+            menu.item(
+                PopupMenuItem::new(text.session_rename.clone()).on_click(rename_action.clone()),
+            )
+            .item(PopupMenuItem::new(archive_label).on_click(archive_action.clone()))
+            .item(PopupMenuItem::new(text.session_delete.clone()).on_click(delete_action.clone()))
+        })
+        .into_any_element()
 }
 
 struct ShellWindow {
@@ -278,6 +365,14 @@ struct ShellWindow {
     /// mirroring `OPENBITFUN_GPUI_TERMINAL_AUTOOPEN`.
     settings_auto_open: bool,
     git_auto_open: bool,
+    /// Sidebar filter: archived sessions stay hidden until this is on.
+    show_archived: bool,
+    /// Rename dialog input, reused across opens (the dialog builder re-reads
+    /// it every frame, so the entity is created once with the window).
+    rename_input: Entity<InputState>,
+    /// Session id the rename dialog is editing; `None` while the dialog is
+    /// closed.
+    rename_target: Option<String>,
 }
 
 impl ShellWindow {
@@ -293,6 +388,7 @@ impl ShellWindow {
         });
         let chat_scroller = cx.new(|cx| MessageScrollerState::new(0, cx));
         let dock = cx.new(|_| ResizableState::default());
+        let rename_input = cx.new(|cx| InputState::new(window, cx));
         receive_runtime_events(event_rx, window, cx);
         Self {
             draft,
@@ -314,6 +410,9 @@ impl ShellWindow {
             terminal_height: TerminalPane::panel_height(),
             settings_auto_open: std::env::var_os("OPENBITFUN_GPUI_SETTINGS_AUTOOPEN").is_some(),
             git_auto_open: std::env::var_os("OPENBITFUN_GPUI_GIT_AUTOOPEN").is_some(),
+            show_archived: false,
+            rename_input,
+            rename_target: None,
         }
     }
 
@@ -324,7 +423,8 @@ impl ShellWindow {
         });
     }
 
-    fn compose_row(&self, session: &AgentSessionSummary, cx: &App) -> SessionRow {
+    fn compose_row(&self, row: &crate::runtime::SessionListRow, cx: &App) -> SessionRow {
+        let session = &row.summary;
         let mut metadata = vec![session.agent_type.clone()];
         if let Some(model) = &session.model_id {
             metadata.push(model.clone());
@@ -340,6 +440,7 @@ impl ShellWindow {
                 .cloned()
                 .collect::<Vec<_>>()
                 .join(" · "),
+            archived: row.archived,
         }
     }
 
@@ -414,10 +515,10 @@ impl ShellWindow {
             RuntimeEvent::Ready => {
                 self.phase = RuntimePhase::Ready;
             }
-            RuntimeEvent::Sessions(sessions) => {
+            RuntimeEvent::Sessions(rows) => {
                 self.phase = RuntimePhase::Ready;
                 self.list_error = None;
-                self.sessions = sessions.iter().map(|s| self.compose_row(s, cx)).collect();
+                self.sessions = rows.iter().map(|row| self.compose_row(row, cx)).collect();
             }
             RuntimeEvent::SessionsFailed(error) => {
                 self.list_error = Some(i18n::failed_status(&error, cx));
@@ -442,6 +543,7 @@ impl ShellWindow {
                             session_id: opened.session_id,
                             name: opened.name,
                             agent_type: opened.agent_type,
+                            model_id: opened.model_id,
                             entries: opened.entries,
                             busy: opened.busy,
                             submitting: false,
@@ -583,6 +685,55 @@ impl ShellWindow {
                     _ => {}
                 }
             }
+            RuntimeEvent::SessionRenamed { session_id, name } => {
+                if let Some(row) = self.sessions.iter_mut().find(|row| row.id == session_id) {
+                    row.name = name.clone();
+                }
+                if let Some(chat) = self.chat.as_mut() {
+                    if chat.matches(&session_id) {
+                        chat.name = name;
+                    }
+                }
+            }
+            RuntimeEvent::SessionDeleted { session_id } => {
+                // A deleted session cannot stay on screen: the transcript is
+                // gone from storage, so every further action would fail.
+                if self
+                    .chat
+                    .as_ref()
+                    .is_some_and(|chat| chat.matches(&session_id))
+                {
+                    self.chat = None;
+                    self.list_sync_reset(cx);
+                }
+                self.sessions.retain(|row| row.id != session_id);
+            }
+            RuntimeEvent::SessionActionFailed { message } => {
+                let line = i18n::failed_status(&message, cx);
+                tracing::warn!("Session action failed: {message}");
+                if self.chat.is_some() {
+                    self.chat_error = Some(line);
+                } else {
+                    self.list_error = Some(line);
+                }
+            }
+            RuntimeEvent::SessionModelChanged {
+                session_id,
+                model_id,
+            } => {
+                if let Some(chat) = self.chat.as_mut() {
+                    if chat.matches(&session_id) {
+                        chat.model_id = Some(model_id);
+                    }
+                }
+            }
+            RuntimeEvent::ModelCatalog(models) => {
+                cx.set_global(runtime::ModelCatalog {
+                    loaded: true,
+                    models,
+                });
+                cx.refresh_windows();
+            }
         }
         cx.notify();
     }
@@ -663,21 +814,33 @@ impl ShellWindow {
         }
     }
 
-    /// Sidebar entries: one session row each, plus the empty-state and error
-    /// lines. One type because `Sidebar` children share one element type.
-    fn render_session_entries(&self, text: &ShellText) -> Vec<SidebarEntry> {
+    /// Sidebar entries: one session row each (archived rows only while the
+    /// toggle is on), plus the empty-state and error lines. One type because
+    /// `Sidebar` children share one element type.
+    fn render_session_entries(
+        &self,
+        text: &ShellText,
+        cx: &mut Context<Self>,
+    ) -> Vec<SidebarEntry> {
         let mut entries = Vec::new();
         if let Some(error) = &self.list_error {
             entries.push(SidebarEntry::Danger(error.clone().into()));
         }
-        if self.sessions.is_empty() {
+        let visible: Vec<&SessionRow> = self
+            .sessions
+            .iter()
+            .filter(|row| self.show_archived || !row.archived)
+            .collect();
+        if visible.is_empty() {
             entries.push(SidebarEntry::Muted(text.sessions_empty.clone().into()));
         }
-        for row in &self.sessions {
+        let view = cx.entity().downgrade();
+        for row in visible {
             entries.push(SidebarEntry::Session {
                 row: row.clone(),
                 open: self.chat.as_ref().is_some_and(|chat| chat.matches(&row.id)),
                 tx: self.event_tx.clone(),
+                view: view.clone(),
             });
         }
         entries
@@ -698,6 +861,7 @@ impl ShellWindow {
             .flex()
             .items_center()
             .justify_between()
+            .gap_1()
             .child(
                 Button::new("new-session")
                     .label(text.sessions_new.clone())
@@ -710,16 +874,37 @@ impl ShellWindow {
                     }),
             )
             .child(
-                Button::new("reload-sessions")
-                    .icon(IconName::RefreshCw)
-                    .small()
-                    .with_variant(ButtonVariant::Ghost)
-                    .tooltip(text.sessions_reload.clone())
-                    .on_click(move |_, _, _| {
-                        if let Some(handle) = runtime::runtime_handle() {
-                            handle.reload_sessions(reload_tx.clone());
-                        }
-                    }),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        Button::new("toggle-archived")
+                            .icon(IconName::Archive)
+                            .small()
+                            .with_variant(if self.show_archived {
+                                ButtonVariant::Secondary
+                            } else {
+                                ButtonVariant::Ghost
+                            })
+                            .tooltip(text.sessions_show_archived.clone())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.show_archived = !this.show_archived;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new("reload-sessions")
+                            .icon(IconName::RefreshCw)
+                            .small()
+                            .with_variant(ButtonVariant::Ghost)
+                            .tooltip(text.sessions_reload.clone())
+                            .on_click(move |_, _, _| {
+                                if let Some(handle) = runtime::runtime_handle() {
+                                    handle.reload_sessions(reload_tx.clone());
+                                }
+                            }),
+                    ),
             );
 
         Sidebar::new("shell-sidebar")
@@ -727,7 +912,7 @@ impl ShellWindow {
             .header(header)
             .child(
                 SidebarGroup::new(text.sessions_title.clone())
-                    .children(self.render_session_entries(text)),
+                    .children(self.render_session_entries(text, cx)),
             )
             .footer(
                 SidebarFooter::new().child(
@@ -1102,6 +1287,135 @@ fn answer_permission(request_id: String, reply: PermissionReply) {
     if let Some(handle) = runtime::runtime_handle() {
         handle.respond_permission(request_id, reply);
     }
+}
+
+/// Opens the rename dialog for one session. The input entity lives on the
+/// shell (a dialog builder runs every frame and must not create state), and the
+/// dialog is dismissable: unlike a permission ask, a rename nobody answers
+/// blocks nothing.
+fn open_rename_dialog(
+    view: WeakEntity<ShellWindow>,
+    session_id: String,
+    current_name: String,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(shell) = view.upgrade() else {
+        return;
+    };
+    let input = shell.read(cx).rename_input.clone();
+    input.update(cx, |state, cx| state.set_value(current_name, window, cx));
+    shell.update(cx, |this, cx| {
+        this.rename_target = Some(session_id.clone());
+        cx.notify();
+    });
+
+    let confirm_view = view.clone();
+    let cancel_view = view.clone();
+    let confirm = move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
+        let Some(shell) = confirm_view.upgrade() else {
+            return;
+        };
+        let name = shell
+            .read(cx)
+            .rename_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        if name.is_empty() {
+            // Keep the dialog open: an empty name would rename nothing the
+            // user could recognize in the list.
+            tracing::warn!("Ignoring empty session name");
+            return;
+        }
+        let session_id = shell.read(cx).rename_target.clone().unwrap_or_default();
+        if session_id.is_empty() {
+            window.close_dialog(cx);
+            return;
+        }
+        let tx = shell.read(cx).event_tx.clone();
+        if let Some(handle) = runtime::runtime_handle() {
+            handle.rename_session(session_id, name, tx);
+        }
+        shell.update(cx, |this, cx| {
+            this.rename_target = None;
+            cx.notify();
+        });
+        window.close_dialog(cx);
+    };
+    let cancel = move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
+        if let Some(shell) = cancel_view.upgrade() {
+            shell.update(cx, |this, cx| {
+                this.rename_target = None;
+                cx.notify();
+            });
+        }
+        window.close_dialog(cx);
+    };
+
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let text = i18n::current(cx);
+        dialog
+            .title(div().child(text.session_rename_title.clone()))
+            .child(div().w(px(360.)).child(Input::new(&input)))
+            .footer(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("rename-cancel")
+                            .label(text.session_action_cancel.clone())
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(cancel.clone()),
+                    )
+                    .child(
+                        Button::new("rename-confirm")
+                            .label(text.session_action_confirm.clone())
+                            .with_variant(ButtonVariant::Primary)
+                            .on_click(confirm.clone()),
+                    ),
+            )
+    });
+}
+
+/// Opens the delete confirmation for one session. Deleting is destructive and
+/// has no undo, so it never happens straight from the row menu.
+fn open_delete_dialog(
+    view: WeakEntity<ShellWindow>,
+    session_id: String,
+    name: String,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    window.open_alert_dialog(cx, move |alert, _window, cx| {
+        let text = i18n::current(cx);
+        let confirm_id = session_id.clone();
+        let confirm_view = view.clone();
+        alert
+            .confirm()
+            .title(text.session_delete_title.clone())
+            .description(
+                div()
+                    .v_flex()
+                    .gap_1()
+                    .child(name.clone())
+                    .child(text.session_delete_warning.clone()),
+            )
+            .ok_text(text.session_delete_confirm.clone())
+            .cancel_text(text.session_action_cancel.clone())
+            .on_ok(move |_, _, cx| {
+                if let Some(shell) = confirm_view.upgrade() {
+                    let tx = shell.read(cx).event_tx.clone();
+                    if let Some(handle) = runtime::runtime_handle() {
+                        handle.delete_session(confirm_id.clone(), tx);
+                    }
+                }
+                true
+            })
+    });
 }
 
 /// Composes the display lines for one arriving request. Everything the dialog
@@ -1501,20 +1815,104 @@ impl ShellWindow {
                                 .child(chat.agent_type.clone()),
                         ),
                 )
-                .child({
-                    let active = chat.busy || chat.submitting;
-                    let label = if chat.submitting {
-                        text.chat_submitting.clone()
-                    } else {
-                        text.chat_busy.clone()
-                    };
+                .child(
                     div()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .when(active, |this| this.child(label))
-                }),
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(self.render_model_picker(text, cx))
+                        .child({
+                            let active = chat.busy || chat.submitting;
+                            let label = if chat.submitting {
+                                text.chat_submitting.clone()
+                            } else {
+                                text.chat_busy.clone()
+                            };
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .when(active, |this| this.child(label))
+                        }),
+                ),
             None => div(),
         }
+    }
+
+    /// Model picker for the open session: the header shows the current model
+    /// and the menu offers every enabled configured model. The selection is
+    /// applied through the runtime (persisted per session), so the header only
+    /// changes after [`RuntimeEvent::SessionModelChanged`] confirms it.
+    fn render_model_picker(
+        &self,
+        text: &ShellText,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        let Some(chat) = self.chat.as_ref() else {
+            return div().into_any_element();
+        };
+        let session_id = chat.session_id.clone();
+        let current = chat.model_id.clone();
+        let catalog = cx
+            .try_global::<runtime::ModelCatalog>()
+            .cloned()
+            .unwrap_or_default();
+        let label = match current.as_deref() {
+            Some(id) => catalog
+                .models
+                .iter()
+                .find(|model| model.id == id)
+                .map(|model| model.label())
+                .unwrap_or_else(|| id.to_string()),
+            None => text.model_default.clone(),
+        };
+        let options: Vec<(String, String, bool)> = catalog
+            .models
+            .iter()
+            .filter(|model| model.enabled)
+            .map(|model| {
+                (
+                    model.id.clone(),
+                    model.label(),
+                    current.as_deref() == Some(model.id.as_str()),
+                )
+            })
+            .collect();
+        let empty = options.is_empty();
+        let tx = self.event_tx.clone();
+        Button::new("chat-model-picker")
+            .label(label)
+            .small()
+            .with_variant(ButtonVariant::Ghost)
+            .dropdown_caret(true)
+            .disabled(empty)
+            .tooltip(if empty {
+                text.model_picker_empty.clone()
+            } else {
+                text.model_picker.clone()
+            })
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _window, _cx| {
+                let mut menu = menu;
+                for (id, option_label, checked) in &options {
+                    let id = id.clone();
+                    let tx = tx.clone();
+                    let session_id = session_id.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(option_label.clone())
+                            .checked(*checked)
+                            .on_click(move |_, _, _| {
+                                if let Some(handle) = runtime::runtime_handle() {
+                                    handle.update_session_model(
+                                        session_id.clone(),
+                                        id.clone(),
+                                        tx.clone(),
+                                    );
+                                }
+                            }),
+                    );
+                }
+                menu
+            })
+            .into_any_element()
     }
 }
 
@@ -1628,6 +2026,7 @@ mod tests {
             session_id: "session".into(),
             name: "name".into(),
             agent_type: "Standard".into(),
+            model_id: None,
             entries,
             busy: false,
             submitting: false,
@@ -1921,6 +2320,53 @@ mod tests {
         window.run_until_parked();
     }
 
+    /// The models page must render the configured catalog (including disabled
+    /// entries) without a live runtime.
+    #[gpui_kit::test]
+    fn settings_models_page_renders_the_catalog(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            let presets = theme::load_presets();
+            let active = presets
+                .iter()
+                .position(|preset| preset.id == DEFAULT_PRESET_ID)
+                .unwrap_or(0);
+            if let Some(preset) = presets.get(active) {
+                preset.apply(cx);
+            }
+            cx.set_global(ShellState {
+                presets,
+                active_preset: active,
+            });
+            cx.set_global(settings::ShellConfig::startup_default(LocaleId::ZhCN));
+            cx.set_global(crate::runtime::ModelCatalog {
+                loaded: true,
+                models: vec![
+                    crate::runtime::ModelChoice {
+                        id: "model-a".into(),
+                        name: "Model A".into(),
+                        provider: "Provider X".into(),
+                        enabled: true,
+                    },
+                    crate::runtime::ModelChoice {
+                        id: "model-b".into(),
+                        name: "Model B".into(),
+                        provider: "Provider Y".into(),
+                        enabled: false,
+                    },
+                ],
+            });
+        });
+        let window = cx.add_empty_window();
+        let text = sample_shell_text();
+        window.draw(
+            point(px(0.), px(0.)),
+            size(px(900.), px(600.)),
+            move |_, cx| cx.new(|_| SettingsHarness { text }).into_any_element(),
+        );
+        window.run_until_parked();
+    }
+
     struct SettingsHarness {
         text: ShellText,
     }
@@ -2014,5 +2460,219 @@ mod tests {
             move |_, _| panel.into_any_element(),
         );
         window.run_until_parked();
+    }
+
+    /// The M11 session-management events must project onto both surfaces: a
+    /// rename re-labels the row and the open header, a delete closes the pane,
+    /// and a failure surfaces instead of disappearing.
+    #[gpui_kit::test]
+    fn session_management_events_project_onto_the_shell(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(
+                    RuntimeEvent::Sessions(vec![
+                        crate::runtime::SessionListRow {
+                            summary: sample_summary("s-1", "First"),
+                            archived: false,
+                        },
+                        crate::runtime::SessionListRow {
+                            summary: sample_summary("s-2", "Second"),
+                            archived: true,
+                        },
+                    ]),
+                    window,
+                    cx,
+                );
+                shell.apply_runtime_event(
+                    RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                        session_id: "s-1".into(),
+                        name: "First".into(),
+                        agent_type: "Standard".into(),
+                        model_id: Some("model-a".into()),
+                        entries: Vec::new(),
+                        busy: false,
+                    }),
+                    window,
+                    cx,
+                );
+            });
+        });
+
+        let (rows, open_name, model) = window.update(|_, cx| {
+            let shell = shell.read(cx);
+            (
+                shell.sessions.clone(),
+                shell.chat.as_ref().map(|chat| chat.name.clone()),
+                shell.chat.as_ref().and_then(|chat| chat.model_id.clone()),
+            )
+        });
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().any(|row| row.archived));
+        assert_eq!(open_name.as_deref(), Some("First"));
+        assert_eq!(model.as_deref(), Some("model-a"));
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(
+                    RuntimeEvent::SessionRenamed {
+                        session_id: "s-1".into(),
+                        name: "Renamed".into(),
+                    },
+                    window,
+                    cx,
+                );
+                shell.apply_runtime_event(
+                    RuntimeEvent::SessionModelChanged {
+                        session_id: "s-1".into(),
+                        model_id: "model-b".into(),
+                    },
+                    window,
+                    cx,
+                );
+                shell.apply_runtime_event(
+                    RuntimeEvent::SessionActionFailed {
+                        message: "delete: boom".into(),
+                    },
+                    window,
+                    cx,
+                );
+            });
+        });
+
+        let (row_name, chat_name, model, chat_error) = window.update(|_, cx| {
+            let shell = shell.read(cx);
+            (
+                shell
+                    .sessions
+                    .iter()
+                    .find(|row| row.id == "s-1")
+                    .map(|row| row.name.clone()),
+                shell.chat.as_ref().map(|chat| chat.name.clone()),
+                shell.chat.as_ref().and_then(|chat| chat.model_id.clone()),
+                shell.chat_error.clone(),
+            )
+        });
+        assert_eq!(row_name.as_deref(), Some("Renamed"));
+        assert_eq!(chat_name.as_deref(), Some("Renamed"));
+        assert_eq!(model.as_deref(), Some("model-b"));
+        assert!(chat_error.is_some(), "a failed action must surface");
+
+        // Deleting the open session closes the pane and drops the row.
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(
+                    RuntimeEvent::SessionDeleted {
+                        session_id: "s-1".into(),
+                    },
+                    window,
+                    cx,
+                );
+            });
+        });
+        let (rows, chat_open) = window.update(|_, cx| {
+            let shell = shell.read(cx);
+            (shell.sessions.len(), shell.chat.is_some())
+        });
+        assert_eq!(rows, 1);
+        assert!(!chat_open);
+    }
+
+    /// Archived rows stay out of the sidebar until the toggle is on, and the
+    /// toggle itself never invents rows the runtime did not report.
+    #[gpui_kit::test]
+    fn archived_rows_hide_behind_the_toggle(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+        let text = sample_shell_text();
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(
+                    RuntimeEvent::Sessions(vec![
+                        crate::runtime::SessionListRow {
+                            summary: sample_summary("s-1", "Active"),
+                            archived: false,
+                        },
+                        crate::runtime::SessionListRow {
+                            summary: sample_summary("s-2", "Archived"),
+                            archived: true,
+                        },
+                    ]),
+                    window,
+                    cx,
+                );
+            });
+        });
+
+        let count = visible_session_rows(&mut window, &shell, &text);
+        assert_eq!(count, 1);
+        window.update(|_, cx| {
+            shell.update(cx, |shell, _cx| {
+                shell.show_archived = true;
+            });
+        });
+        let count = visible_session_rows(&mut window, &shell, &text);
+        assert_eq!(count, 2);
+    }
+
+    /// Number of session rows the sidebar would render with the current
+    /// archive toggle.
+    fn visible_session_rows(
+        window: &mut gpui_kit::VisualTestContext,
+        shell: &Entity<ShellWindow>,
+        text: &ShellText,
+    ) -> usize {
+        let text = text.clone();
+        window.update(|_, cx| {
+            shell.update(cx, |shell, cx| {
+                shell
+                    .render_session_entries(&text, cx)
+                    .into_iter()
+                    .filter(|entry| matches!(entry, SidebarEntry::Session { .. }))
+                    .count()
+            })
+        })
+    }
+
+    fn install_shell_globals(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            let presets = theme::load_presets();
+            let active = presets
+                .iter()
+                .position(|preset| preset.id == DEFAULT_PRESET_ID)
+                .unwrap_or(0);
+            if let Some(preset) = presets.get(active) {
+                preset.apply(cx);
+            }
+            cx.set_global(ShellState {
+                presets,
+                active_preset: active,
+            });
+            cx.set_global(settings::ShellConfig::startup_default(LocaleId::ZhCN));
+            cx.set_global(sample_shell_text());
+        });
+    }
+
+    fn sample_summary(id: &str, name: &str) -> openbitfun_runtime_ports::AgentSessionSummary {
+        openbitfun_runtime_ports::AgentSessionSummary {
+            session_id: id.into(),
+            session_name: name.into(),
+            agent_type: "Standard".into(),
+            model_id: None,
+            reasoning_preset: None,
+            last_user_dialog_agent_type: None,
+            last_submitted_agent_type: None,
+            turn_count: 0,
+            created_at_ms: 0,
+            last_active_at_ms: 0,
+        }
     }
 }

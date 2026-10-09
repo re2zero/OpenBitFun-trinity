@@ -14,7 +14,10 @@ use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::setting::{
     NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
 };
-use gpui_kit::{Anchor, App, Global, IntoElement, SharedString, Window, WindowAppearance};
+use gpui_kit::component::{ActiveTheme, StyledExt};
+use gpui_kit::{
+    div, prelude::*, Anchor, App, Global, IntoElement, SharedString, Window, WindowAppearance,
+};
 use openbitfun_core::service::config::get_global_config_service;
 use openbitfun_core::service::config::types::GlobalConfig;
 use openbitfun_core::service::i18n::LocaleId;
@@ -34,6 +37,9 @@ pub(crate) const TERMINAL_FONT_SIZE_PATH: &str = "terminal.font_size";
 pub(crate) const TERMINAL_FONT_FAMILY_PATH: &str = "terminal.font_family";
 pub(crate) const TERMINAL_SCROLLBACK_PATH: &str = "terminal.scrollback";
 pub(crate) const TERMINAL_DEFAULT_SHELL_PATH: &str = "terminal.default_shell";
+/// Default model new sessions start on (same path the desktop models page
+/// writes).
+pub(crate) const DEFAULT_MODEL_PATH: &str = "ai.default_models.primary";
 
 /// Terminal preferences the built-in terminal consumes. Mirrors the shared
 /// `terminal.*` section the desktop terminal reads, in the same value domain:
@@ -78,6 +84,9 @@ pub(crate) struct ShellConfig {
     pub(crate) permission_preset: PermissionPolicyPreset,
     pub(crate) auto_approve_ask: bool,
     pub(crate) terminal: TerminalSettings,
+    /// `ai.default_models.primary`: the model new sessions start on. `None`
+    /// means the runtime picks the first enabled model.
+    pub(crate) default_primary_model: Option<String>,
 }
 
 impl Global for ShellConfig {}
@@ -91,6 +100,7 @@ impl ShellConfig {
             permission_preset: config.tool_permissions.policy.preset,
             auto_approve_ask: config.tool_permissions.interaction.auto_approve_ask,
             terminal: TerminalSettings::from_global(&config.terminal),
+            default_primary_model: config.ai.default_models.primary.clone(),
         }
     }
 
@@ -113,6 +123,7 @@ impl ShellConfig {
             permission_preset: PermissionPolicyPreset::default(),
             auto_approve_ask: false,
             terminal: TerminalSettings::default(),
+            default_primary_model: None,
         }
     }
 }
@@ -291,13 +302,14 @@ pub(crate) fn persist(path: &'static str, value: serde_json::Value) {
     });
 }
 
-/// The settings page: appearance (language, theme), tool permissions, and the
-/// terminal preferences the built-in terminal reads.
+/// The settings page: appearance (language, theme), models, tool permissions,
+/// and the terminal preferences the built-in terminal reads.
 pub(crate) fn render_page(text: &ShellText, cx: &mut App) -> gpui_kit::AnyElement {
     Settings::new("shell-settings")
         .sidebar_width(gpui_kit::px(180.))
         .pages(vec![
             appearance_page(text),
+            models_page(text, cx),
             terminal_page(text),
             permissions_page(text, cx),
         ])
@@ -341,6 +353,106 @@ fn appearance_page(text: &ShellText) -> SettingPage {
                 .description(text.settings_language_description.clone()),
             SettingItem::new(text.theme.clone(), theme_field)
                 .description(text.settings_theme_description.clone()),
+        ]))
+}
+
+/// Models page (M11 minimal version): the configured models with their
+/// provider and enabled state, plus the default model new sessions start on.
+/// The catalog comes from the same core path the desktop models page uses;
+/// the default-model choice persists to `ai.default_models.primary`.
+fn models_page(text: &ShellText, cx: &App) -> SettingPage {
+    let catalog = cx
+        .try_global::<crate::runtime::ModelCatalog>()
+        .cloned()
+        .unwrap_or_default();
+
+    let default_field = SettingField::dropdown(
+        catalog
+            .models
+            .iter()
+            .filter(|model| model.enabled)
+            .map(|model| (model.id.clone().into(), model.label().into()))
+            .collect::<Vec<(SharedString, SharedString)>>(),
+        |cx: &App| {
+            SharedString::from(
+                ShellConfig::current(cx)
+                    .default_primary_model
+                    .unwrap_or_default(),
+            )
+        },
+        |value: SharedString, cx: &mut App| {
+            let value = value.to_string();
+            if value.is_empty() {
+                return;
+            }
+            cx.global_mut::<ShellConfig>().default_primary_model = Some(value.clone());
+            persist(DEFAULT_MODEL_PATH, serde_json::json!(value));
+            cx.refresh_windows();
+        },
+    );
+
+    let no_models = catalog.models.is_empty();
+
+    let list_field = SettingField::render(|_options, _window, cx| {
+        let catalog = cx
+            .try_global::<crate::runtime::ModelCatalog>()
+            .cloned()
+            .unwrap_or_default();
+        let text = crate::i18n::current(cx);
+        if !catalog.loaded {
+            return div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(text.models_loading.clone())
+                .into_any_element();
+        }
+        if catalog.models.is_empty() {
+            return div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(text.models_empty.clone())
+                .into_any_element();
+        }
+        let mut list = div().v_flex().gap_1().w_full();
+        for model in &catalog.models {
+            let (state, state_color) = if model.enabled {
+                (text.models_enabled.clone(), cx.theme().muted_foreground)
+            } else {
+                (text.models_disabled.clone(), cx.theme().danger)
+            };
+            list = list.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(div().min_w_0().truncate().text_sm().child(model.label()))
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_sm()
+                            .text_color(state_color)
+                            .child(state),
+                    ),
+            );
+        }
+        list.into_any_element()
+    });
+
+    let default_description = if no_models {
+        text.models_empty.clone()
+    } else {
+        text.models_default_description.clone()
+    };
+
+    SettingPage::new(text.models_title.clone())
+        .icon(IconName::Cpu)
+        .resettable(false)
+        .group(SettingGroup::new().items(vec![
+            SettingItem::new(text.models_default.clone(), default_field)
+                .description(default_description),
+            SettingItem::new(text.models_configured.clone(), list_field),
         ]))
 }
 
@@ -657,6 +769,7 @@ mod tests {
         config.terminal.font_family = "\"JetBrains Mono\", monospace".to_string();
         config.terminal.scrollback = 50_000;
         config.terminal.default_shell = "/usr/bin/zsh".to_string();
+        config.ai.default_models.primary = Some("model-a".to_string());
 
         let snapshot = ShellConfig::from_global(&config);
         assert_eq!(snapshot.language, LocaleId::EnUS);
@@ -670,6 +783,7 @@ mod tests {
         );
         assert_eq!(snapshot.terminal.scrollback, 50_000);
         assert_eq!(snapshot.terminal.default_shell, "/usr/bin/zsh");
+        assert_eq!(snapshot.default_primary_model.as_deref(), Some("model-a"));
     }
 
     #[test]
