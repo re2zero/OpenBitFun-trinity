@@ -44,8 +44,8 @@ use openbitfun_core::service::workspace::{
 };
 use openbitfun_events::{AgenticEvent, ToolEventData};
 use openbitfun_runtime_ports::{
-    AgentSessionListRequest, AgentSessionSummary, AgentSubmissionSource, DialogSubmissionPolicy,
-    GitPort, TranscriptContent, TranscriptMessage,
+    AgentInputAttachment, AgentSessionListRequest, AgentSessionSummary, AgentSubmissionSource,
+    DialogSubmissionPolicy, GitPort, TranscriptContent, TranscriptMessage,
 };
 use openbitfun_services_core::session::SessionStatus;
 use tokio::sync::mpsc;
@@ -720,10 +720,14 @@ impl RuntimeHandle {
     }
 
     /// Submits one dialog turn; streaming output arrives through the event pump.
+    /// `attachments` rides along as `remote_image` input attachments — the core
+    /// turn pipeline decodes data URLs, persists the bytes, and builds the
+    /// model content (see `prepare_inline_image_attachments`).
     pub(crate) fn send_message(
         &self,
         session_id: String,
         message: String,
+        attachments: Vec<AgentInputAttachment>,
         tx: mpsc::UnboundedSender<RuntimeEvent>,
     ) {
         let runtime = self.agent_runtime.clone();
@@ -758,7 +762,7 @@ impl RuntimeHandle {
                 policy: DialogSubmissionPolicy::for_source(AgentSubmissionSource::Cli),
                 reply_route: None,
                 prepended_reminders: Vec::new(),
-                attachments: Vec::new(),
+                attachments,
                 metadata: Default::default(),
             };
             match runtime.submit_dialog_turn(request).await {

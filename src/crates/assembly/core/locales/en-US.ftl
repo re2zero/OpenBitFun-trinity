@@ -242,6 +242,10 @@ gpui-shell-settings-terminal-shell = Shell command
 gpui-shell-settings-terminal-shell-desc = Empty follows $SHELL. A new terminal picks this up.
 gpui-shell-git-title = Changes
 gpui-shell-git-failed = Failed to load changes: { $error }
+gpui-shell-chat-attachment-unsupported = Unsupported image type: { $name }
+gpui-shell-notification-turn-done = Turn finished
+gpui-shell-notification-turn-failed = Turn failed
+
 gpui-shell-git-refresh = Refresh
 gpui-shell-git-loading = Loading changes…
 gpui-shell-git-empty = No workspace changes.

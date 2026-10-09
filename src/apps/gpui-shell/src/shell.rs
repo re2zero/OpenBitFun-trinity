@@ -1,5 +1,7 @@
 use crate::{i18n, runtime, settings, theme};
 
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::resizable::{resizable_panel, v_resizable, ResizableState};
 use gpui_kit::component::{
@@ -15,11 +17,15 @@ use gpui_kit::component::{
     ActiveTheme, Collapsible, Disableable, Icon, Sizable, StyledExt, TitleBar, WindowExt,
 };
 use gpui_kit::{
-    div, point, prelude::*, px, size, Anchor, App, Bounds, Context, ElementId, Entity, Pixels,
-    SharedString, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions,
+    div, img, point, prelude::*, px, size, Anchor, App, Bounds, ClipboardEntry, Context, ElementId,
+    Entity, ExternalPaths, Image, ImageFormat, KeyDownEvent, Pixels, SharedString,
+    SystemNotification, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions,
 };
 use openbitfun_agent_runtime::sdk::{PendingUserQuestion, PermissionReply, PermissionRequest};
+use openbitfun_runtime_ports::AgentInputAttachment;
 use std::collections::BTreeSet;
+use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::assets::ShellAssets;
@@ -488,6 +494,55 @@ fn session_row_menu(
         .into_any_element()
 }
 
+/// Image formats the turn pipeline can decode reliably; anything else a
+/// clipboard or drag offers is refused with a visible notice instead of
+/// failing the turn later.
+const SUPPORTED_IMAGE_MIMES: [&str; 5] = [
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/bmp",
+];
+
+/// One image waiting to ride along with the next composer send. The bytes are
+/// always held shell-side: the turn request carries a `data:` URL, so the
+/// image survives any runtime topology (peer/remote runtimes never see a
+/// controller-local path).
+struct PendingAttachment {
+    id: String,
+    name: String,
+    mime: String,
+    data_url: String,
+    /// Decoded bytes for the chip thumbnail.
+    preview: Arc<Image>,
+}
+
+impl PendingAttachment {
+    fn to_input_attachment(&self) -> AgentInputAttachment {
+        AgentInputAttachment::image_context(
+            self.id.clone(),
+            None,
+            Some(self.data_url.clone()),
+            self.mime.clone(),
+            Some(serde_json::json!({ "name": self.name })),
+        )
+    }
+}
+
+/// `image/png` for `.png`, etc.; `None` for anything outside the supported
+/// set (checked against [`SUPPORTED_IMAGE_MIMES`]).
+fn image_format_for_extension(extension: &str) -> Option<ImageFormat> {
+    match extension.to_ascii_lowercase().as_str() {
+        "png" => Some(ImageFormat::Png),
+        "jpg" | "jpeg" => Some(ImageFormat::Jpeg),
+        "gif" => Some(ImageFormat::Gif),
+        "webp" => Some(ImageFormat::Webp),
+        "bmp" => Some(ImageFormat::Bmp),
+        _ => None,
+    }
+}
+
 struct ShellWindow {
     draft: Entity<TextareaState>,
     phase: RuntimePhase,
@@ -554,6 +609,10 @@ struct ShellWindow {
     /// Last workspace-switch failure, shown under the sidebar status; cleared
     /// by a successful switch.
     workspace_error: Option<String>,
+    /// Images staged for the next send (paste or drag-and-drop). Cleared by
+    /// the `TurnAccepted` echo, not optimistically, so a failed submission
+    /// keeps the images for a retry.
+    pending_attachments: Vec<PendingAttachment>,
 }
 
 impl ShellWindow {
@@ -599,7 +658,78 @@ impl ShellWindow {
             workspaces: Vec::new(),
             workspace_input,
             workspace_error: None,
+            pending_attachments: Vec::new(),
         }
+    }
+
+    /// Stages clipboard image bytes for the next send; unsupported formats
+    /// surface a visible notice instead of failing the turn later.
+    fn attach_image_bytes(
+        &mut self,
+        format: ImageFormat,
+        bytes: Vec<u8>,
+        name: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let mime = format.mime_type();
+        if !SUPPORTED_IMAGE_MIMES.contains(&mime) {
+            self.chat_error = Some(i18n::attachment_unsupported("clipboard image", cx));
+            cx.notify();
+            return;
+        }
+        let preview = Arc::new(Image::from_bytes(format, bytes.clone()));
+        self.pending_attachments.push(PendingAttachment {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: name.unwrap_or_else(|| format!("clipboard.{}", format.extension())),
+            mime: mime.to_string(),
+            data_url: format!("data:{mime};base64,{}", BASE64.encode(bytes)),
+            preview,
+        });
+        cx.notify();
+    }
+
+    /// Stages dropped / clipboard path entries. The bytes are read here so the
+    /// turn payload is self-contained (data URL), which keeps the image
+    /// readable on peer or remote runtimes that never see this filesystem.
+    fn attach_image_paths(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        for path in paths {
+            let name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_else(|| "image".to_string());
+            let unsupported = |cx: &Context<Self>| i18n::attachment_unsupported(&name, cx);
+            let Some(format) = path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .and_then(image_format_for_extension)
+            else {
+                self.chat_error = Some(unsupported(cx));
+                cx.notify();
+                continue;
+            };
+            match std::fs::read(&path) {
+                Ok(bytes) => self.attach_image_bytes(format, bytes, Some(name), cx),
+                Err(error) => {
+                    tracing::warn!("Failed to read dropped image {}: {}", path.display(), error);
+                    self.chat_error = Some(unsupported(cx));
+                    cx.notify();
+                }
+            }
+        }
+    }
+
+    fn remove_attachment(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.pending_attachments.retain(|item| item.id != id);
+        cx.notify();
+    }
+
+    /// The turn-request form of the staged images; the chips stay until the
+    /// `TurnAccepted` echo so a failed submission can be retried as-is.
+    fn pending_attachment_payload(&self) -> Vec<AgentInputAttachment> {
+        self.pending_attachments
+            .iter()
+            .map(PendingAttachment::to_input_attachment)
+            .collect()
     }
 
     /// Applies one locale snapshot to the locale-sensitive input state.
@@ -752,6 +882,10 @@ impl ShellWindow {
                         chat.submitting = false;
                         chat.busy = true;
                         chat.entries.push(ChatEntry::User { text: message });
+                        // The turn carries the staged images now; a failed
+                        // submission never reaches this echo, so the chips
+                        // survive for a retry.
+                        self.pending_attachments.clear();
                         self.list_sync_append(cx);
                     }
                 }
@@ -804,6 +938,7 @@ impl ShellWindow {
                 }
             }
             RuntimeEvent::TurnFinished { session_id, error } => {
+                let failure = error.clone();
                 if let Some(chat) = self.chat.as_mut() {
                     if chat.matches(&session_id) {
                         chat.busy = false;
@@ -820,6 +955,7 @@ impl ShellWindow {
                 if let Some(handle) = runtime::runtime_handle() {
                     handle.reload_sessions(self.event_tx.clone());
                 }
+                self.notify_turn_finished(&session_id, failure.as_deref(), window, cx);
             }
             RuntimeEvent::HistoryChanged { session_id } => {
                 if self
@@ -985,7 +1121,43 @@ impl ShellWindow {
         self.terminal_open = false;
         self.git = None;
         self.main_view = MainView::Chat;
+        // Staged images belong to the abandoned workspace's draft.
+        self.pending_attachments.clear();
         cx.notify();
+    }
+
+    /// Desktop notification for a settled turn while the window is not the
+    /// active one (the D36 ⑤ trigger surface: any finished turn — success or
+    /// failure — in a session with an open chat). Platforms without a
+    /// notification daemon no-op silently.
+    fn notify_turn_finished(
+        &self,
+        session_id: &str,
+        error: Option<&str>,
+        window: &Window,
+        cx: &Context<Self>,
+    ) {
+        if window.is_window_active() || self.chat.is_none() {
+            return;
+        }
+        let session = self
+            .sessions
+            .iter()
+            .find(|row| row.id == session_id)
+            .map(|row| row.name.clone())
+            .unwrap_or_else(|| session_id.to_string());
+        let (title, key) = if error.is_some() {
+            (i18n::notification_turn_failed(cx), "failed")
+        } else {
+            (i18n::notification_turn_done(cx), "done")
+        };
+        tracing::info!("Posting turn-finished notification ({key}) for session {session_id}");
+        cx.show_system_notification(SystemNotification {
+            tag: "openbitfun-gpui-shell-turn".into(),
+            title: title.into(),
+            body: session.into(),
+            actions: Vec::new(),
+        });
     }
 
     /// The workspace switcher: a footer button whose menu lists this
@@ -1456,6 +1628,74 @@ impl ShellWindow {
         }
     }
 
+    /// One staged image chip: thumbnail, name, remove button.
+    fn render_attachment_chip(
+        &self,
+        item: &PendingAttachment,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        let view = cx.entity().downgrade();
+        let id = item.id.clone();
+        let remove = Button::new(ElementId::Name(
+            format!("attachment-remove-{}", item.id).into(),
+        ))
+        .icon(IconName::X)
+        .xsmall()
+        .on_click(move |_, _, cx| {
+            if let Some(view) = view.upgrade() {
+                view.update(cx, |this, cx| this.remove_attachment(&id, cx));
+            }
+        });
+        div()
+            .flex()
+            .items_center()
+            .gap_1()
+            .px_1()
+            .py_0p5()
+            .rounded(cx.theme().radius_tokens().md)
+            .bg(cx.theme().background)
+            .border_1()
+            .border_color(cx.theme().border)
+            .child(
+                img(item.preview.clone())
+                    .size(px(24.))
+                    .rounded_sm()
+                    .flex_shrink_0(),
+            )
+            .child(
+                div()
+                    .max_w(px(140.))
+                    .text_xs()
+                    .truncate()
+                    .child(item.name.clone()),
+            )
+            .child(remove)
+            .into_any_element()
+    }
+
+    /// Staged-image strip above the input row; `None` keeps the composer at
+    /// its usual height.
+    fn render_attachment_strip(&self, cx: &mut Context<Self>) -> Option<gpui_kit::AnyElement> {
+        if self.pending_attachments.is_empty() {
+            return None;
+        }
+        let chips: Vec<gpui_kit::AnyElement> = self
+            .pending_attachments
+            .iter()
+            .map(|item| self.render_attachment_chip(item, cx))
+            .collect();
+        Some(
+            div()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .gap_2()
+                .w_full()
+                .children(chips)
+                .into_any_element(),
+        )
+    }
+
     fn render_composer(&self, text: &ShellText, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         let Some(chat) = self.chat.as_ref() else {
             return div().into_any_element();
@@ -1463,11 +1703,13 @@ impl ShellWindow {
         let busy = chat.busy;
         let submitting = chat.submitting;
         let session_id = chat.session_id.clone();
+        let has_attachments = !self.pending_attachments.is_empty();
 
         let draft_value = self.draft.read(cx).value().to_string();
         let draft_for_send = self.draft.clone();
         let tx_for_send = self.event_tx.clone();
         let session_for_send = session_id.clone();
+        let view_for_send = cx.entity().downgrade();
 
         let action_button = if busy {
             Button::new("chat-stop")
@@ -1482,20 +1724,32 @@ impl ShellWindow {
             Button::new("chat-send")
                 .label(text.chat_send.clone())
                 .with_variant(ButtonVariant::Primary)
-                .disabled(submitting || draft_value.trim().is_empty())
+                .disabled(submitting || (draft_value.trim().is_empty() && !has_attachments))
                 .on_click(move |_, window, cx| {
                     let body = draft_for_send.read(cx).value().to_string();
-                    if body.trim().is_empty() {
+                    if body.trim().is_empty() && !has_attachments {
                         return;
                     }
+                    let attachments = view_for_send
+                        .upgrade()
+                        .map(|view| view.read(cx).pending_attachment_payload())
+                        .unwrap_or_default();
                     if let Some(handle) = runtime::runtime_handle() {
-                        handle.send_message(session_for_send.clone(), body, tx_for_send.clone());
+                        handle.send_message(
+                            session_for_send.clone(),
+                            body,
+                            attachments,
+                            tx_for_send.clone(),
+                        );
                     }
                     draft_for_send.update(cx, |state, cx| {
                         state.set_value("", window, cx);
                     });
                 })
         };
+
+        let strip = self.render_attachment_strip(cx);
+        let paste_view = cx.entity().downgrade();
 
         div()
             .w_full()
@@ -1506,22 +1760,62 @@ impl ShellWindow {
             .child(
                 div()
                     .flex()
-                    .flex_row()
+                    .flex_col()
                     .gap_2()
-                    .items_end()
                     .bg(cx.theme().popover)
                     .border_1()
                     .border_color(cx.theme().border)
                     .rounded(cx.theme().radius_2xl())
                     .shadow_sm()
                     .p_2()
+                    .when_some(strip, |this, strip| this.child(strip))
                     .child(
-                        Textarea::new(&self.draft)
-                            .appearance(false)
-                            .flex_1()
-                            .h(px(COMPOSER_HEIGHT)),
-                    )
-                    .child(action_button),
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap_2()
+                            .items_end()
+                            .child(
+                                Textarea::new(&self.draft)
+                                    .appearance(false)
+                                    .flex_1()
+                                    .h(px(COMPOSER_HEIGHT))
+                                    // Image and file pastes become staged
+                                    // attachments; text falls through to the
+                                    // input's own insertion.
+                                    .on_paste(move |item, _window, cx| {
+                                        let Some(view) = paste_view.upgrade() else {
+                                            return false;
+                                        };
+                                        let mut taken = false;
+                                        view.update(cx, |this, cx| {
+                                            for entry in item.entries() {
+                                                match entry {
+                                                    ClipboardEntry::Image(image) => {
+                                                        this.attach_image_bytes(
+                                                            image.format,
+                                                            image.bytes.clone(),
+                                                            None,
+                                                            cx,
+                                                        );
+                                                        taken = true;
+                                                        break;
+                                                    }
+                                                    ClipboardEntry::ExternalPaths(paths) => {
+                                                        let paths: Vec<PathBuf> = paths.0.to_vec();
+                                                        this.attach_image_paths(paths, cx);
+                                                        taken = true;
+                                                        break;
+                                                    }
+                                                    ClipboardEntry::String(_) => {}
+                                                }
+                                            }
+                                        });
+                                        taken
+                                    }),
+                            )
+                            .child(action_button),
+                    ),
             )
             .into_any_element()
     }
@@ -2440,6 +2734,12 @@ impl ShellWindow {
             .min_h_0()
             .min_w_0()
             .v_flex()
+            // External file drags land anywhere on the chat surface; the
+            // highlight only marks the composer card as the drop target.
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
+                let paths: Vec<PathBuf> = paths.0.to_vec();
+                this.attach_image_paths(paths, cx);
+            }))
             .child(self.render_chat_header(text, cx))
             .when_some(self.chat_error.clone(), |this, error| {
                 this.child(
@@ -3625,5 +3925,39 @@ mod tests {
         assert_eq!(next_modal_target(1, 0), Some(ModalOwner::Permissions));
         assert_eq!(next_modal_target(0, 1), Some(ModalOwner::Questions));
         assert_eq!(next_modal_target(2, 3), Some(ModalOwner::Permissions));
+    }
+
+    #[test]
+    fn image_formats_resolve_from_safe_extensions_only() {
+        assert_eq!(image_format_for_extension("png"), Some(ImageFormat::Png));
+        assert_eq!(image_format_for_extension("JPEG"), Some(ImageFormat::Jpeg));
+        assert_eq!(image_format_for_extension("webp"), Some(ImageFormat::Webp));
+        assert_eq!(image_format_for_extension("svg"), None);
+        assert_eq!(image_format_for_extension("exe"), None);
+    }
+
+    #[test]
+    fn attachment_payload_carries_a_self_contained_data_url() {
+        let item = PendingAttachment {
+            id: "att-1".to_string(),
+            name: "shot.png".to_string(),
+            mime: "image/png".to_string(),
+            data_url: "data:image/png;base64,aGVsbG8=".to_string(),
+            preview: Arc::new(Image::empty()),
+        };
+        let attachment = item.to_input_attachment();
+        assert_eq!(attachment.kind, "remote_image");
+        assert_eq!(attachment.id, "att-1");
+        assert_eq!(
+            attachment.metadata.get("dataUrl"),
+            Some(&serde_json::json!("data:image/png;base64,aGVsbG8="))
+        );
+        // No controller-local path ever crosses the wire: peer and remote
+        // runtimes decode the embedded bytes instead.
+        assert!(attachment.metadata.get("imagePath").is_none());
+        assert_eq!(
+            attachment.metadata.get("metadata"),
+            Some(&serde_json::json!({ "name": "shot.png" }))
+        );
     }
 }

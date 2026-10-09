@@ -189,6 +189,33 @@ pub(crate) fn git_failed(error: &str, cx: &App) -> String {
     )
 }
 
+/// Resolves the unsupported-image-attachment notice for one rejected item.
+pub(crate) fn attachment_unsupported(name: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-chat-attachment-unsupported",
+        TranslationArgs::new().with_string("name", name),
+        cx,
+    )
+}
+
+/// Resolves the desktop-notification headline for a finished turn.
+pub(crate) fn notification_turn_done(cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-notification-turn-done",
+        TranslationArgs::new(),
+        cx,
+    )
+}
+
+/// Resolves the desktop-notification headline for a failed turn.
+pub(crate) fn notification_turn_failed(cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-notification-turn-failed",
+        TranslationArgs::new(),
+        cx,
+    )
+}
+
 /// Resolves the localized subagent attribution line for one permission
 /// request; composed once when the request arrives, never on the render path.
 pub(crate) fn permission_subagent_label(subagent_type: &str, cx: &App) -> String {

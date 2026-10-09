@@ -218,6 +218,10 @@ gpui-shell-settings-terminal-shell = Shell 指令
 gpui-shell-settings-terminal-shell-desc = 留空則跟隨 $SHELL；新開的終端機生效。
 gpui-shell-git-title = 變更
 gpui-shell-git-failed = 載入變更失敗：{ $error }
+gpui-shell-chat-attachment-unsupported = 不支援的圖片類型：{ $name }
+gpui-shell-notification-turn-done = 輪次已完成
+gpui-shell-notification-turn-failed = 輪次失敗
+
 gpui-shell-git-refresh = 重新整理
 gpui-shell-git-loading = 正在載入變更…
 gpui-shell-git-empty = 工作區沒有變更。

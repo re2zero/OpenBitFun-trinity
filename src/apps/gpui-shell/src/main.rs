@@ -37,6 +37,27 @@ fn main() {
         }
     }
 
+    // Single-instance gate sits after the flag answers on purpose: update
+    // commands must work while another shell instance is running. Only a
+    // second window launch is refused.
+    if std::env::var("OPENBITFUN_GPUI_ALLOW_MULTI").as_deref() != Ok("1") {
+        match openbitfun_gpui_shell::instance::acquire_instance_lock() {
+            Ok(lock) => {
+                // Held until process exit; the guard itself is not needed.
+                std::mem::forget(lock);
+            }
+            Err(running) => {
+                let message = format!(
+                    "OpenBitFun GPUI shell is already running (pid {}). Close it first, or set OPENBITFUN_GPUI_ALLOW_MULTI=1 to allow parallel instances.",
+                    running.pid
+                );
+                println!("{message}");
+                eprintln!("{message}");
+                std::process::exit(3);
+            }
+        }
+    }
+
     tracing::info!("Starting OpenBitFun GPUI shell");
     openbitfun_gpui_shell::shell::launch_main_window(tokio_handle);
 }

@@ -6,6 +6,7 @@ pub mod assets;
 pub mod cli;
 pub mod git;
 pub mod i18n;
+pub mod instance;
 pub mod runtime;
 pub mod settings;
 pub mod shell;

@@ -43,6 +43,7 @@ openbitfun-runtime-ports = { path = "../../crates/contracts/runtime-ports", feat
 terminal-core = { path = "../../crates/services/terminal" }
 alacritty_terminal = { workspace = true }
 anyhow = { workspace = true }
+base64 = { workspace = true }
 chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
