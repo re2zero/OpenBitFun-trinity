@@ -250,14 +250,19 @@ async fn run(request: UpdateRequest) -> Result<UpdateOutcome> {
         return Ok(UpdateOutcome::Available);
     }
 
-    if asset.sig_url.is_some() {
-        // Said out loud rather than skipped silently: the digest proves the
-        // transfer, not the publisher, and the signed-release pipeline is not
-        // wired up for this frontend yet.
-        tracing::warn!(
-            "Release {} publishes a signature, but this build verifies only the SHA256 digest",
+    let sig_url = asset.sig_url.clone();
+    let filename = asset.filename.clone();
+    match (release_pubkey(), &sig_url) {
+        (Some(_), Some(_)) => {}
+        (Some(_), None) => bail!(
+            "this build requires signed releases but {} publishes no signature for {filename}; refusing to install",
+            request.source.label()
+        ),
+        (None, Some(_)) => tracing::warn!(
+            "Release {} publishes a signature, but this build verifies only the SHA256 digest (no release public key was injected at build time)",
             manifest.version
-        );
+        ),
+        (None, None) => {}
     }
 
     let _lock = InstallLock::acquire()?;
@@ -265,7 +270,21 @@ async fn run(request: UpdateRequest) -> Result<UpdateOutcome> {
     let archive_path = work.path().join(asset_file_name(&asset.filename)?);
     let digest = download_archive(&client, asset, &archive_path).await?;
     let checksum_text = fetch_text(&client, &asset.sha256_url).await?;
-    verify_sha256(&digest, &checksum_text, &asset.filename)?;
+    verify_sha256(&digest, &checksum_text, &filename)?;
+
+    // The signature covers the archive itself, so it is checked against the
+    // downloaded bytes after the transfer (the digest gate above has already
+    // bounded what those bytes can be).
+    if let (Some(pubkey), Some(sig_url)) = (release_pubkey(), sig_url) {
+        let signature = fetch_text(&client, &sig_url)
+            .await
+            .with_context(|| format!("fetch release signature {sig_url}"))?;
+        let archive = fs::read(&archive_path).with_context(|| {
+            format!("read {} for signature verification", archive_path.display())
+        })?;
+        verify_signature(&archive, &signature, pubkey)
+            .context("release signature verification failed")?;
+    }
 
     let package_dir = extract_package(&archive_path, work.path())?;
     let new_binary = package_dir.join(BIN_NAME);
@@ -483,6 +502,47 @@ async fn fetch_text(client: &Client, url: &str) -> Result<String> {
 }
 
 /// Standard `sha256sum` output: `<digest>  <filename>`.
+/// The trust root for release archives: the same `OPENBITFUN_RELEASE_PUBKEY`
+/// the CLI updater trusts (official minisign key `50F47CBE6CC0A376`), injected
+/// at release-build time. Builds without the injection verify the digest only;
+/// the packaging script warns loudly so an official build cannot forget the
+/// key quietly.
+const RELEASE_PUBKEY: Option<&str> = option_env!("OPENBITFUN_RELEASE_PUBKEY");
+
+fn release_pubkey() -> Option<&'static str> {
+    RELEASE_PUBKEY.filter(|key| !key.trim().is_empty())
+}
+
+/// Verify a Tauri-format `.sig` (base64 of a minisign signature file) over the
+/// archive. The public key accepts both current raw Tauri values and the
+/// legacy base64 wrapper. Same trust semantics as the CLI updater: a checksum
+/// only proves the transfer was not corrupted — whoever serves the archive can
+/// serve a matching `.sha256`; a signature is what a mirror cannot forge.
+fn verify_signature(archive: &[u8], signature_b64: &str, pubkey: &str) -> Result<()> {
+    use base64::Engine as _;
+
+    let public_key_text = if pubkey.trim().starts_with("untrusted comment:") {
+        pubkey.trim().to_owned()
+    } else {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(pubkey.trim().as_bytes())
+            .context("decode release public key")?;
+        String::from_utf8(bytes).context("decode release public key as UTF-8")?
+    };
+    let public_key = minisign_verify::PublicKey::decode(&public_key_text)
+        .map_err(|error| anyhow!("invalid release public key: {error}"))?;
+    let signature_bytes = base64::engine::general_purpose::STANDARD
+        .decode(signature_b64.trim().as_bytes())
+        .context("decode release signature")?;
+    let signature_text =
+        String::from_utf8(signature_bytes).context("decode release signature as UTF-8")?;
+    let signature = minisign_verify::Signature::decode(&signature_text)
+        .map_err(|error| anyhow!("invalid release signature: {error}"))?;
+    public_key
+        .verify(archive, &signature, false)
+        .map_err(|error| anyhow!("release signature does not match the archive: {error}"))
+}
+
 fn verify_sha256(actual_digest: &str, checksum_text: &str, filename: &str) -> Result<()> {
     let expected = checksum_text.split_whitespace().next().unwrap_or_default();
     if expected.len() != 64 || !expected.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -815,6 +875,38 @@ mod tests {
             .expect("finish the fixture archive")
             .finish()
             .expect("finish the fixture archive")
+    }
+
+    /// Fixture produced with the Tauri signer CLI in its base64-wrapped
+    /// minisign wire format, pinning the exact on-disk format CI must emit
+    /// (same fixture as the CLI updater's).
+    const FIXTURE_PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IERENTQzQUM5RUY0NTIzRTMKUldUakkwWHZ5VHBVM1NOMXJWMHhLVlljSDBOY2x4YlpxVHA2clN1NEJPMWcyY2Qvd2U4VUR2b3AK";
+    const FIXTURE_SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUakkwWHZ5VHBVM2RVVFdoR3FNZDltSWNUeEQ1K2ZnNWRUSnYxWk5lUkZzd0h0MkdzSUhUSlV6a0haUTdNZm1aemM5QVBQWW50UWgvaWpFcEp1Zkp4SERWdnhIc1g2YUFrPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg4NDg2NTU4CWZpbGU6Lm9wZW5iaXRmdW4tbWluaXNpZ24tZml4dHVyZS50eHQKa1QxdDQ3bWtLVlhaZUdFSjR4R0V5R1Z3REVnUlI0RGJqbHFoZkVHdkdLSlFyTGJ5Z05JRTI5V3dwdXRkSFpZckUrK0RaUVVJYUJod1dzcmVydHZnQXc9PQo=";
+    const FIXTURE_DATA: &[u8] = b"hello-openbitfun\n";
+
+    #[test]
+    fn release_signature_accepts_the_tauri_wire_format() {
+        use base64::Engine as _;
+
+        verify_signature(FIXTURE_DATA, FIXTURE_SIGNATURE, FIXTURE_PUBKEY)
+            .expect("minisign signature in Tauri's base64 wrapper must verify");
+        let raw_pubkey = String::from_utf8(
+            base64::engine::general_purpose::STANDARD
+                .decode(FIXTURE_PUBKEY)
+                .expect("decode fixture public key"),
+        )
+        .expect("fixture public key is UTF-8");
+        verify_signature(FIXTURE_DATA, FIXTURE_SIGNATURE, &raw_pubkey)
+            .expect("raw minisign public key must verify");
+    }
+
+    #[test]
+    fn release_signature_rejects_tampered_bytes() {
+        // The whole point: a mirror that alters the archive cannot also forge
+        // this, unlike the checksum it serves alongside it.
+        let tampered = b"hello-openbitfun-tampered\n";
+        assert!(verify_signature(tampered, FIXTURE_SIGNATURE, FIXTURE_PUBKEY).is_err());
+        assert!(verify_signature(FIXTURE_DATA, "bm90LWEtc2lnbmF0dXJl", FIXTURE_PUBKEY).is_err());
     }
 
     #[test]

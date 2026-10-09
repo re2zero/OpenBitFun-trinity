@@ -8834,6 +8834,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "gpui-kit",
+ "minisign-verify",
  "openbitfun-agent-runtime",
  "openbitfun-core",
  "openbitfun-events",

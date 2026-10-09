@@ -291,6 +291,14 @@ function main() {
       `[gpui-shell-package] product definition selects GUI host "${guiHost}"; packaging this archive as the non-default delivery`,
     );
   }
+  // The updater enforces signatures only when a release public key was baked
+  // in; an official package built without one would silently downgrade to
+  // digest-only verification, so say it out loud at packaging time.
+  if (!process.env.OPENBITFUN_RELEASE_PUBKEY?.trim()) {
+    console.warn(
+      '[gpui-shell-package] OPENBITFUN_RELEASE_PUBKEY is not set; the packaged updater will verify the SHA256 digest only',
+    );
+  }
 
   if (options.build) {
     const cargoArgs = ['build', '--release', '-p', PACKAGE_NAME];

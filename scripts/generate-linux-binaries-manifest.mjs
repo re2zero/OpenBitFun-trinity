@@ -80,6 +80,7 @@ const manifest = {
         target,
         cli: asset(`openbitfun-cli-${version}-${target}.tar.gz`),
         relay: asset(`openbitfun-relay-server-${target}.tar.gz`),
+        gpuiShell: asset(`openbitfun-gpui-shell-${version}-${target}.tar.gz`),
       },
     ])
   ),

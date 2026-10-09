@@ -18,8 +18,8 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     div, img, point, prelude::*, px, size, Anchor, App, Bounds, ClipboardEntry, Context, ElementId,
-    Entity, ExternalPaths, Image, ImageFormat, KeyDownEvent, Pixels, SharedString,
-    SystemNotification, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions,
+    Entity, ExternalPaths, Image, ImageFormat, Pixels, SharedString, SystemNotification,
+    TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions,
 };
 use openbitfun_agent_runtime::sdk::{PendingUserQuestion, PermissionReply, PermissionRequest};
 use openbitfun_runtime_ports::AgentInputAttachment;

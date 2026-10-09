@@ -8,7 +8,8 @@
     "desktop": {
       "displayNameKey": "product.desktop.name",
       "binaryName": "openbitfun-desktop",
-      "bundleId": "com.openbitfun.desktop"
+      "bundleId": "com.openbitfun.desktop",
+      "guiHost": "gpui-shell"
     },
     "cli": {
       "displayNameKey": "product.cli.name",
