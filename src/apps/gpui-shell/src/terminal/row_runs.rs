@@ -7,6 +7,11 @@ use alacritty_terminal::vte::ansi::Color;
 /// One contiguous run of same-styled cells. `col` is the first grid column
 /// the span starts at; wide characters advance two columns and the trailing
 /// spacer cell is not represented in `text`.
+///
+/// Wide characters always end a span (and start a new one): the fallback
+/// font's advance for CJK glyphs does not equal two grid columns, so the
+/// painter must pin each wide character to its own column instead of letting
+/// intra-span shaping drift the row off the grid.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RowSpan {
     pub col: usize,
@@ -30,6 +35,9 @@ impl RowSpan {
 pub fn row_spans(line: &[Cell], cols: usize) -> Vec<RowSpan> {
     let mut spans: Vec<RowSpan> = Vec::new();
     let mut current: Option<RowSpan> = None;
+    // Set after a wide-character cell: the next cell must start a fresh span
+    // even when styles match, so the wide glyph stays pinned to its column.
+    let mut after_wide = false;
     for col in 0..cols {
         let cell = &line[col];
         // Spacer cells belong to the wide character's cell advance; the
@@ -40,9 +48,12 @@ pub fn row_spans(line: &[Cell], cols: usize) -> Vec<RowSpan> {
         {
             continue;
         }
-        let same_style = current.as_ref().is_some_and(|span| {
-            span.fg == cell.fg && span.bg == cell.bg && span.flags == cell.flags
-        });
+        let wide = cell.flags.intersects(Flags::WIDE_CHAR);
+        let same_style = !after_wide
+            && !wide
+            && current.as_ref().is_some_and(|span| {
+                span.fg == cell.fg && span.bg == cell.bg && span.flags == cell.flags
+            });
         match &mut current {
             Some(span) if same_style => span.text.push(cell.c),
             _ => {
@@ -58,6 +69,7 @@ pub fn row_spans(line: &[Cell], cols: usize) -> Vec<RowSpan> {
                 });
             }
         }
+        after_wide = wide;
     }
     if let Some(finished) = current.take() {
         spans.push(finished);
@@ -146,12 +158,26 @@ mod tests {
         let visible: Vec<&RowSpan> = spans.iter().filter(|span| !span.is_invisible()).collect();
         assert_eq!(
             visible.len(),
-            1,
-            "identical style must merge across wide chars"
+            2,
+            "each wide char must be its own span so the painter pins it to its column"
         );
-        assert_eq!(visible[0].text, "汉字");
-        // 4 columns consumed by two wide chars.
-        assert!(visible[0].col == 0);
+        assert_eq!(visible[0].col, 0);
+        assert_eq!(visible[0].text, "汉");
+        assert_eq!(visible[1].col, 2, "wide char occupies two grid columns");
+        assert_eq!(visible[1].text, "字");
+    }
+
+    #[test]
+    fn text_resumes_new_span_after_wide_char() {
+        let line = line_after("汉ab".as_bytes(), 10);
+        let spans = row_spans(&line, 10);
+        let visible: Vec<&RowSpan> = spans.iter().filter(|span| !span.is_invisible()).collect();
+        assert_eq!(visible.len(), 2);
+        assert_eq!(visible[0].col, 0);
+        assert_eq!(visible[0].text, "汉");
+        assert_eq!(visible[1].col, 2);
+        // Trailing default blanks merge into the plain run (one shape call).
+        assert_eq!(visible[1].text, "ab      ");
     }
 
     #[test]

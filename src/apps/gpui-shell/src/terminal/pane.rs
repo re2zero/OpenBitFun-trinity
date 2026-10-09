@@ -360,6 +360,18 @@ impl TerminalPane {
         });
     }
 
+    /// Input follows the live edge: typing, IME commits, and pastes snap the
+    /// viewport back to the bottom when the user is scrolled into history
+    /// (terminal convention; also keeps the cursor visible for the next paint).
+    /// Returns `true` when the viewport moved.
+    fn follow_input_to_bottom(&mut self) -> bool {
+        if self.emulator.display_offset() > 0 {
+            self.emulator.scroll_to_edge(true);
+            return true;
+        }
+        false
+    }
+
     /// Reflows the grid + PTY when the panel bounds imply a new cell size.
     /// Called from the paint phase with the freshly measured canvas bounds.
     fn resize_if_needed(&mut self, cols: u16, rows: u16, cx: &mut Context<Self>) {
@@ -420,6 +432,9 @@ impl TerminalPane {
         if bytes.is_empty() {
             return;
         }
+        if self.follow_input_to_bottom() {
+            cx.notify();
+        }
         self.write_bytes(bytes);
         cx.notify();
     }
@@ -459,16 +474,19 @@ impl TerminalPane {
 
     /// Ctrl+Shift+V: clipboard text with terminal line endings, framed as a
     /// bracketed paste when the running application asked for that mode.
-    fn paste_clipboard(&self, cx: &mut Context<Self>) {
+    fn paste_clipboard(&mut self, cx: &mut Context<Self>) {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
         };
-        self.paste_text(&text);
+        self.paste_text(&text, cx);
     }
 
-    fn paste_text(&self, text: &str) {
+    fn paste_text(&mut self, text: &str, cx: &mut Context<Self>) {
         if self.pty_id.is_none() || self.exited || text.is_empty() {
             return;
+        }
+        if self.follow_input_to_bottom() {
+            cx.notify();
         }
         let bracketed = self.emulator.mode().contains(TermMode::BRACKETED_PASTE);
         self.write_bytes(paste_payload(text, bracketed).into_bytes());
@@ -640,18 +658,21 @@ impl InputHandler for TerminalInputHandler {
         _range_utf16: Option<Range<usize>>,
         new_text: &str,
         _window: &mut Window,
-        _cx: &mut App,
+        cx: &mut App,
     ) {
-        self.pane.update(_cx, |pane, _| {
+        self.pane.update(cx, |pane, cx| {
+            if pane.follow_input_to_bottom() {
+                cx.notify();
+            }
             pane.write_bytes(new_text.as_bytes().to_vec());
         });
     }
 
-    fn paste(&mut self, item: ClipboardItem, _window: &mut Window, _cx: &mut App) {
+    fn paste(&mut self, item: ClipboardItem, _window: &mut Window, cx: &mut App) {
         // Platform-initiated pastes (menus, middle click) take the same path
         // as Ctrl+Shift+V: line endings normalized, bracketed when active.
         if let Some(text) = item.text() {
-            self.pane.update(_cx, |pane, _| pane.paste_text(&text));
+            self.pane.update(cx, |pane, cx| pane.paste_text(&text, cx));
         }
     }
 
