@@ -18,11 +18,13 @@ use anyhow::{Context, Result};
 use gpui_kit::SharedString;
 use openbitfun_agent_runtime::sdk::{
     AgentDialogTurnExecution, AgentDialogTurnRequest, AgentRuntime,
-    AgentSessionArchiveStateRequest, AgentSessionCreateRequest, AgentSessionDeleteRequest,
-    AgentSessionModelUpdateRequest, AgentSessionRenameRequest, AgentSessionRestoreRequest,
-    AgentTurnCancellationRequest, AgentUserAnswersRequest, PendingUserQuestion, PermissionReply,
-    PermissionRequest, PermissionRequestEvent, SessionState, SessionTranscript,
-    SessionTranscriptRequest,
+    AgentSessionArchiveStateRequest, AgentSessionCompactionRequest, AgentSessionCreateRequest,
+    AgentSessionDeleteRequest, AgentSessionForkAtTurnRequest, AgentSessionForkBeforeTurnRequest,
+    AgentSessionForkRequest, AgentSessionModelUpdateRequest, AgentSessionRenameRequest,
+    AgentSessionRestoreRequest, AgentSessionUsageRequest, AgentTurnCancellationRequest,
+    AgentUserAnswersRequest, PendingUserQuestion, PermissionReply, PermissionRequest,
+    PermissionRequestEvent, SessionState, SessionTranscript, SessionTranscriptRequest,
+    SessionUsageReport,
 };
 use openbitfun_agent_runtime::user_questions::{get_user_input_manager, UserInputManager};
 use openbitfun_core::agentic::system::{
@@ -131,6 +133,20 @@ pub(crate) enum RuntimeEvent {
     PermissionSnapshot(Vec<PermissionRequest>),
     /// A session rename was applied by the runtime; adopt the new name.
     SessionRenamed { session_id: String, name: String },
+    /// A fork of an existing session was created; the runtime opens it right
+    /// away, so the chat pane switches to the fork when its transcript
+    /// arrives through [`RuntimeEvent::SessionOpened`].
+    SessionForked {
+        new_session_id: String,
+        new_session_name: String,
+    },
+    /// A manual context-compaction maintenance turn was accepted for the open
+    /// session; completion flows through the normal turn-settlement events.
+    CompactionStarted { session_id: String },
+    /// A transcript export was written to `path`.
+    ExportFinished { session_id: String, path: String },
+    /// Session usage report for the usage dialog.
+    SessionUsage(Box<SessionUsageSummary>),
     /// A session was deleted; the chat pane must close when it shows it.
     SessionDeleted { session_id: String },
     /// A session action (rename / archive / delete / model change) failed;
@@ -171,6 +187,53 @@ pub(crate) enum RuntimeEvent {
 pub(crate) struct SessionListRow {
     pub summary: AgentSessionSummary,
     pub archived: bool,
+}
+
+/// Dialog-ready projection of a session usage report: the headline numbers
+/// the shell shows, without the full report schema.
+#[derive(Debug, Clone)]
+pub(crate) struct SessionUsageSummary {
+    pub session_id: String,
+    pub turn_count: usize,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
+    pub cached_tokens: Option<u64>,
+    pub wall_time_ms: Option<u64>,
+    pub active_turn_ms: Option<u64>,
+    pub models: Vec<UsageModelLine>,
+}
+
+/// One model's usage line in the usage dialog.
+#[derive(Debug, Clone)]
+pub(crate) struct UsageModelLine {
+    pub model_id: String,
+    pub calls: u64,
+    pub total_tokens: Option<u64>,
+}
+
+impl SessionUsageSummary {
+    fn from_report(session_id: String, report: SessionUsageReport) -> Self {
+        Self {
+            session_id,
+            turn_count: report.scope.turn_count,
+            input_tokens: report.tokens.input_tokens,
+            output_tokens: report.tokens.output_tokens,
+            total_tokens: report.tokens.total_tokens,
+            cached_tokens: report.tokens.cached_tokens,
+            wall_time_ms: report.time.wall_time_ms,
+            active_turn_ms: report.time.active_turn_ms,
+            models: report
+                .models
+                .iter()
+                .map(|model| UsageModelLine {
+                    model_id: model.model_id.clone(),
+                    calls: model.call_count,
+                    total_tokens: model.total_tokens,
+                })
+                .collect(),
+        }
+    }
 }
 
 /// One model from the shared catalog, pre-shaped for the pickers.
@@ -239,8 +302,12 @@ pub(crate) struct OpenedSession {
 /// Chat transcript entry as rendered by the shell.
 #[derive(Debug, Clone)]
 pub(crate) enum ChatEntry {
+    /// A submitted user prompt. `turn_id` is the persisted turn identity the
+    /// entry belongs to (turn echo or transcript read), and is the fork
+    /// boundary for the per-turn fork menu.
     User {
         text: String,
+        turn_id: Option<String>,
     },
     /// Assistant markdown (streamed chunks accumulate into one entry per
     /// model round, keyed by `round_id`).
@@ -251,6 +318,10 @@ pub(crate) enum ChatEntry {
     Tool(ToolCard),
     /// Turn-level failures, cancellations, and system errors.
     Notice {
+        text: String,
+    },
+    /// Non-error status lines (compaction started, export finished).
+    Info {
         text: String,
     },
 }
@@ -462,6 +533,220 @@ impl RuntimeHandle {
         });
     }
 
+    /// Forks a session at its latest persisted turn and opens the fork. The
+    /// copy shares no mutable history with the source, so the source session
+    /// keeps running untouched.
+    pub(crate) fn fork_session(&self, session_id: String, tx: mpsc::UnboundedSender<RuntimeEvent>) {
+        let runtime = self.agent_runtime.clone();
+        let workspace_id = Some(self.workspace().id);
+        let handle = self.clone_handle_after_action();
+        self.tokio.spawn(async move {
+            let request = AgentSessionForkRequest {
+                workspace_id,
+                workspace_path: String::new(),
+                source_session_id: session_id.clone(),
+                remote_connection_id: None,
+                remote_ssh_host: None,
+            };
+            match runtime.fork_session(request).await {
+                Ok(forked) => {
+                    tracing::info!(
+                        "Forked session {session_id} -> {} ({})",
+                        forked.session_id,
+                        forked.session_name
+                    );
+                    let _ = tx.send(RuntimeEvent::SessionForked {
+                        new_session_id: forked.session_id.clone(),
+                        new_session_name: forked.session_name,
+                    });
+                    handle.reload_sessions(tx.clone());
+                    handle.open_session(forked.session_id, tx);
+                }
+                Err(error) => {
+                    let message = error.into_message();
+                    tracing::error!("Failed to fork session {session_id}: {message}");
+                    let _ = tx.send(RuntimeEvent::SessionActionFailed {
+                        message: format!("fork: {message}"),
+                    });
+                }
+            }
+        });
+    }
+
+    /// Forks a session at an explicit turn boundary (`before` skips the
+    /// selected turn, otherwise it is included) and opens the fork.
+    pub(crate) fn fork_session_turn(
+        &self,
+        session_id: String,
+        turn_id: String,
+        before: bool,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+    ) {
+        let runtime = self.agent_runtime.clone();
+        let workspace_id = Some(self.workspace().id);
+        let handle = self.clone_handle_after_action();
+        self.tokio.spawn(async move {
+            let forked = if before {
+                let request = AgentSessionForkBeforeTurnRequest {
+                    workspace_id,
+                    workspace_path: String::new(),
+                    source_session_id: session_id.clone(),
+                    source_turn_id: turn_id.clone(),
+                    remote_connection_id: None,
+                    remote_ssh_host: None,
+                };
+                runtime.fork_session_before_turn(request).await
+            } else {
+                let request = AgentSessionForkAtTurnRequest {
+                    workspace_id,
+                    workspace_path: String::new(),
+                    source_session_id: session_id.clone(),
+                    source_turn_id: turn_id.clone(),
+                    remote_connection_id: None,
+                    remote_ssh_host: None,
+                };
+                runtime.fork_session_at_turn(request).await
+            };
+            match forked {
+                Ok(forked) => {
+                    tracing::info!(
+                        "Forked session {session_id} at turn {turn_id} (before={before}) -> {}",
+                        forked.session_id
+                    );
+                    let _ = tx.send(RuntimeEvent::SessionForked {
+                        new_session_id: forked.session_id.clone(),
+                        new_session_name: forked.session_name,
+                    });
+                    handle.reload_sessions(tx.clone());
+                    handle.open_session(forked.session_id, tx);
+                }
+                Err(error) => {
+                    let message = error.into_message();
+                    tracing::error!(
+                        "Failed to fork session {session_id} at turn {turn_id}: {message}"
+                    );
+                    let _ = tx.send(RuntimeEvent::SessionActionFailed {
+                        message: format!("fork: {message}"),
+                    });
+                }
+            }
+        });
+    }
+
+    /// Starts one manual context-compaction maintenance turn. The turn
+    /// identity is caller-generated (the CLI runtime-client precedent): the
+    /// runtime reserves it for cancellation ownership, it does not reference
+    /// an existing turn. Completion surfaces through the normal
+    /// turn-settlement and history-changed events.
+    pub(crate) fn start_compaction(
+        &self,
+        session_id: String,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+    ) {
+        let runtime = self.agent_runtime.clone();
+        let turn_id = uuid::Uuid::new_v4().to_string();
+        self.tokio.spawn(async move {
+            let request = AgentSessionCompactionRequest {
+                session_id: session_id.clone(),
+                turn_id,
+            };
+            match runtime.start_session_compaction(request).await {
+                Ok(_) => {
+                    tracing::info!("Compaction started for session {session_id}");
+                    let _ = tx.send(RuntimeEvent::CompactionStarted { session_id });
+                }
+                Err(error) => {
+                    let message = error.into_message();
+                    tracing::error!("Failed to compact session {session_id}: {message}");
+                    let _ = tx.send(RuntimeEvent::SessionActionFailed {
+                        message: format!("compact: {message}"),
+                    });
+                }
+            }
+        });
+    }
+
+    /// Exports the full session transcript as a Markdown file. Image payloads
+    /// stay in the runtime; multimodal entries report attachment counts.
+    pub(crate) fn export_session(
+        &self,
+        session_id: String,
+        path: PathBuf,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+    ) {
+        let runtime = self.agent_runtime.clone();
+        self.tokio.spawn(async move {
+            let transcript = match runtime
+                .read_session_transcript(SessionTranscriptRequest {
+                    session_id: session_id.clone(),
+                    turn_id: None,
+                })
+                .await
+            {
+                Ok(transcript) => transcript,
+                Err(error) => {
+                    let message = error.into_message();
+                    tracing::error!("Failed to read transcript for export: {message}");
+                    let _ = tx.send(RuntimeEvent::SessionActionFailed {
+                        message: format!("export: {message}"),
+                    });
+                    return;
+                }
+            };
+            let markdown = transcript_to_markdown(&transcript);
+            match tokio::fs::write(&path, markdown).await {
+                Ok(()) => {
+                    let path_display = path.display().to_string();
+                    tracing::info!("Exported session {session_id} to {path_display}");
+                    let _ = tx.send(RuntimeEvent::ExportFinished {
+                        session_id,
+                        path: path_display,
+                    });
+                }
+                Err(error) => {
+                    tracing::error!("Failed to write export {}: {error}", path.display());
+                    let _ = tx.send(RuntimeEvent::SessionActionFailed {
+                        message: format!("export: {error}"),
+                    });
+                }
+            }
+        });
+    }
+
+    /// Generates the session usage report for the usage dialog.
+    pub(crate) fn session_usage(
+        &self,
+        session_id: String,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+    ) {
+        let runtime = self.agent_runtime.clone();
+        let workspace_id = Some(self.workspace().id);
+        self.tokio.spawn(async move {
+            let request = AgentSessionUsageRequest {
+                session_id: session_id.clone(),
+                workspace_id,
+                workspace_path: None,
+                remote_connection_id: None,
+                remote_ssh_host: None,
+                include_hidden_subagents: false,
+            };
+            match runtime.generate_session_usage(request).await {
+                Ok(report) => {
+                    let _ = tx.send(RuntimeEvent::SessionUsage(Box::new(
+                        SessionUsageSummary::from_report(session_id, report),
+                    )));
+                }
+                Err(error) => {
+                    let message = error.into_message();
+                    tracing::error!("Failed to generate usage for session {session_id}: {message}");
+                    let _ = tx.send(RuntimeEvent::SessionActionFailed {
+                        message: format!("usage: {message}"),
+                    });
+                }
+            }
+        });
+    }
+
     /// Updates one session's model selector (model only; the reasoning preset
     /// stays whatever the session already recorded, matching the desktop's
     /// model-only path).
@@ -559,6 +844,56 @@ impl RuntimeHandleLite {
             self.tokio.clone(),
             tx,
         );
+    }
+
+    /// Restores a session transcript into the chat pane. Shared by the owning
+    /// handle and by post-action flows that open a fresh session (fork).
+    fn open_session(&self, session_id: String, tx: mpsc::UnboundedSender<RuntimeEvent>) {
+        let runtime = self.agent_runtime.clone();
+        let (workspace_id, workspace_path) = {
+            let workspace = self
+                .workspace
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            (
+                Some(workspace.id.clone()),
+                workspace.root_path.to_string_lossy().to_string(),
+            )
+        };
+        self.tokio.spawn(async move {
+            let request = AgentSessionRestoreRequest {
+                workspace_id,
+                workspace_path,
+                session_id: session_id.clone(),
+                include_internal: false,
+                remote_connection_id: None,
+                remote_ssh_host: None,
+            };
+            match runtime.restore_session(request).await {
+                Ok(restored) => {
+                    let busy = matches!(restored.state, SessionState::Processing { .. });
+                    tracing::info!(
+                        "Restored session {} (busy={busy})",
+                        restored.session.session_id
+                    );
+                    emit_opened(
+                        &runtime,
+                        restored.session.session_id,
+                        restored.session.session_name,
+                        restored.session.agent_type,
+                        restored.session.model_id,
+                        busy,
+                        tx,
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    let message = error.into_message();
+                    tracing::error!("Failed to restore session {session_id}: {message}");
+                    let _ = tx.send(RuntimeEvent::SessionOpenFailed(message));
+                }
+            }
+        });
     }
 }
 
@@ -679,44 +1014,8 @@ impl RuntimeHandle {
 
     /// Restores a persisted session into the runtime and reads its transcript.
     pub(crate) fn open_session(&self, session_id: String, tx: mpsc::UnboundedSender<RuntimeEvent>) {
-        let runtime = self.agent_runtime.clone();
-        let workspace = self.workspace();
-        let workspace_id = Some(workspace.id);
-        let workspace_path = workspace.root_path.to_string_lossy().to_string();
-        self.tokio.spawn(async move {
-            let request = AgentSessionRestoreRequest {
-                workspace_id,
-                workspace_path,
-                session_id: session_id.clone(),
-                include_internal: false,
-                remote_connection_id: None,
-                remote_ssh_host: None,
-            };
-            match runtime.restore_session(request).await {
-                Ok(restored) => {
-                    let busy = matches!(restored.state, SessionState::Processing { .. });
-                    tracing::info!(
-                        "Restored session {} (busy={busy})",
-                        restored.session.session_id
-                    );
-                    emit_opened(
-                        &runtime,
-                        restored.session.session_id,
-                        restored.session.session_name,
-                        restored.session.agent_type,
-                        restored.session.model_id,
-                        busy,
-                        tx,
-                    )
-                    .await;
-                }
-                Err(error) => {
-                    let message = error.into_message();
-                    tracing::error!("Failed to restore session {session_id}: {message}");
-                    let _ = tx.send(RuntimeEvent::SessionOpenFailed(message));
-                }
-            }
-        });
+        self.clone_handle_after_action()
+            .open_session(session_id, tx)
     }
 
     /// Submits one dialog turn; streaming output arrives through the event pump.
@@ -1073,14 +1372,20 @@ fn convert_message(message: &TranscriptMessage) -> ChatEntry {
                 round_id: message.turn_id.clone().unwrap_or_default(),
                 text: text.clone(),
             },
-            _ => ChatEntry::User { text: text.clone() },
+            _ => ChatEntry::User {
+                text: text.clone(),
+                turn_id: message.turn_id.clone(),
+            },
         },
         TranscriptContent::Multimodal { text, image_count } => {
             let mut text = text.clone();
             if *image_count > 0 {
                 text.push_str(&format!("\n\n[{image_count} image(s) attached]"));
             }
-            ChatEntry::User { text }
+            ChatEntry::User {
+                text,
+                turn_id: message.turn_id.clone(),
+            }
         }
         TranscriptContent::ToolResult {
             tool_id,
@@ -1126,6 +1431,59 @@ fn convert_message(message: &TranscriptMessage) -> ChatEntry {
 
 fn truncate_detail(value: &str) -> String {
     truncate_chars(value, TOOL_DETAIL_LIMIT)
+}
+
+/// Renders a persisted transcript as Markdown for the export flow: roles
+/// become sections, tool results fenced JSON blocks. Multimodal entries carry
+/// attachment counts, matching the in-shell projection.
+pub(crate) fn transcript_to_markdown(transcript: &SessionTranscript) -> String {
+    let mut out = format!("# Session {}\n\n", transcript.session_id);
+    for message in &transcript.messages {
+        match &message.content {
+            TranscriptContent::Text(text) => {
+                let role = if message.role == "assistant" {
+                    "Assistant"
+                } else {
+                    "User"
+                };
+                push_markdown_section(&mut out, role, text);
+            }
+            TranscriptContent::Multimodal { text, image_count } => {
+                let mut text = text.clone();
+                if *image_count > 0 {
+                    text.push_str(&format!("\n\n[{image_count} image(s) attached]"));
+                }
+                push_markdown_section(&mut out, "User", &text);
+            }
+            TranscriptContent::ToolResult {
+                tool_name, result, ..
+            } => {
+                push_markdown_tool(&mut out, tool_name, &result.to_string());
+            }
+            TranscriptContent::Mixed {
+                text, tool_calls, ..
+            } => {
+                push_markdown_section(&mut out, "Assistant", text);
+                for call in tool_calls {
+                    push_markdown_tool(&mut out, &call.tool_name, &call.arguments.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+fn push_markdown_section(out: &mut String, role: &str, text: &str) {
+    if text.trim().is_empty() {
+        return;
+    }
+    out.push_str(&format!("## {role}\n\n{text}\n\n"));
+}
+
+fn push_markdown_tool(out: &mut String, tool_name: &str, body: &str) {
+    out.push_str(&format!(
+        "### Tool `{tool_name}`\n\n```json\n{body}\n```\n\n"
+    ));
 }
 
 /// Char-based preview truncation shared by tool cards and permission prompts.
@@ -1834,7 +2192,7 @@ mod tests {
             },
         ));
         match images {
-            ChatEntry::User { text } => assert!(text.contains("[2 image(s) attached]")),
+            ChatEntry::User { text, .. } => assert!(text.contains("[2 image(s) attached]")),
             other => panic!("expected user entry, got {other:?}"),
         }
 
@@ -1857,6 +2215,80 @@ mod tests {
             }
             other => panic!("expected tool card for text-less mixed, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn transcript_carries_turn_ids_for_fork_boundaries() {
+        let user = convert_message(&message(
+            "user",
+            TranscriptContent::Text("hello".to_string()),
+        ));
+        match user {
+            ChatEntry::User { turn_id, .. } => {
+                assert_eq!(turn_id.as_deref(), Some("turn-1"));
+            }
+            other => panic!("expected user entry, got {other:?}"),
+        }
+
+        let unnamed = TranscriptMessage {
+            turn_id: None,
+            ..message("user", TranscriptContent::Text("legacy".to_string()))
+        };
+        match convert_message(&unnamed) {
+            ChatEntry::User { turn_id, .. } => assert!(turn_id.is_none()),
+            other => panic!("expected user entry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transcript_export_renders_sections_tools_and_attachments() {
+        let transcript = SessionTranscript {
+            session_id: "s-1".to_string(),
+            messages: vec![
+                message("user", TranscriptContent::Text("hello".to_string())),
+                message("assistant", TranscriptContent::Text("**done**".to_string())),
+                message(
+                    "tool",
+                    TranscriptContent::ToolResult {
+                        tool_id: "t1".to_string(),
+                        tool_name: "Read".to_string(),
+                        effective_tool_name: None,
+                        result: serde_json::json!({"ok": true}),
+                        is_error: false,
+                    },
+                ),
+                message(
+                    "user",
+                    TranscriptContent::Multimodal {
+                        text: "see this".to_string(),
+                        image_count: 2,
+                    },
+                ),
+                message(
+                    "assistant",
+                    TranscriptContent::Mixed {
+                        reasoning_content: None,
+                        text: "  ".to_string(),
+                        tool_calls: vec![openbitfun_runtime_ports::TranscriptToolCall {
+                            tool_id: "t2".to_string(),
+                            tool_name: "Bash".to_string(),
+                            arguments: serde_json::json!({"cmd": "ls"}),
+                        }],
+                    },
+                ),
+            ],
+        };
+        let markdown = transcript_to_markdown(&transcript);
+        assert!(markdown.starts_with("# Session s-1\n\n"));
+        assert!(markdown.contains("## User\n\nhello\n\n"));
+        assert!(markdown.contains("## Assistant\n\n**done**\n\n"));
+        assert!(markdown.contains("### Tool `Read`"));
+        assert!(markdown.contains("### Tool `Bash`"));
+        assert!(markdown.contains("```json\n{\"ok\":true}\n```"));
+        assert!(markdown.contains("[2 image(s) attached]"));
+        // Whitespace-only assistant text collapses into its tool calls
+        // instead of emitting an empty section.
+        assert!(!markdown.contains("## Assistant\n\n \n"));
     }
 
     #[test]

@@ -138,7 +138,7 @@ mod tests {
         let dir = temp_lock_dir("takeover");
         let path = dir.join(LOCK_FILE_NAME);
         let first = acquire_at(&path, |_| true).expect("first launch acquires");
-        let first_path = first.path.clone();
+        assert_eq!(first.path, path);
         // Simulate a crashed owner: release without unlinking.
         std::mem::forget(first);
         assert!(path.exists(), "forgotten lock file stays on disk");

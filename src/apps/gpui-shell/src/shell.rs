@@ -380,8 +380,14 @@ impl SidebarItem for SidebarEntry {
                     archived,
                 } = row;
                 let open_id = id.clone();
-                let menu =
-                    session_row_menu(id.clone(), name.clone(), archived, view.clone(), tx.clone());
+                let menu = session_row_menu(
+                    id.clone(),
+                    name.clone(),
+                    archived,
+                    open,
+                    view.clone(),
+                    tx.clone(),
+                );
                 div()
                     .id(SharedString::from(format!("session-{id}")))
                     .on_click(move |_, _, _| {
@@ -439,13 +445,14 @@ impl SidebarItem for SidebarEntry {
     }
 }
 
-/// Per-row actions menu: rename, archive toggle, delete. A Button (whose press
-/// stops propagation) keeps the row's own click-to-open handler from firing
-/// when the menu trigger is used.
+/// Per-row actions menu: rename, fork, compact (open session only), export,
+/// archive toggle, delete. A Button (whose press stops propagation) keeps the
+/// row's own click-to-open handler from firing when the menu trigger is used.
 fn session_row_menu(
     session_id: String,
     name: String,
     archived: bool,
+    open: bool,
     view: WeakEntity<ShellWindow>,
     tx: mpsc::UnboundedSender<RuntimeEvent>,
 ) -> gpui_kit::AnyElement {
@@ -455,6 +462,32 @@ fn session_row_menu(
         let name = name.clone();
         move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
             open_rename_dialog(view.clone(), session_id.clone(), name.clone(), window, cx);
+        }
+    };
+    let fork_action = {
+        let session_id = session_id.clone();
+        let tx = tx.clone();
+        move |_: &gpui_kit::ClickEvent, _window: &mut Window, _cx: &mut App| {
+            if let Some(handle) = runtime::runtime_handle() {
+                handle.fork_session(session_id.clone(), tx.clone());
+            }
+        }
+    };
+    let compact_action = {
+        let session_id = session_id.clone();
+        let tx = tx.clone();
+        move |_: &gpui_kit::ClickEvent, _window: &mut Window, _cx: &mut App| {
+            if let Some(handle) = runtime::runtime_handle() {
+                handle.start_compaction(session_id.clone(), tx.clone());
+            }
+        }
+    };
+    let export_action = {
+        let view = view.clone();
+        let session_id = session_id.clone();
+        let name = name.clone();
+        move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
+            open_export_dialog(view.clone(), session_id.clone(), name.clone(), window, cx);
         }
     };
     let archive_action = {
@@ -485,8 +518,21 @@ fn session_row_menu(
             } else {
                 text.session_archive.clone()
             };
+            let menu = menu
+                .item(
+                    PopupMenuItem::new(text.session_rename.clone()).on_click(rename_action.clone()),
+                )
+                .item(PopupMenuItem::new(text.session_fork.clone()).on_click(fork_action.clone()));
+            let menu = if open {
+                menu.item(
+                    PopupMenuItem::new(text.session_compact.clone())
+                        .on_click(compact_action.clone()),
+                )
+            } else {
+                menu
+            };
             menu.item(
-                PopupMenuItem::new(text.session_rename.clone()).on_click(rename_action.clone()),
+                PopupMenuItem::new(text.session_export.clone()).on_click(export_action.clone()),
             )
             .item(PopupMenuItem::new(archive_label).on_click(archive_action.clone()))
             .item(PopupMenuItem::new(text.session_delete.clone()).on_click(delete_action.clone()))
@@ -601,6 +647,12 @@ struct ShellWindow {
     /// Session id the rename dialog is editing; `None` while the dialog is
     /// closed.
     rename_target: Option<String>,
+    /// Export dialog input (destination file path), reused across opens.
+    export_input: Entity<InputState>,
+    /// Session id the export dialog is writing; `None` while closed.
+    export_target: Option<String>,
+    /// Latest session usage report, shown in the usage dialog.
+    usage_report: Option<Box<runtime::SessionUsageSummary>>,
     /// Workspaces the switcher offers: the active one first, then this
     /// process's visits, then the shared core catalog.
     workspaces: Vec<WorkspaceChoice>,
@@ -630,6 +682,7 @@ impl ShellWindow {
         let dock = cx.new(|_| ResizableState::default());
         let rename_input = cx.new(|cx| InputState::new(window, cx));
         let workspace_input = cx.new(|cx| InputState::new(window, cx));
+        let export_input = cx.new(|cx| InputState::new(window, cx));
         receive_runtime_events(event_rx, window, cx);
         Self {
             draft,
@@ -655,6 +708,9 @@ impl ShellWindow {
             show_archived: false,
             rename_input,
             rename_target: None,
+            export_input,
+            export_target: None,
+            usage_report: None,
             workspaces: Vec::new(),
             workspace_input,
             workspace_error: None,
@@ -874,14 +930,17 @@ impl ShellWindow {
             }
             RuntimeEvent::TurnAccepted {
                 session_id,
-                turn_id: _,
+                turn_id,
                 message,
             } => {
                 if let Some(chat) = self.chat.as_mut() {
                     if chat.matches(&session_id) {
                         chat.submitting = false;
                         chat.busy = true;
-                        chat.entries.push(ChatEntry::User { text: message });
+                        chat.entries.push(ChatEntry::User {
+                            text: message,
+                            turn_id: Some(turn_id),
+                        });
                         // The turn carries the staged images now; a failed
                         // submission never reaches this echo, so the chips
                         // survive for a retry.
@@ -1020,6 +1079,70 @@ impl ShellWindow {
                         chat.name = name;
                     }
                 }
+            }
+            RuntimeEvent::SessionForked { .. } => {
+                // The runtime opens the fork right away; the transcript swap
+                // through `SessionOpened` is the visible feedback, and the
+                // session list refresh rides the same batch.
+            }
+            RuntimeEvent::CompactionStarted { session_id } => {
+                if let Some(chat) = self.chat.as_mut() {
+                    if chat.matches(&session_id) {
+                        chat.busy = true;
+                        chat.entries.push(ChatEntry::Info {
+                            text: i18n::current(cx).compaction_started.clone(),
+                        });
+                        self.list_sync_append(cx);
+                    }
+                }
+            }
+            RuntimeEvent::ExportFinished { session_id, path } => {
+                if let Some(chat) = self.chat.as_mut() {
+                    if chat.matches(&session_id) {
+                        let text = i18n::current(cx);
+                        chat.entries.push(ChatEntry::Info {
+                            text: format!("{} {path}", text.export_done_prefix),
+                        });
+                        self.list_sync_append(cx);
+                    }
+                }
+            }
+            RuntimeEvent::SessionUsage(summary) => {
+                self.usage_report = Some(summary);
+                let view = cx.entity().downgrade();
+                window.open_dialog(cx, move |dialog, _window, cx| {
+                    let text = i18n::current(cx);
+                    let report = view
+                        .upgrade()
+                        .and_then(|shell| shell.read(cx).usage_report.clone());
+                    let Some(report) = report else {
+                        return dialog.child(div());
+                    };
+                    dialog
+                        .title(div().child(text.usage_title.clone()))
+                        .child(
+                            div()
+                                .v_flex()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(report.session_id.clone()),
+                                )
+                                .child(usage_report_rows(&report, &text, cx)),
+                        )
+                        .footer(
+                            div().flex().flex_row().justify_end().child(
+                                Button::new("usage-close")
+                                    .label(text.session_action_cancel.clone())
+                                    .with_variant(ButtonVariant::Ghost)
+                                    .on_click(|_: &gpui_kit::ClickEvent, window, cx| {
+                                        window.close_dialog(cx);
+                                    }),
+                            ),
+                        )
+                });
             }
             RuntimeEvent::SessionDeleted { session_id } => {
                 // A deleted session cannot stay on screen: the transcript is
@@ -1463,27 +1586,53 @@ fn tool_status_label<'a>(status: ToolStatus, text: &'a ShellText) -> &'a str {
     }
 }
 
+/// Everything the per-turn fork menu needs; `None` in list harnesses that
+/// render entries without a live session attached.
+#[derive(Clone)]
+struct ChatForkContext {
+    session_id: String,
+    tx: mpsc::UnboundedSender<RuntimeEvent>,
+}
+
 /// One transcript entry as a scroller row. Row insets and the inter-row gap
 /// belong to the `MessageScroller` row wrapper; the reading column is applied
 /// by the renderer closure around this item.
-fn render_chat_item(entry: &ChatEntry, text: &ShellText, cx: &mut App) -> gpui_kit::AnyElement {
+fn render_chat_item(
+    entry: &ChatEntry,
+    text: &ShellText,
+    fork: Option<&ChatForkContext>,
+    cx: &mut App,
+) -> gpui_kit::AnyElement {
     match entry {
-        ChatEntry::User { text: body } => div()
-            .w_full()
-            // A column wrapper on purpose: inside a row-flex `justify_end`
-            // parent the Bubble lays out but never paints (gpui-pre 0.7.1
-            // stack, reproduced 2026-10-09). `MessageAlignment::End` already
-            // carries the right alignment through the bubble's own
-            // `ml_auto`/`self_end`.
-            .v_flex()
-            .child(
-                Bubble::new()
-                    .alignment(MessageAlignment::End)
-                    .with_variant(BubbleVariant::Muted)
-                    .max_w(px(USER_BUBBLE_MAX_WIDTH))
-                    .child(body.clone()),
-            )
-            .into_any_element(),
+        ChatEntry::User {
+            text: body,
+            turn_id,
+        } => {
+            let mut column = div()
+                .w_full()
+                // A column wrapper on purpose: inside a row-flex `justify_end`
+                // parent the Bubble lays out but never paints (gpui-pre 0.7.1
+                // stack, reproduced 2026-10-09). `MessageAlignment::End` already
+                // carries the right alignment through the bubble's own
+                // `ml_auto`/`self_end`.
+                .v_flex()
+                .child(
+                    Bubble::new()
+                        .alignment(MessageAlignment::End)
+                        .with_variant(BubbleVariant::Muted)
+                        .max_w(px(USER_BUBBLE_MAX_WIDTH))
+                        .child(body.clone()),
+                );
+            if let (Some(turn_id), Some(fork)) = (turn_id, fork) {
+                column = column.child(turn_fork_menu(
+                    fork.session_id.clone(),
+                    turn_id.clone(),
+                    fork.tx.clone(),
+                    text,
+                ));
+            }
+            column.into_any_element()
+        }
         ChatEntry::Assistant { text: body, .. } => div()
             .w_full()
             .min_w_0()
@@ -1503,7 +1652,58 @@ fn render_chat_item(entry: &ChatEntry, text: &ShellText, cx: &mut App) -> gpui_k
             .text_color(cx.theme().danger)
             .child(body.clone())
             .into_any_element(),
+        ChatEntry::Info { text: body } => div()
+            .w_full()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .child(body.clone())
+            .into_any_element(),
     }
+}
+
+/// Per-turn fork menu under a user prompt: fork including the selected turn,
+/// or from just before it. Both open the forked session when the runtime
+/// confirms the copy.
+fn turn_fork_menu(
+    session_id: String,
+    turn_id: String,
+    tx: mpsc::UnboundedSender<RuntimeEvent>,
+    text: &ShellText,
+) -> gpui_kit::AnyElement {
+    let at_action = {
+        let session_id = session_id.clone();
+        let turn_id = turn_id.clone();
+        let tx = tx.clone();
+        move |_: &gpui_kit::ClickEvent, _window: &mut Window, _cx: &mut App| {
+            if let Some(handle) = runtime::runtime_handle() {
+                handle.fork_session_turn(session_id.clone(), turn_id.clone(), false, tx.clone());
+            }
+        }
+    };
+    let before_action = {
+        let session_id = session_id.clone();
+        let turn_id = turn_id.clone();
+        let tx = tx.clone();
+        move |_: &gpui_kit::ClickEvent, _window: &mut Window, _cx: &mut App| {
+            if let Some(handle) = runtime::runtime_handle() {
+                handle.fork_session_turn(session_id.clone(), turn_id.clone(), true, tx.clone());
+            }
+        }
+    };
+    Button::new(SharedString::from(format!("turn-fork-{turn_id}")))
+        .icon(IconName::GitBranch)
+        .small()
+        .with_variant(ButtonVariant::Ghost)
+        .tooltip(text.fork_at_turn.clone())
+        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _window, cx| {
+            let text = i18n::current(cx);
+            menu.item(PopupMenuItem::new(text.fork_at_turn.clone()).on_click(at_action.clone()))
+                .item(
+                    PopupMenuItem::new(text.fork_before_turn.clone())
+                        .on_click(before_action.clone()),
+                )
+        })
+        .into_any_element()
 }
 
 /// Stable per-content markdown element id: transcript indices shift when
@@ -1588,18 +1788,22 @@ impl ShellWindow {
             "transcript",
             self.chat_scroller.clone(),
             move |index, _window, cx| {
-                let entry = this
-                    .read(cx)
+                let snapshot = this.read(cx);
+                let entry = snapshot
                     .chat
                     .as_ref()
                     .and_then(|chat| chat.entries.get(index))
                     .cloned();
+                let fork = snapshot.chat.as_ref().map(|chat| ChatForkContext {
+                    session_id: chat.session_id.clone(),
+                    tx: snapshot.event_tx.clone(),
+                });
                 match entry {
                     Some(entry) => div()
                         .w_full()
                         .max_w(px(READING_COLUMN_WIDTH))
                         .mx_auto()
-                        .child(render_chat_item(&entry, &text, cx))
+                        .child(render_chat_item(&entry, &text, fork.as_ref(), cx))
                         .into_any_element(),
                     // Scroller item counts are synced on the same mutation
                     // that grows `entries`, so an out-of-range index cannot
@@ -2361,6 +2565,210 @@ fn open_workspace_path_dialog(view: WeakEntity<ShellWindow>, window: &mut Window
 
 /// Opens the delete confirmation for one session. Deleting is destructive and
 /// has no undo, so it never happens straight from the row menu.
+fn open_export_dialog(
+    view: WeakEntity<ShellWindow>,
+    session_id: String,
+    name: String,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(shell) = view.upgrade() else {
+        return;
+    };
+    let input = shell.read(cx).export_input.clone();
+    input.update(cx, |state, cx| {
+        state.set_value(default_export_path(&name), window, cx)
+    });
+    shell.update(cx, |this, cx| {
+        this.export_target = Some(session_id.clone());
+        cx.notify();
+    });
+
+    let confirm_view = view.clone();
+    let cancel_view = view.clone();
+    let confirm = move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
+        let Some(shell) = confirm_view.upgrade() else {
+            return;
+        };
+        let path = shell
+            .read(cx)
+            .export_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        if path.is_empty() {
+            // Keep the dialog open: an empty path would write nowhere.
+            tracing::warn!("Ignoring empty export path");
+            return;
+        }
+        let session_id = shell.read(cx).export_target.clone().unwrap_or_default();
+        if session_id.is_empty() {
+            window.close_dialog(cx);
+            return;
+        }
+        let tx = shell.read(cx).event_tx.clone();
+        if let Some(handle) = runtime::runtime_handle() {
+            handle.export_session(session_id, PathBuf::from(&path), tx);
+        }
+        shell.update(cx, |this, cx| {
+            this.export_target = None;
+            cx.notify();
+        });
+        window.close_dialog(cx);
+    };
+    let cancel = move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
+        if let Some(shell) = cancel_view.upgrade() {
+            shell.update(cx, |this, cx| {
+                this.export_target = None;
+                cx.notify();
+            });
+        }
+        window.close_dialog(cx);
+    };
+
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let text = i18n::current(cx);
+        dialog
+            .title(div().child(text.export_title.clone()))
+            .child(div().w(px(420.)).child(Input::new(&input)))
+            .footer(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("export-cancel")
+                            .label(text.session_action_cancel.clone())
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(cancel.clone()),
+                    )
+                    .child(
+                        Button::new("export-confirm")
+                            .label(text.session_action_confirm.clone())
+                            .with_variant(ButtonVariant::Primary)
+                            .on_click(confirm.clone()),
+                    ),
+            )
+    });
+}
+
+/// Export prefill: the user's Downloads directory (HOME / USERPROFILE),
+/// falling back to the current directory when neither is set.
+fn default_export_path(name: &str) -> String {
+    let base = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map(|home| PathBuf::from(home).join("Downloads"))
+        .unwrap_or_else(|_| PathBuf::from("."));
+    base.join(format!("openbitfun-{}.md", export_slug(name)))
+        .display()
+        .to_string()
+}
+
+/// File-name slug for an export: ASCII lowercase words joined by dashes; a
+/// name with no ASCII word characters collapses to `session`.
+fn export_slug(name: &str) -> String {
+    let slug: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let compacted = slug
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    if compacted.is_empty() {
+        "session".to_string()
+    } else {
+        compacted
+    }
+}
+
+/// Key/value rows for the usage dialog: headline token counts, timing, then
+/// one line per model the session called.
+fn usage_report_rows(
+    report: &runtime::SessionUsageSummary,
+    text: &ShellText,
+    cx: &App,
+) -> gpui_kit::Div {
+    let mut entries: Vec<(String, String)> = vec![
+        (text.usage_turns.clone(), report.turn_count.to_string()),
+        (
+            text.usage_input_tokens.clone(),
+            optional_tokens(report.input_tokens),
+        ),
+        (
+            text.usage_output_tokens.clone(),
+            optional_tokens(report.output_tokens),
+        ),
+        (
+            text.usage_cached_tokens.clone(),
+            optional_tokens(report.cached_tokens),
+        ),
+        (
+            text.usage_total_tokens.clone(),
+            optional_tokens(report.total_tokens),
+        ),
+        (
+            text.usage_wall_time.clone(),
+            optional_duration(report.wall_time_ms),
+        ),
+        (
+            text.usage_active_time.clone(),
+            optional_duration(report.active_turn_ms),
+        ),
+    ];
+    if !report.models.is_empty() {
+        for model in &report.models {
+            entries.push((
+                format!("{} · {}", text.usage_models.clone(), model.model_id),
+                format!("{} × {}", model.calls, optional_tokens(model.total_tokens)),
+            ));
+        }
+    }
+    let mut rows = div().v_flex().gap_1().w(px(420.));
+    for (label, value) in entries {
+        rows = rows.child(
+            div()
+                .flex()
+                .flex_row()
+                .justify_between()
+                .gap_2()
+                .text_sm()
+                .child(div().text_color(cx.theme().muted_foreground).child(label))
+                .child(div().child(value)),
+        );
+    }
+    rows
+}
+
+/// Compact duration for the usage dialog: seconds below a minute, then whole
+/// minutes and seconds.
+fn optional_duration(ms: Option<u64>) -> String {
+    let Some(ms) = ms else {
+        return "—".to_string();
+    };
+    if ms < 60_000 {
+        format!("{:.1} s", ms as f64 / 1000.0)
+    } else {
+        let total_seconds = ms / 1000;
+        format!("{} m {} s", total_seconds / 60, total_seconds % 60)
+    }
+}
+
+fn optional_tokens(value: Option<u64>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "—".to_string())
+}
+
 fn open_delete_dialog(
     view: WeakEntity<ShellWindow>,
     session_id: String,
@@ -2804,6 +3212,7 @@ impl ShellWindow {
                         .flex()
                         .items_center()
                         .gap_2()
+                        .child(self.render_usage_button(cx))
                         .child(self.render_model_picker(text, cx))
                         .child({
                             let active = chat.busy || chat.submitting;
@@ -2820,6 +3229,30 @@ impl ShellWindow {
                 ),
             None => div(),
         }
+    }
+
+    /// Header usage button: asks the runtime for the session usage report;
+    /// the dialog opens when [`RuntimeEvent::SessionUsage`] arrives.
+    fn render_usage_button(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        let Some(chat) = self.chat.as_ref() else {
+            return div().into_any_element();
+        };
+        let session_id = chat.session_id.clone();
+        let tx = self.event_tx.clone();
+        let text = i18n::current(cx);
+        Button::new("session-usage")
+            .icon(IconName::ChartPie)
+            .small()
+            .with_variant(ButtonVariant::Ghost)
+            .tooltip(text.usage_title.clone())
+            .on_click(
+                move |_: &gpui_kit::ClickEvent, _window: &mut Window, _cx: &mut App| {
+                    if let Some(handle) = runtime::runtime_handle() {
+                        handle.session_usage(session_id.clone(), tx.clone());
+                    }
+                },
+            )
+            .into_any_element()
     }
 
     /// Model picker for the open session: the header shows the current model
@@ -3068,7 +3501,7 @@ mod tests {
                 move |index, _window, cx| {
                     render_count.set(render_count.get() + 1);
                     match this.read(cx).entries.get(index).cloned() {
-                        Some(entry) => render_chat_item(&entry, &text, cx),
+                        Some(entry) => render_chat_item(&entry, &text, None, cx),
                         None => div().into_any_element(),
                     }
                 },
@@ -3133,6 +3566,7 @@ mod tests {
         for index in 0..rounds {
             entries.push(ChatEntry::User {
                 text: format!("Stress round {index}: please explain item {index}."),
+                turn_id: None,
             });
             let paragraph = format!(
                 "Answer **{index}** with a [link](https://example.com/{index}) and `inline code`.\n\n\
@@ -3236,6 +3670,7 @@ mod tests {
         for round in 0..5 {
             grown.push(ChatEntry::User {
                 text: format!("live round {round}"),
+                turn_id: None,
             });
             window.update(|_, cx| {
                 scroller.update(cx, |scroller, cx| {
@@ -3564,6 +3999,88 @@ mod tests {
         });
         assert_eq!(rows, 1);
         assert!(!chat_open);
+    }
+
+    /// The turn echo stamps the fork boundary onto the user entry, and the
+    /// compaction/export/usage events feed their dialogs and status lines.
+    #[gpui_kit::test]
+    fn turn_echo_and_maintenance_events_update_chat_state(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(
+                    RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                        session_id: "s-1".into(),
+                        name: "First".into(),
+                        agent_type: "Standard".into(),
+                        model_id: None,
+                        entries: Vec::new(),
+                        busy: false,
+                    }),
+                    window,
+                    cx,
+                );
+                shell.apply_runtime_event(
+                    RuntimeEvent::TurnAccepted {
+                        session_id: "s-1".into(),
+                        turn_id: "turn-9".into(),
+                        message: "do the thing".into(),
+                    },
+                    window,
+                    cx,
+                );
+                shell.apply_runtime_event(
+                    RuntimeEvent::CompactionStarted {
+                        session_id: "s-1".into(),
+                    },
+                    window,
+                    cx,
+                );
+                shell.apply_runtime_event(
+                    RuntimeEvent::ExportFinished {
+                        session_id: "s-1".into(),
+                        path: "/tmp/export.md".into(),
+                    },
+                    window,
+                    cx,
+                );
+            });
+        });
+
+        window.update(|_, cx| {
+            let shell = shell.read(cx);
+            let chat = shell.chat.as_ref().expect("chat opened");
+            assert!(chat.busy, "compaction marks the session busy");
+            let mut entries = chat.entries.iter();
+            match entries.next_back() {
+                Some(ChatEntry::Info { text }) => assert!(text.contains("/tmp/export.md")),
+                other => panic!("expected export info line, got {other:?}"),
+            }
+            match entries.next_back() {
+                Some(ChatEntry::Info { text }) => assert!(!text.is_empty()),
+                other => panic!("expected compaction info line, got {other:?}"),
+            }
+            match entries.next_back() {
+                Some(ChatEntry::User { turn_id, .. }) => {
+                    assert_eq!(turn_id.as_deref(), Some("turn-9"));
+                }
+                other => panic!("expected user entry with turn id, got {other:?}"),
+            }
+            assert!(shell.usage_report.is_none(), "usage dialog stays closed");
+        });
+    }
+
+    #[test]
+    fn usage_summary_formats_tokens_and_durations() {
+        assert_eq!(optional_tokens(Some(120)), "120");
+        assert_eq!(optional_tokens(None), "—");
+        assert_eq!(optional_duration(Some(1_500)), "1.5 s");
+        assert_eq!(optional_duration(Some(61_000)), "1 m 1 s");
+        assert_eq!(optional_duration(None), "—");
     }
 
     /// Archived rows stay out of the sidebar until the toggle is on, and the
