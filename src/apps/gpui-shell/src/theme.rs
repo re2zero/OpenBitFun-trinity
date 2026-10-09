@@ -9,9 +9,9 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use gpui::{App, SharedString};
-use gpui_component::highlighter::{HighlightThemeStyle, SyntaxColors};
-use gpui_component::theme::{Theme, ThemeConfig, ThemeConfigColors, ThemeMode};
+use gpui_kit::component::highlighter::{HighlightThemeStyle, SyntaxColors};
+use gpui_kit::component::theme::{Theme, ThemeConfig, ThemeConfigColors, ThemeMode};
+use gpui_kit::{App, SharedString};
 use serde::Deserialize;
 
 /// A parsed CLI theme preset ready to be applied to the global gpui theme.
@@ -24,7 +24,19 @@ pub(crate) struct ThemePreset {
 
 impl ThemePreset {
     pub(crate) fn apply(&self, cx: &mut App) {
-        Theme::global_mut(cx).apply_config(&self.config);
+        // 0.7.x applies a config by installing it as the mode's current theme
+        // and reloading through `Theme::change`, which also refreshes the
+        // Base-layer copy; `apply_config` no longer exists.
+        let mode = self.config.mode;
+        {
+            let theme = Theme::global_mut(cx);
+            if mode.is_dark() {
+                theme.dark_theme = Rc::clone(&self.config);
+            } else {
+                theme.light_theme = Rc::clone(&self.config);
+            }
+        }
+        Theme::change(mode, None, cx);
         cx.refresh_windows();
         tracing::info!("Theme preset applied: {}", self.id);
     }

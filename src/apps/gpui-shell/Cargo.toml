@@ -6,8 +6,7 @@ edition.workspace = true
 description = "OpenBitFun GPUI desktop shell (experimental native frontend)"
 
 [dependencies]
-gpui = { workspace = true }
-gpui-component = { workspace = true }
+gpui-kit = { workspace = true }
 openbitfun-core = { path = "../../crates/assembly/core", features = [
     "i18n-runtime",
     # Embedded runtime closure, aligned with `src/apps/cli/Cargo.toml` (PLAN M3):
@@ -44,7 +43,9 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
-gpui = { workspace = true, features = ["test-support"] }
+# gpui-kit's test-support forwards to gpui/gpui-platform/gpui-base/
+# gpui-component test features, covering `#[gpui_kit::test]` headless windows.
+gpui-kit = { workspace = true, features = ["test-support"] }
 # Test fixture only (`examples/seed_session.rs` stress-test seeder): writes
 # sessions through the sanctioned offline import store instead of hand-crafted
 # storage files.

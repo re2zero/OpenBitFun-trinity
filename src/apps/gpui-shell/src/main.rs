@@ -2,17 +2,16 @@ mod i18n;
 mod runtime;
 mod theme;
 
-use gpui::{
-    div, list, prelude::*, px, size, App, Application, Bounds, Context, Entity, Global,
-    ListAlignment, ListOffset, ListState, SharedString, TitlebarOptions, Window, WindowBounds,
-    WindowOptions,
-};
-use gpui_component::{
+use gpui_kit::component::{
     button::{Button, ButtonVariant, ButtonVariants},
-    input::{Input, InputState},
+    input::{Textarea, TextareaState},
     scroll::ScrollableElement,
     text::TextView,
-    ActiveTheme, Disableable, Root, Sizable, StyledExt,
+    ActiveTheme, Disableable, Sizable, StyledExt,
+};
+use gpui_kit::{
+    div, list, point, prelude::*, px, size, App, Bounds, Context, Entity, Global, ListAlignment,
+    ListOffset, ListState, SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 use openbitfun_runtime_ports::AgentSessionSummary;
 use tokio::sync::mpsc;
@@ -23,7 +22,8 @@ use crate::theme::{ThemePreset, DEFAULT_PRESET_ID};
 
 /// Width of the fixed session pane.
 const SESSION_PANE_WIDTH: f32 = 300.;
-/// Composer height; explicit pixels because `rows()` does not size in 0.5.1.
+/// Composer height; explicit pixels because an auto-grown textarea makes the
+/// docked composer row jump while streaming text is typed.
 const COMPOSER_HEIGHT: f32 = 88.;
 /// Extra content rendered beyond the visible chat area so scrolling does not
 /// pop unmeasured items into view.
@@ -119,7 +119,7 @@ impl ChatView {
 }
 
 struct ShellWindow {
-    draft: Entity<InputState>,
+    draft: Entity<TextareaState>,
     phase: RuntimePhase,
     sessions: Vec<SessionRow>,
     list_error: Option<String>,
@@ -140,9 +140,7 @@ impl ShellWindow {
     ) -> Self {
         let text = i18n::current(cx);
         let draft = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder(text.chat_input_placeholder.clone())
-                .multi_line(true)
+            TextareaState::new(window, cx).placeholder(text.chat_input_placeholder.clone())
         });
         receive_runtime_events(event_rx, window, cx);
         Self {
@@ -376,7 +374,7 @@ impl ShellWindow {
         cx.notify();
     }
 
-    fn render_status_line(&self, text: &ShellText, cx: &mut Context<Self>) -> gpui::Div {
+    fn render_status_line(&self, text: &ShellText, cx: &mut Context<Self>) -> gpui_kit::Div {
         match &self.phase {
             RuntimePhase::Starting => div()
                 .text_color(cx.theme().muted_foreground)
@@ -397,7 +395,7 @@ impl ShellWindow {
         &self,
         text: &ShellText,
         cx: &mut Context<Self>,
-    ) -> gpui::Stateful<gpui::Div> {
+    ) -> gpui_kit::Stateful<gpui_kit::Div> {
         let mut header = div()
             .id("sessions-header")
             .flex()
@@ -507,7 +505,7 @@ impl ShellWindow {
         section.child(list.overflow_y_scrollbar())
     }
 
-    fn render_verification(&self, text: &ShellText, cx: &mut Context<Self>) -> gpui::Div {
+    fn render_verification(&self, text: &ShellText, cx: &mut Context<Self>) -> gpui_kit::Div {
         let language_button = Button::new("language")
             .label(text.locale.as_str())
             .small()
@@ -606,12 +604,7 @@ fn tool_status_label<'a>(status: ToolStatus, text: &'a ShellText) -> &'a str {
 /// One transcript entry as a list item. The gutter padding (`px_2`) and the
 /// trailing gap (`pb_3`) are part of the item because gpui's `list` has no
 /// inter-item gap support.
-fn render_chat_item(
-    entry: &ChatEntry,
-    text: &ShellText,
-    window: &mut Window,
-    cx: &mut App,
-) -> gpui::AnyElement {
+fn render_chat_item(entry: &ChatEntry, text: &ShellText, cx: &mut App) -> gpui_kit::AnyElement {
     match entry {
         ChatEntry::User { text: body } => div()
             .w_full()
@@ -639,8 +632,6 @@ fn render_chat_item(
                 TextView::markdown(
                     SharedString::from(format!("entry-{}-md", markdown_id_key(body))),
                     body.clone(),
-                    window,
-                    cx,
                 )
                 .selectable(true),
             )
@@ -671,7 +662,7 @@ fn markdown_id_key(body: &str) -> u64 {
     std::hash::Hasher::finish(&hasher)
 }
 
-fn render_tool_card(card: &ToolCard, text: &ShellText, cx: &App) -> gpui::Div {
+fn render_tool_card(card: &ToolCard, text: &ShellText, cx: &App) -> gpui_kit::Div {
     let status_color = match card.status {
         ToolStatus::Running | ToolStatus::WaitingConfirm => cx.theme().warning,
         ToolStatus::Done => cx.theme().success,
@@ -725,7 +716,7 @@ impl ShellWindow {
     /// overdraw, so a 1k-message transcript neither re-parses off-screen
     /// markdown nor re-renders it per frame. Bottom alignment pins the view to
     /// the newest content until the user scrolls up.
-    fn render_chat_area(&self, text: &ShellText, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_chat_area(&self, text: &ShellText, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         if self.chat.is_none() {
             return div()
                 .flex_1()
@@ -739,7 +730,7 @@ impl ShellWindow {
         }
         let this = cx.entity();
         let text = text.clone();
-        list(self.chat_list.clone(), move |index, window, cx| {
+        list(self.chat_list.clone(), move |index, _window, cx| {
             let entry = this
                 .read(cx)
                 .chat
@@ -747,7 +738,7 @@ impl ShellWindow {
                 .and_then(|chat| chat.entries.get(index))
                 .cloned();
             match entry {
-                Some(entry) => render_chat_item(&entry, &text, window, cx),
+                Some(entry) => render_chat_item(&entry, &text, cx),
                 // List-state item counts are synced on the same mutation that
                 // grows `entries`, so an out-of-range index cannot persist.
                 None => div().into_any_element(),
@@ -773,7 +764,7 @@ impl ShellWindow {
         }
     }
 
-    fn render_composer(&self, text: &ShellText, cx: &mut Context<Self>) -> gpui::Div {
+    fn render_composer(&self, text: &ShellText, cx: &mut Context<Self>) -> gpui_kit::Div {
         let Some(chat) = self.chat.as_ref() else {
             return div();
         };
@@ -791,7 +782,7 @@ impl ShellWindow {
             .flex_row()
             .gap_2()
             .items_end()
-            .child(Input::new(&self.draft).flex_1().h(px(COMPOSER_HEIGHT)))
+            .child(Textarea::new(&self.draft).flex_1().h(px(COMPOSER_HEIGHT)))
             .child(if busy {
                 Button::new("chat-stop")
                     .label(text.chat_stop.clone())
@@ -905,7 +896,7 @@ impl Render for ShellWindow {
 }
 
 impl ShellWindow {
-    fn render_chat_header(&self, text: &ShellText, cx: &mut Context<Self>) -> gpui::Div {
+    fn render_chat_header(&self, text: &ShellText, cx: &mut Context<Self>) -> gpui_kit::Div {
         match self.chat.as_ref() {
             Some(chat) => div()
                 .flex()
@@ -1001,8 +992,8 @@ fn main() {
     // The view keeps its own sender for the session reload action.
     let view_event_tx = event_tx.clone();
 
-    Application::new().run(move |cx: &mut App| {
-        gpui_component::init(cx);
+    gpui_kit::application().run(move |cx: &mut App| {
+        gpui_kit::init(cx);
 
         let presets = theme::load_presets();
         let active_preset = presets
@@ -1021,22 +1012,20 @@ fn main() {
 
         runtime::spawn_bootstrap(tokio_handle, event_tx);
 
-        let open_result = cx.open_window(
+        let open_result = gpui_kit::open_window(
             WindowOptions {
                 titlebar: Some(TitlebarOptions {
                     title: Some(SharedString::from("OpenBitFun GPUI Shell")),
                     ..Default::default()
                 }),
                 window_bounds: Some(WindowBounds::Windowed(Bounds {
-                    origin: gpui::point(px(80.), px(80.)),
+                    origin: point(px(80.), px(80.)),
                     size: size(px(1180.), px(760.)),
                 })),
                 ..Default::default()
             },
-            |window, cx| {
-                let view = cx.new(|cx| ShellWindow::new(view_event_tx, event_rx, window, cx));
-                cx.new(|cx| Root::new(view, window, cx))
-            },
+            cx,
+            |window, cx| cx.new(|cx| ShellWindow::new(view_event_tx, event_rx, window, cx)),
         );
 
         match open_result {
@@ -1117,10 +1106,10 @@ mod tests {
             let this = cx.entity();
             let render_count = self.render_count.clone();
             let text = self.text.clone();
-            list(self.state.clone(), move |index, window, cx| {
+            list(self.state.clone(), move |index, _window, cx| {
                 render_count.set(render_count.get() + 1);
                 match this.read(cx).entries.get(index).cloned() {
-                    Some(entry) => render_chat_item(&entry, &text, window, cx),
+                    Some(entry) => render_chat_item(&entry, &text, cx),
                     None => div().into_any_element(),
                 }
             })
@@ -1183,18 +1172,17 @@ mod tests {
         entries
     }
 
-    #[gpui::test]
-    fn transcript_list_renders_visible_range_only(cx: &mut gpui::TestAppContext) {
-        cx.update(|cx| gpui_component::init(cx));
+    #[gpui_kit::test]
+    fn transcript_list_renders_visible_range_only(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| gpui_kit::init(cx));
 
         const ROUNDS: usize = 500;
         let entries = Rc::new(stress_entries(ROUNDS));
         let render_count: Rc<Cell<usize>> = Default::default();
         let state = ListState::new(entries.len(), ListAlignment::Bottom, px(CHAT_OVERDRAW));
-        let text = sample_shell_text();
 
         let window = cx.add_empty_window();
-        let draw_frame = |window: &mut gpui::VisualTestContext,
+        let draw_frame = |window: &mut gpui_kit::VisualTestContext,
                           state: &ListState,
                           entries: &Rc<Vec<ChatEntry>>,
                           render_count: &Rc<Cell<usize>>|
@@ -1206,7 +1194,7 @@ mod tests {
             let text = sample_shell_text();
             let started = std::time::Instant::now();
             window.draw(
-                gpui::point(px(0.), px(0.)),
+                point(px(0.), px(0.)),
                 size(px(800.), px(600.)),
                 move |_, cx| {
                     cx.new(|_| TranscriptListHarness {
@@ -1215,6 +1203,7 @@ mod tests {
                         render_count,
                         text,
                     })
+                    .into_any_element()
                 },
             );
             started.elapsed()
@@ -1222,7 +1211,7 @@ mod tests {
 
         // Transcript restore: the first frame must neither render nor measure
         // all 1k entries (markdown parse only happens for rendered items).
-        let elapsed = draw_frame(window, &state, &entries, &render_count);
+        draw_frame(window, &state, &entries, &render_count);
         let restored = render_count.get();
         assert!(
             restored < 100,

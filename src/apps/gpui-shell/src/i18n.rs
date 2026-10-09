@@ -5,7 +5,7 @@
 //! result in a gpui global. Locale copy lives in
 //! `src/crates/assembly/core/locales/*.ftl` under the `gpui-shell-*` keys.
 
-use gpui::{App, Global};
+use gpui_kit::{App, Global};
 use openbitfun_core::service::i18n::{
     get_global_i18n_service, initialize_global_i18n_service, LocaleId, TranslationArgs,
 };
@@ -40,8 +40,8 @@ impl Global for ShellText {}
 
 pub(crate) fn init(cx: &mut App) {
     if let Err(err) = cx
-        .background_executor()
-        .block(initialize_global_i18n_service(None))
+        .foreground_executor()
+        .block_on(initialize_global_i18n_service(None))
     {
         tracing::error!("Failed to initialize i18n service: {}", err);
         return;
@@ -50,7 +50,7 @@ pub(crate) fn init(cx: &mut App) {
 }
 
 pub(crate) fn load_locale(locale: LocaleId, cx: &mut App) {
-    let text = cx.background_executor().block(fetch_text(locale));
+    let text = cx.foreground_executor().block_on(fetch_text(locale));
     cx.set_global(text);
     cx.refresh_windows();
     tracing::info!("Shell locale loaded: {}", locale.as_str());
@@ -102,7 +102,7 @@ pub(crate) fn turns_label(turn_count: usize, cx: &App) -> String {
 }
 
 fn resolve_with(key: &str, args: TranslationArgs, cx: &App) -> String {
-    cx.background_executor().block(async move {
+    cx.foreground_executor().block_on(async move {
         match get_global_i18n_service().await {
             Some(service) => service.t_with(key, args).await,
             None => key.to_string(),

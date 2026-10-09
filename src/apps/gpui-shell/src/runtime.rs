@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Result};
-use gpui::SharedString;
+use gpui_kit::SharedString;
 use openbitfun_agent_runtime::sdk::{
     AgentDialogTurnExecution, AgentDialogTurnRequest, AgentRuntime, AgentSessionCreateRequest,
     AgentSessionRestoreRequest, AgentTurnCancellationRequest, SessionState, SessionTranscript,
