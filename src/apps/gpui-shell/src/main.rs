@@ -3,16 +3,21 @@ mod runtime;
 mod theme;
 mod theme_openbitfun;
 
+use gpui_kit::assets::IconName;
 use gpui_kit::component::{
-    button::{Button, ButtonVariant, ButtonVariants},
+    bubble::{Bubble, BubbleVariant},
+    button::{Button, ButtonVariant, ButtonVariants, DropdownButton},
     input::{Textarea, TextareaState},
-    scroll::ScrollableElement,
+    menu::PopupMenuItem,
+    message::MessageAlignment,
+    message_scroller::{MessageScroller, MessageScrollerState},
+    sidebar::{Sidebar, SidebarFooter, SidebarGroup, SidebarItem},
     text::TextView,
-    ActiveTheme, Disableable, Sizable, StyledExt,
+    ActiveTheme, Collapsible, Disableable, Sizable, StyledExt, TitleBar,
 };
 use gpui_kit::{
-    div, list, point, prelude::*, px, size, App, Bounds, Context, Entity, Global, ListAlignment,
-    ListOffset, ListState, SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
+    div, point, prelude::*, px, size, App, Bounds, Context, ElementId, Entity, Global,
+    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 use openbitfun_runtime_ports::AgentSessionSummary;
 use tokio::sync::mpsc;
@@ -21,14 +26,16 @@ use crate::i18n::ShellText;
 use crate::runtime::{ChatEntry, RuntimeEvent, ToolCard, ToolStatus};
 use crate::theme::{ThemePreset, DEFAULT_PRESET_ID};
 
-/// Width of the fixed session pane.
+/// Width of the navigation sidebar, matching the web-ui desktop shell.
 const SESSION_PANE_WIDTH: f32 = 300.;
+/// Transcript reading column; long-window content stays centered on it.
+const READING_COLUMN_WIDTH: f32 = 900.;
+/// User bubble cap inside the reading column, so short messages do not
+/// stretch across the whole column.
+const USER_BUBBLE_MAX_WIDTH: f32 = 480.;
 /// Composer height; explicit pixels because an auto-grown textarea makes the
 /// docked composer row jump while streaming text is typed.
 const COMPOSER_HEIGHT: f32 = 88.;
-/// Extra content rendered beyond the visible chat area so scrolling does not
-/// pop unmeasured items into view.
-const CHAT_OVERDRAW: f32 = 256.;
 
 /// App-global shell state: theme presets from the CLI palette plus the active
 /// selection. Lives outside `ShellWindow` so button handlers can reach it.
@@ -49,6 +56,7 @@ enum RuntimePhase {
 
 /// One session list entry, composed (including localized metadata) when the
 /// snapshot arrives so the render path never touches the i18n service.
+#[derive(Clone)]
 struct SessionRow {
     id: String,
     name: String,
@@ -119,6 +127,87 @@ impl ChatView {
     }
 }
 
+/// One `Sidebar` content entry: a session row, the empty-state line, or the
+/// list error line. One type because `Sidebar` children share one element
+/// type; collapsed-state is inert because entries are always rendered.
+#[derive(Clone)]
+enum SidebarEntry {
+    Session {
+        row: SessionRow,
+        open: bool,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+    },
+    Muted(SharedString),
+    Danger(SharedString),
+}
+
+impl Collapsible for SidebarEntry {
+    fn collapsed(self, _collapsed: bool) -> Self {
+        self
+    }
+
+    fn is_collapsed(&self) -> bool {
+        false
+    }
+}
+
+impl SidebarItem for SidebarEntry {
+    fn render(
+        self,
+        id: impl Into<ElementId>,
+        _window: &mut Window,
+        cx: &mut App,
+    ) -> impl IntoElement {
+        let _id = id.into();
+        match self {
+            SidebarEntry::Session { row, open, tx } => {
+                let SessionRow { id, name, metadata } = row;
+                div()
+                    .id(SharedString::from(format!("session-{}", id)))
+                    .on_click(move |_, _, _| {
+                        if let Some(handle) = runtime::runtime_handle() {
+                            handle.open_session(id.clone(), tx.clone());
+                        }
+                    })
+                    .cursor_pointer()
+                    .v_flex()
+                    .gap_0p5()
+                    .min_w_0()
+                    .p_2()
+                    .rounded(cx.theme().radius)
+                    .when(open, |this| this.bg(cx.theme().sidebar_accent))
+                    .when(!open, |this| {
+                        this.hover(|style| style.bg(cx.theme().sidebar_accent))
+                    })
+                    .child(
+                        div()
+                            .text_color(cx.theme().sidebar_foreground)
+                            .truncate()
+                            .child(name),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .truncate()
+                            .child(metadata),
+                    )
+                    .into_any_element()
+            }
+            SidebarEntry::Muted(text) => div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(text)
+                .into_any_element(),
+            SidebarEntry::Danger(text) => div()
+                .text_sm()
+                .text_color(cx.theme().danger)
+                .child(text)
+                .into_any_element(),
+        }
+    }
+}
+
 struct ShellWindow {
     draft: Entity<TextareaState>,
     phase: RuntimePhase,
@@ -126,9 +215,11 @@ struct ShellWindow {
     list_error: Option<String>,
     chat: Option<ChatView>,
     chat_error: Option<String>,
-    /// Virtualized transcript list state; item counts are kept in sync with
-    /// `chat.entries` through the `list_sync_*` helpers.
-    chat_list: ListState,
+    /// Virtualized transcript state owned by the component library's
+    /// `MessageScroller`; item counts are kept in sync with `chat.entries`
+    /// through the `list_sync_*` helpers and tail-following keeps the newest
+    /// content in view until the user scrolls up.
+    chat_scroller: Entity<MessageScrollerState>,
     event_tx: mpsc::UnboundedSender<RuntimeEvent>,
 }
 
@@ -143,6 +234,7 @@ impl ShellWindow {
         let draft = cx.new(|cx| {
             TextareaState::new(window, cx).placeholder(text.chat_input_placeholder.clone())
         });
+        let chat_scroller = cx.new(|cx| MessageScrollerState::new(0, cx));
         receive_runtime_events(event_rx, window, cx);
         Self {
             draft,
@@ -151,7 +243,7 @@ impl ShellWindow {
             list_error: None,
             chat: None,
             chat_error: None,
-            chat_list: ListState::new(0, ListAlignment::Bottom, px(CHAT_OVERDRAW)),
+            chat_scroller,
             event_tx,
         }
     }
@@ -182,43 +274,40 @@ impl ShellWindow {
         }
     }
 
-    /// Entry count grew by one: register the new item as unmeasured and keep
-    /// the newest content in view, matching the previous scroll-to-bottom
-    /// behavior for appends.
-    fn list_sync_append(&mut self) {
-        let count = self.entry_count();
-        self.chat_list.splice(appended_range(count), 1);
-        self.scroll_list_to_bottom();
+    /// Entry count grew by one: register the new item and keep the newest
+    /// content in view (the scroller's tail-follow mode tracks appends while
+    /// the reader sits at the live edge).
+    fn list_sync_append(&mut self, cx: &mut Context<Self>) {
+        self.chat_scroller.update(cx, |scroller, cx| {
+            scroller.append(1, cx);
+        });
     }
 
     /// The tail entry changed in place (streaming chunk or tool-card update);
     /// its cached height is stale until the list re-measures it.
-    fn list_sync_tail_changed(&mut self) {
+    fn list_sync_tail_changed(&mut self, cx: &mut Context<Self>) {
         let count = self.entry_count();
         if count > 0 {
-            self.chat_list.splice(tail_changed_range(count), 1);
+            self.chat_scroller.update(cx, |scroller, cx| {
+                scroller.remeasure_items(tail_changed_range(count), cx);
+            });
         }
-        self.scroll_list_to_bottom();
     }
 
     /// An entry below the tail changed in place (tool lifecycle upserts land
     /// on cards created earlier in the turn).
-    fn list_sync_item_changed(&mut self, index: usize) {
-        self.chat_list.splice(index..index + 1, 1);
+    fn list_sync_item_changed(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.chat_scroller.update(cx, |scroller, cx| {
+            scroller.remeasure_items(index..index + 1, cx);
+        });
     }
 
     /// The transcript was replaced wholesale (session opened or reloaded);
-    /// resetting also drops the logical scroll top, which pins the
-    /// bottom-aligned list to the newest content.
-    fn list_sync_reset(&mut self) {
-        self.chat_list.reset(self.entry_count());
-    }
-
-    fn scroll_list_to_bottom(&mut self) {
-        // Out-of-range item indices are clamped to the end by `scroll_to`.
-        self.chat_list.scroll_to(ListOffset {
-            item_ix: self.entry_count(),
-            offset_in_item: px(0.),
+    /// resetting also drops the follow anchor, which pins the view to the
+    /// newest content.
+    fn list_sync_reset(&mut self, cx: &mut Context<Self>) {
+        self.chat_scroller.update(cx, |scroller, cx| {
+            scroller.reset(self.entry_count(), cx);
         });
     }
 
@@ -275,7 +364,7 @@ impl ShellWindow {
                         });
                     }
                 }
-                self.list_sync_reset();
+                self.list_sync_reset(cx);
                 tracing::info!("Session transcript ready in chat pane");
             }
             RuntimeEvent::SessionOpenFailed(error) => {
@@ -291,7 +380,7 @@ impl ShellWindow {
                         chat.submitting = false;
                         chat.busy = true;
                         chat.entries.push(ChatEntry::User { text: message });
-                        self.list_sync_append();
+                        self.list_sync_append(cx);
                     }
                 }
             }
@@ -304,7 +393,7 @@ impl ShellWindow {
                         chat.entries.push(ChatEntry::Notice {
                             text: i18n::failed_status(&error, cx),
                         });
-                        self.list_sync_append();
+                        self.list_sync_append(cx);
                     }
                 }
             }
@@ -325,9 +414,9 @@ impl ShellWindow {
                 if let Some(chat) = self.chat.as_mut() {
                     if chat.matches(&session_id) {
                         if chat.append_chunk(&round_id, &text) {
-                            self.list_sync_append();
+                            self.list_sync_append(cx);
                         } else {
-                            self.list_sync_tail_changed();
+                            self.list_sync_tail_changed(cx);
                         }
                     }
                 }
@@ -336,8 +425,8 @@ impl ShellWindow {
                 if let Some(chat) = self.chat.as_mut() {
                     if chat.matches(&session_id) {
                         match chat.upsert_tool(card) {
-                            None => self.list_sync_append(),
-                            Some(index) => self.list_sync_item_changed(index),
+                            None => self.list_sync_append(cx),
+                            Some(index) => self.list_sync_item_changed(index, cx),
                         }
                     }
                 }
@@ -351,7 +440,7 @@ impl ShellWindow {
                             chat.entries.push(ChatEntry::Notice {
                                 text: i18n::failed_status(&error, cx),
                             });
-                            self.list_sync_append();
+                            self.list_sync_append(cx);
                         }
                     }
                 }
@@ -392,198 +481,140 @@ impl ShellWindow {
         }
     }
 
-    fn render_sessions(
+    /// Sidebar entries: one session row each, plus the empty-state and error
+    /// lines. One type because `Sidebar` children share one element type.
+    fn render_session_entries(&self, text: &ShellText) -> Vec<SidebarEntry> {
+        let mut entries = Vec::new();
+        if let Some(error) = &self.list_error {
+            entries.push(SidebarEntry::Danger(error.clone().into()));
+        }
+        if self.sessions.is_empty() {
+            entries.push(SidebarEntry::Muted(text.sessions_empty.clone().into()));
+        }
+        for row in &self.sessions {
+            entries.push(SidebarEntry::Session {
+                row: row.clone(),
+                open: self.chat.as_ref().is_some_and(|chat| chat.matches(&row.id)),
+                tx: self.event_tx.clone(),
+            });
+        }
+        entries
+    }
+
+    /// The navigation sidebar: session commands in the header, the session
+    /// list as the content, and the runtime status plus the settings menu
+    /// (theme, language) in the footer.
+    fn render_sidebar(
         &self,
         text: &ShellText,
         cx: &mut Context<Self>,
-    ) -> gpui_kit::Stateful<gpui_kit::Div> {
-        let mut header = div()
-            .id("sessions-header")
+    ) -> Sidebar<SidebarGroup<SidebarEntry>> {
+        let new_tx = self.event_tx.clone();
+        let reload_tx = self.event_tx.clone();
+        let header = div()
+            .w_full()
             .flex()
-            .flex_row()
             .items_center()
             .justify_between()
             .child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(text.sessions_title.clone()),
-            );
-        if matches!(self.phase, RuntimePhase::Ready) {
-            let new_tx = self.event_tx.clone();
-            let reload_tx = self.event_tx.clone();
-            header = header.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap_1()
-                    .child(
-                        Button::new("new-session")
-                            .label(text.sessions_new.clone())
-                            .small()
-                            .with_variant(ButtonVariant::Primary)
-                            .on_click(move |_, _, _| {
-                                if let Some(handle) = runtime::runtime_handle() {
-                                    handle.create_session(new_tx.clone());
-                                }
-                            }),
-                    )
-                    .child(
-                        Button::new("reload-sessions")
-                            .label(text.sessions_reload.clone())
-                            .small()
-                            .with_variant(ButtonVariant::Ghost)
-                            .on_click(move |_, _, _| {
-                                if let Some(handle) = runtime::runtime_handle() {
-                                    handle.reload_sessions(reload_tx.clone());
-                                }
-                            }),
-                    ),
-            );
-        }
-
-        let mut list = div().v_flex().id("sessions-list").gap_2().p_1();
-        if self.sessions.is_empty() {
-            list = list.child(
-                div()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(text.sessions_empty.clone()),
-            );
-        }
-        for row in &self.sessions {
-            let open = self.chat.as_ref().is_some_and(|chat| chat.matches(&row.id));
-            list = list.child(
-                div()
-                    .id(SharedString::from(format!("session-{}", row.id)))
-                    .on_click({
-                        let session_id = row.id.clone();
-                        let tx = self.event_tx.clone();
-                        move |_, _, _| {
-                            if let Some(handle) = runtime::runtime_handle() {
-                                handle.open_session(session_id.clone(), tx.clone());
-                            }
+                Button::new("new-session")
+                    .label(text.sessions_new.clone())
+                    .small()
+                    .with_variant(ButtonVariant::Primary)
+                    .on_click(move |_, _, _| {
+                        if let Some(handle) = runtime::runtime_handle() {
+                            handle.create_session(new_tx.clone());
                         }
-                    })
-                    .cursor_pointer()
-                    .v_flex()
-                    .gap_0p5()
-                    .min_w_0()
-                    .p_1()
-                    .rounded(cx.theme().radius)
-                    .when(open, |this| this.bg(cx.theme().muted))
-                    .when(!open, |this| this.hover(|style| style.bg(cx.theme().muted)))
-                    .child(
-                        div()
-                            .text_color(cx.theme().foreground)
-                            .truncate()
-                            .child(row.name.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .truncate()
-                            .child(row.metadata.clone()),
-                    ),
+                    }),
+            )
+            .child(
+                Button::new("reload-sessions")
+                    .icon(IconName::RefreshCw)
+                    .small()
+                    .with_variant(ButtonVariant::Ghost)
+                    .tooltip(text.sessions_reload.clone())
+                    .on_click(move |_, _, _| {
+                        if let Some(handle) = runtime::runtime_handle() {
+                            handle.reload_sessions(reload_tx.clone());
+                        }
+                    }),
             );
-        }
 
-        let mut section = div()
-            .v_flex()
-            .id("sessions-section")
-            .flex_1()
-            .min_h_0()
-            .gap_2()
-            .child(header);
-        if let Some(error) = &self.list_error {
-            section = section.child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().danger)
-                    .child(error.clone()),
-            );
-        }
-        section.child(list.overflow_y_scrollbar())
+        Sidebar::new("shell-sidebar")
+            .w(px(SESSION_PANE_WIDTH))
+            .header(header)
+            .child(
+                SidebarGroup::new(text.sessions_title.clone())
+                    .children(self.render_session_entries(text)),
+            )
+            .footer(
+                SidebarFooter::new().child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .child(self.render_status_line(text, cx))
+                        .child(self.render_settings_menu(text, cx)),
+                ),
+            )
     }
 
-    fn render_verification(&self, text: &ShellText, cx: &mut Context<Self>) -> gpui_kit::Div {
-        let language_button = Button::new("language")
-            .label(text.locale.as_str())
-            .small()
-            .with_variant(ButtonVariant::Ghost)
-            .on_click(|_, _, cx| {
-                let next = i18n::next_locale(i18n::current(cx).locale);
-                i18n::load_locale(next, cx);
-            });
-
+    /// The settings dropdown: theme presets in a submenu, locale toggle below.
+    fn render_settings_menu(&self, text: &ShellText, cx: &mut Context<Self>) -> DropdownButton {
         let active_preset = cx.global::<ShellState>().active_preset;
-        let preset_labels: Vec<(&'static str, usize)> = cx
+        let presets: Vec<(usize, String)> = cx
             .global::<ShellState>()
             .presets
             .iter()
             .enumerate()
-            .map(|(index, preset)| (preset.label, index))
+            .map(|(index, preset)| (index, preset.label.to_string()))
             .collect();
+        let theme_label = text.theme.clone();
+        let language_label = text.language.clone();
+        let locale_label = text.locale.as_str().to_string();
+        let settings_label = text.settings.clone();
 
-        let mut theme_row = div()
-            .flex()
-            .flex_row()
-            .flex_wrap()
-            .gap_1()
-            .items_center()
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(text.theme.clone()),
-            );
-        for (label, index) in preset_labels {
-            let variant = if index == active_preset {
-                ButtonVariant::Primary
-            } else {
-                ButtonVariant::Ghost
-            };
-            theme_row = theme_row.child(
-                Button::new(SharedString::from(format!("preset-{label}")))
-                    .label(label)
+        DropdownButton::new("sidebar-settings")
+            .button(
+                Button::new("settings-trigger")
+                    .icon(IconName::Settings)
                     .small()
-                    .with_variant(variant)
-                    .on_click(move |_, _, cx| {
-                        let preset = {
-                            let state = cx.global_mut::<ShellState>();
-                            state.active_preset = index;
-                            state.presets[index].clone()
-                        };
-                        preset.apply(cx);
-                    }),
-            );
-        }
-
-        div()
-            .v_flex()
-            .gap_2()
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap_2()
-                    .items_center()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format!("{}: {}", text.language, text.locale.as_str())),
-                    )
-                    .child(language_button),
+                    .with_variant(ButtonVariant::Ghost)
+                    .tooltip(settings_label),
             )
-            .child(theme_row)
+            .dropdown_menu(move |menu, window, cx| {
+                menu.submenu(theme_label.clone(), window, cx, {
+                    let presets = presets.clone();
+                    move |menu, _, cx| {
+                        let mut menu = menu;
+                        for (index, label) in &presets {
+                            let preset = {
+                                let state = cx.global_mut::<ShellState>();
+                                state.presets[*index].clone()
+                            };
+                            let active = *index == active_preset;
+                            menu = menu.item(
+                                PopupMenuItem::new(label.clone())
+                                    .checked(active)
+                                    .on_click(move |_, _, cx| preset.apply(cx)),
+                            );
+                        }
+                        menu
+                    }
+                })
+                .separator()
+                .item(
+                    PopupMenuItem::new(format!("{}: {}", language_label, locale_label))
+                        .icon(IconName::Languages)
+                        .on_click(|_, _, cx| {
+                            let next = i18n::next_locale(i18n::current(cx).locale);
+                            i18n::load_locale(next, cx);
+                        }),
+                )
+            })
     }
-}
-
-/// `list` splice range registering one new item at the end of a transcript of
-/// `count` entries (the range is empty; the item is inserted past the end).
-fn appended_range(count: usize) -> std::ops::Range<usize> {
-    count.saturating_sub(1)..count.saturating_sub(1)
 }
 
 /// `list` splice range invalidating the cached height of a transcript tail
@@ -602,32 +633,30 @@ fn tool_status_label<'a>(status: ToolStatus, text: &'a ShellText) -> &'a str {
     }
 }
 
-/// One transcript entry as a list item. The gutter padding (`px_2`) and the
-/// trailing gap (`pb_3`) are part of the item because gpui's `list` has no
-/// inter-item gap support.
+/// One transcript entry as a scroller row. Row insets and the inter-row gap
+/// belong to the `MessageScroller` row wrapper; the reading column is applied
+/// by the renderer closure around this item.
 fn render_chat_item(entry: &ChatEntry, text: &ShellText, cx: &mut App) -> gpui_kit::AnyElement {
     match entry {
         ChatEntry::User { text: body } => div()
             .w_full()
-            .px_2()
-            .pb_3()
-            .flex()
-            .justify_end()
+            // A column wrapper on purpose: inside a row-flex `justify_end`
+            // parent the Bubble lays out but never paints (gpui-pre 0.7.1
+            // stack, reproduced 2026-10-09). `MessageAlignment::End` already
+            // carries the right alignment through the bubble's own
+            // `ml_auto`/`self_end`.
+            .v_flex()
             .child(
-                div()
-                    .max_w(px(480.))
-                    .bg(cx.theme().muted)
-                    .rounded(cx.theme().radius)
-                    .px_2()
-                    .py_1()
+                Bubble::new()
+                    .alignment(MessageAlignment::End)
+                    .with_variant(BubbleVariant::Muted)
+                    .max_w(px(USER_BUBBLE_MAX_WIDTH))
                     .child(body.clone()),
             )
             .into_any_element(),
         ChatEntry::Assistant { text: body, .. } => div()
             .w_full()
             .min_w_0()
-            .px_2()
-            .pb_3()
             .text_sm()
             .child(
                 TextView::markdown(
@@ -637,16 +666,9 @@ fn render_chat_item(entry: &ChatEntry, text: &ShellText, cx: &mut App) -> gpui_k
                 .selectable(true),
             )
             .into_any_element(),
-        ChatEntry::Tool(card) => div()
-            .w_full()
-            .px_2()
-            .pb_3()
-            .child(render_tool_card(card, text, cx))
-            .into_any_element(),
+        ChatEntry::Tool(card) => render_tool_card(card, text, cx).into_any_element(),
         ChatEntry::Notice { text: body } => div()
             .w_full()
-            .px_2()
-            .pb_3()
             .text_sm()
             .text_color(cx.theme().danger)
             .child(body.clone())
@@ -730,25 +752,36 @@ impl ShellWindow {
                 .into_any_element();
         }
         let this = cx.entity();
+        let jump_label = text.chat_jump_latest.clone();
         let text = text.clone();
-        list(self.chat_list.clone(), move |index, _window, cx| {
-            let entry = this
-                .read(cx)
-                .chat
-                .as_ref()
-                .and_then(|chat| chat.entries.get(index))
-                .cloned();
-            match entry {
-                Some(entry) => render_chat_item(&entry, &text, cx),
-                // List-state item counts are synced on the same mutation that
-                // grows `entries`, so an out-of-range index cannot persist.
-                None => div().into_any_element(),
-            }
-        })
+        MessageScroller::new(
+            "transcript",
+            self.chat_scroller.clone(),
+            move |index, _window, cx| {
+                let entry = this
+                    .read(cx)
+                    .chat
+                    .as_ref()
+                    .and_then(|chat| chat.entries.get(index))
+                    .cloned();
+                match entry {
+                    Some(entry) => div()
+                        .w_full()
+                        .max_w(px(READING_COLUMN_WIDTH))
+                        .mx_auto()
+                        .child(render_chat_item(&entry, &text, cx))
+                        .into_any_element(),
+                    // Scroller item counts are synced on the same mutation
+                    // that grows `entries`, so an out-of-range index cannot
+                    // persist.
+                    None => div().into_any_element(),
+                }
+            },
+        )
+        .with_jump_button_label(jump_label)
+        .with_bottom_fade(cx.theme().background)
         .flex_1()
         .min_h_0()
-        .pt_2()
-        .pb_2()
         .into_any_element()
     }
 
@@ -765,9 +798,9 @@ impl ShellWindow {
         }
     }
 
-    fn render_composer(&self, text: &ShellText, cx: &mut Context<Self>) -> gpui_kit::Div {
+    fn render_composer(&self, text: &ShellText, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         let Some(chat) = self.chat.as_ref() else {
-            return div();
+            return div().into_any_element();
         };
         let busy = chat.busy;
         let submitting = chat.submitting;
@@ -778,44 +811,61 @@ impl ShellWindow {
         let tx_for_send = self.event_tx.clone();
         let session_for_send = session_id.clone();
 
-        let composer = div()
-            .flex()
-            .flex_row()
-            .gap_2()
-            .items_end()
-            .child(Textarea::new(&self.draft).flex_1().h(px(COMPOSER_HEIGHT)))
-            .child(if busy {
-                Button::new("chat-stop")
-                    .label(text.chat_stop.clone())
-                    .with_variant(ButtonVariant::Danger)
-                    .on_click(move |_, _, _| {
-                        if let Some(handle) = runtime::runtime_handle() {
-                            handle.cancel_turn(session_id.clone());
-                        }
-                    })
-            } else {
-                Button::new("chat-send")
-                    .label(text.chat_send.clone())
-                    .with_variant(ButtonVariant::Primary)
-                    .disabled(submitting || draft_value.trim().is_empty())
-                    .on_click(move |_, window, cx| {
-                        let body = draft_for_send.read(cx).value().to_string();
-                        if body.trim().is_empty() {
-                            return;
-                        }
-                        if let Some(handle) = runtime::runtime_handle() {
-                            handle.send_message(
-                                session_for_send.clone(),
-                                body,
-                                tx_for_send.clone(),
-                            );
-                        }
-                        draft_for_send.update(cx, |state, cx| {
-                            state.set_value("", window, cx);
-                        });
-                    })
-            });
-        composer
+        let action_button = if busy {
+            Button::new("chat-stop")
+                .label(text.chat_stop.clone())
+                .with_variant(ButtonVariant::Danger)
+                .on_click(move |_, _, _| {
+                    if let Some(handle) = runtime::runtime_handle() {
+                        handle.cancel_turn(session_id.clone());
+                    }
+                })
+        } else {
+            Button::new("chat-send")
+                .label(text.chat_send.clone())
+                .with_variant(ButtonVariant::Primary)
+                .disabled(submitting || draft_value.trim().is_empty())
+                .on_click(move |_, window, cx| {
+                    let body = draft_for_send.read(cx).value().to_string();
+                    if body.trim().is_empty() {
+                        return;
+                    }
+                    if let Some(handle) = runtime::runtime_handle() {
+                        handle.send_message(session_for_send.clone(), body, tx_for_send.clone());
+                    }
+                    draft_for_send.update(cx, |state, cx| {
+                        state.set_value("", window, cx);
+                    });
+                })
+        };
+
+        div()
+            .w_full()
+            .max_w(px(READING_COLUMN_WIDTH))
+            .mx_auto()
+            .px_4()
+            .pb_3()
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_2()
+                    .items_end()
+                    .bg(cx.theme().popover)
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .rounded(cx.theme().radius_2xl())
+                    .shadow_sm()
+                    .p_2()
+                    .child(
+                        Textarea::new(&self.draft)
+                            .appearance(false)
+                            .flex_1()
+                            .h(px(COMPOSER_HEIGHT)),
+                    )
+                    .child(action_button),
+            )
+            .into_any_element()
     }
 }
 
@@ -827,29 +877,22 @@ impl Render for ShellWindow {
         div()
             .size_full()
             .v_flex()
-            .gap_3()
-            .p_4()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .v_flex()
-                            .gap_0p5()
-                            .child(div().text_size(px(20.)).child("OpenBitFun GPUI Shell"))
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(text.subtitle.clone()),
-                            ),
-                    )
-                    .child(self.render_status_line(&text, cx)),
+                TitleBar::new().child(
+                    div()
+                        .flex()
+                        .items_baseline()
+                        .gap_2()
+                        .child(div().text_sm().child("OpenBitFun GPUI Shell"))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(text.subtitle.clone()),
+                        ),
+                ),
             )
             .child(
                 div()
@@ -857,33 +900,32 @@ impl Render for ShellWindow {
                     .min_h_0()
                     .flex()
                     .flex_row()
-                    .gap_3()
-                    .child(
-                        div()
-                            .w(px(SESSION_PANE_WIDTH))
-                            .min_h_0()
-                            .v_flex()
-                            .gap_2()
-                            .child(self.render_sessions(&text, cx))
-                            .child(self.render_verification(&text, cx)),
-                    )
+                    .min_w_0()
+                    .child(self.render_sidebar(&text, cx))
                     .child(
                         div()
                             .flex_1()
                             .min_h_0()
+                            .min_w_0()
                             .v_flex()
-                            .gap_2()
                             .child(self.render_chat_header(&text, cx))
                             .when_some(self.chat_error.clone(), |this, error| {
                                 this.child(
-                                    div().text_sm().text_color(cx.theme().danger).child(error),
+                                    div()
+                                        .mx_4()
+                                        .text_sm()
+                                        .text_color(cx.theme().danger)
+                                        .child(error),
                                 )
                             })
                             .child(chat_area)
                             .when_some(self.busy_label(&text), |this, label| {
                                 this.child(
                                     div()
-                                        .px_2()
+                                        .w_full()
+                                        .max_w(px(READING_COLUMN_WIDTH))
+                                        .mx_auto()
+                                        .px_4()
                                         .pb_1()
                                         .text_sm()
                                         .text_color(cx.theme().muted_foreground)
@@ -904,6 +946,10 @@ impl ShellWindow {
                 .flex_row()
                 .items_center()
                 .justify_between()
+                .px_4()
+                .py_2()
+                .border_b_1()
+                .border_color(cx.theme().title_bar_border)
                 .gap_2()
                 .child(
                     div()
@@ -993,52 +1039,55 @@ fn main() {
     // The view keeps its own sender for the session reload action.
     let view_event_tx = event_tx.clone();
 
-    gpui_kit::application().run(move |cx: &mut App| {
-        gpui_kit::init(cx);
+    gpui_kit::application()
+        .with_assets(gpui_kit::assets::Assets)
+        .run(move |cx: &mut App| {
+            gpui_kit::init(cx);
 
-        let presets = theme::load_presets();
-        let active_preset = presets
-            .iter()
-            .position(|preset| preset.id == DEFAULT_PRESET_ID)
-            .unwrap_or(0);
-        if let Some(preset) = presets.get(active_preset) {
-            preset.apply(cx);
-        }
-        cx.set_global(ShellState {
-            presets,
-            active_preset,
+            let presets = theme::load_presets();
+            let active_preset = presets
+                .iter()
+                .position(|preset| preset.id == DEFAULT_PRESET_ID)
+                .unwrap_or(0);
+            if let Some(preset) = presets.get(active_preset) {
+                preset.apply(cx);
+            }
+            cx.set_global(ShellState {
+                presets,
+                active_preset,
+            });
+
+            i18n::init(cx);
+
+            runtime::spawn_bootstrap(tokio_handle, event_tx);
+
+            let open_result = gpui_kit::open_window(
+                WindowOptions {
+                    titlebar: Some(TitlebarOptions {
+                        title: Some(SharedString::from("OpenBitFun GPUI Shell")),
+                        ..TitleBar::title_bar_options()
+                    }),
+                    window_bounds: Some(WindowBounds::Windowed(Bounds {
+                        origin: point(px(80.), px(80.)),
+                        size: size(px(1180.), px(760.)),
+                    })),
+                    window_min_size: Some(size(px(960.), px(640.))),
+                    ..TitleBar::window_options()
+                },
+                cx,
+                |window, cx| cx.new(|cx| ShellWindow::new(view_event_tx, event_rx, window, cx)),
+            );
+
+            match open_result {
+                Ok(_) => {
+                    tracing::info!("Main window opened");
+                    cx.activate(true);
+                }
+                Err(err) => {
+                    tracing::error!("Failed to open main window: {}", err);
+                }
+            }
         });
-
-        i18n::init(cx);
-
-        runtime::spawn_bootstrap(tokio_handle, event_tx);
-
-        let open_result = gpui_kit::open_window(
-            WindowOptions {
-                titlebar: Some(TitlebarOptions {
-                    title: Some(SharedString::from("OpenBitFun GPUI Shell")),
-                    ..Default::default()
-                }),
-                window_bounds: Some(WindowBounds::Windowed(Bounds {
-                    origin: point(px(80.), px(80.)),
-                    size: size(px(1180.), px(760.)),
-                })),
-                ..Default::default()
-            },
-            cx,
-            |window, cx| cx.new(|cx| ShellWindow::new(view_event_tx, event_rx, window, cx)),
-        );
-
-        match open_result {
-            Ok(_) => {
-                tracing::info!("Main window opened");
-                cx.activate(true);
-            }
-            Err(err) => {
-                tracing::error!("Failed to open main window: {}", err);
-            }
-        }
-    });
 }
 
 #[cfg(test)]
@@ -1087,16 +1136,14 @@ mod tests {
 
     #[test]
     fn list_sync_ranges_match_entry_counts() {
-        assert_eq!(appended_range(0), 0..0);
-        assert_eq!(appended_range(3), 2..2);
         assert_eq!(tail_changed_range(1), 0..1);
         assert_eq!(tail_changed_range(40), 39..40);
     }
 
     /// A harness view mirroring `ShellWindow::render_chat_area` so the test
-    /// exercises the same list construction and item renderer.
+    /// exercises the same scroller construction and item renderer.
     struct TranscriptListHarness {
-        state: ListState,
+        scroller: Entity<MessageScrollerState>,
         entries: Rc<Vec<ChatEntry>>,
         render_count: Rc<Cell<usize>>,
         text: ShellText,
@@ -1107,13 +1154,17 @@ mod tests {
             let this = cx.entity();
             let render_count = self.render_count.clone();
             let text = self.text.clone();
-            list(self.state.clone(), move |index, _window, cx| {
-                render_count.set(render_count.get() + 1);
-                match this.read(cx).entries.get(index).cloned() {
-                    Some(entry) => render_chat_item(&entry, &text, cx),
-                    None => div().into_any_element(),
-                }
-            })
+            MessageScroller::new(
+                "transcript",
+                self.scroller.clone(),
+                move |index, _window, cx| {
+                    render_count.set(render_count.get() + 1);
+                    match this.read(cx).entries.get(index).cloned() {
+                        Some(entry) => render_chat_item(&entry, &text, cx),
+                        None => div().into_any_element(),
+                    }
+                },
+            )
             .w(px(800.))
             .h(px(600.))
         }
@@ -1133,6 +1184,8 @@ mod tests {
             sessions_new: String::new(),
             chat_empty: String::new(),
             chat_input_placeholder: String::new(),
+            chat_jump_latest: String::new(),
+            settings: String::new(),
             chat_send: String::new(),
             chat_stop: String::new(),
             chat_busy: String::new(),
@@ -1180,16 +1233,16 @@ mod tests {
         const ROUNDS: usize = 500;
         let entries = Rc::new(stress_entries(ROUNDS));
         let render_count: Rc<Cell<usize>> = Default::default();
-        let state = ListState::new(entries.len(), ListAlignment::Bottom, px(CHAT_OVERDRAW));
+        let scroller = cx.new(|cx| MessageScrollerState::new(entries.len(), cx));
 
         let window = cx.add_empty_window();
         let draw_frame = |window: &mut gpui_kit::VisualTestContext,
-                          state: &ListState,
+                          scroller: &Entity<MessageScrollerState>,
                           entries: &Rc<Vec<ChatEntry>>,
                           render_count: &Rc<Cell<usize>>|
          -> std::time::Duration {
             render_count.set(0);
-            let state = state.clone();
+            let scroller = scroller.clone();
             let entries = entries.clone();
             let render_count = render_count.clone();
             let text = sample_shell_text();
@@ -1199,7 +1252,7 @@ mod tests {
                 size(px(800.), px(600.)),
                 move |_, cx| {
                     cx.new(|_| TranscriptListHarness {
-                        state,
+                        scroller,
                         entries,
                         render_count,
                         text,
@@ -1212,7 +1265,7 @@ mod tests {
 
         // Transcript restore: the first frame must neither render nor measure
         // all 1k entries (markdown parse only happens for rendered items).
-        draw_frame(window, &state, &entries, &render_count);
+        draw_frame(window, &scroller, &entries, &render_count);
         let restored = render_count.get();
         assert!(
             restored < 100,
@@ -1220,15 +1273,21 @@ mod tests {
             entries.len()
         );
 
-        // Sweep the whole list top to bottom; every frame stays bounded and
-        // the list keeps tracking the bottom-pinned offset.
+        // Sweep the whole list top to bottom by jumping row anchors; every
+        // frame stays bounded while the scroller re-measures the landed range.
         let mut max_per_frame = 0usize;
         let mut total = std::time::Duration::ZERO;
         let steps = 60;
-        for _ in 0..steps {
-            state.scroll_by(px(1000.));
+        let total_entries = entries.len();
+        for step in 0..steps {
+            let anchor = step * (total_entries.saturating_sub(1)) / steps;
+            window.update(|_, cx| {
+                scroller.update(cx, |scroller, cx| {
+                    scroller.scroll_to_item(anchor, cx);
+                });
+            });
             window.run_until_parked();
-            let elapsed = draw_frame(window, &state, &entries, &render_count);
+            let elapsed = draw_frame(window, &scroller, &entries, &render_count);
             max_per_frame = max_per_frame.max(render_count.get());
             total += elapsed;
         }
@@ -1250,17 +1309,30 @@ mod tests {
             grown.push(ChatEntry::User {
                 text: format!("live round {round}"),
             });
-            state.splice(appended_range(grown.len()), 1);
+            window.update(|_, cx| {
+                scroller.update(cx, |scroller, cx| {
+                    scroller.append(1, cx);
+                });
+            });
             grown.push(ChatEntry::Assistant {
                 round_id: format!("live-{round}"),
                 text: "streamed **markdown** body.\n\n- item\n- item".to_string(),
             });
-            state.splice(appended_range(grown.len()), 1);
-            state.splice(tail_changed_range(grown.len()), 1);
+            let count = grown.len();
+            window.update(|_, cx| {
+                scroller.update(cx, |scroller, cx| {
+                    scroller.append(1, cx);
+                    scroller.remeasure_items(tail_changed_range(count), cx);
+                });
+            });
         }
-        assert_eq!(state.item_count(), grown.len());
+        window.update(|_, cx| {
+            scroller.update(cx, |scroller, _| {
+                assert_eq!(scroller.item_count(), grown.len());
+            });
+        });
         let entries = Rc::new(grown);
-        draw_frame(window, &state, &entries, &render_count);
+        draw_frame(window, &scroller, &entries, &render_count);
         assert!(
             render_count.get() < 100,
             "post-growth frame rendered {} entries",

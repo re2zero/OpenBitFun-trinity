@@ -295,6 +295,8 @@ fn build_config(
     colors.sidebar = Some(resolve("color.surface.panel")?.into());
     colors.sidebar_border = Some(resolve("color.border.subtle")?.into());
     colors.sidebar_foreground = Some(resolve("color.content.primary")?.into());
+    colors.sidebar_accent = Some(resolve("color.accent.surface")?.into());
+    colors.sidebar_accent_foreground = Some(resolve("color.accent.default")?.into());
     colors.scrollbar_thumb = Some(resolve("color.scrollbar.thumb")?.into());
     colors.scrollbar_thumb_hover = Some(resolve("color.scrollbar.thumbHover")?.into());
     colors.window_border = Some(resolve("color.border.subtle")?.into());
