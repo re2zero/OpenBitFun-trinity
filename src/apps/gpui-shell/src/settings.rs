@@ -12,7 +12,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::setting::{
-    SettingField, SettingGroup, SettingItem, SettingPage, Settings,
+    NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
 };
 use gpui_kit::{Anchor, App, Global, IntoElement, SharedString, Window, WindowAppearance};
 use openbitfun_core::service::config::get_global_config_service;
@@ -30,6 +30,41 @@ pub(crate) const LANGUAGE_PATH: &str = "app.language";
 pub(crate) const APPEARANCE_PATH: &str = "appearance.selection";
 pub(crate) const PERMISSION_PRESET_PATH: &str = "tool_permissions.policy.preset";
 pub(crate) const AUTO_APPROVE_ASK_PATH: &str = "tool_permissions.interaction.auto_approve_ask";
+pub(crate) const TERMINAL_FONT_SIZE_PATH: &str = "terminal.font_size";
+pub(crate) const TERMINAL_FONT_FAMILY_PATH: &str = "terminal.font_family";
+pub(crate) const TERMINAL_SCROLLBACK_PATH: &str = "terminal.scrollback";
+pub(crate) const TERMINAL_DEFAULT_SHELL_PATH: &str = "terminal.default_shell";
+
+/// Terminal preferences the built-in terminal consumes. Mirrors the shared
+/// `terminal.*` section the desktop terminal reads, in the same value domain:
+/// values outside it (or the empty string) mean "shell default" and are applied
+/// at the pane, never rewritten in the config.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TerminalSettings {
+    pub(crate) font_size: u32,
+    pub(crate) font_family: String,
+    pub(crate) scrollback: u32,
+    pub(crate) default_shell: String,
+}
+
+impl Default for TerminalSettings {
+    fn default() -> Self {
+        // Same defaults the shared document resolves to for a fresh install.
+        let config = openbitfun_core::service::config::types::TerminalConfig::default();
+        Self::from_global(&config)
+    }
+}
+
+impl TerminalSettings {
+    fn from_global(config: &openbitfun_core::service::config::types::TerminalConfig) -> Self {
+        Self {
+            font_size: config.font_size,
+            font_family: config.font_family.clone(),
+            scrollback: config.scrollback,
+            default_shell: config.default_shell.clone(),
+        }
+    }
+}
 
 /// The shell's in-memory mirror of the settings it can change. Kept as a gpui
 /// global so the settings page, the window bootstrap, and tests can read it
@@ -42,6 +77,7 @@ pub(crate) struct ShellConfig {
     pub(crate) appearance: String,
     pub(crate) permission_preset: PermissionPolicyPreset,
     pub(crate) auto_approve_ask: bool,
+    pub(crate) terminal: TerminalSettings,
 }
 
 impl Global for ShellConfig {}
@@ -54,11 +90,18 @@ impl ShellConfig {
             appearance: config.appearance.selection.clone(),
             permission_preset: config.tool_permissions.policy.preset,
             auto_approve_ask: config.tool_permissions.interaction.auto_approve_ask,
+            terminal: TerminalSettings::from_global(&config.terminal),
         }
     }
 
     pub(crate) fn current(cx: &App) -> Self {
         cx.global::<ShellConfig>().clone()
+    }
+
+    /// The same snapshot, or `None` while the shared config has not been read
+    /// yet (the terminal pane, for one, is created before that in tests).
+    pub(crate) fn try_current(cx: &App) -> Option<Self> {
+        cx.try_global::<ShellConfig>().cloned()
     }
 
     /// Mirror installed before the shared config has been read: the shell
@@ -69,12 +112,52 @@ impl ShellConfig {
             appearance: DEFAULT_APPEARANCE_ID.to_string(),
             permission_preset: PermissionPolicyPreset::default(),
             auto_approve_ask: false,
+            terminal: TerminalSettings::default(),
         }
     }
 }
 
 /// Appearance applied on the first frame, before the shared config is read.
 pub(crate) const DEFAULT_APPEARANCE_ID: &str = "openbitfun-dark";
+
+/// Value domains the shell grants the shared terminal settings. A value outside
+/// its domain means "shell default" to the pane and is refused by the page, so
+/// the persisted document never carries one this shell cannot render.
+pub(crate) const MIN_FONT_SIZE: u32 = 8;
+pub(crate) const MAX_FONT_SIZE: u32 = 32;
+pub(crate) const MIN_SCROLLBACK: u32 = 100;
+pub(crate) const MAX_SCROLLBACK: u32 = 1_000_000;
+
+/// Font size a pane renders with, or `None` when the configured value is
+/// outside the renderable range.
+pub(crate) fn valid_font_size(value: u32) -> Option<u32> {
+    (MIN_FONT_SIZE..=MAX_FONT_SIZE)
+        .contains(&value)
+        .then_some(value)
+}
+
+/// Scrollback depth a pane starts with, or `None` outside the domain.
+pub(crate) fn valid_scrollback(value: u32) -> Option<u32> {
+    (MIN_SCROLLBACK..=MAX_SCROLLBACK)
+        .contains(&value)
+        .then_some(value)
+}
+
+/// Rounds a number-field value onto the font-size domain.
+fn clamp_font_size(value: f64) -> Option<u32> {
+    if !value.is_finite() || value < 0. {
+        return None;
+    }
+    valid_font_size(value.round() as u32)
+}
+
+/// Rounds a number-field value onto the scrollback domain.
+fn clamp_scrollback(value: f64) -> Option<u32> {
+    if !value.is_finite() || value < 0. {
+        return None;
+    }
+    valid_scrollback(value.round() as u32)
+}
 
 /// One theme choice: the product appearance id (the value stored in
 /// `appearance.selection`) and the shell preset that renders it.
@@ -208,11 +291,16 @@ pub(crate) fn persist(path: &'static str, value: serde_json::Value) {
     });
 }
 
-/// The settings page: appearance (language, theme) and tool permissions.
+/// The settings page: appearance (language, theme), tool permissions, and the
+/// terminal preferences the built-in terminal reads.
 pub(crate) fn render_page(text: &ShellText, cx: &mut App) -> gpui_kit::AnyElement {
     Settings::new("shell-settings")
         .sidebar_width(gpui_kit::px(180.))
-        .pages(vec![appearance_page(text), permissions_page(text, cx)])
+        .pages(vec![
+            appearance_page(text),
+            terminal_page(text),
+            permissions_page(text, cx),
+        ])
         .into_any_element()
 }
 
@@ -253,6 +341,83 @@ fn appearance_page(text: &ShellText) -> SettingPage {
                 .description(text.settings_language_description.clone()),
             SettingItem::new(text.theme.clone(), theme_field)
                 .description(text.settings_theme_description.clone()),
+        ]))
+}
+
+/// Terminal preferences for the built-in terminal (M7 pane). The values are
+/// the shared `terminal.*` entries, so the desktop terminal and this pane read
+/// the same document; font size and family apply to a running pane, while the
+/// scrollback and shell command are read when a pane starts.
+fn terminal_page(text: &ShellText) -> SettingPage {
+    let font_size_field = SettingField::number_input(
+        NumberFieldOptions {
+            min: f64::from(MIN_FONT_SIZE),
+            max: f64::from(MAX_FONT_SIZE),
+            step: 1.,
+        },
+        |cx: &App| f64::from(ShellConfig::current(cx).terminal.font_size),
+        |value: f64, cx: &mut App| {
+            let Some(size) = clamp_font_size(value) else {
+                tracing::warn!("Ignoring out-of-range terminal font size: {}", value);
+                return;
+            };
+            cx.global_mut::<ShellConfig>().terminal.font_size = size;
+            persist(TERMINAL_FONT_SIZE_PATH, serde_json::json!(size));
+            cx.refresh_windows();
+        },
+    );
+
+    let font_family_field = SettingField::input(
+        |cx: &App| SharedString::from(ShellConfig::current(cx).terminal.font_family.clone()),
+        |value: SharedString, cx: &mut App| {
+            let value = value.to_string();
+            cx.global_mut::<ShellConfig>().terminal.font_family = value.clone();
+            persist(TERMINAL_FONT_FAMILY_PATH, serde_json::json!(value));
+            cx.refresh_windows();
+        },
+    );
+
+    let scrollback_field = SettingField::number_input(
+        NumberFieldOptions {
+            min: f64::from(MIN_SCROLLBACK),
+            max: f64::from(MAX_SCROLLBACK),
+            step: 1000.,
+        },
+        |cx: &App| f64::from(ShellConfig::current(cx).terminal.scrollback),
+        |value: f64, cx: &mut App| {
+            let Some(lines) = clamp_scrollback(value) else {
+                tracing::warn!("Ignoring out-of-range terminal scrollback: {}", value);
+                return;
+            };
+            cx.global_mut::<ShellConfig>().terminal.scrollback = lines;
+            persist(TERMINAL_SCROLLBACK_PATH, serde_json::json!(lines));
+            cx.refresh_windows();
+        },
+    );
+
+    let shell_field = SettingField::input(
+        |cx: &App| SharedString::from(ShellConfig::current(cx).terminal.default_shell.clone()),
+        |value: SharedString, cx: &mut App| {
+            let value = value.to_string();
+            cx.global_mut::<ShellConfig>().terminal.default_shell = value.clone();
+            persist(TERMINAL_DEFAULT_SHELL_PATH, serde_json::json!(value));
+            cx.refresh_windows();
+        },
+    );
+
+    SettingPage::new(text.settings_terminal.clone())
+        .icon(IconName::SquareTerminal)
+        .resettable(false)
+        .default_open(false)
+        .group(SettingGroup::new().items(vec![
+            SettingItem::new(text.settings_terminal_font_size.clone(), font_size_field)
+                .description(text.settings_terminal_font_size_description.clone()),
+            SettingItem::new(text.settings_terminal_font_family.clone(), font_family_field)
+                .description(text.settings_terminal_font_family_description.clone()),
+            SettingItem::new(text.settings_terminal_scrollback.clone(), scrollback_field)
+                .description(text.settings_terminal_scrollback_description.clone()),
+            SettingItem::new(text.settings_terminal_shell.clone(), shell_field)
+                .description(text.settings_terminal_shell_description.clone()),
         ]))
 }
 
@@ -488,12 +653,39 @@ mod tests {
         config.appearance.selection = "openbitfun-light".to_string();
         config.tool_permissions.policy.preset = PermissionPolicyPreset::Ask;
         config.tool_permissions.interaction.auto_approve_ask = true;
+        config.terminal.font_size = 18;
+        config.terminal.font_family = "\"JetBrains Mono\", monospace".to_string();
+        config.terminal.scrollback = 50_000;
+        config.terminal.default_shell = "/usr/bin/zsh".to_string();
 
         let snapshot = ShellConfig::from_global(&config);
         assert_eq!(snapshot.language, LocaleId::EnUS);
         assert_eq!(snapshot.appearance, "openbitfun-light");
         assert_eq!(snapshot.permission_preset, PermissionPolicyPreset::Ask);
         assert!(snapshot.auto_approve_ask);
+        assert_eq!(snapshot.terminal.font_size, 18);
+        assert_eq!(
+            snapshot.terminal.font_family,
+            "\"JetBrains Mono\", monospace"
+        );
+        assert_eq!(snapshot.terminal.scrollback, 50_000);
+        assert_eq!(snapshot.terminal.default_shell, "/usr/bin/zsh");
+    }
+
+    #[test]
+    fn terminal_value_domains_reject_what_the_grid_cannot_render() {
+        assert_eq!(valid_font_size(14), Some(14));
+        assert_eq!(valid_font_size(0), None);
+        assert_eq!(valid_font_size(MIN_FONT_SIZE - 1), None);
+        assert_eq!(valid_font_size(MAX_FONT_SIZE + 1), None);
+        assert_eq!(clamp_font_size(14.4), Some(14));
+        assert_eq!(clamp_font_size(f64::NAN), None);
+        assert_eq!(clamp_font_size(-1.), None);
+
+        assert_eq!(valid_scrollback(1000), Some(1000));
+        assert_eq!(valid_scrollback(0), None);
+        assert_eq!(clamp_scrollback(1000.6), Some(1001));
+        assert_eq!(clamp_scrollback(f64::INFINITY), None);
     }
 
     #[test]

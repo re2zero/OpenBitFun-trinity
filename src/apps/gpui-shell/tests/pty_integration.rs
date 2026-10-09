@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use openbitfun_gpui_shell::terminal::emulator::TerminalEmulator;
+use openbitfun_gpui_shell::terminal::emulator::{TerminalEmulator, DEFAULT_SCROLLBACK_LINES};
 use terminal_core::{PtyService, PtyServiceEvent, ShellConfig, ShellType, TerminalConfig};
 
 /// Generous ceiling: the assertions are about delivery, not throughput.
@@ -141,7 +141,7 @@ fn large_output_streams_through_with_acknowledgements() {
             .await
             .expect("spawn seq");
 
-        let mut emulator = TerminalEmulator::new(80, 24);
+        let mut emulator = TerminalEmulator::new(80, 24, DEFAULT_SCROLLBACK_LINES);
         let mut bytes = 0usize;
         let mut chunks = 0usize;
         let mut slowest = Duration::ZERO;
@@ -207,7 +207,7 @@ fn resize_reaches_the_running_process() {
             )
             .await
             .expect("spawn reporter");
-        let mut emulator = TerminalEmulator::new(80, 24);
+        let mut emulator = TerminalEmulator::new(80, 24, DEFAULT_SCROLLBACK_LINES);
         let mut collected = Vec::new();
         read_until(&service, id, &mut emulator, &mut collected, "ready").await;
 
@@ -232,7 +232,7 @@ fn shutdown_reaps_the_child_and_its_children() {
             .await
             .expect("spawn sleeper");
 
-        let mut emulator = TerminalEmulator::new(80, 24);
+        let mut emulator = TerminalEmulator::new(80, 24, DEFAULT_SCROLLBACK_LINES);
         let mut collected = Vec::new();
         let pid = wait_for_ready(&service, id, &mut emulator, &mut collected).await;
         assert!(process_alive(pid), "pty child {pid} must be running");
@@ -273,7 +273,7 @@ fn normal_exit_reports_code_and_ends_the_stream() {
             .await
             .expect("spawn exiting shell");
 
-        let mut emulator = TerminalEmulator::new(80, 24);
+        let mut emulator = TerminalEmulator::new(80, 24, DEFAULT_SCROLLBACK_LINES);
         let mut exit_code = None;
         let deadline = tokio::time::Instant::now() + DEADLINE;
         while let Ok(Some(event)) = tokio::time::timeout_at(deadline, service.recv_event()).await {
@@ -354,7 +354,7 @@ fn reopened_pane_streams_output_again() {
                 .create_process(shell("printf 'round\\n'"), ShellType::Bash, 80, 24)
                 .await
                 .expect("spawn");
-            let mut emulator = TerminalEmulator::new(80, 24);
+            let mut emulator = TerminalEmulator::new(80, 24, DEFAULT_SCROLLBACK_LINES);
             let mut collected = Vec::new();
             read_until(&service, id, &mut emulator, &mut collected, "round").await;
             // Closing the pane tears the pty down before the next round.

@@ -15,7 +15,7 @@ use gpui_kit::{
     UnderlineStyle, Window, WindowBounds, WindowOptions,
 };
 use openbitfun_gpui_shell::terminal::colors::TerminalPalette;
-use openbitfun_gpui_shell::terminal::emulator::TerminalEmulator;
+use openbitfun_gpui_shell::terminal::emulator::{TerminalEmulator, DEFAULT_SCROLLBACK_LINES};
 use openbitfun_gpui_shell::terminal::row_runs::row_spans;
 use terminal_core::{PtyService, PtyServiceEvent, ShellConfig, ShellType, TerminalConfig};
 
@@ -98,7 +98,7 @@ impl TerminalSpike {
         receive_pty_msgs(msg_rx, window, cx);
 
         Self {
-            emulator: TerminalEmulator::new(COLS, ROWS),
+            emulator: TerminalEmulator::new(COLS, ROWS, DEFAULT_SCROLLBACK_LINES),
             palette,
             service,
             pty_id: None,

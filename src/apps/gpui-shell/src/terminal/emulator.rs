@@ -9,8 +9,9 @@ use alacritty_terminal::term::cell::Cell;
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte;
 
-/// Scrollback lines kept behind the live screen.
-const SCROLLBACK_LINES: usize = 10_000;
+/// Scrollback lines kept behind the live screen for callers without a depth of
+/// their own; the pane passes the shared `terminal.scrollback` setting instead.
+pub const DEFAULT_SCROLLBACK_LINES: usize = 10_000;
 
 /// Grid dimensions for `Term::new`/`Term::resize` (the `(usize, usize)` impl
 /// upstream is test-only).
@@ -81,9 +82,9 @@ pub struct TerminalEmulator {
 }
 
 impl TerminalEmulator {
-    pub fn new(cols: u16, rows: u16) -> Self {
+    pub fn new(cols: u16, rows: u16, scrollback_lines: usize) -> Self {
         let config = Config {
-            scrolling_history: SCROLLBACK_LINES,
+            scrolling_history: scrollback_lines,
             ..Config::default()
         };
         let queue = EventQueue::default();
@@ -242,11 +243,11 @@ mod tests {
     use alacritty_terminal::vte::ansi::{Color, NamedColor, Rgb};
 
     fn emulator() -> TerminalEmulator {
-        TerminalEmulator::new(80, 24)
+        TerminalEmulator::new(80, 24, DEFAULT_SCROLLBACK_LINES)
     }
 
     fn emulator_of(cols: u16, rows: u16) -> TerminalEmulator {
-        TerminalEmulator::new(cols, rows)
+        TerminalEmulator::new(cols, rows, DEFAULT_SCROLLBACK_LINES)
     }
 
     fn cell(emulator: &TerminalEmulator, row: usize, col: usize) -> &Cell {
@@ -334,7 +335,7 @@ mod tests {
 
     #[test]
     fn selection_stays_anchored_to_content_while_output_scrolls() {
-        let mut emulator = TerminalEmulator::new(10, 3);
+        let mut emulator = TerminalEmulator::new(10, 3, DEFAULT_SCROLLBACK_LINES);
         emulator.advance(b"alpha\r\nbeta\r\ngamma");
         select(&mut emulator, (1, 0), (1, 3));
         assert_eq!(emulator.selection_text().unwrap(), "beta");
@@ -351,7 +352,7 @@ mod tests {
 
     #[test]
     fn selection_range_reports_grid_lines_for_history_viewport() {
-        let mut emulator = TerminalEmulator::new(10, 3);
+        let mut emulator = TerminalEmulator::new(10, 3, DEFAULT_SCROLLBACK_LINES);
         for i in 0..6 {
             emulator.advance(format!("line{i}").as_bytes());
             if i < 5 {
@@ -503,7 +504,7 @@ mod tests {
 
     #[test]
     fn scroll_display_clamps_at_both_history_edges() {
-        let mut emulator = TerminalEmulator::new(10, 3);
+        let mut emulator = TerminalEmulator::new(10, 3, DEFAULT_SCROLLBACK_LINES);
         for i in 0..6 {
             emulator.advance(format!("line{i}").as_bytes());
             if i < 5 {

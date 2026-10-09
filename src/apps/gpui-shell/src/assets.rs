@@ -11,7 +11,7 @@ use std::borrow::Cow;
 
 use gpui_kit::AssetSource;
 
-gpui_kit::assets::icon_assets!(ExtraIcons, [GitBranch, Languages, Shield, X]);
+gpui_kit::assets::icon_assets!(ExtraIcons, [GitBranch, Languages, Shield, TextWrap, X]);
 
 /// Asset source registered for the shell window.
 pub(crate) struct ShellAssets;

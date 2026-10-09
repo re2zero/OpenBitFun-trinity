@@ -58,6 +58,15 @@ pub(crate) struct ShellText {
     pub settings_policy_full_access: String,
     pub settings_auto_approve: String,
     pub settings_auto_approve_description: String,
+    pub settings_terminal: String,
+    pub settings_terminal_font_size: String,
+    pub settings_terminal_font_size_description: String,
+    pub settings_terminal_font_family: String,
+    pub settings_terminal_font_family_description: String,
+    pub settings_terminal_scrollback: String,
+    pub settings_terminal_scrollback_description: String,
+    pub settings_terminal_shell: String,
+    pub settings_terminal_shell_description: String,
     pub git_title: String,
     pub git_refresh: String,
     pub git_loading: String,
@@ -69,6 +78,7 @@ pub(crate) struct ShellText {
     pub git_unstaged: String,
     pub git_untracked: String,
     pub git_select: String,
+    pub git_diff_wrap: String,
 }
 
 impl Global for ShellText {}
@@ -221,6 +231,18 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_auto_approve: "Auto-approve requests".to_string(),
         settings_auto_approve_description:
             "Answer interactive approval requests automatically (Ask policy only).".to_string(),
+        settings_terminal: "Terminal".to_string(),
+        settings_terminal_font_size: "Font size".to_string(),
+        settings_terminal_font_size_description: "Text size of the built-in terminal grid."
+            .to_string(),
+        settings_terminal_font_family: "Font family".to_string(),
+        settings_terminal_font_family_description:
+            "Font stack for the terminal; empty follows the shell default.".to_string(),
+        settings_terminal_scrollback: "Scrollback lines".to_string(),
+        settings_terminal_scrollback_description: "History kept above the live screen.".to_string(),
+        settings_terminal_shell: "Shell command".to_string(),
+        settings_terminal_shell_description: "Empty follows $SHELL. A new terminal picks this up."
+            .to_string(),
         git_title: "Changes".to_string(),
         git_refresh: "Refresh".to_string(),
         git_loading: "Loading changes…".to_string(),
@@ -232,6 +254,7 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         git_unstaged: "unstaged".to_string(),
         git_untracked: "untracked".to_string(),
         git_select: "Select a file to see its diff.".to_string(),
+        git_diff_wrap: "Toggle diff line wrapping".to_string(),
     }
 }
 
@@ -291,6 +314,23 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         settings_policy_full_access: service.t("gpui-shell-settings-policy-full-access").await,
         settings_auto_approve: service.t("gpui-shell-settings-auto-approve").await,
         settings_auto_approve_description: service.t("gpui-shell-settings-auto-approve-desc").await,
+        settings_terminal: service.t("gpui-shell-settings-terminal").await,
+        settings_terminal_font_size: service.t("gpui-shell-settings-terminal-font-size").await,
+        settings_terminal_font_size_description: service
+            .t("gpui-shell-settings-terminal-font-size-desc")
+            .await,
+        settings_terminal_font_family: service.t("gpui-shell-settings-terminal-font-family").await,
+        settings_terminal_font_family_description: service
+            .t("gpui-shell-settings-terminal-font-family-desc")
+            .await,
+        settings_terminal_scrollback: service.t("gpui-shell-settings-terminal-scrollback").await,
+        settings_terminal_scrollback_description: service
+            .t("gpui-shell-settings-terminal-scrollback-desc")
+            .await,
+        settings_terminal_shell: service.t("gpui-shell-settings-terminal-shell").await,
+        settings_terminal_shell_description: service
+            .t("gpui-shell-settings-terminal-shell-desc")
+            .await,
         git_title: service.t("gpui-shell-git-title").await,
         git_refresh: service.t("gpui-shell-git-refresh").await,
         git_loading: service.t("gpui-shell-git-loading").await,
@@ -302,6 +342,7 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         git_unstaged: service.t("gpui-shell-git-unstaged").await,
         git_untracked: service.t("gpui-shell-git-untracked").await,
         git_select: service.t("gpui-shell-git-select").await,
+        git_diff_wrap: service.t("gpui-shell-git-diff-wrap").await,
     }
 }
 

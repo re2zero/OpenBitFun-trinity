@@ -1,6 +1,7 @@
 use crate::{i18n, runtime, settings, theme};
 
 use gpui_kit::assets::IconName;
+use gpui_kit::component::resizable::{resizable_panel, v_resizable, ResizableState};
 use gpui_kit::component::{
     bubble::{Bubble, BubbleVariant},
     button::{Button, ButtonVariant, ButtonVariants},
@@ -12,8 +13,8 @@ use gpui_kit::component::{
     ActiveTheme, Collapsible, Disableable, Sizable, StyledExt, TitleBar, WindowExt,
 };
 use gpui_kit::{
-    div, point, prelude::*, px, size, App, Bounds, Context, ElementId, Entity, SharedString,
-    TitlebarOptions, Window, WindowBounds, WindowOptions,
+    div, point, prelude::*, px, size, App, Bounds, Context, ElementId, Entity, Pixels,
+    SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
 use openbitfun_agent_runtime::sdk::{PermissionReply, PermissionRequest};
 use openbitfun_runtime_ports::AgentSessionSummary;
@@ -36,6 +37,9 @@ const USER_BUBBLE_MAX_WIDTH: f32 = 480.;
 /// Composer height; explicit pixels because an auto-grown textarea makes the
 /// docked composer row jump while streaming text is typed.
 const COMPOSER_HEIGHT: f32 = 88.;
+/// Bounds of the docked terminal panel, dragged by the divider above it.
+const MIN_TERMINAL_HEIGHT: f32 = 120.;
+const MAX_TERMINAL_HEIGHT: f32 = 900.;
 
 /// Which surface the main content area shows.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -264,6 +268,12 @@ struct ShellWindow {
     /// Workspace changes panel (M8): created when the view opens, dropped when
     /// it closes so the snapshot is refetched on the next open.
     git: Option<Entity<GitPanel>>,
+    /// Split state of the docked terminal panel: the panel keeps whatever
+    /// height the divider was dragged to for as long as the window lives.
+    dock: Entity<ResizableState>,
+    /// Height the terminal dock reopens at (the last dragged height, or the
+    /// pane default before any drag).
+    terminal_height: Pixels,
     /// One-shot automation hooks for the settings page and the changes view,
     /// mirroring `OPENBITFUN_GPUI_TERMINAL_AUTOOPEN`.
     settings_auto_open: bool,
@@ -282,6 +292,7 @@ impl ShellWindow {
             TextareaState::new(window, cx).placeholder(text.chat_input_placeholder.clone())
         });
         let chat_scroller = cx.new(|cx| MessageScrollerState::new(0, cx));
+        let dock = cx.new(|_| ResizableState::default());
         receive_runtime_events(event_rx, window, cx);
         Self {
             draft,
@@ -299,6 +310,8 @@ impl ShellWindow {
             terminal_auto_open: std::env::var_os("OPENBITFUN_GPUI_TERMINAL_AUTOOPEN").is_some(),
             main_view: MainView::Chat,
             git: None,
+            dock,
+            terminal_height: TerminalPane::panel_height(),
             settings_auto_open: std::env::var_os("OPENBITFUN_GPUI_SETTINGS_AUTOOPEN").is_some(),
             git_auto_open: std::env::var_os("OPENBITFUN_GPUI_GIT_AUTOOPEN").is_some(),
         }
@@ -579,6 +592,12 @@ impl ShellWindow {
     fn toggle_terminal_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.terminal_open {
             self.terminal_open = false;
+            // Remember the dragged height so the next open docks at it instead
+            // of the default; the second slot is the terminal panel.
+            if let Some(size) = self.dock.read(cx).sizes().get(1) {
+                self.terminal_height =
+                    (*size).clamp(px(MIN_TERMINAL_HEIGHT), px(MAX_TERMINAL_HEIGHT));
+            }
             if let Some(pane) = self.terminal.take() {
                 pane.update(cx, |pane, _| pane.close());
             }
@@ -595,7 +614,13 @@ impl ShellWindow {
             let tokio = runtime::runtime_handle()
                 .map(|handle| handle.tokio_handle())
                 .expect("runtime handle ready when terminal opens");
-            self.terminal = Some(cx.new(|cx| TerminalPane::new(tokio, window, cx)));
+            // The pane starts from the shared terminal settings: the configured
+            // shell command and scrollback are read here, font preferences are
+            // also re-applied on every render below.
+            let terminal = settings::ShellConfig::try_current(cx)
+                .unwrap_or_else(|| settings::ShellConfig::startup_default(i18n::current(cx).locale))
+                .terminal;
+            self.terminal = Some(cx.new(|cx| TerminalPane::new(tokio, &terminal, window, cx)));
         }
         cx.notify();
     }
@@ -1248,6 +1273,18 @@ impl Render for ShellWindow {
             }
         }
 
+        // Terminal font preferences apply to a live pane: the paint pass
+        // remeasures the cell and reflows the grid (and the PTY) when they land.
+        // The settings page handlers only get `&mut App`, so the window is what
+        // pushes the shared config into the pane; the call is a no-op unless a
+        // value actually changed.
+        if let Some(pane) = self.terminal.clone() {
+            let terminal = settings::ShellConfig::try_current(cx)
+                .unwrap_or_else(|| settings::ShellConfig::startup_default(text.locale))
+                .terminal;
+            pane.update(cx, |pane, cx| pane.apply_font(&terminal, cx));
+        }
+
         let main_area = match self.main_view {
             MainView::Settings => settings::render_page(&text, cx),
             MainView::Git => match self.git.clone() {
@@ -1289,19 +1326,53 @@ impl Render for ShellWindow {
                         ),
                 ),
             )
+            // The body and the docked terminal are one vertical split: the
+            // divider above the terminal drags its height, and the body keeps
+            // the rest. Closed, the terminal panel is simply absent, so the
+            // body takes the whole split.
             .child(
                 div()
+                    .id("shell-dock-frame")
+                    .debug_selector(|| "shell-dock-frame".to_string())
+                    .size_full()
                     .flex_1()
                     .min_h_0()
-                    .flex()
-                    .flex_row()
-                    .min_w_0()
-                    .child(self.render_sidebar(&text, cx))
-                    .child(div().flex_1().min_h_0().min_w_0().flex().child(main_area)),
+                    .overflow_hidden()
+                    .child({
+                        // One `children` call with the whole panel list:
+                        // `ResizablePanelGroup::children` *replaces* the panel
+                        // list, so mixing it with `child` silently drops every
+                        // panel added before it (upstream 0.7.1).
+                        let mut panels = vec![resizable_panel().child(
+                            div()
+                                .size_full()
+                                .flex()
+                                .flex_row()
+                                .min_w_0()
+                                .min_h_0()
+                                .child(
+                                    div()
+                                        .id("shell-body-sidebar")
+                                        .debug_selector(|| "shell-body-sidebar".to_string())
+                                        .h_full()
+                                        .child(self.render_sidebar(&text, cx)),
+                                )
+                                .child(div().flex_1().min_h_0().min_w_0().flex().child(main_area)),
+                        )];
+                        if self.terminal_open {
+                            panels.push(
+                                resizable_panel()
+                                    .size(self.terminal_height)
+                                    .flex_none()
+                                    .size_range(px(MIN_TERMINAL_HEIGHT)..px(MAX_TERMINAL_HEIGHT))
+                                    .child(self.render_terminal_panel(&text, cx)),
+                            );
+                        }
+                        v_resizable("shell-dock")
+                            .with_state(&self.dock)
+                            .children(panels)
+                    }),
             )
-            .when(self.terminal_open, |this| {
-                this.child(self.render_terminal_panel(&text, cx))
-            })
     }
 }
 
@@ -1323,8 +1394,10 @@ impl ShellWindow {
             })
             .unwrap_or_else(|| text.terminal_title.clone().into());
         div()
+            .id("shell-terminal-dock")
+            .debug_selector(|| "shell-terminal-dock".to_string())
             .v_flex()
-            .h(TerminalPane::panel_height())
+            .size_full()
             .min_h_0()
             .border_t_1()
             .border_color(cx.theme().title_bar_border)
@@ -1856,6 +1929,73 @@ mod tests {
         fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             settings::render_page(&self.text, cx)
         }
+    }
+
+    /// The dock split must hand the body a real box whether or not the terminal
+    /// is docked: a `ResizablePanelGroup` carries `size_full()` internally and
+    /// collapses inside a parent whose height is only flex-derived, which is why
+    /// the split lives in its own sized frame (same recipe as gpui-base's own
+    /// dock area).
+    #[gpui_kit::test]
+    fn dock_split_keeps_the_body_sized(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            let presets = theme::load_presets();
+            let active = presets
+                .iter()
+                .position(|preset| preset.id == DEFAULT_PRESET_ID)
+                .unwrap_or(0);
+            if let Some(preset) = presets.get(active) {
+                preset.apply(cx);
+            }
+            cx.set_global(ShellState {
+                presets,
+                active_preset: active,
+            });
+            cx.set_global(settings::ShellConfig::startup_default(LocaleId::ZhCN));
+            cx.set_global(sample_shell_text());
+        });
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        window.draw(point(px(0.), px(0.)), size(px(1200.), px(800.)), {
+            let shell = shell.clone();
+            move |_, _| shell.into_any_element()
+        });
+        window.run_until_parked();
+        let body = window
+            .debug_bounds("shell-body-sidebar")
+            .unwrap_or_else(|| {
+                panic!(
+                    "body lays out with the terminal closed: frame {:?}",
+                    window.debug_bounds("shell-dock-frame")
+                )
+            });
+        assert!(body.size.height > px(300.), "body height: {:?}", body.size);
+        assert!(body.size.width > px(200.), "body width: {:?}", body.size);
+        assert!(window.debug_bounds("shell-terminal-dock").is_none());
+
+        window.update(|_, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.terminal_open = true;
+                cx.notify();
+            })
+        });
+        window.draw(
+            point(px(0.), px(0.)),
+            size(px(1200.), px(800.)),
+            move |_, _| shell.into_any_element(),
+        );
+        window.run_until_parked();
+        let docked = window
+            .debug_bounds("shell-terminal-dock")
+            .expect("terminal dock lays out once opened");
+        assert_eq!(docked.size.height, TerminalPane::panel_height());
+        let body = window
+            .debug_bounds("shell-body-sidebar")
+            .expect("body keeps its box with the terminal docked");
+        assert!(body.size.height > px(300.), "body height: {:?}", body.size);
     }
 
     /// The changes view must render its failure state (no runtime attached in

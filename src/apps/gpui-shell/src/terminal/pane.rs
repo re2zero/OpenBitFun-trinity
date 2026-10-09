@@ -16,15 +16,18 @@ use gpui_kit::{
 };
 use terminal_core::{PtyService, PtyServiceEvent, ShellConfig, ShellType, TerminalConfig};
 
+use crate::settings::{self, TerminalSettings};
 use crate::terminal::colors::TerminalPalette;
-use crate::terminal::emulator::TerminalEmulator;
+use crate::terminal::emulator::{TerminalEmulator, DEFAULT_SCROLLBACK_LINES};
 use crate::terminal::row_runs::row_spans;
 
 const FONT_SIZE: f32 = 13.;
-const LINE_HEIGHT: f32 = 17.;
+/// Line box as a multiple of the font size; the grid keeps every row this tall.
+const LINE_HEIGHT_RATIO: f32 = 1.31;
 const MIN_COLS: u16 = 20;
 const MIN_ROWS: u16 = 6;
 const MONO_FONT: &str = "DejaVu Sans Mono";
+const DEFAULT_SHELL: &str = "/bin/bash";
 const PANEL_HEIGHT: f32 = 300.;
 
 /// One interactive terminal session embedded in the shell: a `PtyService`
@@ -40,6 +43,13 @@ pub struct TerminalPane {
     exited: bool,
     error: Option<String>,
     title: Option<String>,
+    /// Grid typography, from the shared terminal settings (font size/family)
+    /// with shell defaults for unset or unresolvable values. The configured
+    /// family is kept next to the resolved one so the (allocating) font-list
+    /// lookup and its warning run only when the setting actually changes.
+    font_size: f32,
+    font_family: SharedString,
+    font_family_configured: String,
     /// Grid size currently applied to both the emulator and the PTY.
     cols: u16,
     rows: u16,
@@ -66,14 +76,88 @@ enum PtyMsg {
     SpawnFailed(String),
 }
 
+/// Grid line box for one font size; every row is exactly this tall.
+fn line_height(font_size: f32) -> f32 {
+    (font_size * LINE_HEIGHT_RATIO).round()
+}
+
+/// Font size the grid renders with; an unset or out-of-range value means the
+/// default (the value domain itself is owned by the settings page).
+fn resolve_font_size(configured: u32) -> f32 {
+    settings::valid_font_size(configured).map_or(FONT_SIZE, |size| size as f32)
+}
+
+/// First family of a CSS-style stack that is actually installed here, so a
+/// stack written for the Web UI still lands on a real face instead of silently
+/// falling back to a proportional font the grid cannot align. The installed
+/// spelling is what the text system is asked for. A configured stack that
+/// resolves to nothing keeps the default and says so, rather than reporting a
+/// font that is not what is drawn.
+fn resolve_font_family(configured: &str, available: &[String]) -> SharedString {
+    let resolved = configured
+        .split(',')
+        .map(|part| part.trim().trim_matches(['"', '\'']).trim())
+        .filter(|name| !name.is_empty())
+        .find_map(|name| {
+            available
+                .iter()
+                .find(|font| font.eq_ignore_ascii_case(name))
+                .cloned()
+        });
+    match resolved {
+        Some(family) => SharedString::from(family),
+        None => {
+            if !configured.trim().is_empty() {
+                tracing::warn!(
+                    "Terminal font family '{}' is not installed; using {}",
+                    configured,
+                    MONO_FONT
+                );
+            }
+            SharedString::from(MONO_FONT)
+        }
+    }
+}
+
+/// Scrollback depth the emulator keeps; unset or out-of-range means the
+/// default.
+fn resolve_scrollback(configured: u32) -> usize {
+    settings::valid_scrollback(configured).map_or(DEFAULT_SCROLLBACK_LINES, |lines| lines as usize)
+}
+
+/// Shell command for the PTY: the configured command when set, else `$SHELL`.
+fn resolve_shell(configured: &str) -> String {
+    let configured = configured.trim();
+    if configured.is_empty() {
+        std::env::var("SHELL").unwrap_or_else(|_| DEFAULT_SHELL.to_string())
+    } else {
+        configured.to_string()
+    }
+}
+
 impl TerminalPane {
-    pub fn new(tokio: tokio::runtime::Handle, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// Creates the pane from the shared terminal settings: the font drives the
+    /// grid metrics, the scrollback depth sizes the history, and a configured
+    /// shell command replaces `$SHELL`. Preferences that only affect a starting
+    /// pane are read once, here.
+    pub(crate) fn new(
+        tokio: tokio::runtime::Handle,
+        settings: &TerminalSettings,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus = cx.focus_handle();
         let palette = TerminalPalette::from_theme(
             cx.theme().foreground,
             cx.theme().background,
             cx.theme().accent,
         );
+        let font_size = resolve_font_size(settings.font_size);
+        let font_family =
+            resolve_font_family(&settings.font_family, &cx.text_system().all_font_names());
+        let font_family_configured = settings.font_family.clone();
+        let scrollback = resolve_scrollback(settings.scrollback);
+        let executable = resolve_shell(&settings.default_shell);
         let service = Arc::new(PtyService::new(TerminalConfig::default()));
         let (msg_tx, msg_rx) = tokio::sync::mpsc::unbounded_channel::<PtyMsg>();
 
@@ -83,7 +167,7 @@ impl TerminalPane {
             let mut env = HashMap::new();
             env.insert("COLORTERM".to_string(), "truecolor".to_string());
             let shell = ShellConfig {
-                executable: std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string()),
+                executable,
                 args: vec!["-i".to_string()],
                 env,
                 cwd: None,
@@ -119,7 +203,7 @@ impl TerminalPane {
         receive_pty_msgs(msg_rx, window, cx);
 
         Self {
-            emulator: TerminalEmulator::new(80, 24),
+            emulator: TerminalEmulator::new(80, 24, scrollback),
             palette,
             service,
             pty_id: None,
@@ -128,15 +212,37 @@ impl TerminalPane {
             exited: false,
             error: None,
             title: None,
+            font_size,
+            font_family,
+            font_family_configured,
             cols: 80,
             rows: 24,
             cell_w: px(7.),
-            cell_h: px(LINE_HEIGHT),
+            cell_h: px(line_height(font_size)),
             cursor_px: None,
             grid_bounds: None,
             selecting: false,
             needs_focus: false,
         }
+    }
+
+    /// Applies the font preferences to a running pane. The next paint pass
+    /// remeasures the cell from the new font, which reflows the grid and the
+    /// PTY through the ordinary resize path. Values the grid cannot render
+    /// (out of range, family not installed) resolve to the pane defaults.
+    pub(crate) fn apply_font(&mut self, settings: &TerminalSettings, cx: &mut Context<Self>) {
+        let font_size = resolve_font_size(settings.font_size);
+        let family_changed = self.font_family_configured != settings.font_family;
+        if self.font_size == font_size && !family_changed {
+            return;
+        }
+        self.font_size = font_size;
+        if family_changed {
+            self.font_family_configured = settings.font_family.clone();
+            self.font_family =
+                resolve_font_family(&settings.font_family, &cx.text_system().all_font_names());
+        }
+        cx.notify();
     }
 
     pub fn focus_handle(&self) -> FocusHandle {
@@ -651,13 +757,18 @@ impl Render for TerminalPane {
                 div().size_full().child(
                     canvas(
                         move |bounds, window, cx| {
-                            // Measure the monospace cell, then reflow the grid
-                            // to the panel's real size (window resizes land
-                            // here on every frame).
-                            let font = gpui_kit::font(MONO_FONT);
+                            // Measure the monospace cell from the pane's current
+                            // typography, then reflow the grid to the panel's
+                            // real size (window resizes and font changes both
+                            // land here on every frame).
+                            let (font_family, font_size) = {
+                                let pane = entity.read(cx);
+                                (pane.font_family.clone(), pane.font_size)
+                            };
+                            let font = gpui_kit::font(font_family);
                             let shaped = window.text_system().shape_line(
                                 SharedString::from("M"),
-                                px(FONT_SIZE),
+                                px(font_size),
                                 &[gpui_kit::TextRun {
                                     len: 1,
                                     font,
@@ -670,7 +781,7 @@ impl Render for TerminalPane {
                             );
                             let metrics = GridMetrics {
                                 cell_w: shaped.width,
-                                cell_h: px(LINE_HEIGHT),
+                                cell_h: px(line_height(font_size)),
                             };
                             let cols = ((bounds.size.width / metrics.cell_w).floor() as u16)
                                 .clamp(MIN_COLS, 500);
@@ -739,7 +850,17 @@ fn paint_grid(
 ) {
     // Snapshot owned render data so the entity borrow ends before painting
     // (paint needs `&mut App` for quads and text).
-    let (cols, rows, cursor, display_offset, palette, row_spans_by_row, selection_spans) = {
+    let (
+        cols,
+        rows,
+        cursor,
+        display_offset,
+        palette,
+        font_family,
+        font_size,
+        row_spans_by_row,
+        selection_spans,
+    ) = {
         let state = entity.read(cx);
         let emulator = &state.emulator;
         let cols = emulator.cols();
@@ -765,6 +886,8 @@ fn paint_grid(
             emulator.cursor_point(),
             emulator.display_offset(),
             state.palette,
+            state.font_family.clone(),
+            state.font_size,
             spans,
             selection_spans,
         )
@@ -787,7 +910,7 @@ fn paint_grid(
         cursor_origin = Some(origin);
     }
 
-    let font = gpui_kit::font(MONO_FONT);
+    let font = gpui_kit::font(font_family);
     for (row, spans) in row_spans_by_row.iter().enumerate() {
         // Walk spans right-to-left so each span knows how many grid columns
         // it occupies (wide characters advance two).
@@ -872,7 +995,7 @@ fn paint_grid(
             // background comment); natural mono advance fills the cells.
             let shaped = window.text_system().shape_line(
                 SharedString::from(span.text.clone()),
-                px(FONT_SIZE),
+                px(font_size),
                 &[gpui_kit::TextRun {
                     len: span.text.len(),
                     font: run_font,
@@ -996,8 +1119,12 @@ fn cell_origin(bounds: Bounds<Pixels>, col: f32, row: f32, metrics: &GridMetrics
 
 #[cfg(test)]
 mod tests {
-    use super::{grid_point_at, key_to_bytes, paste_payload, selection_span, Side};
-    use crate::terminal::emulator::TerminalEmulator;
+    use super::{
+        grid_point_at, key_to_bytes, line_height, paste_payload, resolve_font_family,
+        resolve_font_size, resolve_scrollback, resolve_shell, selection_span, Side, FONT_SIZE,
+        MONO_FONT,
+    };
+    use crate::terminal::emulator::{TerminalEmulator, DEFAULT_SCROLLBACK_LINES};
     use alacritty_terminal::index::{Line as GridLine, Side as TermSide};
     use gpui_kit::{point, px, size, Bounds};
 
@@ -1043,7 +1170,7 @@ mod tests {
     fn spans_for(
         selection: Option<((i32, usize), (i32, usize))>,
     ) -> Vec<Option<std::ops::Range<usize>>> {
-        let mut emulator = TerminalEmulator::new(10, 2);
+        let mut emulator = TerminalEmulator::new(10, 2, DEFAULT_SCROLLBACK_LINES);
         emulator.advance("ab汉字cd".as_bytes());
         if let Some((from, to)) = selection {
             // The drag's outer edges carry the sides: anchor Left, head Right
@@ -1185,5 +1312,69 @@ mod tests {
         assert!(key_to_bytes("a", false, false, false, false).is_none());
         assert!(key_to_bytes(" ", false, false, false, false).is_none());
         assert!(key_to_bytes("$", true, false, false, false).is_none());
+    }
+
+    #[test]
+    fn terminal_settings_resolve_onto_renderable_values() {
+        // Unset (zero) and out-of-range values mean "shell default"; the pane
+        // keeps its own constants for those.
+        assert_eq!(resolve_font_size(0), FONT_SIZE);
+        assert_eq!(resolve_font_size(4), FONT_SIZE);
+        assert_eq!(resolve_font_size(200), FONT_SIZE);
+        assert_eq!(resolve_font_size(16), 16.);
+
+        assert_eq!(
+            resolve_scrollback(0),
+            crate::terminal::emulator::DEFAULT_SCROLLBACK_LINES
+        );
+        assert_eq!(
+            resolve_scrollback(5),
+            crate::terminal::emulator::DEFAULT_SCROLLBACK_LINES
+        );
+        assert_eq!(resolve_scrollback(5000), 5000);
+
+        assert_eq!(line_height(13.), 17.);
+        assert_eq!(line_height(20.), 26.);
+    }
+
+    #[test]
+    fn font_stack_picks_the_first_installed_family() {
+        let installed = vec![
+            "Noto Sans CJK SC".to_string(),
+            "JetBrains Mono".to_string(),
+            "DejaVu Sans Mono".to_string(),
+        ];
+        // Web UI style stacks carry quotes and a generic tail.
+        assert_eq!(
+            resolve_font_family("\"JetBrains Mono\", \"Fira Code\", monospace", &installed)
+                .as_ref(),
+            "JetBrains Mono"
+        );
+        // Case-insensitive match, first hit wins.
+        assert_eq!(
+            resolve_font_family("fira code, jetbrains mono", &installed).as_ref(),
+            "JetBrains Mono"
+        );
+        // Nothing installed or nothing configured: the shell default, never a
+        // proportional fallback the grid cannot align.
+        assert_eq!(
+            resolve_font_family("monospace", &installed).as_ref(),
+            MONO_FONT
+        );
+        assert_eq!(resolve_font_family("", &installed).as_ref(), MONO_FONT);
+        assert_eq!(resolve_font_family("  ", &installed).as_ref(), MONO_FONT);
+        // The desktop Web UI default stack, on a machine with none of it.
+        assert_eq!(
+            resolve_font_family("Consolas, \"Courier New\", monospace", &installed).as_ref(),
+            MONO_FONT
+        );
+    }
+
+    #[test]
+    fn shell_command_prefers_the_configured_value() {
+        assert_eq!(resolve_shell(" /usr/bin/zsh "), "/usr/bin/zsh");
+        let fallback = resolve_shell("");
+        assert!(!fallback.is_empty());
+        assert_eq!(resolve_shell("   "), fallback);
     }
 }

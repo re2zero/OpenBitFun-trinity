@@ -12,16 +12,24 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, StyledExt};
 use gpui_kit::{
-    div, list, prelude::*, px, App, Context, IntoElement, ListAlignment, ListState, Render, Window,
+    div, list, prelude::*, px, App, Context, IntoElement, ListAlignment, ListState, Pixels, Render,
+    SharedString, TextRun, Window,
 };
 use openbitfun_runtime_ports::{
     WorkspaceDiffContent, WorkspaceDiffFile, WorkspaceDiffFileStatus, WorkspaceDiffSnapshot,
 };
+use unicode_width::UnicodeWidthStr;
 
 use crate::i18n::{self, ShellText};
 
 /// Width of the changed-file column inside the panel.
 const FILE_COLUMN_WIDTH: f32 = 300.;
+
+/// Diff row typography: `text_xs` (0.75rem) with the theme's monospace family,
+/// duplicated here so the unwrapped layout can shape a row at the same metrics.
+const DIFF_FONT_SIZE: f32 = 12.;
+/// Horizontal padding of one diff row (`px_2`, both sides).
+const DIFF_ROW_PADDING: f32 = 16.;
 
 /// One rendered diff row kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +89,15 @@ pub(crate) fn parse_unified_patch(patch: &str) -> Vec<DiffLine> {
         .collect()
 }
 
+/// The row whose rendered width decides the unwrapped layout. Selection uses
+/// display width (CJK glyphs count as two columns) because the rows are drawn
+/// in the monospace family, where that is what a column costs.
+fn widest_line(lines: &[DiffLine]) -> Option<&DiffLine> {
+    lines
+        .iter()
+        .max_by_key(|line| UnicodeWidthStr::width(line.text.as_str()))
+}
+
 /// Single-letter status marker (git porcelain vocabulary).
 pub(crate) fn status_letter(status: WorkspaceDiffFileStatus) -> &'static str {
     match status {
@@ -134,6 +151,9 @@ pub(crate) struct GitPanel {
     truncated: bool,
     /// Parsed rows of the selected file's patch; rebuilt on selection change.
     diff: Rc<Vec<DiffLine>>,
+    /// Rows wrap at the viewport width (default). Unwrapped, every row keeps
+    /// its own line and the view scrolls horizontally instead.
+    wrap_lines: bool,
     file_list: ListState,
     diff_list: ListState,
 }
@@ -147,6 +167,7 @@ impl GitPanel {
             error: None,
             truncated: false,
             diff: Rc::new(Vec::new()),
+            wrap_lines: true,
             file_list: ListState::new(0, ListAlignment::Top, px(40.)),
             diff_list: ListState::new(0, ListAlignment::Top, px(40.)),
         };
@@ -225,6 +246,15 @@ impl GitPanel {
         }
         self.selected = index;
         self.rebuild_diff(cx);
+        cx.notify();
+    }
+
+    /// Flips the diff between wrapped rows and one-line rows with horizontal
+    /// scrolling. Row heights change wholesale, so the list remeasures from
+    /// scratch.
+    fn toggle_wrap(&mut self, cx: &mut Context<Self>) {
+        self.wrap_lines = !self.wrap_lines;
+        self.diff_list.reset(self.diff.len());
         cx.notify();
     }
 
@@ -381,8 +411,10 @@ fn render_file_row(
 }
 
 /// One diff row. Additions/deletions carry a faint tinted background so the
-/// diff reads without a gutter; colors come from the active theme.
-fn render_diff_line(line: &DiffLine, cx: &App) -> gpui_kit::AnyElement {
+/// diff reads without a gutter; colors come from the active theme. Wrapped
+/// rows flow onto as many visual lines as the text needs; unwrapped rows stay
+/// on one line and the surrounding viewport scrolls sideways.
+fn render_diff_line(line: &DiffLine, wrap: bool, cx: &App) -> gpui_kit::AnyElement {
     let color = match line.kind {
         DiffLineKind::Meta => cx.theme().muted_foreground,
         DiffLineKind::Hunk => cx.theme().info,
@@ -402,18 +434,52 @@ fn render_diff_line(line: &DiffLine, cx: &App) -> gpui_kit::AnyElement {
         .when(line.kind == DiffLineKind::Delete, |this| {
             this.bg(cx.theme().danger.opacity(0.08))
         })
-        .truncate()
+        .when(!wrap, |this| this.whitespace_nowrap())
         .child(line.text.clone())
         .into_any_element()
 }
 
+/// Natural pixel width of the widest diff row at the row typography. The
+/// unwrapped layout lays the rows out at this width and lets the viewport
+/// scroll horizontally, so nothing is cut off. Shaping a single line goes
+/// through the text system's layout cache.
+fn diff_content_width(lines: &[DiffLine], window: &mut Window, cx: &App) -> Pixels {
+    let Some(widest) = widest_line(lines) else {
+        return px(0.);
+    };
+    if widest.text.is_empty() {
+        return px(DIFF_ROW_PADDING);
+    }
+    let shaped = window.text_system().shape_line(
+        SharedString::from(widest.text.clone()),
+        px(DIFF_FONT_SIZE),
+        &[TextRun {
+            len: widest.text.len(),
+            font: gpui_kit::font(cx.theme().mono_font_family.clone()),
+            color: cx.theme().foreground,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        }],
+        None,
+    );
+    shaped.width() + px(DIFF_ROW_PADDING)
+}
+
 impl Render for GitPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let text = i18n::current(cx);
         let selected_file = self.files.get(self.selected).cloned();
         let diff = self.diff.clone();
         let error = self.error.clone();
         let truncated = self.truncated;
+        // Unwrapped rows need their natural width before the list is built; the
+        // measurement only matters in that mode.
+        let diff_width = if self.wrap_lines {
+            Pixels::ZERO
+        } else {
+            diff_content_width(&diff, window, cx)
+        };
 
         let file_list = {
             let this = cx.entity();
@@ -444,6 +510,7 @@ impl Render for GitPanel {
             .as_ref()
             .map(|file| (file.additions, file.deletions))
             .unwrap_or((0, 0));
+        let wrap_lines = self.wrap_lines;
         let diff_header = selected_file.as_ref().map(|file| {
             div()
                 .flex()
@@ -479,6 +546,20 @@ impl Render for GitPanel {
                         .text_xs()
                         .text_color(cx.theme().danger)
                         .child(format!("-{}", deletions)),
+                )
+                // Wrap toggle: on = rows flow at the viewport width, off = one
+                // line per row with horizontal scrolling.
+                .child(
+                    Button::new("git-diff-wrap")
+                        .icon(IconName::TextWrap)
+                        .small()
+                        .with_variant(if wrap_lines {
+                            ButtonVariant::Secondary
+                        } else {
+                            ButtonVariant::Ghost
+                        })
+                        .tooltip(text.git_diff_wrap.clone())
+                        .on_click(cx.listener(|this, _, _, cx| this.toggle_wrap(cx))),
                 )
                 .into_any_element()
         });
@@ -535,16 +616,33 @@ impl Render for GitPanel {
                     .into_any_element(),
                 Some(WorkspaceDiffContent::Text { .. }) => {
                     let diff = diff.clone();
-                    list(
-                        self.diff_list.clone(),
-                        move |index, _window, cx| match diff.get(index) {
-                            Some(line) => render_diff_line(line, cx),
-                            None => div().into_any_element(),
-                        },
-                    )
-                    .flex_1()
-                    .min_h_0()
-                    .into_any_element()
+                    let wrap_lines = self.wrap_lines;
+                    let rows = list(self.diff_list.clone(), move |index, _window, cx| match diff
+                        .get(index)
+                    {
+                        Some(line) => render_diff_line(line, wrap_lines, cx),
+                        None => div().into_any_element(),
+                    });
+                    if wrap_lines {
+                        rows.flex_1().min_h_0().into_any_element()
+                    } else {
+                        // Unwrapped: the rows keep their natural width and the
+                        // viewport scrolls sideways instead of cutting them off.
+                        div()
+                            .id("git-diff-hscroll")
+                            .flex_1()
+                            .min_h_0()
+                            .min_w_0()
+                            .overflow_x_scroll()
+                            .child(
+                                div()
+                                    .h_full()
+                                    .w_full()
+                                    .min_w(diff_width)
+                                    .child(rows.size_full()),
+                            )
+                            .into_any_element()
+                    }
                 }
             }
         };
@@ -673,5 +771,97 @@ mod tests {
             ..file
         };
         assert_eq!(stage_markers(&staged), vec![StageMarker::Staged]);
+    }
+
+    #[test]
+    fn widest_line_measures_columns_not_characters() {
+        let lines = vec![
+            DiffLine {
+                kind: DiffLineKind::Context,
+                text: "x".repeat(12),
+            },
+            // Eight CJK glyphs occupy sixteen monospace columns, more than the
+            // twelve Latin characters above.
+            DiffLine {
+                kind: DiffLineKind::Add,
+                text: "中文中文中文中文".into(),
+            },
+            DiffLine {
+                kind: DiffLineKind::Delete,
+                text: "-short".into(),
+            },
+        ];
+        assert_eq!(
+            widest_line(&lines).map(|line| line.text.as_str()),
+            Some("中文中文中文中文")
+        );
+        assert!(widest_line(&[]).is_none());
+    }
+
+    fn sample_file(patch: &str) -> WorkspaceDiffFile {
+        WorkspaceDiffFile {
+            path: "src/wide.rs".into(),
+            old_path: None,
+            status: WorkspaceDiffFileStatus::Modified,
+            staged: false,
+            unstaged: true,
+            untracked: false,
+            additions: 1,
+            deletions: 1,
+            content: WorkspaceDiffContent::Text {
+                patch: patch.to_string(),
+            },
+        }
+    }
+
+    /// Both diff layouts must draw: wrapped rows flow in the viewport, and the
+    /// unwrapped mode measures the widest row (CJK included) before handing the
+    /// list its content width.
+    #[gpui_kit::test]
+    fn diff_renders_wrapped_and_unwrapped(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(crate::i18n::fallback_text(
+                openbitfun_core::service::i18n::LocaleId::EnUS,
+            ));
+        });
+        let patch = "diff --git a/src/wide.rs b/src/wide.rs\n\
+                     index 1111111..2222222 100644\n\
+                     --- a/src/wide.rs\n\
+                     +++ b/src/wide.rs\n\
+                     @@ -1,2 +1,2 @@\n\
+                     -let old = \"a very long line that will not fit in the diff column at all\";\n\
+                     +let new = \"中文中文中文中文中文中文中文中文中文中文中文中文\";\n";
+        let panel = cx.new(GitPanel::new);
+        panel.update(cx, |panel, cx| {
+            // The panel is driven with a fixture snapshot instead of the git
+            // port so the render path is exercised without a runtime.
+            panel.error = None;
+            panel.files = vec![sample_file(patch)];
+            panel.file_list.reset(panel.files.len());
+            panel.rebuild_diff(cx);
+            assert!(panel.wrap_lines);
+        });
+        {
+            let window = cx.add_empty_window();
+            window.draw(
+                gpui_kit::point(px(0.), px(0.)),
+                gpui_kit::size(px(900.), px(600.)),
+                {
+                    let panel = panel.clone();
+                    move |_, _| panel.into_any_element()
+                },
+            );
+            window.run_until_parked();
+        }
+
+        panel.update(cx, |panel, _| panel.wrap_lines = false);
+        let window = cx.add_empty_window();
+        window.draw(
+            gpui_kit::point(px(0.), px(0.)),
+            gpui_kit::size(px(900.), px(600.)),
+            move |_, _| panel.into_any_element(),
+        );
+        window.run_until_parked();
     }
 }
