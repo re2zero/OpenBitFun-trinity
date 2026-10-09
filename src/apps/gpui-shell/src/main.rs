@@ -1,6 +1,7 @@
 mod i18n;
 mod runtime;
 mod theme;
+mod theme_openbitfun;
 
 use gpui_kit::component::{
     button::{Button, ButtonVariant, ButtonVariants},

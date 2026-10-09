@@ -19,7 +19,7 @@ use serde::Deserialize;
 pub(crate) struct ThemePreset {
     pub id: &'static str,
     pub label: &'static str,
-    config: Rc<ThemeConfig>,
+    pub(crate) config: Rc<ThemeConfig>,
 }
 
 impl ThemePreset {
@@ -42,8 +42,9 @@ impl ThemePreset {
     }
 }
 
-/// Preset applied on the first frame, matching the CLI default palette.
-pub(crate) const DEFAULT_PRESET_ID: &str = "openbitfun-dark";
+/// Preset applied on the first frame: the design-system dark palette, with
+/// the CLI presets below kept as the compatibility source.
+pub(crate) const DEFAULT_PRESET_ID: &str = crate::theme_openbitfun::DARK_PRESET_ID;
 
 static PRESET_FILES: &[(&str, &str)] = &[
     (
@@ -72,23 +73,28 @@ static PRESET_FILES: &[(&str, &str)] = &[
     ),
 ];
 
-/// Parses every embedded preset; unparsable presets are skipped with a warning
-/// instead of failing the shell startup.
+/// Parses every palette shown in the shell: the design-system
+/// `theme-openbitfun` tokens first (the product default), then the CLI
+/// presets. Unparsable entries are skipped with a warning instead of failing
+/// the shell startup.
 pub(crate) fn load_presets() -> Vec<ThemePreset> {
-    PRESET_FILES
-        .iter()
-        .filter_map(|(id, json)| match build_config(id, json) {
-            Ok(config) => Some(ThemePreset {
-                id,
-                label: id.strip_prefix("openbitfun-").unwrap_or(id),
-                config: Rc::new(config),
+    let mut presets = crate::theme_openbitfun::load();
+    presets.extend(
+        PRESET_FILES
+            .iter()
+            .filter_map(|(id, json)| match build_config(id, json) {
+                Ok(config) => Some(ThemePreset {
+                    id,
+                    label: id.strip_prefix("openbitfun-").unwrap_or(id),
+                    config: Rc::new(config),
+                }),
+                Err(err) => {
+                    tracing::warn!("Skipping theme preset {}: {}", id, err);
+                    None
+                }
             }),
-            Err(err) => {
-                tracing::warn!("Skipping theme preset {}: {}", id, err);
-                None
-            }
-        })
-        .collect()
+    );
+    presets
 }
 
 #[derive(Debug, Deserialize)]
@@ -232,7 +238,7 @@ fn resolved_color(file: &PresetFile, key: &str, dark: bool) -> Option<String> {
         .and_then(|value| resolve_color(value, dark))
 }
 
-fn readable_foreground(hex: &str) -> SharedString {
+pub(crate) fn readable_foreground(hex: &str) -> SharedString {
     if relative_luminance(hex).unwrap_or(0.0) > 0.36 {
         "#000000".into()
     } else {
@@ -275,7 +281,11 @@ mod tests {
     #[test]
     fn all_builtin_presets_load() {
         let presets = load_presets();
-        assert_eq!(presets.len(), PRESET_FILES.len());
+        // Two theme-openbitfun design-system palettes plus the CLI presets.
+        assert_eq!(presets.len(), PRESET_FILES.len() + 2);
+        assert!(presets
+            .first()
+            .is_some_and(|preset| preset.id == crate::theme_openbitfun::DARK_PRESET_ID));
         for preset in &presets {
             assert!(preset.label.len() < preset.id.len());
         }
