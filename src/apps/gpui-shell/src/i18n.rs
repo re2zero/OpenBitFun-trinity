@@ -43,6 +43,9 @@ pub(crate) struct ShellText {
     pub permission_allow_once: String,
     pub permission_allow_always: String,
     pub permission_deny: String,
+    pub terminal_title: String,
+    pub terminal_close: String,
+    pub terminal_exited: String,
 }
 
 impl Global for ShellText {}
@@ -163,6 +166,9 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
             permission_allow_once: "Allow once".to_string(),
             permission_allow_always: "Always allow".to_string(),
             permission_deny: "Deny".to_string(),
+            terminal_title: "Terminal".to_string(),
+            terminal_close: "Close terminal".to_string(),
+            terminal_exited: "process exited".to_string(),
         };
     };
 
@@ -201,6 +207,9 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         permission_allow_once: service.t("gpui-shell-permission-allow-once").await,
         permission_allow_always: service.t("gpui-shell-permission-allow-always").await,
         permission_deny: service.t("gpui-shell-permission-deny").await,
+        terminal_title: service.t("gpui-shell-terminal-title").await,
+        terminal_close: service.t("gpui-shell-terminal-close").await,
+        terminal_exited: service.t("gpui-shell-terminal-exited").await,
     }
 }
 

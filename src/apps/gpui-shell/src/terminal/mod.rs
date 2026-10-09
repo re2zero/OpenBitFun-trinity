@@ -7,4 +7,5 @@
 
 pub mod colors;
 pub mod emulator;
+pub mod pane;
 pub mod row_runs;

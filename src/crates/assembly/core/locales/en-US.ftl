@@ -194,3 +194,7 @@ gpui-shell-session-turns = { $count ->
   [one] 1 turn
   *[other] { $count } turns
 }
+gpui-shell-terminal-title = Terminal
+gpui-shell-terminal-close = Close terminal
+gpui-shell-terminal-exited = process exited
+

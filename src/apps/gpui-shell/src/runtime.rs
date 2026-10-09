@@ -182,6 +182,12 @@ impl RuntimeHandle {
         &self.workspace
     }
 
+    /// Process-lifetime tokio handle for spawning service-side tasks (the
+    /// terminal pane's PTY pump and writes).
+    pub(crate) fn tokio_handle(&self) -> tokio::runtime::Handle {
+        self.tokio.clone()
+    }
+
     /// Requests a fresh read-only session snapshot; the result arrives as a
     /// [`RuntimeEvent::Sessions`] (or [`RuntimeEvent::SessionsFailed`]).
     pub(crate) fn reload_sessions(&self, tx: mpsc::UnboundedSender<RuntimeEvent>) {

@@ -170,3 +170,7 @@ gpui-shell-permission-allow-always = 永遠允許
 gpui-shell-permission-deny = 拒絕
 
 gpui-shell-session-turns = { $count } 輪對話
+gpui-shell-terminal-title = 終端
+gpui-shell-terminal-close = 關閉終端
+gpui-shell-terminal-exited = 處理程序已結束
+

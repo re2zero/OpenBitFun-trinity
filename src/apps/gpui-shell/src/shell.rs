@@ -22,6 +22,7 @@ use tokio::sync::mpsc;
 
 use crate::i18n::ShellText;
 use crate::runtime::{ChatEntry, RuntimeEvent, ToolCard, ToolStatus};
+use crate::terminal::pane::TerminalPane;
 use crate::theme::{ThemePreset, DEFAULT_PRESET_ID};
 
 /// Width of the navigation sidebar, matching the web-ui desktop shell.
@@ -247,6 +248,10 @@ struct ShellWindow {
     /// [`ShellWindow::open_permission_dialog`] until the resolving echo drains
     /// the queue.
     permission_dialog_open: bool,
+    /// Built-in terminal panel (M7): created lazily on first open, shut down
+    /// and dropped when the panel closes.
+    terminal: Option<Entity<TerminalPane>>,
+    terminal_open: bool,
 }
 
 impl ShellWindow {
@@ -273,6 +278,8 @@ impl ShellWindow {
             event_tx,
             pending_permissions: Vec::new(),
             permission_dialog_open: false,
+            terminal: None,
+            terminal_open: false,
         }
     }
 
@@ -527,6 +534,23 @@ impl ShellWindow {
                     _ => {}
                 }
             }
+        }
+        cx.notify();
+    }
+
+    /// Opens or closes the built-in terminal panel. First open creates the
+    /// pane (and its PTY); close shuts the PTY down and drops the pane.
+    fn toggle_terminal_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.terminal_open = !self.terminal_open;
+        if self.terminal_open {
+            if self.terminal.is_none() {
+                let tokio = runtime::runtime_handle()
+                    .map(|handle| handle.tokio_handle())
+                    .expect("runtime handle ready when terminal opens");
+                self.terminal = Some(cx.new(|cx| TerminalPane::new(tokio, window, cx)));
+            }
+        } else if let Some(pane) = self.terminal.take() {
+            pane.update(cx, |pane, _| pane.close());
         }
         cx.notify();
     }
@@ -1138,15 +1162,32 @@ impl Render for ShellWindow {
             .child(
                 TitleBar::new().child(
                     div()
+                        .flex_1()
                         .flex()
-                        .items_baseline()
-                        .gap_2()
-                        .child(div().text_sm().child("OpenBitFun GPUI Shell"))
+                        .items_center()
+                        .justify_between()
                         .child(
                             div()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(text.subtitle.clone()),
+                                .flex()
+                                .items_baseline()
+                                .gap_2()
+                                .child(div().text_sm().child("OpenBitFun GPUI Shell"))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(text.subtitle.clone()),
+                                ),
+                        )
+                        .child(
+                            Button::new("terminal-toggle")
+                                .icon(IconName::SquareTerminal)
+                                .small()
+                                .with_variant(ButtonVariant::Ghost)
+                                .tooltip(text.terminal_title.clone())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.toggle_terminal_panel(window, cx)
+                                })),
                         ),
                 ),
             )
@@ -1191,10 +1232,68 @@ impl Render for ShellWindow {
                             .child(self.render_composer(&text, cx)),
                     ),
             )
+            .when(self.terminal_open, |this| {
+                this.child(self.render_terminal_panel(&text, cx))
+            })
     }
 }
 
 impl ShellWindow {
+    /// The docked terminal panel: slim header (OSC title + close) above the
+    /// pane. The pane owns focus, keyboard, wheel scrollback, and reflows to
+    /// whatever size the panel gives it.
+    fn render_terminal_panel(
+        &self,
+        text: &ShellText,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        let title = self
+            .terminal
+            .as_ref()
+            .map(|pane| {
+                pane.read(cx)
+                    .title_label(text.terminal_title.clone().into())
+            })
+            .unwrap_or_else(|| text.terminal_title.clone().into());
+        div()
+            .v_flex()
+            .h(TerminalPane::panel_height())
+            .min_h_0()
+            .border_t_1()
+            .border_color(cx.theme().title_bar_border)
+            .bg(cx.theme().background)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px_3()
+                    .py_1()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .truncate()
+                            .child(title),
+                    )
+                    .child(
+                        Button::new("terminal-close")
+                            .icon(IconName::X)
+                            .small()
+                            .with_variant(ButtonVariant::Ghost)
+                            .tooltip(text.terminal_close.clone())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.toggle_terminal_panel(window, cx)
+                            })),
+                    ),
+            )
+            .child(match self.terminal.clone() {
+                Some(pane) => div().flex_1().min_h_0().child(pane).into_any_element(),
+                None => div().flex_1().min_h_0().into_any_element(),
+            })
+            .into_any_element()
+    }
+
     fn render_chat_header(&self, text: &ShellText, cx: &mut Context<Self>) -> gpui_kit::Div {
         match self.chat.as_ref() {
             Some(chat) => div()
@@ -1446,6 +1545,9 @@ mod tests {
             permission_allow_once: "Allow once".into(),
             permission_allow_always: "Always allow".into(),
             permission_deny: "Deny".into(),
+            terminal_title: "Terminal".into(),
+            terminal_close: "Close terminal".into(),
+            terminal_exited: "process exited".into(),
         }
     }
 
