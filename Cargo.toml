@@ -182,6 +182,9 @@ git2 = { version = "0.21", default-features = false, features = ["vendored-libgi
 # Terminal
 portable-pty = "0.8"
 vte = "0.15.0"
+# VT screen model (grid/scrollback/alternate screen) on top of vte parsing.
+# gpui-shell M7 uses it as the terminal emulator backend; serde default is off.
+alacritty_terminal = { version = "=0.26.0", default-features = false }
 clap = { version = "4.6.1", features = ["derive"] }
 crossterm = "0.28"
 ratatui = "0.29"

@@ -33,6 +33,10 @@ openbitfun-core = { path = "../../crates/assembly/core", features = [
 openbitfun-agent-runtime = { path = "../../crates/execution/agent-runtime", features = ["agent-runtime"] }
 openbitfun-events = { path = "../../crates/contracts/events" }
 openbitfun-runtime-ports = { path = "../../crates/contracts/runtime-ports", features = ["agent-api"] }
+# M7 built-in terminal: PTY lifecycle from the owning services crate, VT screen
+# model (grid/scrollback/alternate screen) from the emulator backend (D24).
+terminal-core = { path = "../../crates/services/terminal" }
+alacritty_terminal = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
 serde = { workspace = true }
