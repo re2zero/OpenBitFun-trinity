@@ -16,6 +16,7 @@ use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Result};
 use gpui_kit::SharedString;
+use openbitfun_agent_runtime::event_router::EventSubscriber as _;
 use openbitfun_agent_runtime::sdk::{
     AgentDialogTurnExecution, AgentDialogTurnRequest, AgentRuntime,
     AgentSessionArchiveStateRequest, AgentSessionCompactionRequest, AgentSessionCreateRequest,
@@ -27,6 +28,7 @@ use openbitfun_agent_runtime::sdk::{
     SessionUsageReport,
 };
 use openbitfun_agent_runtime::user_questions::{get_user_input_manager, UserInputManager};
+use openbitfun_core::agentic::insights::{InsightsReport, InsightsReportMeta, InsightsService};
 use openbitfun_core::agentic::system::{
     init_agentic_system_for_profile_with_runtime_ownership, select_agentic_system_profile,
 };
@@ -41,6 +43,7 @@ use openbitfun_core::runtime_ownership::{CoreRuntimeOwnership, RuntimeDeployment
 use openbitfun_core::service::config::{
     get_app_language, get_global_config_service, initialize_global_config, types::GlobalConfig,
 };
+use openbitfun_core::service::cron::CronJob;
 use openbitfun_core::service::workspace::{
     get_global_workspace_service, set_global_workspace_service, WorkspaceInfo, WorkspaceService,
 };
@@ -147,6 +150,18 @@ pub(crate) enum RuntimeEvent {
     ExportFinished { session_id: String, path: String },
     /// Session usage report for the usage dialog.
     SessionUsage(Box<SessionUsageSummary>),
+    /// Insight report metadata (latest first) for the insights page.
+    InsightsLatest(Vec<InsightsReportMeta>),
+    /// One full insight report (generated or loaded by path).
+    InsightsReport(Box<InsightsReport>),
+    /// An insights action failed; the page shows the reason inline.
+    InsightsFailed(String),
+    /// A generate call was dispatched; the page shows its in-flight state.
+    InsightsGenerating,
+    /// Scheduled-jobs snapshot for the tasks page.
+    CronJobs(Vec<CronJob>),
+    /// A scheduled-jobs action failed; the page shows the reason inline.
+    CronFailed(String),
     /// A session was deleted; the chat pane must close when it shows it.
     SessionDeleted { session_id: String },
     /// A session action (rename / archive / delete / model change) failed;
@@ -742,6 +757,157 @@ impl RuntimeHandle {
                     let _ = tx.send(RuntimeEvent::SessionActionFailed {
                         message: format!("usage: {message}"),
                     });
+                }
+            }
+        });
+    }
+
+    /// Loads the latest insight report metadata for the insights page.
+    pub(crate) fn reload_insights(&self, tx: mpsc::UnboundedSender<RuntimeEvent>) {
+        self.tokio.spawn(async move {
+            match InsightsService::load_latest_reports().await {
+                Ok(metas) => {
+                    let _ = tx.send(RuntimeEvent::InsightsLatest(metas));
+                }
+                Err(error) => {
+                    tracing::error!("Failed to load latest insights: {error}");
+                    let _ = tx.send(RuntimeEvent::InsightsFailed(format!("insights: {error}")));
+                }
+            }
+        });
+    }
+
+    /// Generates a fresh insight report over the last `days` days. The call
+    /// is long-running; the page shows its own generating state and can
+    /// cancel through [`RuntimeHandle::cancel_insights`].
+    pub(crate) fn generate_insights(&self, days: u32, tx: mpsc::UnboundedSender<RuntimeEvent>) {
+        self.tokio.spawn(async move {
+            let _ = tx.send(RuntimeEvent::InsightsGenerating);
+            // Boxed: the generation future's concrete type is deep enough to
+            // overflow the compiler's Send evaluation without the pin.
+            let generation = Box::pin(InsightsService::generate(days, None));
+            match generation.await {
+                Ok(report) => {
+                    let _ = tx.send(RuntimeEvent::InsightsReport(Box::new(report)));
+                }
+                Err(error) => {
+                    tracing::error!("Failed to generate insights: {error}");
+                    let _ = tx.send(RuntimeEvent::InsightsFailed(format!("insights: {error}")));
+                }
+            }
+        });
+    }
+
+    /// Loads one previously generated insight report by its stored path.
+    pub(crate) fn load_insights_report(
+        &self,
+        path: String,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+    ) {
+        self.tokio.spawn(async move {
+            match InsightsService::load_report(&path).await {
+                Ok(report) => {
+                    let _ = tx.send(RuntimeEvent::InsightsReport(Box::new(report)));
+                }
+                Err(error) => {
+                    tracing::error!("Failed to load insight report {path}: {error}");
+                    let _ = tx.send(RuntimeEvent::InsightsFailed(format!("insights: {error}")));
+                }
+            }
+        });
+    }
+
+    /// Cancels an in-flight insight report generation.
+    pub(crate) fn cancel_insights(&self, tx: mpsc::UnboundedSender<RuntimeEvent>) {
+        self.tokio.spawn(async move {
+            if let Err(error) = InsightsService::cancel().await {
+                tracing::warn!("Failed to cancel insights generation: {error}");
+                let _ = tx.send(RuntimeEvent::InsightsFailed(format!("insights: {error}")));
+            }
+        });
+    }
+
+    /// Loads the scheduled-jobs snapshot for the tasks page.
+    pub(crate) fn reload_cron_jobs(&self, tx: mpsc::UnboundedSender<RuntimeEvent>) {
+        self.tokio.spawn(async move {
+            let Some(service) = openbitfun_core::service::cron::get_global_cron_service() else {
+                tracing::error!("Scheduled jobs unavailable: cron service missing");
+                let _ = tx.send(RuntimeEvent::CronFailed(
+                    "cron: service is not initialized".to_string(),
+                ));
+                return;
+            };
+            let _ = tx.send(RuntimeEvent::CronJobs(service.list_jobs().await));
+        });
+    }
+
+    /// Enables or disables one scheduled job; the updated row replaces the
+    /// stale one through [`RuntimeEvent::CronJobs`] refresh.
+    pub(crate) fn set_cron_job_enabled(
+        &self,
+        job_id: String,
+        enabled: bool,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+    ) {
+        self.tokio.spawn(async move {
+            let Some(service) = openbitfun_core::service::cron::get_global_cron_service() else {
+                let _ = tx.send(RuntimeEvent::CronFailed(
+                    "cron: service is not initialized".to_string(),
+                ));
+                return;
+            };
+            match service.set_job_enabled(&job_id, enabled).await {
+                Ok(_) => {
+                    tracing::info!("Scheduled job {job_id} enabled={enabled}");
+                    let _ = tx.send(RuntimeEvent::CronJobs(service.list_jobs().await));
+                }
+                Err(error) => {
+                    tracing::error!("Failed to update scheduled job {job_id}: {error}");
+                    let _ = tx.send(RuntimeEvent::CronFailed(format!("cron: {error}")));
+                }
+            }
+        });
+    }
+
+    /// Triggers one scheduled job immediately.
+    pub(crate) fn run_cron_job_now(&self, job_id: String, tx: mpsc::UnboundedSender<RuntimeEvent>) {
+        self.tokio.spawn(async move {
+            let Some(service) = openbitfun_core::service::cron::get_global_cron_service() else {
+                let _ = tx.send(RuntimeEvent::CronFailed(
+                    "cron: service is not initialized".to_string(),
+                ));
+                return;
+            };
+            match service.run_job_now(&job_id).await {
+                Ok(_) => {
+                    tracing::info!("Scheduled job {job_id} triggered manually");
+                    let _ = tx.send(RuntimeEvent::CronJobs(service.list_jobs().await));
+                }
+                Err(error) => {
+                    tracing::error!("Failed to trigger scheduled job {job_id}: {error}");
+                    let _ = tx.send(RuntimeEvent::CronFailed(format!("cron: {error}")));
+                }
+            }
+        });
+    }
+
+    /// Deletes one scheduled job.
+    pub(crate) fn delete_cron_job(&self, job_id: String, tx: mpsc::UnboundedSender<RuntimeEvent>) {
+        self.tokio.spawn(async move {
+            let Some(service) = openbitfun_core::service::cron::get_global_cron_service() else {
+                let _ = tx.send(RuntimeEvent::CronFailed(
+                    "cron: service is not initialized".to_string(),
+                ));
+                return;
+            };
+            match service.delete_job(&job_id).await {
+                Ok(_) => {
+                    tracing::info!("Scheduled job {job_id} deleted");
+                    let _ = tx.send(RuntimeEvent::CronJobs(service.list_jobs().await));
+                }
+                Err(error) => {
+                    tracing::error!("Failed to delete scheduled job {job_id}: {error}");
+                    let _ = tx.send(RuntimeEvent::CronFailed(format!("cron: {error}")));
                 }
             }
         });
@@ -1519,9 +1685,17 @@ pub(crate) fn spawn_event_pump(
             }
         };
         tracing::info!("Runtime event pump attached");
+        // Turn-outcome bookkeeping for scheduled jobs (run state, history).
+        // Resolved once: the pump starts after the bootstrap has installed
+        // the global service.
+        let cron_feeder = openbitfun_core::service::cron::get_global_cron_service()
+            .map(openbitfun_core::service::cron::CronEventSubscriber::new);
         loop {
             match rx.recv().await {
                 Ok(envelope) => {
+                    if let Some(feeder) = cron_feeder.as_ref() {
+                        let _ = feeder.on_event(&envelope.event).await;
+                    }
                     for event in translate_event(envelope.event) {
                         let _ = tx.send(event);
                     }
@@ -1951,6 +2125,7 @@ async fn bootstrap(tx: mpsc::UnboundedSender<RuntimeEvent>) -> Result<()> {
     let (services, _disabled_plugin_runtime) = parts.into_runtime_parts();
 
     let event_queue_owner = CoreProductEventQueueOwner::new(agentic_system.event_queue.clone());
+    let cron_scheduler = scheduler.clone();
     let agent_runtime = CoreProductAgentRuntime::build_with_event_source(
         agentic_system.coordinator.clone(),
         scheduler,
@@ -1960,6 +2135,22 @@ async fn bootstrap(tx: mpsc::UnboundedSender<RuntimeEvent>) -> Result<()> {
     )
     .map_err(anyhow::Error::msg)
     .context("Failed to build Agent Runtime SDK")?;
+
+    // M14: the shell hosts the same cron service the desktop hosts — the
+    // shared jobs.json store guarded by the scheduling lease, the management
+    // API for the scheduled-jobs page, and the runner loop for due jobs.
+    // Turn-outcome bookkeeping rides the shell's own event pump
+    // (CronEventSubscriber has no registration surface on AgentRuntime).
+    let cron_service = openbitfun_core::service::cron::CronService::new(
+        path_manager.clone(),
+        agentic_system.coordinator.clone(),
+        cron_scheduler,
+    )
+    .await
+    .context("Failed to initialize cron service")?;
+    openbitfun_core::service::cron::set_global_cron_service(cron_service.clone());
+    cron_service.start();
+    tracing::info!("Cron service initialized and started");
 
     let handle = RuntimeHandle {
         agent_runtime,

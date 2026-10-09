@@ -16,6 +16,7 @@ use gpui_kit::component::{
     text::TextView,
     ActiveTheme, Collapsible, Disableable, Icon, Sizable, StyledExt, TitleBar, WindowExt,
 };
+use gpui_kit::InteractiveElement as _;
 use gpui_kit::{
     div, img, point, prelude::*, px, size, Anchor, App, Bounds, ClipboardEntry, Context, ElementId,
     Entity, ExternalPaths, Image, ImageFormat, Pixels, SharedString, SystemNotification,
@@ -57,6 +58,10 @@ enum MainView {
     Settings,
     /// Workspace changes (git status + self-drawn diff).
     Git,
+    /// Usage insights over recent sessions (M14).
+    Insights,
+    /// Scheduled jobs management (M14).
+    Tasks,
 }
 
 /// Lifecycle of the embedded runtime, mirrored into the status line.
@@ -653,6 +658,10 @@ struct ShellWindow {
     export_target: Option<String>,
     /// Latest session usage report, shown in the usage dialog.
     usage_report: Option<Box<runtime::SessionUsageSummary>>,
+    /// Insights page state (M14): latest reports + the open report.
+    insights: crate::insights::InsightsPageState,
+    /// Scheduled-jobs page state (M14).
+    tasks: crate::tasks::TasksPageState,
     /// Workspaces the switcher offers: the active one first, then this
     /// process's visits, then the shared core catalog.
     workspaces: Vec<WorkspaceChoice>,
@@ -711,6 +720,8 @@ impl ShellWindow {
             export_input,
             export_target: None,
             usage_report: None,
+            insights: Default::default(),
+            tasks: Default::default(),
             workspaces: Vec::new(),
             workspace_input,
             workspace_error: None,
@@ -1055,6 +1066,32 @@ impl ShellWindow {
                     self.open_next_modal(window, cx);
                 }
             }
+            RuntimeEvent::InsightsLatest(metas) => {
+                self.insights.latest = metas;
+                self.insights.loaded = true;
+            }
+            RuntimeEvent::InsightsReport(report) => {
+                self.insights.report = Some(report);
+                self.insights.generating = false;
+                self.insights.error = None;
+            }
+            RuntimeEvent::InsightsGenerating => {
+                self.insights.generating = true;
+            }
+            RuntimeEvent::InsightsFailed(message) => {
+                tracing::warn!("Insights action failed: {message}");
+                self.insights.generating = false;
+                self.insights.error = Some(message);
+            }
+            RuntimeEvent::CronJobs(jobs) => {
+                self.tasks.jobs = jobs;
+                self.tasks.loaded = true;
+                self.tasks.error = None;
+            }
+            RuntimeEvent::CronFailed(message) => {
+                tracing::warn!("Scheduled-jobs action failed: {message}");
+                self.tasks.error = Some(message);
+            }
             RuntimeEvent::QuestionsChanged(questions) => {
                 self.apply_questions_changed(questions, window, cx);
             }
@@ -1364,6 +1401,36 @@ impl ShellWindow {
         cx.notify();
     }
 
+    /// Insights page toggle; the first open fetches the latest report list.
+    fn toggle_insights_view(&mut self, cx: &mut Context<Self>) {
+        if self.main_view == MainView::Insights {
+            self.main_view = MainView::Chat;
+        } else {
+            self.main_view = MainView::Insights;
+            if !self.insights.loaded {
+                if let Some(handle) = runtime::runtime_handle() {
+                    handle.reload_insights(self.event_tx.clone());
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// Scheduled-jobs page toggle; the first open fetches the job snapshot.
+    fn toggle_tasks_view(&mut self, cx: &mut Context<Self>) {
+        if self.main_view == MainView::Tasks {
+            self.main_view = MainView::Chat;
+        } else {
+            self.main_view = MainView::Tasks;
+            if !self.tasks.loaded {
+                if let Some(handle) = runtime::runtime_handle() {
+                    handle.reload_cron_jobs(self.event_tx.clone());
+                }
+            }
+        }
+        cx.notify();
+    }
+
     fn render_status_line(&self, text: &ShellText, cx: &mut Context<Self>) -> gpui_kit::Div {
         match &self.phase {
             RuntimePhase::Starting => div()
@@ -1535,6 +1602,22 @@ impl ShellWindow {
                     .with_variant(active_variant(self.main_view == MainView::Git))
                     .tooltip(text.git_title.clone())
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_git_view(cx))),
+            )
+            .child(
+                Button::new("footer-insights")
+                    .icon(IconName::ChartPie)
+                    .small()
+                    .with_variant(active_variant(self.main_view == MainView::Insights))
+                    .tooltip(text.insights_title.clone())
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_insights_view(cx))),
+            )
+            .child(
+                Button::new("footer-tasks")
+                    .icon(IconName::Calendar)
+                    .small()
+                    .with_variant(active_variant(self.main_view == MainView::Tasks))
+                    .tooltip(text.tasks_title.clone())
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_tasks_view(cx))),
             )
             .child(
                 Button::new("footer-terminal")
@@ -2996,6 +3079,32 @@ impl Render for ShellWindow {
                     .into_any_element(),
                 None => div().into_any_element(),
             },
+            MainView::Insights => div()
+                .id("insights-page")
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .overflow_y_scroll()
+                .child(crate::insights::render_page(
+                    &self.insights,
+                    &self.event_tx,
+                    &text,
+                    cx,
+                ))
+                .into_any_element(),
+            MainView::Tasks => div()
+                .id("tasks-page")
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .overflow_y_scroll()
+                .child(crate::tasks::render_page(
+                    &self.tasks,
+                    &self.event_tx,
+                    &text,
+                    cx,
+                ))
+                .into_any_element(),
             MainView::Chat => self.render_chat_column(&text, cx),
         };
 
@@ -4081,6 +4190,43 @@ mod tests {
         assert_eq!(optional_duration(Some(1_500)), "1.5 s");
         assert_eq!(optional_duration(Some(61_000)), "1 m 1 s");
         assert_eq!(optional_duration(None), "—");
+    }
+
+    /// Insights and scheduled-jobs events project onto their page state
+    /// without touching the chat surface.
+    #[gpui_kit::test]
+    fn insights_and_tasks_events_project_onto_page_state(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(RuntimeEvent::InsightsGenerating, window, cx);
+                assert!(shell.insights.generating);
+                shell.apply_runtime_event(
+                    RuntimeEvent::InsightsFailed("insights: boom".into()),
+                    window,
+                    cx,
+                );
+                assert!(!shell.insights.generating);
+                assert_eq!(shell.insights.error.as_deref(), Some("insights: boom"));
+                shell.apply_runtime_event(RuntimeEvent::CronJobs(vec![]), window, cx);
+                shell.apply_runtime_event(
+                    RuntimeEvent::CronFailed("cron: boom".into()),
+                    window,
+                    cx,
+                );
+            });
+        });
+
+        window.update(|_, cx| {
+            let shell = shell.read(cx);
+            assert!(shell.tasks.loaded);
+            assert_eq!(shell.tasks.error.as_deref(), Some("cron: boom"));
+            assert!(shell.chat.is_none(), "page events never touch the chat");
+        });
     }
 
     /// Archived rows stay out of the sidebar until the toggle is on, and the
