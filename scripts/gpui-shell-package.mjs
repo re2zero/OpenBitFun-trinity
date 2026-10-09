@@ -13,6 +13,9 @@ import { chmodSync, copyFileSync, mkdirSync, readFileSync, rmSync, statSync, wri
 import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
+import { extractProductConfigArg } from './product-customization/cli.mjs';
+import { resolveProductDefinition } from './product-customization/resolver.mjs';
+
 const ROOT = resolve(import.meta.dirname, '..');
 export const BIN_NAME = 'openbitfun-gpui-shell';
 export const PACKAGE_NAME = 'openbitfun-gpui-shell';
@@ -246,7 +249,8 @@ function verifyDeb(debPath, version, workRoot) {
 }
 
 function parseArgs(argv) {
-  const options = { build: true, target: null, outputDir: null };
+  const options = { build: true, target: null, outputDir: null, productConfig: null };
+  const forwarded = [];
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === '--no-build') options.build = false;
@@ -254,7 +258,12 @@ function parseArgs(argv) {
     else if (arg.startsWith('--target=')) options.target = arg.slice('--target='.length);
     else if (arg === '--output') options.outputDir = argv[++index];
     else if (arg.startsWith('--output=')) options.outputDir = arg.slice('--output='.length);
-    else throw new Error(`Unknown argument: ${arg}`);
+    else forwarded.push(arg);
+  }
+  const extracted = extractProductConfigArg(forwarded);
+  options.productConfig = extracted.productConfig;
+  if (extracted.forwardArgs.length > 0) {
+    throw new Error(`Unknown argument: ${extracted.forwardArgs[0]}`);
   }
   return options;
 }
@@ -268,6 +277,20 @@ function main() {
   mkdirSync(outputDir, { recursive: true });
   rmSync(workRoot, { recursive: true, force: true });
   mkdirSync(workRoot, { recursive: true });
+
+  // The product definition picks the default GUI host (blueprint §7). While a
+  // different host is the default, this archive is the parallel (non-default)
+  // delivery, which is fine — say so instead of pretending otherwise.
+  const guiHost = resolveProductDefinition({
+    rootDir: ROOT,
+    productConfig: options.productConfig ?? undefined,
+    member: 'desktop',
+  }).assembly.guiHost;
+  if (guiHost !== 'gpui-shell') {
+    console.warn(
+      `[gpui-shell-package] product definition selects GUI host "${guiHost}"; packaging this archive as the non-default delivery`,
+    );
+  }
 
   if (options.build) {
     const cargoArgs = ['build', '--release', '-p', PACKAGE_NAME];

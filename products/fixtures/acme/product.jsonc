@@ -8,7 +8,8 @@
     "desktop": {
       "displayNameKey": "product.desktop.name",
       "binaryName": "acme-desktop",
-      "bundleId": "com.acme.desktop"
+      "bundleId": "com.acme.desktop",
+      "guiHost": "tauri"
     },
     "cli": {
       "displayNameKey": "product.cli.name",

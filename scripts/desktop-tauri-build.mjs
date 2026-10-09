@@ -317,6 +317,17 @@ export function prepareTauriConfig(
   baseConfigPath,
   { desktopDir, flashgrepBinary, resolution, releaseChannel }
 ) {
+  // The product definition picks the default GUI host (blueprint §7). This
+  // script produces the Tauri delivery, so a definition pointing elsewhere is
+  // a wrong-package build, not a silent one; the override exists to produce
+  // the fallback delivery after a default switch.
+  const guiHost = resolution?.assembly?.guiHost;
+  if (guiHost && guiHost !== 'tauri' && process.env.OPENBITFUN_ALLOW_NONDEFAULT_GUI_HOST !== '1') {
+    throw new Error(
+      `Product definition selects GUI host "${guiHost}", but this script builds the Tauri delivery. ` +
+        'Set OPENBITFUN_ALLOW_NONDEFAULT_GUI_HOST=1 to build it as the fallback delivery.',
+    );
+  }
   const config = JSON.parse(readFileSync(baseConfigPath, 'utf8'));
   if (resolution) {
     const productName =
