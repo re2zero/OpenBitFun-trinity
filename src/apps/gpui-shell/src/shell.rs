@@ -25,7 +25,7 @@ use tokio::sync::mpsc;
 use crate::assets::ShellAssets;
 use crate::git::GitPanel;
 use crate::i18n::ShellText;
-use crate::runtime::{ChatEntry, RuntimeEvent, ToolCard, ToolStatus};
+use crate::runtime::{ChatEntry, RuntimeEvent, ToolCard, ToolStatus, WorkspaceChoice};
 use crate::terminal::pane::TerminalPane;
 use crate::theme::{ShellState, DEFAULT_PRESET_ID};
 
@@ -44,7 +44,7 @@ const MIN_TERMINAL_HEIGHT: f32 = 120.;
 const MAX_TERMINAL_HEIGHT: f32 = 900.;
 
 /// Which surface the main content area shows.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MainView {
     Chat,
     /// The settings page (component-library `Settings` container).
@@ -546,6 +546,14 @@ struct ShellWindow {
     /// Session id the rename dialog is editing; `None` while the dialog is
     /// closed.
     rename_target: Option<String>,
+    /// Workspaces the switcher offers: the active one first, then this
+    /// process's visits, then the shared core catalog.
+    workspaces: Vec<WorkspaceChoice>,
+    /// Path input of the "switch workspace" dialog, reused across opens.
+    workspace_input: Entity<InputState>,
+    /// Last workspace-switch failure, shown under the sidebar status; cleared
+    /// by a successful switch.
+    workspace_error: Option<String>,
 }
 
 impl ShellWindow {
@@ -562,6 +570,7 @@ impl ShellWindow {
         let chat_scroller = cx.new(|cx| MessageScrollerState::new(0, cx));
         let dock = cx.new(|_| ResizableState::default());
         let rename_input = cx.new(|cx| InputState::new(window, cx));
+        let workspace_input = cx.new(|cx| InputState::new(window, cx));
         receive_runtime_events(event_rx, window, cx);
         Self {
             draft,
@@ -587,6 +596,9 @@ impl ShellWindow {
             show_archived: false,
             rename_input,
             rename_target: None,
+            workspaces: Vec::new(),
+            workspace_input,
+            workspace_error: None,
         }
     }
 
@@ -851,6 +863,18 @@ impl ShellWindow {
             RuntimeEvent::QuestionsChanged(questions) => {
                 self.apply_questions_changed(questions, window, cx);
             }
+            RuntimeEvent::Workspaces(choices) => {
+                self.workspaces = choices;
+            }
+            RuntimeEvent::WorkspaceSwitched(choice) => {
+                tracing::info!("Adopted workspace {} ({})", choice.name, choice.root_path);
+                self.workspace_error = None;
+                self.apply_workspace_reset(cx);
+            }
+            RuntimeEvent::WorkspaceSwitchFailed(message) => {
+                tracing::warn!("Workspace switch failed: {message}");
+                self.workspace_error = Some(message);
+            }
             RuntimeEvent::SessionRenamed { session_id, name } => {
                 if let Some(row) = self.sessions.iter_mut().find(|row| row.id == session_id) {
                     row.name = name.clone();
@@ -937,9 +961,91 @@ impl ShellWindow {
             let terminal = settings::ShellConfig::try_current(cx)
                 .unwrap_or_else(|| settings::ShellConfig::startup_default(i18n::current(cx).locale))
                 .terminal;
-            self.terminal = Some(cx.new(|cx| TerminalPane::new(tokio, &terminal, window, cx)));
+            // The PTY starts in the active workspace, so the terminal follows
+            // a workspace switch instead of the process launch directory.
+            let start_dir = runtime::runtime_handle()
+                .map(|handle| handle.workspace().root_path.to_string_lossy().to_string());
+            self.terminal =
+                Some(cx.new(|cx| TerminalPane::new(tokio, &terminal, start_dir, window, cx)));
         }
         cx.notify();
+    }
+
+    /// Resets every workspace-scoped surface after the active workspace
+    /// changed: the open transcript, the terminal (its PTY runs with the old
+    /// root), the changes snapshot, and the session list all belong to the
+    /// previous workspace.
+    fn apply_workspace_reset(&mut self, cx: &mut Context<Self>) {
+        self.chat = None;
+        self.chat_error = None;
+        self.sessions.clear();
+        self.list_error = None;
+        self.show_archived = false;
+        self.terminal = None;
+        self.terminal_open = false;
+        self.git = None;
+        self.main_view = MainView::Chat;
+        cx.notify();
+    }
+
+    /// The workspace switcher: a footer button whose menu lists this
+    /// process's workspaces plus the shared core catalog, and an "open by
+    /// path" entry that registers a record without touching the desktop's
+    /// current/recent selection. The builder re-reads the list every frame, so
+    /// a switch or a failure is visible without reopening the menu.
+    fn render_workspace_button(
+        &self,
+        text: &ShellText,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let view = cx.entity().downgrade();
+        Button::new("footer-workspace")
+            .icon(IconName::FolderOpen)
+            .small()
+            .with_variant(ButtonVariant::Ghost)
+            .tooltip(text.workspace_switch.clone())
+            .dropdown_menu_with_anchor(Anchor::TopLeft, move |menu, _window, cx| {
+                let (choices, error, active_id, tx) = match view.upgrade() {
+                    Some(shell) => {
+                        let shell = shell.read(cx);
+                        (
+                            shell.workspaces.clone(),
+                            shell.workspace_error.clone(),
+                            runtime::runtime_handle().map(|handle| handle.workspace().id),
+                            shell.event_tx.clone(),
+                        )
+                    }
+                    None => return menu,
+                };
+                let text = i18n::current(cx);
+                let mut menu = menu;
+                if let Some(error) = error {
+                    menu = menu.item(PopupMenuItem::new(error).disabled(true));
+                }
+                for choice in choices {
+                    let label = format!("{} · {}", choice.name, choice.root_path);
+                    let item = if active_id.as_deref() == Some(choice.id.as_str()) {
+                        PopupMenuItem::new(label).checked(true)
+                    } else {
+                        PopupMenuItem::new(label)
+                    };
+                    let root = choice.root_path;
+                    let tx = tx.clone();
+                    menu = menu.item(item.on_click(move |_, _, _| {
+                        if let Some(handle) = runtime::runtime_handle() {
+                            handle.switch_workspace(std::path::PathBuf::from(&root), tx.clone());
+                        }
+                    }));
+                }
+                menu.separator().item(
+                    PopupMenuItem::new(text.workspace_open_path.clone()).on_click({
+                        let view = view.clone();
+                        move |_, window, cx| {
+                            open_workspace_path_dialog(view.clone(), window, cx);
+                        }
+                    }),
+                )
+            })
     }
 
     /// Shows the settings page in the main area. The page owns its own
@@ -970,11 +1076,18 @@ impl ShellWindow {
                 .child(text.status_starting.clone()),
             RuntimePhase::Ready => {
                 let workspace = runtime::runtime_handle()
-                    .map(|handle| handle.workspace().name.clone())
+                    .map(|handle| handle.workspace().name)
                     .unwrap_or_default();
-                div()
+                let line = div()
                     .text_color(cx.theme().muted_foreground)
-                    .child(format!("{} · {}", text.status_ready, workspace))
+                    .child(format!("{} · {}", text.status_ready, workspace));
+                match &self.workspace_error {
+                    Some(error) => line
+                        .v_flex()
+                        .gap_1()
+                        .child(div().text_color(cx.theme().danger).child(error.clone())),
+                    None => line,
+                }
             }
             RuntimePhase::Failed(error) => div().text_color(cx.theme().danger).child(error.clone()),
         }
@@ -1119,6 +1232,7 @@ impl ShellWindow {
             .flex_shrink_0()
             .items_center()
             .gap_1()
+            .child(self.render_workspace_button(text, cx))
             .child(
                 Button::new("footer-changes")
                     .icon(IconName::GitBranch)
@@ -1869,6 +1983,81 @@ fn open_rename_dialog(
                     .child(
                         Button::new("rename-confirm")
                             .label(text.session_action_confirm.clone())
+                            .with_variant(ButtonVariant::Primary)
+                            .on_click(confirm.clone()),
+                    ),
+            )
+    });
+}
+
+/// Opens the "switch workspace by path" dialog: the typed path is registered
+/// (or reused) as a workspace record and becomes this shell's active
+/// workspace. The dialog is dismissable; unlike an ask, nobody answering it
+/// blocks nothing.
+fn open_workspace_path_dialog(view: WeakEntity<ShellWindow>, window: &mut Window, cx: &mut App) {
+    let Some(shell) = view.upgrade() else {
+        return;
+    };
+    let input = shell.read(cx).workspace_input.clone();
+    input.update(cx, |state, cx| state.set_value("", window, cx));
+    let confirm_view = view.clone();
+    let confirm = move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
+        let Some(shell) = confirm_view.upgrade() else {
+            return;
+        };
+        let path = shell
+            .read(cx)
+            .workspace_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        if path.is_empty() {
+            tracing::warn!("Ignoring empty workspace path");
+            return;
+        }
+        let tx = shell.read(cx).event_tx.clone();
+        if let Some(handle) = runtime::runtime_handle() {
+            handle.switch_workspace(std::path::PathBuf::from(path), tx);
+        }
+        window.close_dialog(cx);
+    };
+    let cancel = move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
+        window.close_dialog(cx);
+    };
+
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let text = i18n::current(cx);
+        dialog
+            .title(div().child(text.workspace_switch.clone()))
+            .child(
+                div()
+                    .v_flex()
+                    .gap_2()
+                    .w(px(420.))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(text.workspace_open_path_description.clone()),
+                    )
+                    .child(Input::new(&input)),
+            )
+            .footer(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("workspace-cancel")
+                            .label(text.session_action_cancel.clone())
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(cancel.clone()),
+                    )
+                    .child(
+                        Button::new("workspace-confirm")
+                            .label(text.workspace_switch.clone())
                             .with_variant(ButtonVariant::Primary)
                             .on_click(confirm.clone()),
                     ),
@@ -3333,6 +3522,99 @@ mod tests {
         assert_eq!(rebuilt[0].tool_id, "tool-2");
 
         assert!(rebuild_question_queue(&rebuilt, Vec::new(), test_question_label).is_empty());
+    }
+
+    /// A workspace switch resets every workspace-scoped surface: the open
+    /// transcript, the session list (and its archive toggle), the terminal,
+    /// the changes pane, and the error lines — while a failure keeps the
+    /// previous workspace active and surfaces the reason.
+    #[gpui_kit::test]
+    fn workspace_switch_resets_scoped_surfaces(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(
+                    RuntimeEvent::Sessions(vec![crate::runtime::SessionListRow {
+                        summary: sample_summary("s-1", "First"),
+                        archived: false,
+                    }]),
+                    window,
+                    cx,
+                );
+                shell.apply_runtime_event(
+                    RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                        session_id: "s-1".into(),
+                        name: "First".into(),
+                        agent_type: "Standard".into(),
+                        model_id: None,
+                        entries: Vec::new(),
+                        busy: false,
+                    }),
+                    window,
+                    cx,
+                );
+                shell.show_archived = true;
+                shell.list_error = Some("stale".into());
+            });
+        });
+        window.update(|_, cx| {
+            let shell = shell.read(cx);
+            assert!(shell.chat.is_some());
+            assert_eq!(shell.sessions.len(), 1);
+        });
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(
+                    RuntimeEvent::WorkspaceSwitched(WorkspaceChoice {
+                        id: "ws-2".into(),
+                        name: "Second".into(),
+                        root_path: "/tmp/ws-2".into(),
+                    }),
+                    window,
+                    cx,
+                );
+            });
+        });
+        window.update(|_, cx| {
+            let shell = shell.read(cx);
+            assert!(
+                shell.chat.is_none(),
+                "transcript belongs to the old workspace"
+            );
+            assert!(
+                shell.sessions.is_empty(),
+                "session list reloads for the new root"
+            );
+            assert!(!shell.show_archived, "archive filter resets with the list");
+            assert!(shell.list_error.is_none());
+            assert!(shell.terminal.is_none());
+            assert!(!shell.terminal_open);
+            assert!(shell.git.is_none());
+            assert_eq!(shell.main_view, MainView::Chat);
+            assert!(shell.workspace_error.is_none());
+        });
+
+        // A rejected switch keeps the current workspace and shows the reason.
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(
+                    RuntimeEvent::WorkspaceSwitchFailed("owned by a shared runtime".into()),
+                    window,
+                    cx,
+                );
+            });
+        });
+        window.update(|_, cx| {
+            assert_eq!(
+                shell.read(cx).workspace_error.as_deref(),
+                Some("owned by a shared runtime")
+            );
+        });
     }
 
     /// Approvals gate a parked tool call, so they take the single dialog slot

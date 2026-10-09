@@ -69,6 +69,9 @@ pub(crate) struct ShellText {
     pub question_submit: String,
     pub question_cancel: String,
     pub question_unreadable: String,
+    pub workspace_switch: String,
+    pub workspace_open_path: String,
+    pub workspace_open_path_description: String,
     pub terminal_title: String,
     pub terminal_close: String,
     pub terminal_exited: String,
@@ -281,6 +284,11 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         question_submit: "Submit".to_string(),
         question_cancel: "Cancel".to_string(),
         question_unreadable: "This question could not be displayed.".to_string(),
+        workspace_switch: "Switch workspace".to_string(),
+        workspace_open_path: "Open workspace by path…".to_string(),
+        workspace_open_path_description:
+            "Folder to use as this shell's workspace. It is registered in the shared workspace list without changing the desktop's selection."
+                .to_string(),
         terminal_title: "Terminal".to_string(),
         terminal_close: "Close terminal".to_string(),
         terminal_exited: "process exited".to_string(),
@@ -395,6 +403,11 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         question_submit: service.t("gpui-shell-question-submit").await,
         question_cancel: service.t("gpui-shell-question-cancel").await,
         question_unreadable: service.t("gpui-shell-question-unreadable").await,
+        workspace_switch: service.t("gpui-shell-workspace-switch").await,
+        workspace_open_path: service.t("gpui-shell-workspace-open-path").await,
+        workspace_open_path_description: service
+            .t("gpui-shell-workspace-open-path-description")
+            .await,
         terminal_title: service.t("gpui-shell-terminal-title").await,
         terminal_close: service.t("gpui-shell-terminal-close").await,
         terminal_exited: service.t("gpui-shell-terminal-exited").await,

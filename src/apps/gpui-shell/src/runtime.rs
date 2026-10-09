@@ -57,6 +57,9 @@ const ENTRYPOINT: &str = "gpui-shell";
 const DEFAULT_AGENT_TYPE: &str = "Standard";
 /// Tool card payload previews stay short; full values live in the runtime.
 const TOOL_DETAIL_LIMIT: usize = 400;
+/// Per-process workspace history kept for the picker (the shared catalog holds
+/// the desktop/CLI recent list; this only remembers what this shell visited).
+const VISITED_WORKSPACES_LIMIT: usize = 12;
 
 static RUNTIME_HANDLE: OnceLock<RuntimeHandle> = OnceLock::new();
 
@@ -141,6 +144,17 @@ pub(crate) enum RuntimeEvent {
     /// Configured-model catalog for the pickers (session header + models
     /// settings page); sent once after bootstrap.
     ModelCatalog(Vec<ModelChoice>),
+    /// Workspaces the shell can switch to: the shared core catalog (recent
+    /// first, then the rest of the opened set) plus workspaces visited by
+    /// this process, with the active one always present.
+    Workspaces(Vec<WorkspaceChoice>),
+    /// The active workspace changed; workspace-scoped surfaces reset and the
+    /// list reloads for the new root.
+    WorkspaceSwitched(WorkspaceChoice),
+    /// A switch was rejected (unreadable path, another runtime owning the
+    /// workspace, service assembly failure); the previous workspace stays
+    /// active and the reason is surfaced.
+    WorkspaceSwitchFailed(String),
     /// Full pending-user-question snapshot from the process-local mailbox
     /// (`ask_user` tool). The mailbox publishes only a coalesced revision, so
     /// the shell rebuilds its queue from this on every change: additions,
@@ -176,6 +190,24 @@ impl ModelChoice {
             self.name.clone()
         } else {
             format!("{} · {}", self.name, self.provider)
+        }
+    }
+}
+
+/// One workspace the shell can switch to, pre-shaped for the picker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkspaceChoice {
+    pub id: String,
+    pub name: String,
+    pub root_path: String,
+}
+
+impl WorkspaceChoice {
+    fn from_info(info: &WorkspaceInfo) -> Self {
+        Self {
+            id: info.id.clone(),
+            name: info.name.clone(),
+            root_path: info.root_path.to_string_lossy().to_string(),
         }
     }
 }
@@ -242,25 +274,50 @@ pub(crate) enum ToolStatus {
 }
 
 /// Process-lifetime handle to the embedded runtime, safe to hold from UI code.
+///
+/// The process-wide Agent Runtime (coordinator, event queue, tool registry)
+/// is assembled once and cannot be rebuilt in-process — core registers the
+/// coordinator in a `OnceLock` and skips a second `set_global`. The active
+/// workspace is therefore a swappable fact of this handle: every request the
+/// shell sends carries the active workspace id/path, and core resolves
+/// per-turn workspace services from that binding (the same shape the desktop
+/// uses when it switches its active workspace).
 pub(crate) struct RuntimeHandle {
     agent_runtime: AgentRuntime,
     /// Coordinator-backed compatibility owner (M11): persistence-level session
     /// metadata, which the runtime ports do not expose (archive state, for
     /// example, is absent from `AgentSessionSummary`).
     compat: CoreAgentRuntimeCompatibility,
-    workspace: WorkspaceInfo,
+    /// Workspace the shell's requests are addressed to. Shared with the
+    /// short-lived action clones so a switch is visible to in-flight reloads.
+    workspace: Arc<RwLock<WorkspaceInfo>>,
+    /// Workspaces visited in this process, newest first. Core keeps the
+    /// shared catalog (desktop recent/opened); this is the per-process extra
+    /// so a workspace opened by path stays reachable from the picker without
+    /// touching the desktop's selection.
+    visited: Arc<RwLock<Vec<WorkspaceInfo>>>,
+    /// Process ownership guard: acquiring another local workspace lease is the
+    /// same check the runtime performs before a turn, done here so a switch
+    /// fails loudly instead of on the first turn.
+    ownership: Arc<CoreRuntimeOwnership>,
     tokio: tokio::runtime::Handle,
     /// Workspace-level git port from the local runtime services (M8 changes
-    /// view); `None` when the assembly did not register one.
-    git: Option<Arc<dyn GitPort>>,
+    /// view); `None` when the assembly did not register one. Rebuilt for the
+    /// active workspace on every switch.
+    git: Arc<RwLock<Option<Arc<dyn GitPort>>>>,
     // Keeps the runtime event source attached for the process lifetime.
     _event_queue_owner: CoreProductEventQueueOwner,
 }
 
+use std::sync::RwLock;
+
 impl RuntimeHandle {
-    /// Workspace record the runtime was assembled against (canonical root).
-    pub(crate) fn workspace(&self) -> &WorkspaceInfo {
-        &self.workspace
+    /// Active workspace record (canonical root).
+    pub(crate) fn workspace(&self) -> WorkspaceInfo {
+        self.workspace
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     /// Process-lifetime tokio handle for spawning service-side tasks (the
@@ -269,10 +326,13 @@ impl RuntimeHandle {
         self.tokio.clone()
     }
 
-    /// Workspace-level git port (M8 changes view), when the assembly
-    /// registered one.
+    /// Workspace-level git port (M8 changes view) for the active workspace,
+    /// when the assembly registered one.
     pub(crate) fn git(&self) -> Option<Arc<dyn GitPort>> {
-        self.git.clone()
+        self.git
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 
     /// Requests a fresh session snapshot; the result arrives as a
@@ -299,7 +359,7 @@ impl RuntimeHandle {
         tx: mpsc::UnboundedSender<RuntimeEvent>,
     ) {
         let runtime = self.agent_runtime.clone();
-        let workspace_id = Some(self.workspace.id.clone());
+        let workspace_id = Some(self.workspace().id);
         let handle = self.clone_handle_after_action();
         self.tokio.spawn(async move {
             let request = AgentSessionRenameRequest {
@@ -337,7 +397,7 @@ impl RuntimeHandle {
         tx: mpsc::UnboundedSender<RuntimeEvent>,
     ) {
         let runtime = self.agent_runtime.clone();
-        let workspace_id = Some(self.workspace.id.clone());
+        let workspace_id = Some(self.workspace().id);
         let handle = self.clone_handle_after_action();
         self.tokio.spawn(async move {
             let request = AgentSessionArchiveStateRequest {
@@ -373,7 +433,7 @@ impl RuntimeHandle {
         tx: mpsc::UnboundedSender<RuntimeEvent>,
     ) {
         let runtime = self.agent_runtime.clone();
-        let workspace_id = Some(self.workspace.id.clone());
+        let workspace_id = Some(self.workspace().id);
         let handle = self.clone_handle_after_action();
         self.tokio.spawn(async move {
             let request = AgentSessionDeleteRequest {
@@ -484,7 +544,9 @@ impl RuntimeHandle {
 struct RuntimeHandleLite {
     agent_runtime: AgentRuntime,
     compat: CoreAgentRuntimeCompatibility,
-    workspace: WorkspaceInfo,
+    /// Shared with the owning handle: a reload spawned before a workspace
+    /// switch reads the workspace that is active when it runs.
+    workspace: Arc<RwLock<WorkspaceInfo>>,
     tokio: tokio::runtime::Handle,
 }
 
@@ -505,10 +567,14 @@ impl RuntimeHandleLite {
 fn spawn_session_reload(
     runtime: AgentRuntime,
     compat: CoreAgentRuntimeCompatibility,
-    workspace: WorkspaceInfo,
+    workspace: Arc<RwLock<WorkspaceInfo>>,
     tokio: tokio::runtime::Handle,
     tx: mpsc::UnboundedSender<RuntimeEvent>,
 ) {
+    let workspace = workspace
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
     let request = AgentSessionListRequest {
         workspace_id: Some(workspace.id.clone()),
         workspace_path: String::new(),
@@ -563,8 +629,9 @@ impl RuntimeHandle {
     /// Creates a new durable session for the shell workspace.
     pub(crate) fn create_session(&self, tx: mpsc::UnboundedSender<RuntimeEvent>) {
         let runtime = self.agent_runtime.clone();
-        let workspace_path = self.workspace.root_path.to_string_lossy().to_string();
-        let workspace_id = Some(self.workspace.id.clone());
+        let workspace = self.workspace();
+        let workspace_path = workspace.root_path.to_string_lossy().to_string();
+        let workspace_id = Some(workspace.id);
         let handle = self.clone_handle_after_action();
         self.tokio.spawn(async move {
             let request = AgentSessionCreateRequest {
@@ -613,8 +680,9 @@ impl RuntimeHandle {
     /// Restores a persisted session into the runtime and reads its transcript.
     pub(crate) fn open_session(&self, session_id: String, tx: mpsc::UnboundedSender<RuntimeEvent>) {
         let runtime = self.agent_runtime.clone();
-        let workspace_id = Some(self.workspace.id.clone());
-        let workspace_path = self.workspace.root_path.to_string_lossy().to_string();
+        let workspace = self.workspace();
+        let workspace_id = Some(workspace.id);
+        let workspace_path = workspace.root_path.to_string_lossy().to_string();
         self.tokio.spawn(async move {
             let request = AgentSessionRestoreRequest {
                 workspace_id,
@@ -659,8 +727,9 @@ impl RuntimeHandle {
         tx: mpsc::UnboundedSender<RuntimeEvent>,
     ) {
         let runtime = self.agent_runtime.clone();
-        let workspace_path = self.workspace.root_path.to_string_lossy().to_string();
-        let workspace_id = Some(self.workspace.id.clone());
+        let workspace = self.workspace();
+        let workspace_path = workspace.root_path.to_string_lossy().to_string();
+        let workspace_id = Some(workspace.id);
         self.tokio.spawn(async move {
             let turn_id = uuid::Uuid::new_v4().to_string();
             // The turn carries the session's own agent; the default only
@@ -784,6 +853,120 @@ impl RuntimeHandle {
         {
             tracing::error!("Failed to cancel question {tool_id}: {error}");
         }
+    }
+
+    /// Reads the workspace catalog for the picker: shared recent/opened
+    /// records first, then workspaces visited by this process, with the
+    /// active workspace always included so a hidden record (the cwd-launched
+    /// workspace, or one opened by path) stays selectable.
+    pub(crate) fn reload_workspaces(&self, tx: mpsc::UnboundedSender<RuntimeEvent>) {
+        let active = self.workspace();
+        let visited = self
+            .visited
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        self.tokio.spawn(async move {
+            let mut choices = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            let push = |info: &WorkspaceInfo,
+                        choices: &mut Vec<WorkspaceChoice>,
+                        seen: &mut std::collections::HashSet<String>| {
+                if seen.insert(info.id.clone()) {
+                    choices.push(WorkspaceChoice::from_info(info));
+                }
+            };
+            push(&active, &mut choices, &mut seen);
+            for info in visited {
+                push(&info, &mut choices, &mut seen);
+            }
+            if let Some(service) = get_global_workspace_service() {
+                for info in service.get_recent_workspaces().await {
+                    push(&info, &mut choices, &mut seen);
+                }
+                for info in service.get_opened_workspaces().await {
+                    push(&info, &mut choices, &mut seen);
+                }
+            } else {
+                tracing::warn!("Workspace catalog unavailable; picker shows this process only");
+            }
+            let _ = tx.send(RuntimeEvent::Workspaces(choices));
+        });
+    }
+
+    /// Switches the shell's active workspace. The process-wide Agent Runtime
+    /// is not rebuilt (core registers its coordinator once); instead the
+    /// workspace facts every request carries are swapped, after the same
+    /// ownership check the runtime performs before running a turn, and the
+    /// workspace-bound services the shell itself uses (the changes view git
+    /// port) are rebuilt for the new root. The shared core catalog's
+    /// current/opened/recent selection is left untouched — this is the
+    /// per-process workspace semantics, the same seam the CLI and ACP use.
+    pub(crate) fn switch_workspace(&self, path: PathBuf, tx: mpsc::UnboundedSender<RuntimeEvent>) {
+        let ownership = self.ownership.clone();
+        let workspace = self.workspace.clone();
+        let visited = self.visited.clone();
+        let git = self.git.clone();
+        let handle = self.clone_handle_after_action();
+        self.tokio.spawn(async move {
+            let record = match register_local_workspace_record(path.clone()).await {
+                Ok(record) => record,
+                Err(error) => {
+                    let message = format!("failed to open workspace: {error}");
+                    tracing::error!("Workspace switch failed to resolve {path:?}: {message}");
+                    let _ = tx.send(RuntimeEvent::WorkspaceSwitchFailed(message));
+                    return;
+                }
+            };
+            // Same lease the runtime takes before a turn, so a workspace owned
+            // by a Shared runtime is rejected here instead of on first use.
+            if let Err(error) = ownership.ensure_local_workspace(&record.root_path) {
+                let message = ownership.error_message(&error);
+                tracing::error!("Workspace switch rejected for {}: {message}", record.name);
+                let _ = tx.send(RuntimeEvent::WorkspaceSwitchFailed(message));
+                return;
+            }
+            let git_port =
+                match build_local_runtime_services(&record.root_path, RUNTIME_EVENT_BUFFER) {
+                    Ok((_, services)) => services.git.clone(),
+                    Err(error) => {
+                        let message = format!("failed to bind workspace services: {error:#}");
+                        tracing::error!("Workspace switch failed for {}: {message}", record.name);
+                        let _ = tx.send(RuntimeEvent::WorkspaceSwitchFailed(message));
+                        return;
+                    }
+                };
+            {
+                let mut active = workspace
+                    .write()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                *active = record.clone();
+            }
+            {
+                let mut visited = visited
+                    .write()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                visited.retain(|info| info.id != record.id);
+                visited.insert(0, record.clone());
+                visited.truncate(VISITED_WORKSPACES_LIMIT);
+            }
+            {
+                let mut slot = git.write().unwrap_or_else(|poisoned| poisoned.into_inner());
+                *slot = git_port;
+            }
+            tracing::info!(
+                "Active workspace switched: id={}, root={}",
+                record.id,
+                record.root_path.display()
+            );
+            let _ = tx.send(RuntimeEvent::WorkspaceSwitched(WorkspaceChoice::from_info(
+                &record,
+            )));
+            handle.reload_sessions(tx.clone());
+            if let Some(handle) = runtime_handle() {
+                handle.reload_workspaces(tx);
+            }
+        });
     }
 
     /// Re-reads the transcript of an already-restored session after
@@ -1342,6 +1525,8 @@ async fn bootstrap(tx: mpsc::UnboundedSender<RuntimeEvent>) -> Result<()> {
         anyhow::anyhow!(error.startup_message(RuntimeDeployment::Embedded, ENTRYPOINT))
     })?;
     let runtime_ownership = Arc::new(runtime_ownership);
+    // The same guard is kept on the handle so a workspace switch takes the
+    // identical lease check the runtime applies before a turn.
     tracing::info!(
         "Agent runtime ownership acquired for workspace {}",
         workspace_root.display()
@@ -1353,7 +1538,7 @@ async fn bootstrap(tx: mpsc::UnboundedSender<RuntimeEvent>) -> Result<()> {
 
     let agentic_system = init_agentic_system_for_profile_with_runtime_ownership(
         DeliveryProfile::Cli,
-        runtime_ownership,
+        runtime_ownership.clone(),
     )
     .await
     .context("Failed to initialize agentic system")?;
@@ -1417,9 +1602,11 @@ async fn bootstrap(tx: mpsc::UnboundedSender<RuntimeEvent>) -> Result<()> {
     let handle = RuntimeHandle {
         agent_runtime,
         compat: compatibility,
-        workspace,
+        workspace: Arc::new(RwLock::new(workspace.clone())),
+        visited: Arc::new(RwLock::new(vec![workspace])),
+        ownership: runtime_ownership.clone(),
         tokio: tokio::runtime::Handle::current(),
-        git: git_port,
+        git: Arc::new(RwLock::new(git_port)),
         _event_queue_owner: event_queue_owner,
     };
     let _ = RUNTIME_HANDLE.set(handle);
@@ -1435,6 +1622,7 @@ async fn bootstrap(tx: mpsc::UnboundedSender<RuntimeEvent>) -> Result<()> {
     if let Some(handle) = runtime_handle() {
         handle.reload_sessions(tx.clone());
         handle.reload_model_catalog(tx.clone());
+        handle.reload_workspaces(tx.clone());
         match handle.agent_runtime.pending_permission_requests() {
             Ok(requests) if !requests.is_empty() => {
                 tracing::info!("{} permission requests pending at startup", requests.len());

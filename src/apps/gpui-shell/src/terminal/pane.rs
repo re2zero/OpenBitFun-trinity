@@ -143,6 +143,7 @@ impl TerminalPane {
     pub(crate) fn new(
         tokio: tokio::runtime::Handle,
         settings: &TerminalSettings,
+        start_dir: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -170,7 +171,7 @@ impl TerminalPane {
                 executable,
                 args: vec!["-i".to_string()],
                 env,
-                cwd: None,
+                cwd: start_dir,
                 login: false,
             };
             // Initial 80x24; the first paint recomputes from the real bounds.

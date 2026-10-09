@@ -237,3 +237,7 @@ gpui-shell-question-multi = 可多选
 gpui-shell-question-submit = 提交
 gpui-shell-question-cancel = 取消
 gpui-shell-question-unreadable = 无法显示该问题的内容。
+
+gpui-shell-workspace-switch = 切换工作区
+gpui-shell-workspace-open-path = 按路径打开…
+gpui-shell-workspace-open-path-description = 作为本壳工作区使用的文件夹。它只会登记进共享工作区列表，不改桌面端的选择。

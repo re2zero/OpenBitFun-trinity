@@ -261,3 +261,7 @@ gpui-shell-question-multi = Select all that apply
 gpui-shell-question-submit = Submit
 gpui-shell-question-cancel = Cancel
 gpui-shell-question-unreadable = This question could not be displayed.
+
+gpui-shell-workspace-switch = Switch workspace
+gpui-shell-workspace-open-path = Open workspace by path…
+gpui-shell-workspace-open-path-description = Folder to use as this shell's workspace. It is registered in the shared workspace list without changing the desktop's selection.
