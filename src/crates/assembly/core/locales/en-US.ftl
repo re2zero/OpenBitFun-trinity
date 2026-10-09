@@ -254,3 +254,10 @@ gpui-shell-git-untracked = untracked
 gpui-shell-git-select = Select a file to see its diff.
 gpui-shell-git-diff-wrap = Toggle diff line wrapping
 
+
+gpui-shell-question-title = Your answer is needed
+gpui-shell-question-progress = Question { $index } / { $total }
+gpui-shell-question-multi = Select all that apply
+gpui-shell-question-submit = Submit
+gpui-shell-question-cancel = Cancel
+gpui-shell-question-unreadable = This question could not be displayed.

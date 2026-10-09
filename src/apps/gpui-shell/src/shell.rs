@@ -9,15 +9,17 @@ use gpui_kit::component::{
     menu::{DropdownMenu, PopupMenuItem},
     message::MessageAlignment,
     message_scroller::{MessageScroller, MessageScrollerState},
+    scroll::ScrollableElement,
     sidebar::{Sidebar, SidebarFooter, SidebarGroup, SidebarItem},
     text::TextView,
-    ActiveTheme, Collapsible, Disableable, Sizable, StyledExt, TitleBar, WindowExt,
+    ActiveTheme, Collapsible, Disableable, Icon, Sizable, StyledExt, TitleBar, WindowExt,
 };
 use gpui_kit::{
     div, point, prelude::*, px, size, Anchor, App, Bounds, Context, ElementId, Entity, Pixels,
     SharedString, TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions,
 };
-use openbitfun_agent_runtime::sdk::{PermissionReply, PermissionRequest};
+use openbitfun_agent_runtime::sdk::{PendingUserQuestion, PermissionReply, PermissionRequest};
+use std::collections::BTreeSet;
 use tokio::sync::mpsc;
 
 use crate::assets::ShellAssets;
@@ -101,6 +103,174 @@ struct PermissionPromptItem {
 impl PermissionPromptItem {
     fn request_id(&self) -> &str {
         &self.request.request_id
+    }
+}
+
+/// Which shell-owned modal currently owns the single dialog slot. The
+/// component library's dialog stack closes strictly by LIFO and carries no
+/// dialog id, so the shell keeps at most one modal open and hands the slot
+/// over in priority order; two open modals would make a `close_dialog` meant
+/// for one queue pop the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModalOwner {
+    Permissions,
+    Questions,
+}
+
+/// One pending `ask_user` batch, pre-parsed for rendering. Selection state
+/// lives here rather than in the dialog builder, so a queue rebuild keeps the
+/// user's in-progress answers when another question joins or leaves.
+#[derive(Debug, Clone)]
+struct QuestionPromptItem {
+    tool_id: String,
+    session_id: String,
+    /// Questions of this batch; empty when the payload could not be parsed
+    /// (the dialog then offers Cancel only).
+    questions: Vec<PromptQuestion>,
+    /// Selected option indices per question; single-select holds at most one.
+    selected: Vec<BTreeSet<usize>>,
+}
+
+/// One question of an `ask_user` batch as rendered by the dialog.
+#[derive(Debug, Clone)]
+struct PromptQuestion {
+    header: String,
+    question: String,
+    /// "Question n of m", resolved in the active locale when the item was
+    /// composed; the render path never calls the i18n service.
+    progress_line: String,
+    options: Vec<PromptOption>,
+    multi_select: bool,
+}
+
+/// One selectable option of a question.
+#[derive(Debug, Clone)]
+struct PromptOption {
+    label: String,
+    description: String,
+}
+
+impl QuestionPromptItem {
+    /// True once every question has a selection; a malformed batch is never
+    /// answerable and only offers Cancel.
+    fn is_answered(&self) -> bool {
+        !self.questions.is_empty() && self.selected.iter().all(|set| !set.is_empty())
+    }
+
+    /// Answers in the wire shape the tool expects: question index as key,
+    /// option labels as the value, an array for multi-select questions
+    /// (`{"0": "A", "1": ["B", "C"]}` — same as the desktop card).
+    fn answers(&self) -> serde_json::Value {
+        let mut map = serde_json::Map::new();
+        for (index, question) in self.questions.iter().enumerate() {
+            let selected = question
+                .options
+                .iter()
+                .enumerate()
+                .filter(|(option_index, _)| {
+                    self.selected
+                        .get(index)
+                        .is_some_and(|set| set.contains(option_index))
+                })
+                .map(|(_, option)| option.label.clone())
+                .collect::<Vec<_>>();
+            if selected.is_empty() {
+                continue;
+            }
+            if question.multi_select {
+                map.insert(index.to_string(), serde_json::Value::from(selected));
+            } else if let Some(label) = selected.first() {
+                map.insert(index.to_string(), serde_json::Value::from(label.clone()));
+            }
+        }
+        serde_json::Value::Object(map)
+    }
+}
+
+/// Parses one mailbox payload into render-ready questions. The payload is the
+/// tool input plus timing metadata; an unparsable or option-less batch yields
+/// `None` so the dialog stays visible with Cancel instead of hiding a live
+/// ask. `question_label` localizes the "n of m" heading at composition time,
+/// keeping the i18n service off the render path.
+fn parse_question_payload(
+    payload: &serde_json::Value,
+    question_label: impl Fn(usize, usize) -> String,
+) -> Option<Vec<PromptQuestion>> {
+    let input: openbitfun_agent_runtime::user_questions::AskUserQuestionInput =
+        serde_json::from_value(payload.clone()).ok()?;
+    let total = input.questions.len();
+    let questions = input
+        .questions
+        .into_iter()
+        .enumerate()
+        .map(|(index, question)| PromptQuestion {
+            header: question.header,
+            question: question.question,
+            progress_line: question_label(index + 1, total),
+            options: question
+                .options
+                .into_iter()
+                .map(|option| PromptOption {
+                    label: option.label,
+                    description: option.description,
+                })
+                .collect(),
+            multi_select: question.multi_select,
+        })
+        .collect::<Vec<_>>();
+    if questions.is_empty() || questions.iter().any(|question| question.options.is_empty()) {
+        return None;
+    }
+    Some(questions)
+}
+
+/// Builds one render-ready item from a mailbox question.
+fn compose_question_item(
+    question: PendingUserQuestion,
+    question_label: impl Fn(usize, usize) -> String,
+) -> QuestionPromptItem {
+    let questions = parse_question_payload(&question.questions, question_label);
+    let selected = vec![BTreeSet::new(); questions.as_ref().map_or(0, Vec::len)];
+    QuestionPromptItem {
+        tool_id: question.tool_id,
+        session_id: question.session_id,
+        questions: questions.unwrap_or_default(),
+        selected,
+    }
+}
+
+/// Rebuilds the question queue from a mailbox snapshot. Existing items are
+/// carried over whole so the user's in-progress selections survive an
+/// unrelated question arriving or leaving; only new tool ids are parsed.
+fn rebuild_question_queue(
+    existing: &[QuestionPromptItem],
+    incoming: Vec<PendingUserQuestion>,
+    question_label: impl Fn(usize, usize) -> String,
+) -> Vec<QuestionPromptItem> {
+    incoming
+        .into_iter()
+        .map(|question| {
+            match existing
+                .iter()
+                .find(|item| item.tool_id == question.tool_id)
+            {
+                Some(item) => item.clone(),
+                None => compose_question_item(question, &question_label),
+            }
+        })
+        .collect()
+}
+
+/// Which modal should own the dialog slot next; `None` when both queues are
+/// empty. Approvals take the slot first: they gate a tool call that is
+/// otherwise parked, while an attended question waits without a deadline.
+fn next_modal_target(pending_permissions: usize, pending_questions: usize) -> Option<ModalOwner> {
+    if pending_permissions > 0 {
+        Some(ModalOwner::Permissions)
+    } else if pending_questions > 0 {
+        Some(ModalOwner::Questions)
+    } else {
+        None
     }
 }
 
@@ -337,10 +507,13 @@ struct ShellWindow {
     /// so hiding one would be exactly the deadlock this shell must not
     /// introduce.
     pending_permissions: Vec<PermissionPromptItem>,
-    /// The modal approval dialog tracks the queue head; `true` from
-    /// [`ShellWindow::open_permission_dialog`] until the resolving echo drains
-    /// the queue.
-    permission_dialog_open: bool,
+    /// `ask_user` questions waiting for an answer, oldest first. Same
+    /// no-session-filter rule as approvals: a hidden question is a parked
+    /// turn.
+    pending_questions: Vec<QuestionPromptItem>,
+    /// Which shell-owned modal owns the single dialog slot; `None` while no
+    /// modal is open.
+    modal_owner: Option<ModalOwner>,
     /// Built-in terminal panel (M7): created lazily on first open, shut down
     /// and dropped when the panel closes.
     terminal: Option<Entity<TerminalPane>>,
@@ -400,7 +573,8 @@ impl ShellWindow {
             chat_scroller,
             event_tx,
             pending_permissions: Vec::new(),
-            permission_dialog_open: false,
+            pending_questions: Vec::new(),
+            modal_owner: None,
             terminal: None,
             terminal_open: false,
             terminal_auto_open: std::env::var_os("OPENBITFUN_GPUI_TERMINAL_AUTOOPEN").is_some(),
@@ -653,16 +827,13 @@ impl ShellWindow {
                 let text = i18n::current(cx);
                 self.pending_permissions
                     .push(compose_permission_item(request, &text, cx));
-                if !self.permission_dialog_open {
-                    self.open_permission_dialog(window, cx);
-                }
+                self.open_next_modal(window, cx);
             }
             RuntimeEvent::PermissionResolved { request_id } => {
                 self.pending_permissions
                     .retain(|item| item.request_id() != request_id);
-                if self.pending_permissions.is_empty() && self.permission_dialog_open {
-                    window.close_dialog(cx);
-                    self.permission_dialog_open = false;
+                if self.pending_permissions.is_empty() {
+                    self.release_modal(ModalOwner::Permissions, window, cx);
                 }
             }
             RuntimeEvent::PermissionSnapshot(requests) => {
@@ -671,19 +842,14 @@ impl ShellWindow {
                     .into_iter()
                     .map(|request| compose_permission_item(request, &text, cx))
                     .collect();
-                match (
-                    self.pending_permissions.is_empty(),
-                    self.permission_dialog_open,
-                ) {
-                    (true, true) => {
-                        window.close_dialog(cx);
-                        self.permission_dialog_open = false;
-                    }
-                    (false, false) => self.open_permission_dialog(window, cx),
-                    // Head swapped under an open dialog: the builder re-reads
-                    // the queue every frame, so the surface refreshes itself.
-                    _ => {}
+                if self.pending_permissions.is_empty() {
+                    self.release_modal(ModalOwner::Permissions, window, cx);
+                } else {
+                    self.open_next_modal(window, cx);
                 }
+            }
+            RuntimeEvent::QuestionsChanged(questions) => {
+                self.apply_questions_changed(questions, window, cx);
             }
             RuntimeEvent::SessionRenamed { session_id, name } => {
                 if let Some(row) = self.sessions.iter_mut().find(|row| row.id == session_id) {
@@ -1276,7 +1442,128 @@ impl ShellWindow {
                 .child(permission_body(&item, cx))
                 .footer(permission_footer(&item, &text, answer_permission))
         });
-        self.permission_dialog_open = true;
+        self.modal_owner = Some(ModalOwner::Permissions);
+    }
+
+    /// Opens the modal question dialog bound to the head of the pending
+    /// queue. Like the approval dialog the builder re-reads the queue every
+    /// frame, so answering one batch reveals the next without reopening, and
+    /// the dialog closes when the mailbox rebuild drops the last question
+    /// rather than in the button handlers. Every dismissal path without a
+    /// decision (Escape, backdrop press, close icon) is disabled: the
+    /// question parks its turn and has no deadline left once the shell has
+    /// shown it, so the only ways out are Submit and Cancel.
+    fn open_question_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let view = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let Some(view) = view.upgrade() else {
+                return dialog;
+            };
+            let Some(item) = view.read(cx).pending_questions.first().cloned() else {
+                return dialog;
+            };
+            let text = i18n::current(cx);
+            dialog
+                .title(div().child(text.question_title.clone()))
+                .overlay_closable(false)
+                .keyboard(false)
+                .close_button(false)
+                .child(question_body(&view.downgrade(), &item, &text, cx))
+                .footer(question_footer(
+                    &item,
+                    &text,
+                    submit_question,
+                    cancel_question,
+                ))
+        });
+        self.modal_owner = Some(ModalOwner::Questions);
+    }
+
+    /// Opens the next waiting modal unless one is already open. Approvals
+    /// take the slot first: they gate a tool call that is otherwise parked,
+    /// while an attended question waits on the mailbox without a deadline.
+    fn open_next_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal_owner.is_some() {
+            return;
+        }
+        match next_modal_target(self.pending_permissions.len(), self.pending_questions.len()) {
+            Some(ModalOwner::Permissions) => self.open_permission_dialog(window, cx),
+            Some(ModalOwner::Questions) => self.open_question_dialog(window, cx),
+            None => {}
+        }
+    }
+
+    /// Releases the dialog slot once `owner`'s queue drained, then hands it
+    /// to the next waiting queue. No-op while the other queue owns the slot.
+    fn release_modal(&mut self, owner: ModalOwner, window: &mut Window, cx: &mut Context<Self>) {
+        if self.modal_owner != Some(owner) {
+            return;
+        }
+        window.close_dialog(cx);
+        self.modal_owner = None;
+        self.open_next_modal(window, cx);
+    }
+
+    /// Rebuilds the question queue from a mailbox snapshot. Existing items are
+    /// carried over so selections survive an unrelated question arriving or
+    /// leaving; only new tool ids are parsed.
+    fn apply_questions_changed(
+        &mut self,
+        questions: Vec<PendingUserQuestion>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending_questions =
+            rebuild_question_queue(&self.pending_questions, questions, |index, total| {
+                i18n::question_progress(index, total, cx)
+            });
+        if self.pending_questions.is_empty() {
+            self.release_modal(ModalOwner::Questions, window, cx);
+        } else {
+            self.open_next_modal(window, cx);
+        }
+    }
+
+    /// Toggles one option of the dialog's head item: single-select replaces
+    /// the selection, multi-select adds or removes it.
+    fn toggle_question_option(
+        &mut self,
+        tool_id: &str,
+        question_index: usize,
+        option_index: usize,
+    ) {
+        let Some(item) = self
+            .pending_questions
+            .iter_mut()
+            .find(|item| item.tool_id == tool_id)
+        else {
+            return;
+        };
+        let Some(question) = item.questions.get(question_index) else {
+            return;
+        };
+        let multi_select = question.multi_select;
+        let Some(selected) = item.selected.get_mut(question_index) else {
+            return;
+        };
+        toggle_option_selection(selected, option_index, multi_select);
+    }
+}
+
+/// Applies one option click: single-select replaces the selection,
+/// multi-select adds or removes the option.
+fn toggle_option_selection(
+    selected: &mut BTreeSet<usize>,
+    option_index: usize,
+    multi_select: bool,
+) {
+    if multi_select {
+        if !selected.remove(&option_index) {
+            selected.insert(option_index);
+        }
+    } else {
+        selected.clear();
+        selected.insert(option_index);
     }
 }
 
@@ -1287,6 +1574,214 @@ fn answer_permission(request_id: String, reply: PermissionReply) {
     if let Some(handle) = runtime::runtime_handle() {
         handle.respond_permission(request_id, reply);
     }
+}
+
+/// Forwards the dialog's submitted answers to the embedded runtime. The queue
+/// advances on the mailbox rebuild, not here.
+fn submit_question(tool_id: String, answers: serde_json::Value) {
+    if let Some(handle) = runtime::runtime_handle() {
+        handle.respond_user_question(tool_id, answers);
+    }
+}
+
+/// Declines one question on the user's behalf; the tool reports the
+/// cancellation back to the model.
+fn cancel_question(session_id: String, tool_id: String) {
+    if let Some(handle) = runtime::runtime_handle() {
+        handle.cancel_user_question(session_id, tool_id);
+    }
+}
+
+/// Dialog body for one question batch: every question of the batch with its
+/// options, scrollable so a long batch stays inside the dialog.
+fn question_body(
+    view: &WeakEntity<ShellWindow>,
+    item: &QuestionPromptItem,
+    text: &ShellText,
+    cx: &App,
+) -> impl IntoElement {
+    let mut body = div()
+        .v_flex()
+        .gap_4()
+        .w(px(520.))
+        .max_h(px(420.))
+        .overflow_y_scrollbar()
+        .text_sm();
+    if item.questions.is_empty() {
+        return body.child(
+            div()
+                .text_color(cx.theme().warning)
+                .child(text.question_unreadable.clone()),
+        );
+    }
+    for (index, question) in item.questions.iter().enumerate() {
+        let heading = if question.header.trim().is_empty() {
+            question.progress_line.clone()
+        } else {
+            format!("{} · {}", question.header, question.progress_line)
+        };
+        let mut options = div().v_flex().gap_2();
+        for (option_index, option) in question.options.iter().enumerate() {
+            let selected = item
+                .selected
+                .get(index)
+                .is_some_and(|set| set.contains(&option_index));
+            options = options.child(question_option_row(
+                view.clone(),
+                item.tool_id.clone(),
+                index,
+                option_index,
+                option,
+                question.multi_select,
+                selected,
+                cx,
+            ));
+        }
+        body = body.child(
+            div()
+                .v_flex()
+                .gap_2()
+                .child(
+                    div()
+                        .v_flex()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(heading),
+                        )
+                        .child(
+                            div()
+                                .text_color(cx.theme().foreground)
+                                .child(question.question.clone()),
+                        )
+                        .when(question.multi_select, |this| {
+                            this.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(text.question_multi.clone()),
+                            )
+                        }),
+                )
+                .child(options),
+        );
+    }
+    body
+}
+
+/// One clickable option row. Selection lives on the shell item, so the click
+/// updates that item and the dialog's next frame shows the new state.
+#[allow(clippy::too_many_arguments)]
+fn question_option_row(
+    view: WeakEntity<ShellWindow>,
+    tool_id: String,
+    question_index: usize,
+    option_index: usize,
+    option: &PromptOption,
+    multi_select: bool,
+    selected: bool,
+    cx: &App,
+) -> impl IntoElement {
+    let marker = match (multi_select, selected) {
+        (true, true) => IconName::Check,
+        (true, false) => IconName::Square,
+        (false, true) => IconName::CircleDot,
+        (false, false) => IconName::Circle,
+    };
+    div()
+        .id(SharedString::from(format!(
+            "question-option-{tool_id}-{question_index}-{option_index}"
+        )))
+        .cursor_pointer()
+        .h_flex()
+        .items_start()
+        .gap_2()
+        .p_2()
+        .rounded(cx.theme().radius)
+        .border_1()
+        .border_color(if selected {
+            cx.theme().primary
+        } else {
+            cx.theme().border
+        })
+        .when(!selected, |this| {
+            this.hover(|style| style.bg(cx.theme().muted))
+        })
+        .child(Icon::new(marker).size_4().text_color(if selected {
+            cx.theme().primary
+        } else {
+            cx.theme().muted_foreground
+        }))
+        .child(
+            div()
+                .v_flex()
+                .gap_0p5()
+                .min_w_0()
+                .child(
+                    div()
+                        .text_color(cx.theme().foreground)
+                        .child(option.label.clone()),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(option.description.clone()),
+                ),
+        )
+        .on_click(move |_, _, cx| {
+            if let Some(shell) = view.upgrade() {
+                shell.update(cx, |this, cx| {
+                    this.toggle_question_option(&tool_id, question_index, option_index);
+                    cx.notify();
+                });
+            }
+        })
+}
+
+/// Dialog footer: Cancel (declines the question) and Submit, disabled until
+/// every question has a selection (same affordance as the composer's send
+/// button). The callbacks are injected so tests can observe the decisions
+/// without a runtime.
+fn question_footer(
+    item: &QuestionPromptItem,
+    text: &ShellText,
+    on_submit: impl Fn(String, serde_json::Value) + Clone + 'static,
+    on_cancel: impl Fn(String, String) + Clone + 'static,
+) -> gpui_kit::Div {
+    let submit_tool_id = item.tool_id.clone();
+    let answers_item = item.clone();
+    let cancel_session_id = item.session_id.clone();
+    let cancel_tool_id = item.tool_id.clone();
+    div()
+        .flex()
+        .justify_end()
+        .gap_2()
+        .child(
+            Button::new("question-cancel")
+                .label(text.question_cancel.clone())
+                .with_variant(ButtonVariant::Ghost)
+                .on_click({
+                    let on_cancel = on_cancel.clone();
+                    move |_, _, _| {
+                        on_cancel(cancel_session_id.clone(), cancel_tool_id.clone());
+                    }
+                }),
+        )
+        .child(
+            Button::new("question-submit")
+                .label(text.question_submit.clone())
+                .with_variant(ButtonVariant::Primary)
+                .disabled(!item.is_answered())
+                .on_click({
+                    let on_submit = on_submit.clone();
+                    move |_, _, _| {
+                        on_submit(submit_tool_id.clone(), answers_item.answers());
+                    }
+                }),
+        )
 }
 
 /// Opens the rename dialog for one session. The input entity lives on the
@@ -2674,5 +3169,179 @@ mod tests {
             created_at_ms: 0,
             last_active_at_ms: 0,
         }
+    }
+
+    /// One `ask_user` mailbox payload shaped like the tool's input plus the
+    /// timing metadata the runtime adds.
+    fn question_payload(questions: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "questions": questions,
+            "responseHostNowMs": 1_700_000_000_000u64,
+            "responseDeadlineMs": serde_json::Value::Null,
+        })
+    }
+
+    fn sample_question(tool_id: &str, payload: serde_json::Value) -> PendingUserQuestion {
+        PendingUserQuestion::new(
+            tool_id,
+            "session-1",
+            Some("turn-1".to_string()),
+            None,
+            payload,
+        )
+    }
+
+    /// Deterministic stand-in for the localized "n of m" label.
+    fn test_question_label(index: usize, total: usize) -> String {
+        format!("Question {index} / {total}")
+    }
+
+    fn two_choice_payload(multi_select: bool) -> serde_json::Value {
+        question_payload(serde_json::json!([{
+            "question": "Which path should be used?",
+            "header": "Path",
+            "options": [
+                { "label": "A", "description": "Use A" },
+                { "label": "B", "description": "Use B" }
+            ],
+            "multiSelect": multi_select
+        }]))
+    }
+
+    #[test]
+    fn question_payload_parses_into_render_items() {
+        let item = compose_question_item(
+            sample_question("tool-1", two_choice_payload(false)),
+            test_question_label,
+        );
+        assert_eq!(item.tool_id, "tool-1");
+        assert_eq!(item.questions.len(), 1);
+        assert_eq!(item.questions[0].options.len(), 2);
+        assert_eq!(item.questions[0].options[1].label, "B");
+        assert!(!item.questions[0].multi_select);
+        assert_eq!(item.questions[0].progress_line, "Question 1 / 1");
+        assert!(!item.is_answered());
+        // Timing metadata alongside the tool input is ignored.
+        assert_eq!(item.selected.len(), 1);
+    }
+
+    #[test]
+    fn question_payload_without_options_is_unanswerable() {
+        for questions in [
+            serde_json::json!([]),
+            serde_json::json!([{ "question": "q", "header": "h", "options": [] }]),
+            serde_json::json!([{ "question": "q", "header": "h" }]),
+        ] {
+            let item = compose_question_item(
+                sample_question("tool-1", question_payload(questions)),
+                test_question_label,
+            );
+            assert!(item.questions.is_empty(), "batch must stay cancel-only");
+            assert!(!item.is_answered());
+            assert!(item.answers().as_object().is_some_and(|map| map.is_empty()));
+        }
+    }
+
+    #[test]
+    fn question_answers_follow_the_tool_wire_shape() {
+        let mut item = compose_question_item(
+            sample_question("tool-1", two_choice_payload(false)),
+            test_question_label,
+        );
+        toggle_option_selection(&mut item.selected[0], 1, false);
+        assert!(item.is_answered());
+        assert_eq!(item.answers(), serde_json::json!({ "0": "B" }));
+
+        // Multi-select answers are arrays of labels, and unanswered questions
+        // are omitted.
+        let multi = question_payload(serde_json::json!([
+            {
+                "question": "Which ones?",
+                "header": "Pick",
+                "options": [
+                    { "label": "X", "description": "x" },
+                    { "label": "Y", "description": "y" }
+                ],
+                "multiSelect": true
+            },
+            {
+                "question": "And one?",
+                "header": "One",
+                "options": [
+                    { "label": "P", "description": "p" },
+                    { "label": "Q", "description": "q" }
+                ]
+            }
+        ]));
+        let mut item = compose_question_item(sample_question("tool-1", multi), test_question_label);
+        toggle_option_selection(&mut item.selected[0], 0, true);
+        toggle_option_selection(&mut item.selected[0], 1, true);
+        assert!(!item.is_answered(), "the second question has no selection");
+        assert_eq!(item.answers(), serde_json::json!({ "0": ["X", "Y"] }));
+    }
+
+    #[test]
+    fn question_option_selection_toggles_or_replaces() {
+        let mut selected = BTreeSet::new();
+        toggle_option_selection(&mut selected, 0, false);
+        toggle_option_selection(&mut selected, 1, false);
+        assert_eq!(selected.iter().copied().collect::<Vec<_>>(), vec![1]);
+
+        let mut selected = BTreeSet::new();
+        toggle_option_selection(&mut selected, 0, true);
+        toggle_option_selection(&mut selected, 1, true);
+        assert_eq!(selected.iter().copied().collect::<Vec<_>>(), vec![0, 1]);
+        toggle_option_selection(&mut selected, 0, true);
+        assert_eq!(selected.iter().copied().collect::<Vec<_>>(), vec![1]);
+    }
+
+    /// The question queue is rebuilt from the mailbox snapshot on every
+    /// change: in-progress selections survive an unrelated question arriving
+    /// or leaving, resolved questions drop out, and the dialog slot follows
+    /// the queue.
+    #[test]
+    fn question_queue_rebuild_keeps_selections_and_drops_resolved() {
+        let mut head = compose_question_item(
+            sample_question("tool-1", two_choice_payload(false)),
+            test_question_label,
+        );
+        toggle_option_selection(&mut head.selected[0], 1, false);
+        let existing = vec![head];
+
+        let rebuilt = rebuild_question_queue(
+            &existing,
+            vec![
+                sample_question("tool-1", two_choice_payload(false)),
+                sample_question("tool-2", two_choice_payload(true)),
+            ],
+            test_question_label,
+        );
+        assert_eq!(rebuilt.len(), 2);
+        assert!(rebuilt[0].is_answered());
+        assert_eq!(
+            rebuilt[0].selected[0].iter().copied().collect::<Vec<_>>(),
+            vec![1]
+        );
+        assert!(!rebuilt[1].is_answered());
+
+        let rebuilt = rebuild_question_queue(
+            &rebuilt,
+            vec![sample_question("tool-2", two_choice_payload(true))],
+            test_question_label,
+        );
+        assert_eq!(rebuilt.len(), 1);
+        assert_eq!(rebuilt[0].tool_id, "tool-2");
+
+        assert!(rebuild_question_queue(&rebuilt, Vec::new(), test_question_label).is_empty());
+    }
+
+    /// Approvals gate a parked tool call, so they take the single dialog slot
+    /// ahead of questions; the slot is empty once both queues drain.
+    #[test]
+    fn approvals_take_the_modal_slot_before_questions() {
+        assert_eq!(next_modal_target(0, 0), None);
+        assert_eq!(next_modal_target(1, 0), Some(ModalOwner::Permissions));
+        assert_eq!(next_modal_target(0, 1), Some(ModalOwner::Questions));
+        assert_eq!(next_modal_target(2, 3), Some(ModalOwner::Permissions));
     }
 }

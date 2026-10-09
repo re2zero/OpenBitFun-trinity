@@ -230,3 +230,10 @@ gpui-shell-git-untracked = 未追蹤
 gpui-shell-git-select = 選擇檔案以查看差異。
 gpui-shell-git-diff-wrap = 切換 diff 換行
 
+
+gpui-shell-question-title = 需要你的回答
+gpui-shell-question-progress = 問題 { $index } / { $total }
+gpui-shell-question-multi = 可多選
+gpui-shell-question-submit = 提交
+gpui-shell-question-cancel = 取消
+gpui-shell-question-unreadable = 無法顯示該問題的內容。

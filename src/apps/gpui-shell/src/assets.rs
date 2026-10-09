@@ -13,7 +13,7 @@ use gpui_kit::AssetSource;
 
 gpui_kit::assets::icon_assets!(
     ExtraIcons,
-    [Archive, GitBranch, Languages, Shield, TextWrap, X]
+    [Archive, Check, Circle, CircleDot, GitBranch, Languages, Shield, Square, TextWrap, X]
 );
 
 /// Asset source registered for the shell window.

@@ -64,6 +64,11 @@ pub(crate) struct ShellText {
     pub permission_allow_once: String,
     pub permission_allow_always: String,
     pub permission_deny: String,
+    pub question_title: String,
+    pub question_multi: String,
+    pub question_submit: String,
+    pub question_cancel: String,
+    pub question_unreadable: String,
     pub terminal_title: String,
     pub terminal_close: String,
     pub terminal_exited: String,
@@ -191,6 +196,18 @@ pub(crate) fn permission_subagent_label(subagent_type: &str, cx: &App) -> String
     )
 }
 
+/// Resolves the localized "question n of m" heading for one question of an
+/// `ask_user` batch.
+pub(crate) fn question_progress(index: usize, total: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-question-progress",
+        TranslationArgs::new()
+            .with_number("index", index as f64)
+            .with_number("total", total as f64),
+        cx,
+    )
+}
+
 fn resolve_with(key: &str, args: TranslationArgs, cx: &App) -> String {
     cx.foreground_executor().block_on(async move {
         match get_global_i18n_service().await {
@@ -259,6 +276,11 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         permission_allow_once: "Allow once".to_string(),
         permission_allow_always: "Always allow".to_string(),
         permission_deny: "Deny".to_string(),
+        question_title: "Your answer is needed".to_string(),
+        question_multi: "Select all that apply".to_string(),
+        question_submit: "Submit".to_string(),
+        question_cancel: "Cancel".to_string(),
+        question_unreadable: "This question could not be displayed.".to_string(),
         terminal_title: "Terminal".to_string(),
         terminal_close: "Close terminal".to_string(),
         terminal_exited: "process exited".to_string(),
@@ -368,6 +390,11 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         permission_allow_once: service.t("gpui-shell-permission-allow-once").await,
         permission_allow_always: service.t("gpui-shell-permission-allow-always").await,
         permission_deny: service.t("gpui-shell-permission-deny").await,
+        question_title: service.t("gpui-shell-question-title").await,
+        question_multi: service.t("gpui-shell-question-multi").await,
+        question_submit: service.t("gpui-shell-question-submit").await,
+        question_cancel: service.t("gpui-shell-question-cancel").await,
+        question_unreadable: service.t("gpui-shell-question-unreadable").await,
         terminal_title: service.t("gpui-shell-terminal-title").await,
         terminal_close: service.t("gpui-shell-terminal-close").await,
         terminal_exited: service.t("gpui-shell-terminal-exited").await,

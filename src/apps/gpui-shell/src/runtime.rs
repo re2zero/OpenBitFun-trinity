@@ -20,9 +20,11 @@ use openbitfun_agent_runtime::sdk::{
     AgentDialogTurnExecution, AgentDialogTurnRequest, AgentRuntime,
     AgentSessionArchiveStateRequest, AgentSessionCreateRequest, AgentSessionDeleteRequest,
     AgentSessionModelUpdateRequest, AgentSessionRenameRequest, AgentSessionRestoreRequest,
-    AgentTurnCancellationRequest, PermissionReply, PermissionRequest, PermissionRequestEvent,
-    SessionState, SessionTranscript, SessionTranscriptRequest,
+    AgentTurnCancellationRequest, AgentUserAnswersRequest, PendingUserQuestion, PermissionReply,
+    PermissionRequest, PermissionRequestEvent, SessionState, SessionTranscript,
+    SessionTranscriptRequest,
 };
+use openbitfun_agent_runtime::user_questions::{get_user_input_manager, UserInputManager};
 use openbitfun_core::agentic::system::{
     init_agentic_system_for_profile_with_runtime_ownership, select_agentic_system_profile,
 };
@@ -139,6 +141,13 @@ pub(crate) enum RuntimeEvent {
     /// Configured-model catalog for the pickers (session header + models
     /// settings page); sent once after bootstrap.
     ModelCatalog(Vec<ModelChoice>),
+    /// Full pending-user-question snapshot from the process-local mailbox
+    /// (`ask_user` tool). The mailbox publishes only a coalesced revision, so
+    /// the shell rebuilds its queue from this on every change: additions,
+    /// answers, cancellations, timeouts, and turn cancellations all arrive
+    /// through this one path, and questions that predate the subscription
+    /// still surface.
+    QuestionsChanged(Vec<PendingUserQuestion>),
 }
 
 /// One session list row: the runtime summary plus its persisted archive state.
@@ -744,6 +753,39 @@ impl RuntimeHandle {
         });
     }
 
+    /// Submits answers for one pending user question (`ask_user` tool). The
+    /// question dialog advances on the mailbox rebuild that follows the
+    /// answer, not here, so a lost answer leaves the question on screen
+    /// instead of desyncing the shell's queue from the runtime.
+    pub(crate) fn respond_user_question(&self, tool_id: String, answers: serde_json::Value) {
+        let runtime = self.agent_runtime.clone();
+        self.tokio.spawn(async move {
+            let request = AgentUserAnswersRequest {
+                tool_id: tool_id.clone(),
+                answers,
+            };
+            if let Err(error) = runtime.submit_user_answers(request).await {
+                tracing::error!(
+                    "Failed to submit answers for question {tool_id}: {}",
+                    error.into_message()
+                );
+            }
+        });
+    }
+
+    /// Declines one pending user question; the tool reports the cancellation
+    /// back to the model. A question that was answered or expired already
+    /// reports a missing channel, which is logged and otherwise ignored: the
+    /// mailbox rebuild has already removed it from the dialog.
+    pub(crate) fn cancel_user_question(&self, session_id: String, tool_id: String) {
+        if let Err(error) = self
+            .agent_runtime
+            .cancel_user_question(&session_id, &tool_id)
+        {
+            tracing::error!("Failed to cancel question {tool_id}: {error}");
+        }
+    }
+
     /// Re-reads the transcript of an already-restored session after
     /// [`RuntimeEvent::HistoryChanged`]; arrives as [`RuntimeEvent::SessionOpened`].
     pub(crate) fn reload_transcript(
@@ -1003,6 +1045,81 @@ pub(crate) fn spawn_permission_pump(
             }
         }
     });
+}
+
+/// Watches the process-local user-question mailbox and republishes the full
+/// pending set on every revision. The mailbox only publishes a coalesced
+/// invalidation (no payloads), so the shell rebuilds from the snapshot: an
+/// answer, a cancellation, a timeout, and a turn cancellation all remove the
+/// question through the same path, and a question that predates the
+/// subscription still surfaces on the first pass.
+pub(crate) fn spawn_question_pump(
+    tokio: tokio::runtime::Handle,
+    tx: mpsc::UnboundedSender<RuntimeEvent>,
+) {
+    tokio.spawn(async move {
+        let manager = get_user_input_manager();
+        let mut changes = manager.subscribe_changes();
+        let mut announced: std::collections::HashSet<String> = std::collections::HashSet::new();
+        tracing::info!("User question pump attached");
+        loop {
+            publish_pending_questions(manager, &mut announced, &tx);
+            if changes.changed().await.is_err() {
+                tracing::info!("User question mailbox closed");
+                break;
+            }
+        }
+    });
+}
+
+/// Reads every session's pending questions (the mailbox exposes no
+/// process-wide list), deduplicates by tool id, and marks newly seen
+/// questions as attended: displaying one in the shell removes its unattended
+/// timeout, so it cannot expire while the user is deciding.
+fn publish_pending_questions(
+    manager: &UserInputManager,
+    announced: &mut std::collections::HashSet<String>,
+    tx: &mpsc::UnboundedSender<RuntimeEvent>,
+) {
+    let mut session_ids = manager
+        .pending_question_counts()
+        .into_keys()
+        .collect::<Vec<_>>();
+    // Sorted so the snapshot is deterministic even when one question is
+    // visible from both its own session and a controller session.
+    session_ids.sort();
+    let mut seen = std::collections::HashSet::new();
+    let mut questions = Vec::new();
+    for session_id in session_ids {
+        for question in manager.pending_question_snapshot(&session_id).questions {
+            if seen.insert(question.tool_id.clone()) {
+                questions.push(question);
+            }
+        }
+    }
+    questions.sort_by(|a, b| {
+        a.registered_at_ms
+            .cmp(&b.registered_at_ms)
+            .then_with(|| a.tool_id.cmp(&b.tool_id))
+    });
+    for question in &questions {
+        if announced.insert(question.tool_id.clone()) {
+            if let Err(error) = manager.start_interaction(&question.session_id, &question.tool_id) {
+                // Raced with a turn cancellation between snapshot and mark.
+                tracing::debug!(
+                    "Could not mark question {} as attended: {}",
+                    question.tool_id,
+                    error
+                );
+            }
+        }
+    }
+    announced.retain(|tool_id| {
+        questions
+            .iter()
+            .any(|question| &question.tool_id == tool_id)
+    });
+    let _ = tx.send(RuntimeEvent::QuestionsChanged(questions));
 }
 
 /// Maps one permission lifecycle event onto the shell's view-facing events.
@@ -1314,6 +1431,7 @@ async fn bootstrap(tx: mpsc::UnboundedSender<RuntimeEvent>) -> Result<()> {
     // initial snapshot surfaces any request that predates the subscription.
     spawn_event_pump(tokio::runtime::Handle::current(), tx.clone());
     spawn_permission_pump(tokio::runtime::Handle::current(), tx.clone());
+    spawn_question_pump(tokio::runtime::Handle::current(), tx.clone());
     if let Some(handle) = runtime_handle() {
         handle.reload_sessions(tx.clone());
         handle.reload_model_catalog(tx.clone());
