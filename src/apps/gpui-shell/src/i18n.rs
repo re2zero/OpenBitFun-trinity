@@ -36,6 +36,13 @@ pub(crate) struct ShellText {
     pub tool_done: String,
     pub tool_failed: String,
     pub tool_cancelled: String,
+    pub permission_title: String,
+    pub permission_resources: String,
+    pub permission_project: String,
+    pub permission_risk: String,
+    pub permission_allow_once: String,
+    pub permission_allow_always: String,
+    pub permission_deny: String,
 }
 
 impl Global for ShellText {}
@@ -103,6 +110,16 @@ pub(crate) fn turns_label(turn_count: usize, cx: &App) -> String {
     )
 }
 
+/// Resolves the localized subagent attribution line for one permission
+/// request; composed once when the request arrives, never on the render path.
+pub(crate) fn permission_subagent_label(subagent_type: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-permission-subagent",
+        TranslationArgs::new().with_string("subagent", subagent_type),
+        cx,
+    )
+}
+
 fn resolve_with(key: &str, args: TranslationArgs, cx: &App) -> String {
     cx.foreground_executor().block_on(async move {
         match get_global_i18n_service().await {
@@ -139,6 +156,13 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
             tool_done: "Done".to_string(),
             tool_failed: "Failed".to_string(),
             tool_cancelled: "Cancelled".to_string(),
+            permission_title: "Permission required".to_string(),
+            permission_resources: "Resources".to_string(),
+            permission_project: "Project".to_string(),
+            permission_risk: "Risk".to_string(),
+            permission_allow_once: "Allow once".to_string(),
+            permission_allow_always: "Always allow".to_string(),
+            permission_deny: "Deny".to_string(),
         };
     };
 
@@ -170,6 +194,13 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         tool_done: service.t("gpui-shell-tool-done").await,
         tool_failed: service.t("gpui-shell-tool-failed").await,
         tool_cancelled: service.t("gpui-shell-tool-cancelled").await,
+        permission_title: service.t("gpui-shell-permission-title").await,
+        permission_resources: service.t("gpui-shell-permission-resources").await,
+        permission_project: service.t("gpui-shell-permission-project").await,
+        permission_risk: service.t("gpui-shell-permission-risk").await,
+        permission_allow_once: service.t("gpui-shell-permission-allow-once").await,
+        permission_allow_always: service.t("gpui-shell-permission-allow-always").await,
+        permission_deny: service.t("gpui-shell-permission-deny").await,
     }
 }
 

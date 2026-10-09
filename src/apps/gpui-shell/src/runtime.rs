@@ -18,8 +18,8 @@ use anyhow::{Context, Result};
 use gpui_kit::SharedString;
 use openbitfun_agent_runtime::sdk::{
     AgentDialogTurnExecution, AgentDialogTurnRequest, AgentRuntime, AgentSessionCreateRequest,
-    AgentSessionRestoreRequest, AgentTurnCancellationRequest, SessionState, SessionTranscript,
-    SessionTranscriptRequest,
+    AgentSessionRestoreRequest, AgentTurnCancellationRequest, PermissionReply, PermissionRequest,
+    PermissionRequestEvent, SessionState, SessionTranscript, SessionTranscriptRequest,
 };
 use openbitfun_core::agentic::system::{
     init_agentic_system_for_profile_with_runtime_ownership, select_agentic_system_profile,
@@ -106,6 +106,17 @@ pub(crate) enum RuntimeEvent {
     },
     /// The authoritative history changed (undo/restore/repair); reload it.
     HistoryChanged { session_id: String },
+    /// A tool asked for permission (process-local `PermissionRequestManager`
+    /// broadcast). The turn parks until the shell answers it through
+    /// [`RuntimeHandle::respond_permission`].
+    PermissionAsked { request: PermissionRequest },
+    /// A pending request was answered or cancelled; `request_id` drops out of
+    /// the shell's pending queue. This includes echoes of the shell's own
+    /// replies, which keeps the queue a pure projection of the runtime state.
+    PermissionResolved { request_id: String },
+    /// Full pending-request snapshot replacing the queue, sent when the
+    /// permission broadcast lags so no ask can be stranded unanswered.
+    PermissionSnapshot(Vec<PermissionRequest>),
 }
 
 /// A session ready to be shown in the chat pane.
@@ -367,6 +378,23 @@ impl RuntimeHandle {
         });
     }
 
+    /// Answers one permission request on the user's behalf. The approval UI
+    /// clears its prompt when the [`PermissionRequestEvent::Replied`]
+    /// broadcast echoes back through the pump, so a failed answer keeps the
+    /// prompt on screen (the request is still pending) instead of desyncing
+    /// the shell's queue from the runtime.
+    pub(crate) fn respond_permission(&self, request_id: String, reply: PermissionReply) {
+        let runtime = self.agent_runtime.clone();
+        self.tokio.spawn(async move {
+            if let Err(error) = runtime.respond_permission(&request_id, reply).await {
+                tracing::error!(
+                    "Failed to respond to permission request {request_id}: {}",
+                    error.into_message()
+                );
+            }
+        });
+    }
+
     /// Re-reads the transcript of an already-restored session after
     /// [`RuntimeEvent::HistoryChanged`]; arrives as [`RuntimeEvent::SessionOpened`].
     pub(crate) fn reload_transcript(
@@ -516,11 +544,16 @@ fn convert_message(message: &TranscriptMessage) -> ChatEntry {
 }
 
 fn truncate_detail(value: &str) -> String {
+    truncate_chars(value, TOOL_DETAIL_LIMIT)
+}
+
+/// Char-based preview truncation shared by tool cards and permission prompts.
+pub(crate) fn truncate_chars(value: &str, limit: usize) -> String {
     let value = value.trim();
-    if value.chars().count() <= TOOL_DETAIL_LIMIT {
+    if value.chars().count() <= limit {
         value.to_string()
     } else {
-        let truncated: String = value.chars().take(TOOL_DETAIL_LIMIT).collect();
+        let truncated: String = value.chars().take(limit).collect();
         format!("{truncated}…")
     }
 }
@@ -564,6 +597,77 @@ pub(crate) fn spawn_event_pump(
             }
         }
     });
+}
+
+/// Subscribes to the process-local permission broadcast and forwards the
+/// lifecycle events the shell must answer for the process lifetime. A lagging
+/// receiver cannot be trusted (dropped `Asked`/`Resolved` events strand
+/// prompts or turns), so it rebuilds from the pending snapshot instead.
+pub(crate) fn spawn_permission_pump(
+    tokio: tokio::runtime::Handle,
+    tx: mpsc::UnboundedSender<RuntimeEvent>,
+) {
+    tokio.spawn(async move {
+        let Some(handle) = runtime_handle() else {
+            tracing::error!("Permission pump skipped: runtime handle missing");
+            return;
+        };
+        let mut rx = match handle.agent_runtime.subscribe_permission_requests() {
+            Ok(rx) => rx,
+            Err(error) => {
+                tracing::error!(
+                    "Failed to subscribe to permission requests: {}",
+                    error.into_message()
+                );
+                return;
+            }
+        };
+        tracing::info!("Permission request pump attached");
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    if let Some(event) = translate_permission_event(event) {
+                        let _ = tx.send(event);
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!("Permission pump lagged; {skipped} events dropped");
+                    match handle.agent_runtime.pending_permission_requests() {
+                        Ok(requests) => {
+                            let _ = tx.send(RuntimeEvent::PermissionSnapshot(requests));
+                        }
+                        Err(error) => {
+                            tracing::error!(
+                                "Failed to snapshot pending permissions: {}",
+                                error.into_message()
+                            );
+                        }
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    tracing::info!("Permission request source closed");
+                    break;
+                }
+            }
+        }
+    });
+}
+
+/// Maps one permission lifecycle event onto the shell's view-facing events.
+/// Every ask is surfaced without session filtering: this process's manager
+/// only serves shell-driven turns, and an unanswered ask parks its turn at
+/// the tool pipeline until cancellation (subagent asks included — the parent
+/// turn waits on the child).
+fn translate_permission_event(event: PermissionRequestEvent) -> Option<RuntimeEvent> {
+    match event {
+        PermissionRequestEvent::Asked { request } => {
+            Some(RuntimeEvent::PermissionAsked { request })
+        }
+        PermissionRequestEvent::Replied { request_id, .. }
+        | PermissionRequestEvent::Cancelled { request_id, .. } => {
+            Some(RuntimeEvent::PermissionResolved { request_id })
+        }
+    }
 }
 
 /// Maps runtime events onto the shell's view-facing event set. Everything the
@@ -817,10 +921,25 @@ async fn bootstrap(tx: mpsc::UnboundedSender<RuntimeEvent>) -> Result<()> {
     tracing::info!("Embedded runtime ready");
 
     // Attach before any session work so turn events for sessions opened later
-    // are always visible to the pump.
+    // are always visible to the pump. The permission pump rides along, and the
+    // initial snapshot surfaces any request that predates the subscription.
     spawn_event_pump(tokio::runtime::Handle::current(), tx.clone());
+    spawn_permission_pump(tokio::runtime::Handle::current(), tx.clone());
     if let Some(handle) = runtime_handle() {
-        handle.reload_sessions(tx);
+        handle.reload_sessions(tx.clone());
+        match handle.agent_runtime.pending_permission_requests() {
+            Ok(requests) if !requests.is_empty() => {
+                tracing::info!("{} permission requests pending at startup", requests.len());
+                let _ = tx.send(RuntimeEvent::PermissionSnapshot(requests));
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(
+                    "Failed to read pending permissions at startup: {}",
+                    error.into_message()
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -871,6 +990,32 @@ pub(crate) fn format_last_active(last_active_at_ms: u64) -> String {
                 .to_string()
         })
         .unwrap_or_default()
+}
+
+/// Minimal valid permission request for pump/UI tests; shared with the
+/// `main.rs` test module.
+#[cfg(test)]
+pub(crate) fn test_permission_request(request_id: &str) -> PermissionRequest {
+    use openbitfun_agent_runtime::sdk::{PermissionRequestSource, PermissionRequestSourceKind};
+    PermissionRequest {
+        request_id: request_id.to_string(),
+        round_id: "round-1".to_string(),
+        order: 0,
+        tool_call_id: Some("call-1".to_string()),
+        project_path: None,
+        project_id: "project".to_string(),
+        session_id: "session".to_string(),
+        agent_id: "Standard".to_string(),
+        action: "test.action".to_string(),
+        resources: vec!["resource-a".to_string()],
+        save_resources: Vec::new(),
+        source: PermissionRequestSource {
+            kind: PermissionRequestSourceKind::ToolCall,
+            identity: "test".to_string(),
+        },
+        delegation: None,
+        display_metadata: Default::default(),
+    }
 }
 
 #[cfg(test)]
@@ -1091,5 +1236,32 @@ mod tests {
             token_details: None,
         });
         assert!(dropped.is_empty());
+    }
+
+    #[test]
+    fn permission_events_translate_to_view_events() {
+        let asked = translate_permission_event(PermissionRequestEvent::Asked {
+            request: test_permission_request("req-1"),
+        });
+        assert!(matches!(asked, Some(RuntimeEvent::PermissionAsked { .. })));
+
+        let replied = translate_permission_event(PermissionRequestEvent::Replied {
+            request_id: "req-2".to_string(),
+            reply: PermissionReply::Once,
+            source: openbitfun_agent_runtime::sdk::PermissionReplySource::User,
+        });
+        assert!(matches!(
+            replied,
+            Some(RuntimeEvent::PermissionResolved { ref request_id }) if request_id == "req-2"
+        ));
+
+        let cancelled = translate_permission_event(PermissionRequestEvent::Cancelled {
+            request_id: "req-3".to_string(),
+            reason: "turn cancelled".to_string(),
+        });
+        assert!(matches!(
+            cancelled,
+            Some(RuntimeEvent::PermissionResolved { ref request_id }) if request_id == "req-3"
+        ));
     }
 }

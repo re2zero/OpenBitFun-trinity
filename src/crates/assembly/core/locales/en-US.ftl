@@ -181,6 +181,15 @@ gpui-shell-tool-waiting = Awaiting approval
 gpui-shell-tool-done = Finished
 gpui-shell-tool-failed = Errored
 gpui-shell-tool-cancelled = Aborted
+gpui-shell-permission-title = Permission required
+gpui-shell-permission-resources = Resources
+gpui-shell-permission-project = Project
+gpui-shell-permission-risk = Risk
+gpui-shell-permission-subagent = Requested by subagent { $subagent }
+gpui-shell-permission-allow-once = Allow once
+gpui-shell-permission-allow-always = Always allow
+gpui-shell-permission-deny = Deny
+
 gpui-shell-session-turns = { $count ->
   [one] 1 turn
   *[other] { $count } turns

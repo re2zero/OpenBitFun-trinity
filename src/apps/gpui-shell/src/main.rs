@@ -13,12 +13,13 @@ use gpui_kit::component::{
     message_scroller::{MessageScroller, MessageScrollerState},
     sidebar::{Sidebar, SidebarFooter, SidebarGroup, SidebarItem},
     text::TextView,
-    ActiveTheme, Collapsible, Disableable, Sizable, StyledExt, TitleBar,
+    ActiveTheme, Collapsible, Disableable, Sizable, StyledExt, TitleBar, WindowExt,
 };
 use gpui_kit::{
     div, point, prelude::*, px, size, App, Bounds, Context, ElementId, Entity, Global,
     SharedString, TitlebarOptions, Window, WindowBounds, WindowOptions,
 };
+use openbitfun_agent_runtime::sdk::{PermissionReply, PermissionRequest};
 use openbitfun_runtime_ports::AgentSessionSummary;
 use tokio::sync::mpsc;
 
@@ -63,7 +64,7 @@ struct SessionRow {
     metadata: String,
 }
 
-/// The open session in the chat pane.
+/// One open session in the chat pane.
 struct ChatView {
     session_id: String,
     name: String,
@@ -74,6 +75,24 @@ struct ChatView {
     /// A submission is in flight; the optimistic user entry awaits
     /// [`RuntimeEvent::TurnAccepted`].
     submitting: bool,
+}
+
+/// One pending approval: the runtime request plus display lines composed once
+/// at arrival, so the dialog builder never touches the i18n service on the
+/// render path (same pattern as [`SessionRow`] metadata).
+#[derive(Clone)]
+struct PermissionPromptItem {
+    request: PermissionRequest,
+    resources_line: Option<String>,
+    project_line: String,
+    delegation_line: Option<String>,
+    risk_line: Option<String>,
+}
+
+impl PermissionPromptItem {
+    fn request_id(&self) -> &str {
+        &self.request.request_id
+    }
 }
 
 impl ChatView {
@@ -221,6 +240,16 @@ struct ShellWindow {
     /// content in view until the user scrolls up.
     chat_scroller: Entity<MessageScrollerState>,
     event_tx: mpsc::UnboundedSender<RuntimeEvent>,
+    /// Approvals waiting for a user decision, oldest first. Every ask in this
+    /// process surfaces here regardless of which session is open — an
+    /// unanswered ask parks its turn at the tool pipeline until cancellation,
+    /// so hiding one would be exactly the deadlock this shell must not
+    /// introduce.
+    pending_permissions: Vec<PermissionPromptItem>,
+    /// The modal approval dialog tracks the queue head; `true` from
+    /// [`ShellWindow::open_permission_dialog`] until the resolving echo drains
+    /// the queue.
+    permission_dialog_open: bool,
 }
 
 impl ShellWindow {
@@ -245,6 +274,8 @@ impl ShellWindow {
             chat_error: None,
             chat_scroller,
             event_tx,
+            pending_permissions: Vec::new(),
+            permission_dialog_open: false,
         }
     }
 
@@ -458,6 +489,45 @@ impl ShellWindow {
                     if let Some(handle) = runtime::runtime_handle() {
                         handle.reload_transcript(session_id, self.event_tx.clone());
                     }
+                }
+            }
+            RuntimeEvent::PermissionAsked { request } => {
+                // FIFO arrival order: the runtime registers batch requests in
+                // tool-call order, so the queue head is always the oldest
+                // pending ask.
+                let text = i18n::current(cx);
+                self.pending_permissions
+                    .push(compose_permission_item(request, &text, cx));
+                if !self.permission_dialog_open {
+                    self.open_permission_dialog(window, cx);
+                }
+            }
+            RuntimeEvent::PermissionResolved { request_id } => {
+                self.pending_permissions
+                    .retain(|item| item.request_id() != request_id);
+                if self.pending_permissions.is_empty() && self.permission_dialog_open {
+                    window.close_dialog(cx);
+                    self.permission_dialog_open = false;
+                }
+            }
+            RuntimeEvent::PermissionSnapshot(requests) => {
+                let text = i18n::current(cx);
+                self.pending_permissions = requests
+                    .into_iter()
+                    .map(|request| compose_permission_item(request, &text, cx))
+                    .collect();
+                match (
+                    self.pending_permissions.is_empty(),
+                    self.permission_dialog_open,
+                ) {
+                    (true, true) => {
+                        window.close_dialog(cx);
+                        self.permission_dialog_open = false;
+                    }
+                    (false, false) => self.open_permission_dialog(window, cx),
+                    // Head swapped under an open dialog: the builder re-reads
+                    // the queue every frame, so the surface refreshes itself.
+                    _ => {}
                 }
             }
         }
@@ -867,6 +937,195 @@ impl ShellWindow {
             )
             .into_any_element()
     }
+
+    /// Opens the modal approval dialog bound to the head of the pending
+    /// queue. The builder re-reads the queue every frame, so answering one
+    /// request reveals the next without reopening; the dialog closes on the
+    /// resolving [`RuntimeEvent::PermissionResolved`] echo instead of in the
+    /// button handlers, keeping the surface a pure projection of the pending
+    /// set. Every dismissal path without a decision (Escape, backdrop press,
+    /// close icon) is disabled: an unanswered ask parks its turn, so the only
+    /// ways out are the three replies.
+    fn open_permission_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let view = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let Some(view) = view.upgrade() else {
+                return dialog;
+            };
+            let Some(item) = view.read(cx).pending_permissions.first().cloned() else {
+                return dialog;
+            };
+            let text = i18n::current(cx);
+            dialog
+                .title(
+                    div()
+                        .text_color(cx.theme().warning)
+                        .child(text.permission_title.clone()),
+                )
+                .overlay_closable(false)
+                .keyboard(false)
+                .close_button(false)
+                .child(permission_body(&item, cx))
+                .footer(permission_footer(&item, &text, answer_permission))
+        });
+        self.permission_dialog_open = true;
+    }
+}
+
+/// Forwards one user reply to the embedded runtime. The queue and dialog
+/// update on the broadcast echo, not here, so a failed answer leaves the
+/// prompt standing (the request is still pending).
+fn answer_permission(request_id: String, reply: PermissionReply) {
+    if let Some(handle) = runtime::runtime_handle() {
+        handle.respond_permission(request_id, reply);
+    }
+}
+
+/// Composes the display lines for one arriving request. Everything the dialog
+/// shows is resolved here against the active locale, mirroring the CLI prompt
+/// content (`src/apps/cli/src/ui/permission.rs`); the render path stays free
+/// of i18n service calls.
+fn compose_permission_item(
+    request: PermissionRequest,
+    text: &ShellText,
+    cx: &App,
+) -> PermissionPromptItem {
+    let resources_line = if request.resources.is_empty() {
+        None
+    } else {
+        let resources = request
+            .resources
+            .iter()
+            .map(|resource| runtime::truncate_chars(resource, 80))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Some(format!("{}: {resources}", text.permission_resources))
+    };
+    let project = request
+        .project_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .unwrap_or(&request.project_id);
+    let project_line = format!("{}: {}", text.permission_project, project);
+    let delegation_line = request.delegation.as_ref().map(|delegation| {
+        format!(
+            "{}: {} · {}",
+            i18n::permission_subagent_label(&delegation.subagent_type, cx),
+            delegation.subagent_type,
+            request.session_id
+        )
+    });
+    let risk_line = request
+        .display_metadata
+        .get("riskDescription")
+        .or_else(|| request.display_metadata.get("risk"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|risk| !risk.trim().is_empty())
+        .map(|risk| {
+            format!(
+                "{}: {}",
+                text.permission_risk,
+                runtime::truncate_chars(risk, 100)
+            )
+        });
+    PermissionPromptItem {
+        resources_line,
+        project_line,
+        delegation_line,
+        risk_line,
+        request,
+    }
+}
+
+/// Dialog body: the action as the headline, then the composed context lines.
+fn permission_body(item: &PermissionPromptItem, cx: &App) -> gpui_kit::Div {
+    let mut body = div()
+        .v_flex()
+        .gap_1p5()
+        .text_sm()
+        .child(
+            div()
+                .text_color(cx.theme().foreground)
+                .truncate()
+                .child(item.request.action.clone()),
+        )
+        .child(
+            div()
+                .text_color(cx.theme().muted_foreground)
+                .truncate()
+                .child(item.project_line.clone()),
+        );
+    if let Some(line) = &item.resources_line {
+        body = body.child(
+            div()
+                .text_color(cx.theme().muted_foreground)
+                .truncate()
+                .child(line.clone()),
+        );
+    }
+    if let Some(line) = &item.delegation_line {
+        body = body.child(
+            div()
+                .text_color(cx.theme().muted_foreground)
+                .truncate()
+                .child(line.clone()),
+        );
+    }
+    if let Some(line) = &item.risk_line {
+        body = body.child(
+            div()
+                .text_color(cx.theme().warning)
+                .truncate()
+                .child(line.clone()),
+        );
+    }
+    body
+}
+
+/// Dialog footer: Deny / Always allow / Allow once. The reply callback is
+/// injected so tests can observe the decisions without a runtime.
+fn permission_footer(
+    item: &PermissionPromptItem,
+    text: &ShellText,
+    on_reply: impl Fn(String, PermissionReply) + Clone + 'static,
+) -> gpui_kit::Div {
+    let deny_id = item.request_id().to_string();
+    let always_id = item.request_id().to_string();
+    let once_id = item.request_id().to_string();
+    div()
+        .flex()
+        .justify_end()
+        .gap_2()
+        .child(
+            Button::new("permission-deny")
+                .label(text.permission_deny.clone())
+                .with_variant(ButtonVariant::Danger)
+                .on_click({
+                    let on_reply = on_reply.clone();
+                    move |_, _, _| {
+                        on_reply(deny_id.clone(), PermissionReply::Reject { feedback: None });
+                    }
+                }),
+        )
+        .child(
+            Button::new("permission-always")
+                .label(text.permission_allow_always.clone())
+                .on_click({
+                    let on_reply = on_reply.clone();
+                    move |_, _, _| {
+                        on_reply(always_id.clone(), PermissionReply::Always);
+                    }
+                }),
+        )
+        .child(
+            Button::new("permission-once")
+                .label(text.permission_allow_once.clone())
+                .with_variant(ButtonVariant::Primary)
+                .on_click(move |_, _, _| {
+                    on_reply(once_id.clone(), PermissionReply::Once);
+                }),
+        )
 }
 
 impl Render for ShellWindow {
@@ -1195,7 +1454,58 @@ mod tests {
             tool_done: "Done".into(),
             tool_failed: "Failed".into(),
             tool_cancelled: "Cancelled".into(),
+            permission_title: "Permission required".into(),
+            permission_resources: "Resources".into(),
+            permission_project: "Project".into(),
+            permission_risk: "Risk".into(),
+            permission_allow_once: "Allow once".into(),
+            permission_allow_always: "Always allow".into(),
+            permission_deny: "Deny".into(),
         }
+    }
+
+    fn permission_item(request_id: &str) -> PermissionPromptItem {
+        PermissionPromptItem {
+            request: crate::runtime::test_permission_request(request_id),
+            resources_line: Some("Resources: resource-a".into()),
+            project_line: "Project: project".into(),
+            delegation_line: None,
+            risk_line: None,
+        }
+    }
+
+    #[test]
+    fn permission_queue_resolution_drains_by_request_id() {
+        let mut queue = vec![permission_item("req-a"), permission_item("req-b")];
+        queue.retain(|item| item.request_id() != "req-a");
+        assert_eq!(queue.len(), 1);
+        queue.retain(|item| item.request_id() != "req-b");
+        assert!(queue.is_empty());
+    }
+
+    /// Composition happens at arrival; without the i18n service initialized
+    /// the interpolating subagent label falls back to the raw key, which keeps
+    /// the assertion deterministic.
+    #[gpui_kit::test]
+    fn permission_item_composes_context_lines(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            let text = sample_shell_text();
+            let mut request = crate::runtime::test_permission_request("req-1");
+            request.project_path = Some("/tmp/ws".into());
+            let item = compose_permission_item(request, &text, cx);
+            assert_eq!(item.project_line, "Project: /tmp/ws");
+            assert_eq!(
+                item.resources_line.as_deref(),
+                Some("Resources: resource-a")
+            );
+            assert!(item.delegation_line.is_none());
+            assert!(item.risk_line.is_none());
+
+            let mut delegated = crate::runtime::test_permission_request("req-2");
+            delegated.display_metadata = Default::default();
+            let delegated_item = compose_permission_item(delegated, &text, cx);
+            assert_eq!(delegated_item.project_line, "Project: project");
+        });
     }
 
     /// Alternating user/assistant pairs with markdown of varying length, plus

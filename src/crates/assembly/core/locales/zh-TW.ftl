@@ -160,4 +160,13 @@ gpui-shell-tool-waiting = 等待確認
 gpui-shell-tool-done = 完成
 gpui-shell-tool-failed = 執行失敗
 gpui-shell-tool-cancelled = 已中止
+gpui-shell-permission-title = 需要許可權
+gpui-shell-permission-resources = 資源
+gpui-shell-permission-project = 專案
+gpui-shell-permission-risk = 風險
+gpui-shell-permission-subagent = 子代理 { $subagent } 發起
+gpui-shell-permission-allow-once = 僅允許一次
+gpui-shell-permission-allow-always = 永遠允許
+gpui-shell-permission-deny = 拒絕
+
 gpui-shell-session-turns = { $count } 輪對話
