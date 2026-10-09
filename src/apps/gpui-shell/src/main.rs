@@ -1,13 +1,13 @@
+use openbitfun_gpui_shell::cli::{self, ProcessCommand};
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if let Some(exit_code) = openbitfun_gpui_shell::cli::answer_process_command(
-        openbitfun_gpui_shell::cli::parse_process_args(args.iter().map(String::as_str)),
-    ) {
+    let command = cli::parse_process_args(args.iter().map(String::as_str));
+    if let Some(exit_code) = cli::answer_process_command(&command) {
         std::process::exit(exit_code);
     }
 
     openbitfun_gpui_shell::shell::init_tracing();
-    tracing::info!("Starting OpenBitFun GPUI shell");
 
     // Process-lifetime tokio runtime: core services are async (config, i18n,
     // runtime bootstrap, session store) while the GPUI main loop is not.
@@ -22,5 +22,21 @@ fn main() {
     let tokio_handle = tokio_runtime.handle().clone();
     std::mem::forget(tokio_runtime);
 
+    // Update commands answer and exit before the embedded runtime is booted:
+    // packagers and update tooling drive the binary, not its window. Their
+    // stdout stays readable for scripts (the "starting the shell" line below
+    // is part of launching the window, not of answering these flags).
+    if matches!(
+        command,
+        ProcessCommand::CheckUpdate { .. } | ProcessCommand::SelfUpdate { .. }
+    ) {
+        if let Some(exit_code) =
+            openbitfun_gpui_shell::update::answer_update_command(&command, &tokio_handle)
+        {
+            std::process::exit(exit_code);
+        }
+    }
+
+    tracing::info!("Starting OpenBitFun GPUI shell");
     openbitfun_gpui_shell::shell::launch_main_window(tokio_handle);
 }

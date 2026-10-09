@@ -216,7 +216,9 @@ test('Agent Runtime leaf capabilities have one managed feature and source contra
     'native-hook-runtime',
     'native-hook-settings',
   ]);
-  assert.equal(rule.consumers.size, 11);
+  // Stale on HEAD since `openbitfun-services-integrations` was registered as a
+  // consumer in the rules; the inventory just keeps count and rules in step.
+  assert.equal(rule.consumers.size, 12);
   assert.ok(rule.consumers.has('openbitfun-legacy-migration-adapters'));
   assert.ok(
     guardedEmptyInternalDefaultManifestPaths.includes(

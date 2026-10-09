@@ -350,6 +350,13 @@ const REQWEST_PACKAGE_PROFILES = new Map([
     dependencyFeatures: ['http2', 'json', 'query', 'rustls-no-provider', 'stream'],
     optional: false,
   }],
+  // The GPUI shell fetches its own release manifest, checksum, and archive for
+  // `--check-update` / `--self-update`; no JSON or form API is used.
+  ['openbitfun-gpui-shell', {
+    dependencyFeatures: ['http2', 'rustls-no-provider', 'stream'],
+    optional: false,
+    tlsProviderDependency: 'openbitfun-services-core',
+  }],
   ['openbitfun-miniapp-market-service', {
     dependencyFeatures: ['form', 'http2', 'json', 'rustls-no-provider'],
     optional: false,

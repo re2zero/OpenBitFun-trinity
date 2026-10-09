@@ -46,7 +46,22 @@ anyhow = { workspace = true }
 chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
+tokio = { workspace = true, features = ["fs", "io-util", "rt-multi-thread", "sync"] }
+# M9 self-update: the release manifest and archive come over HTTPS through the
+# same product-owned ring TLS provider the CLI uses, and the extracted binary is
+# probed through the sanctioned child-process helper (never a bare
+# `std::process::Command`). Both features are already in this crate's closure
+# through `openbitfun-core`.
+openbitfun-services-core = { path = "../../crates/services/services-core", features = [
+    "process-runtime",
+    "tls-provider",
+] }
+flate2 = { workspace = true }
+futures-util = { workspace = true }
+reqwest = { workspace = true, features = ["http2", "rustls-no-provider", "stream"] }
+sha2 = { workspace = true }
+tar = { workspace = true }
+tempfile = { workspace = true }
 uuid = { workspace = true }
 # Unwrapped diff rows size to the widest line; display width (CJK = two columns)
 # selects that row instead of character count.
@@ -58,13 +73,10 @@ tracing-subscriber = { workspace = true }
 # gpui-kit's test-support forwards to gpui/gpui-platform/gpui-base/
 # gpui-component test features, covering `#[gpui_kit::test]` headless windows.
 gpui-kit = { workspace = true, features = ["test-support"] }
-# Test fixture only (`examples/seed_session.rs` stress-test seeder): writes
-# sessions through the sanctioned offline import store instead of hand-crafted
-# storage files.
-openbitfun-services-core = { path = "../../crates/services/services-core" }
-# `tests/pty_integration.rs` drives the real PTY: timeouts and a multi-thread
-# runtime for the async service API (runtime features come from [dependencies]).
-tokio = { workspace = true, features = ["macros", "time"] }
+# `tests/pty_integration.rs` drives the real PTY, and `tests/update_integration.rs`
+# serves the release fixture over a local HTTP/1.1 listener and runs the real
+# binary as the updater.
+tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "time"] }
 
 [lints]
 workspace = true

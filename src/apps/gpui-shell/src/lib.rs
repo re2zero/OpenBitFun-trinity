@@ -12,3 +12,4 @@ pub mod shell;
 pub mod terminal;
 pub mod theme;
 pub mod theme_openbitfun;
+pub mod update;
