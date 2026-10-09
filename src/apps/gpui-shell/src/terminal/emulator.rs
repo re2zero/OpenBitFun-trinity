@@ -3,7 +3,8 @@ use std::rc::Rc;
 
 use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
-use alacritty_terminal::index::{Column, Line, Point};
+use alacritty_terminal::index::{Column, Line, Point, Side};
+use alacritty_terminal::selection::{Selection, SelectionRange, SelectionType};
 use alacritty_terminal::term::cell::Cell;
 use alacritty_terminal::term::{Config, Term, TermMode};
 use alacritty_terminal::vte;
@@ -186,6 +187,52 @@ impl TerminalEmulator {
         let line = Line(row as i32 - self.display_offset() as i32);
         &self.term.grid()[line][..]
     }
+
+    /// Starts a simple (linear) selection at a grid point. `line` follows the
+    /// backend's grid coordinates: `0` is the live screen top, negative lines
+    /// reach into scrollback. The screen model keeps the selection anchored to
+    /// its content while output scrolls or the viewport moves.
+    pub fn begin_selection(&mut self, line: i32, col: usize, side: Side) {
+        self.term.selection = Some(Selection::new(
+            SelectionType::Simple,
+            Point::new(Line(line), Column(col)),
+            side,
+        ));
+    }
+
+    /// Moves the selection head (a no-op without an active selection).
+    pub fn update_selection(&mut self, line: i32, col: usize, side: Side) {
+        if let Some(selection) = self.term.selection.as_mut() {
+            selection.update(Point::new(Line(line), Column(col)), side);
+        }
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.term.selection = None;
+    }
+
+    /// `true` when a drag actually spans cells (a bare click is empty).
+    pub fn has_selection(&self) -> bool {
+        self.term
+            .selection
+            .as_ref()
+            .is_some_and(|selection| !selection.is_empty())
+    }
+
+    /// Selection in grid coordinates, for painting (viewport rows are
+    /// `range.start.line + display_offset` onwards).
+    pub fn selection_range(&self) -> Option<SelectionRange> {
+        self.term
+            .selection
+            .as_ref()
+            .and_then(|selection| selection.to_range(&self.term))
+    }
+
+    /// Selected text, rows trimmed, wide-char spacers folded (the backend's
+    /// own copy path).
+    pub fn selection_text(&self) -> Option<String> {
+        self.term.selection_to_string()
+    }
 }
 
 #[cfg(test)]
@@ -198,8 +245,141 @@ mod tests {
         TerminalEmulator::new(80, 24)
     }
 
+    fn emulator_of(cols: u16, rows: u16) -> TerminalEmulator {
+        TerminalEmulator::new(cols, rows)
+    }
+
     fn cell(emulator: &TerminalEmulator, row: usize, col: usize) -> &Cell {
         &emulator.visible_line(row)[col]
+    }
+
+    fn row_text(emulator: &TerminalEmulator, row: usize) -> String {
+        let text: String = emulator
+            .visible_line(row)
+            .iter()
+            .map(|cell| cell.c)
+            .collect();
+        text.trim_end().to_string()
+    }
+
+    /// Drag helper mirroring the mouse path: each end carries the side of the
+    /// half-cell the pointer sat in, so the outer edge of the drag defines the
+    /// range (backend `Side` semantics).
+    fn select(emulator: &mut TerminalEmulator, from: (i32, usize), to: (i32, usize)) {
+        let side_for = |point: (i32, usize), other: (i32, usize)| {
+            if point > other {
+                Side::Right
+            } else {
+                Side::Left
+            }
+        };
+        emulator.begin_selection(from.0, from.1, side_for(from, to));
+        emulator.update_selection(to.0, to.1, side_for(to, from));
+    }
+
+    #[test]
+    fn selection_copies_across_rows_with_trailing_blanks_trimmed() {
+        let mut emulator = emulator();
+        emulator.advance(b"alpha\r\nbeta  \r\n\r\ngamma");
+        select(&mut emulator, (0, 2), (3, 2));
+        let text = emulator.selection_text().unwrap();
+        assert_eq!(text, "pha\nbeta\n\ngam", "each row trimmed, rows kept");
+        assert!(emulator.has_selection());
+    }
+
+    #[test]
+    fn selection_reversed_drag_copies_in_reading_order() {
+        let mut emulator = emulator();
+        emulator.advance(b"one\r\ntwo");
+        // Press on the right half of the later cell, release on the left half
+        // of the earlier one: the outer edges define the range.
+        emulator.begin_selection(1, 2, Side::Right);
+        emulator.update_selection(0, 0, Side::Left);
+        assert_eq!(emulator.selection_text().unwrap(), "one\ntwo");
+    }
+
+    #[test]
+    fn selection_outer_edges_follow_the_pointer_half_cell() {
+        let mut emulator = emulator();
+        emulator.advance(b"abcdef");
+        // Pressing on the right half of the first cell excludes that cell,
+        // matching the backend's side semantics for the drag start.
+        emulator.begin_selection(0, 1, Side::Right);
+        emulator.update_selection(0, 4, Side::Right);
+        assert_eq!(emulator.selection_text().unwrap(), "cde");
+    }
+
+    #[test]
+    fn click_without_drag_is_an_empty_selection() {
+        let mut emulator = emulator();
+        emulator.advance(b"abc");
+        // Press and release inside the same half of one cell: nothing selected.
+        emulator.begin_selection(0, 1, Side::Left);
+        emulator.update_selection(0, 1, Side::Left);
+        assert!(
+            !emulator.has_selection(),
+            "a click must not highlight or copy a cell"
+        );
+        assert_eq!(emulator.selection_range(), None);
+        assert_eq!(emulator.selection_text(), None);
+    }
+
+    #[test]
+    fn selection_folds_wide_char_spacers() {
+        let mut emulator = emulator();
+        emulator.advance("汉字 ok".as_bytes());
+        select(&mut emulator, (0, 0), (0, 6));
+        assert_eq!(emulator.selection_text().unwrap(), "汉字 ok");
+    }
+
+    #[test]
+    fn selection_stays_anchored_to_content_while_output_scrolls() {
+        let mut emulator = TerminalEmulator::new(10, 3);
+        emulator.advance(b"alpha\r\nbeta\r\ngamma");
+        select(&mut emulator, (1, 0), (1, 3));
+        assert_eq!(emulator.selection_text().unwrap(), "beta");
+        // New output pushes the selected line into scrollback; the selection
+        // must follow the text, not the screen row.
+        emulator.advance(b"\r\ndelta");
+        assert_eq!(row_text(&emulator, 0), "beta");
+        assert_eq!(emulator.selection_text().unwrap(), "beta");
+        // A wider resize clears the selection instead of copying stale cells.
+        emulator.resize(14, 3);
+        assert!(!emulator.has_selection());
+        assert_eq!(emulator.selection_text(), None);
+    }
+
+    #[test]
+    fn selection_range_reports_grid_lines_for_history_viewport() {
+        let mut emulator = TerminalEmulator::new(10, 3);
+        for i in 0..6 {
+            emulator.advance(format!("line{i}").as_bytes());
+            if i < 5 {
+                emulator.advance(b"\r\n");
+            }
+        }
+        // History holds the first lines; scroll the viewport back and select
+        // a row that is on screen only because of the offset.
+        emulator.scroll_display(2);
+        assert_eq!(emulator.display_offset(), 2);
+        assert_eq!(row_text(&emulator, 0), "line1");
+        let line = 0 - emulator.display_offset() as i32;
+        select(&mut emulator, (line, 0), (line, 4));
+        let range = emulator.selection_range().unwrap();
+        assert_eq!(range.start.line.0, line);
+        assert_eq!(emulator.selection_text().unwrap(), "line1");
+    }
+
+    #[test]
+    fn selection_clears_without_touching_screen_state() {
+        let mut emulator = emulator();
+        emulator.advance(b"keep");
+        select(&mut emulator, (0, 0), (0, 3));
+        assert!(emulator.has_selection());
+        emulator.clear_selection();
+        assert!(!emulator.has_selection());
+        assert_eq!(emulator.selection_range(), None);
+        assert_eq!(row_text(&emulator, 0), "keep");
     }
 
     #[test]
@@ -319,6 +499,35 @@ mod tests {
         assert_eq!(emulator.display_offset(), 0);
         let live_top: String = (0..7).map(|col| cell(&emulator, 0, col).c).collect();
         assert_eq!(live_top.trim_end(), "line 6");
+    }
+
+    #[test]
+    fn scroll_display_clamps_at_both_history_edges() {
+        let mut emulator = TerminalEmulator::new(10, 3);
+        for i in 0..6 {
+            emulator.advance(format!("line{i}").as_bytes());
+            if i < 5 {
+                emulator.advance(b"\r\n");
+            }
+        }
+        assert_eq!(emulator.term.grid().history_size(), 3);
+        // Past the top: clamped to the oldest line, not a panic or empty view.
+        emulator.scroll_display(500);
+        assert_eq!(emulator.display_offset(), 3);
+        assert_eq!(row_text(&emulator, 0), "line0");
+        // Past the live edge: clamped back to offset 0.
+        emulator.scroll_display(-500);
+        assert_eq!(emulator.display_offset(), 0);
+        assert_eq!(row_text(&emulator, 0), "line3");
+        // Edge jumps agree with the wheel path.
+        emulator.scroll_to_edge(false);
+        assert_eq!(emulator.display_offset(), 3);
+        emulator.scroll_to_edge(true);
+        assert_eq!(emulator.display_offset(), 0);
+        // Scrolling an empty history is a no-op, not a panic.
+        let mut fresh = emulator_of(10, 3);
+        fresh.scroll_display(10);
+        assert_eq!(fresh.display_offset(), 0);
     }
 
     #[test]

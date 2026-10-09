@@ -54,6 +54,9 @@ gpui-kit = { workspace = true, features = ["test-support"] }
 # sessions through the sanctioned offline import store instead of hand-crafted
 # storage files.
 openbitfun-services-core = { path = "../../crates/services/services-core" }
+# `tests/pty_integration.rs` drives the real PTY: timeouts and a multi-thread
+# runtime for the async service API (runtime features come from [dependencies]).
+tokio = { workspace = true, features = ["macros", "time"] }
 
 [lints]
 workspace = true

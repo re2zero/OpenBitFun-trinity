@@ -2,12 +2,17 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 
+use alacritty_terminal::index::{Column as GridColumn, Line as GridLine, Point as GridPoint, Side};
+use alacritty_terminal::selection::SelectionRange;
+use alacritty_terminal::term::cell::{Cell, Flags};
+use alacritty_terminal::term::TermMode;
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    canvas, div, hsla, point, px, size, App, Bounds, Context, Entity, FocusHandle, FontStyle,
-    FontWeight, InputHandler, KeyDownEvent, Pixels, Point, Render, ScrollWheelEvent, SharedString,
-    TextAlign, UTF16Selection, UnderlineStyle, Window,
+    canvas, div, hsla, point, px, size, App, Bounds, ClipboardItem, Context, Entity, FocusHandle,
+    FontStyle, FontWeight, InputHandler, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, Render, ScrollWheelEvent, SharedString, TextAlign, UTF16Selection,
+    UnderlineStyle, Window,
 };
 use terminal_core::{PtyService, PtyServiceEvent, ShellConfig, ShellType, TerminalConfig};
 
@@ -45,6 +50,10 @@ pub struct TerminalPane {
     /// Cursor cell origin in window coordinates from the last paint, for the
     /// IME candidate window anchor.
     cursor_px: Option<Point<Pixels>>,
+    /// Content-area bounds from the last paint, for pointer hit-testing.
+    grid_bounds: Option<Bounds<Pixels>>,
+    /// True while a left-button drag extends the selection.
+    selecting: bool,
     /// Set when the PTY starts and the pane should take keyboard focus on
     /// the next frame (focusing needs `Window`, which the pump lacks).
     needs_focus: bool,
@@ -124,6 +133,8 @@ impl TerminalPane {
             cell_w: px(7.),
             cell_h: px(LINE_HEIGHT),
             cursor_px: None,
+            grid_bounds: None,
+            selecting: false,
             needs_focus: false,
         }
     }
@@ -258,6 +269,22 @@ impl TerminalPane {
             return;
         }
         let keystroke = &event.keystroke;
+        // Copy/paste follow the terminal conventions (alacritty,
+        // gnome-terminal): Ctrl+Shift+C copies, Ctrl+Shift+V pastes. Plain
+        // Ctrl+C / Ctrl+V keep their control bytes (SIGINT, quoted insert).
+        if keystroke.modifiers.control && keystroke.modifiers.shift {
+            match keystroke.key.as_str() {
+                "c" => {
+                    self.copy_selection(cx);
+                    return;
+                }
+                "v" => {
+                    self.paste_clipboard(cx);
+                    return;
+                }
+                _ => {}
+            }
+        }
         let app_cursor = self
             .emulator
             .mode()
@@ -276,6 +303,56 @@ impl TerminalPane {
         }
         self.write_bytes(bytes);
         cx.notify();
+    }
+
+    /// The grid cell under a window-space position, in grid coordinates
+    /// (`line` negative = scrollback) plus which half of the cell the pointer
+    /// covers (the backend uses it as the drag's outer edge).
+    fn cell_point(&self, position: Point<Pixels>) -> Option<(i32, usize, Side)> {
+        let bounds = self.grid_bounds?;
+        Some(grid_point_at(
+            bounds,
+            self.cell_w,
+            self.cell_h,
+            self.emulator.cols(),
+            self.emulator.rows(),
+            self.emulator.display_offset(),
+            position,
+        ))
+    }
+
+    /// Ctrl+Shift+C: the selection goes to the system clipboard.
+    fn copy_selection(&mut self, cx: &mut Context<Self>) {
+        let Some(text) = self.selected_text() else {
+            return;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+    }
+
+    fn selected_text(&self) -> Option<String> {
+        if !self.emulator.has_selection() {
+            return None;
+        }
+        self.emulator
+            .selection_text()
+            .filter(|text| !text.is_empty())
+    }
+
+    /// Ctrl+Shift+V: clipboard text with terminal line endings, framed as a
+    /// bracketed paste when the running application asked for that mode.
+    fn paste_clipboard(&self, cx: &mut Context<Self>) {
+        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+            return;
+        };
+        self.paste_text(&text);
+    }
+
+    fn paste_text(&self, text: &str) {
+        if self.pty_id.is_none() || self.exited || text.is_empty() {
+            return;
+        }
+        let bracketed = self.emulator.mode().contains(TermMode::BRACKETED_PASTE);
+        self.write_bytes(paste_payload(text, bracketed).into_bytes());
     }
 
     fn on_scroll_wheel(
@@ -451,6 +528,14 @@ impl InputHandler for TerminalInputHandler {
         });
     }
 
+    fn paste(&mut self, item: ClipboardItem, _window: &mut Window, _cx: &mut App) {
+        // Platform-initiated pastes (menus, middle click) take the same path
+        // as Ctrl+Shift+V: line endings normalized, bracketed when active.
+        if let Some(text) = item.text() {
+            self.pane.update(_cx, |pane, _| pane.paste_text(&text));
+        }
+    }
+
     fn replace_and_mark_text_in_range(
         &mut self,
         _range_utf16: Option<Range<usize>>,
@@ -510,9 +595,41 @@ impl Render for TerminalPane {
             .key_context("TerminalPane")
             .track_focus(&focus)
             .on_mouse_down(
-                gpui_kit::MouseButton::Left,
-                cx.listener(|pane, _, window, cx| {
+                MouseButton::Left,
+                cx.listener(|pane, event: &MouseDownEvent, window, cx| {
                     window.focus(&pane.focus, cx);
+                    // A press starts a fresh selection; a bare click leaves it
+                    // empty (nothing to copy), like other terminals.
+                    if let Some((line, col, side)) = pane.cell_point(event.position) {
+                        pane.emulator.begin_selection(line, col, side);
+                        pane.selecting = true;
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_mouse_move(cx.listener(|pane, event: &MouseMoveEvent, _window, cx| {
+                if !pane.selecting || event.pressed_button != Some(MouseButton::Left) {
+                    return;
+                }
+                if let Some((line, col, side)) = pane.cell_point(event.position) {
+                    pane.emulator.update_selection(line, col, side);
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|pane, event: &MouseUpEvent, _window, cx| {
+                    if !pane.selecting {
+                        return;
+                    }
+                    pane.selecting = false;
+                    if let Some((line, col, side)) = pane.cell_point(event.position) {
+                        pane.emulator.update_selection(line, col, side);
+                    }
+                    // Releasing a drag copies, so drag-select-then-paste needs
+                    // no second gesture; Ctrl+Shift+C copies again explicitly.
+                    pane.copy_selection(cx);
+                    cx.notify();
                 }),
             )
             .on_key_down(cx.listener(Self::on_key_down))
@@ -590,13 +707,25 @@ fn paint_grid(
 ) {
     // Snapshot owned render data so the entity borrow ends before painting
     // (paint needs `&mut App` for quads and text).
-    let (cols, rows, cursor, display_offset, palette, row_spans_by_row) = {
+    let (cols, rows, cursor, display_offset, palette, row_spans_by_row, selection_spans) = {
         let state = entity.read(cx);
         let emulator = &state.emulator;
         let cols = emulator.cols();
         let rows = emulator.rows();
         let spans = (0..rows)
             .map(|row| row_spans(emulator.visible_line(row), cols))
+            .collect::<Vec<_>>();
+        let selection = emulator
+            .has_selection()
+            .then(|| emulator.selection_range())
+            .flatten();
+        let selection_spans = (0..rows)
+            .map(|row| {
+                selection.and_then(|range| {
+                    let line = GridLine(row as i32 - emulator.display_offset() as i32);
+                    selection_span(&range, line, emulator.visible_line(row), cols)
+                })
+            })
             .collect::<Vec<_>>();
         (
             cols,
@@ -605,8 +734,10 @@ fn paint_grid(
             emulator.display_offset(),
             state.palette,
             spans,
+            selection_spans,
         )
     };
+    let selection_color = cx.theme().selection;
 
     // Cursor block under the text (viewport-aware: history scroll can move
     // the cursor row out of view).
@@ -629,23 +760,26 @@ fn paint_grid(
         // Walk spans right-to-left so each span knows how many grid columns
         // it occupies (wide characters advance two).
         let mut next_col = cols;
-        for span in spans.iter().rev() {
-            let span_cols = (next_col - span.col).max(1);
-            next_col = span.col;
-            let dim = span
-                .flags
-                .contains(alacritty_terminal::term::cell::Flags::DIM);
-            let inverse = span
-                .flags
-                .contains(alacritty_terminal::term::cell::Flags::INVERSE);
-            // Cell background as an exact quad. Invisible spans (default
-            // blanks) skip both text and background; every visible span gets
-            // its background painted even when the text is whitespace, so a
-            // colored band from `printf '\e[41m   '` renders. Quads instead
-            // of TextRun background decorations: shape_line's force_width
-            // path displaces glyphs of decorated runs (gpui-pre 0.7.1,
-            // reproduced 2026-10-09), and cell-aligned quads are what the
-            // grid actually wants.
+        let spans_with_cols = spans
+            .iter()
+            .rev()
+            .map(|span| {
+                let span_cols = (next_col - span.col).max(1);
+                next_col = span.col;
+                (span, span_cols)
+            })
+            .collect::<Vec<_>>();
+
+        // Cell backgrounds first. Quads instead of TextRun background
+        // decorations: shape_line's force_width path displaces glyphs of
+        // decorated runs (gpui-pre 0.7.1, reproduced 2026-10-09), and
+        // cell-aligned quads are what the grid actually wants. Invisible spans
+        // (default blanks) skip the background; every visible span gets its
+        // background painted even when the text is whitespace, so a colored
+        // band from `printf '\e[41m   '` renders.
+        for (span, span_cols) in spans_with_cols.iter().rev() {
+            let dim = span.flags.contains(Flags::DIM);
+            let inverse = span.flags.contains(Flags::INVERSE);
             let bg = if inverse {
                 palette.resolve(span.fg, dim)
             } else {
@@ -656,25 +790,37 @@ fn paint_grid(
                 window.paint_quad(gpui_kit::fill(
                     Bounds {
                         origin: cell_origin(bounds, span.col as f32, row as f32, metrics),
-                        size: size(metrics.cell_w * span_cols as f32, metrics.cell_h),
+                        size: size(metrics.cell_w * *span_cols as f32, metrics.cell_h),
                     },
                     bg,
                 ));
             }
+        }
+
+        // Selection highlight between backgrounds and text: content stays
+        // readable, colored bands keep their own color underneath.
+        if let Some(selection) = selection_spans[row].clone() {
+            window.paint_quad(gpui_kit::fill(
+                Bounds {
+                    origin: cell_origin(bounds, selection.start as f32, row as f32, metrics),
+                    size: size(metrics.cell_w * selection.len() as f32, metrics.cell_h),
+                },
+                selection_color,
+            ));
+        }
+
+        for (span, _) in spans_with_cols.iter().rev() {
+            let dim = span.flags.contains(Flags::DIM);
+            let inverse = span.flags.contains(Flags::INVERSE);
+            let visible = !(span.is_invisible() || span.text.is_empty());
             if !visible {
                 continue;
             }
             let mut run_font = font.clone();
-            if span
-                .flags
-                .contains(alacritty_terminal::term::cell::Flags::BOLD)
-            {
+            if span.flags.contains(Flags::BOLD) {
                 run_font.weight = FontWeight::BOLD;
             }
-            if span
-                .flags
-                .contains(alacritty_terminal::term::cell::Flags::ITALIC)
-            {
+            if span.flags.contains(Flags::ITALIC) {
                 run_font.style = FontStyle::Italic;
             }
             let fg = if inverse {
@@ -684,7 +830,7 @@ fn paint_grid(
             };
             let underline = span
                 .flags
-                .contains(alacritty_terminal::term::cell::Flags::UNDERLINE)
+                .contains(Flags::UNDERLINE)
                 .then(|| UnderlineStyle {
                     thickness: px(1.),
                     color: None,
@@ -733,7 +879,80 @@ fn paint_grid(
         pane.cursor_px = cursor_px;
         pane.cell_w = cell_w;
         pane.cell_h = cell_h;
+        pane.grid_bounds = Some(bounds);
     });
+}
+
+/// Grid cell under a window-space position: columns and rows clamp to the
+/// grid so drags past an edge keep extending, then the viewport row converts
+/// to the backend's grid line (`0` = live screen top, negative = history).
+/// The returned side is which half of the cell the pointer covers.
+fn grid_point_at(
+    bounds: Bounds<Pixels>,
+    cell_w: Pixels,
+    cell_h: Pixels,
+    cols: usize,
+    rows: usize,
+    display_offset: usize,
+    position: Point<Pixels>,
+) -> (i32, usize, Side) {
+    let col_f = (position.x - bounds.origin.x) / cell_w;
+    let row_f = (position.y - bounds.origin.y) / cell_h;
+    let raw_col = col_f.floor();
+    let col = raw_col.clamp(0., (cols.max(1) - 1) as f32) as usize;
+    let row = row_f.floor().clamp(0., (rows.max(1) - 1) as f32) as i32;
+    // The side is which half of the hit cell the pointer covers; pointer
+    // positions outside the grid widen the drag to that edge instead.
+    let side = if raw_col < 0. || raw_col >= cols as f32 {
+        if raw_col < 0. {
+            Side::Left
+        } else {
+            Side::Right
+        }
+    } else if col_f.fract() < 0.5 {
+        Side::Left
+    } else {
+        Side::Right
+    };
+    (row - display_offset as i32, col, side)
+}
+
+/// Columns of one grid line covered by the selection, extended over a wide
+/// character's trailing spacer cell so the highlight stays rectangular.
+fn selection_span(
+    range: &SelectionRange,
+    line: GridLine,
+    row: &[Cell],
+    cols: usize,
+) -> Option<Range<usize>> {
+    if cols == 0 {
+        return None;
+    }
+    let first = (0..cols).find(|&col| range.contains(GridPoint::new(line, GridColumn(col))))?;
+    let last = (0..cols)
+        .rev()
+        .find(|&col| range.contains(GridPoint::new(line, GridColumn(col))))?;
+    let mut end = last + 1;
+    if end < cols && row[last].flags.contains(Flags::WIDE_CHAR) {
+        end += 1;
+    }
+    Some(first..end)
+}
+
+/// Clipboard text prepared for the PTY: terminals execute on CR, so every
+/// line-ending flavour normalizes to CR; when the running application enabled
+/// bracketed paste the payload is framed so it is inserted, not executed.
+/// Applied by both Ctrl+Shift+V and platform-initiated pastes.
+fn paste_payload(text: &str, bracketed: bool) -> String {
+    let mut payload = String::with_capacity(text.len() + 16);
+    if bracketed {
+        payload.push_str("\x1b[200~");
+    }
+    payload.push_str(&text.replace("\r\n", "\r").replace('\n', "\r"));
+    if bracketed {
+        payload.push_str("\x1b[201~");
+    }
+    payload
 }
 
 fn cell_origin(bounds: Bounds<Pixels>, col: f32, row: f32, metrics: &GridMetrics) -> Point<Pixels> {
@@ -745,7 +964,120 @@ fn cell_origin(bounds: Bounds<Pixels>, col: f32, row: f32, metrics: &GridMetrics
 
 #[cfg(test)]
 mod tests {
-    use super::key_to_bytes;
+    use super::{grid_point_at, key_to_bytes, paste_payload, selection_span, Side};
+    use crate::terminal::emulator::TerminalEmulator;
+    use alacritty_terminal::index::{Line as GridLine, Side as TermSide};
+    use gpui_kit::{point, px, size, Bounds};
+
+    fn bounds() -> Bounds<gpui_kit::Pixels> {
+        Bounds {
+            origin: point(px(10.), px(20.)),
+            size: size(px(70.), px(68.)),
+        }
+    }
+
+    #[test]
+    fn grid_point_at_maps_pixels_to_cells_with_clamping() {
+        let cell_w = px(7.);
+        let cell_h = px(17.);
+        let bounds = bounds();
+        let at =
+            |x: f32, y: f32| grid_point_at(bounds, cell_w, cell_h, 10, 4, 0, point(px(x), px(y)));
+        // Inside the first cell, left half.
+        assert_eq!(at(12., 24.), (0, 0, Side::Left));
+        // Third column (x = 10 + 2*7 + 6), right half.
+        assert_eq!(at(30., 20.), (0, 2, Side::Right));
+        // Past the right and bottom edges clamps to the last cell.
+        assert_eq!(at(500., 500.), (3, 9, Side::Right));
+        // Above and left of the content clamps to the first cell.
+        assert_eq!(at(-50., -50.), (0, 0, Side::Left));
+    }
+
+    #[test]
+    fn grid_point_at_converts_viewport_rows_to_history_lines() {
+        let point = grid_point_at(
+            bounds(),
+            px(7.),
+            px(17.),
+            10,
+            4,
+            3,
+            gpui_kit::point(px(10.), px(20.)),
+        );
+        assert_eq!(point, (-3, 0, Side::Left));
+    }
+
+    /// Selects a range on a 10x2 grid and returns the per-row paint spans.
+    fn spans_for(
+        selection: Option<((i32, usize), (i32, usize))>,
+    ) -> Vec<Option<std::ops::Range<usize>>> {
+        let mut emulator = TerminalEmulator::new(10, 2);
+        emulator.advance("ab汉字cd".as_bytes());
+        if let Some((from, to)) = selection {
+            // The drag's outer edges carry the sides: anchor Left, head Right
+            // (reversed for a backwards drag).
+            let (from_side, to_side) = if from <= to {
+                (TermSide::Left, TermSide::Right)
+            } else {
+                (TermSide::Right, TermSide::Left)
+            };
+            emulator.begin_selection(from.0, from.1, from_side);
+            emulator.update_selection(to.0, to.1, to_side);
+        }
+        let range = emulator.selection_range();
+        (0..2)
+            .map(|row| {
+                range.and_then(|range| {
+                    selection_span(
+                        &range,
+                        GridLine(row as i32),
+                        emulator.visible_line(row),
+                        emulator.cols(),
+                    )
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn selection_span_covers_selected_columns_per_row() {
+        // Row content "ab汉字cd": selecting columns 1..=2 covers 'b' plus the
+        // leading cell of the first wide glyph, and the highlight extends over
+        // that glyph's spacer column.
+        let spans = spans_for(Some(((0, 1), (0, 2))));
+        assert_eq!(spans[0], Some(1..4));
+        assert_eq!(spans[1], None, "rows outside the selection paint nothing");
+        // Selecting a plain column range stops after the last selected cell.
+        let spans = spans_for(Some(((0, 6), (0, 7))));
+        assert_eq!(spans[0], Some(6..8));
+    }
+
+    #[test]
+    fn selection_span_extends_over_a_wide_char_spacer() {
+        // Columns 2 and 3 hold the first wide glyph; a selection ending on its
+        // leading cell still highlights both columns.
+        let spans = spans_for(Some(((0, 2), (0, 2))));
+        assert_eq!(spans[0], Some(2..4));
+    }
+
+    #[test]
+    fn selection_span_is_empty_without_a_selection() {
+        assert_eq!(spans_for(None), vec![None, None]);
+    }
+
+    #[test]
+    fn paste_payload_normalizes_line_endings() {
+        assert_eq!(paste_payload("a\nb", false), "a\rb");
+        assert_eq!(paste_payload("a\r\nb", false), "a\rb");
+        assert_eq!(paste_payload("a\rb", false), "a\rb");
+        assert_eq!(paste_payload("plain", false), "plain");
+    }
+
+    #[test]
+    fn paste_payload_frames_bracketed_paste() {
+        assert_eq!(paste_payload("a\nb", true), "\x1b[200~a\rb\x1b[201~");
+        assert_eq!(paste_payload("x", false), "x");
+    }
 
     #[test]
     fn control_keys_map_to_terminal_sequences() {
