@@ -1,4 +1,11 @@
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(exit_code) = openbitfun_gpui_shell::cli::answer_process_command(
+        openbitfun_gpui_shell::cli::parse_process_args(args.iter().map(String::as_str)),
+    ) {
+        std::process::exit(exit_code);
+    }
+
     openbitfun_gpui_shell::shell::init_tracing();
     tracing::info!("Starting OpenBitFun GPUI shell");
 
