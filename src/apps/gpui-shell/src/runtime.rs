@@ -476,6 +476,10 @@ pub(crate) struct ToolCard {
     /// runtime's `SubagentSessionLinked` event arrives, and the chat renders
     /// the "view run" entry point on the card.
     pub subagent_session: Option<String>,
+    /// The tool started with a `run_in_background` input (T2-6, the web
+    /// backgroundSubagentActivity signal): only the `Started` event carries
+    /// params, so this is the one chance to record it.
+    pub background: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2504,6 +2508,7 @@ fn convert_message(message: &TranscriptMessage) -> ChatEntry {
             },
             detail: truncate_detail(&result.to_string()),
             subagent_session: None,
+            background: false,
         }),
         TranscriptContent::Mixed {
             text, tool_calls, ..
@@ -2518,6 +2523,7 @@ fn convert_message(message: &TranscriptMessage) -> ChatEntry {
                     status: ToolStatus::Done,
                     detail: truncate_detail(&call.arguments.to_string()),
                     subagent_session: None,
+                    background: false,
                 })
             }) {
                 if text.trim().is_empty() {
@@ -2895,11 +2901,15 @@ fn convert_tool_event(event: ToolEventData) -> ToolCard {
         status,
         detail,
         subagent_session: None,
+        background: false,
     };
     match event {
-        ToolEventData::Started { params, .. } => {
-            card(ToolStatus::Running, truncate_detail(&params.to_string()))
-        }
+        ToolEventData::Started { params, .. } => ToolCard {
+            // The web backgroundSubagentActivity signal: a task tool that
+            // started with `run_in_background` outlives its parent's turn.
+            background: params.get("run_in_background") == Some(&serde_json::Value::Bool(true)),
+            ..card(ToolStatus::Running, truncate_detail(&params.to_string()))
+        },
         ToolEventData::Progress { message, .. } => {
             card(ToolStatus::Running, truncate_detail(&message))
         }
@@ -3284,6 +3294,38 @@ pub(crate) fn test_permission_request(request_id: &str) -> PermissionRequest {
 mod tests {
     use super::*;
     use openbitfun_events::ToolEventIdentity;
+
+    #[test]
+    fn tool_started_records_the_run_in_background_flag() {
+        let started = |params: serde_json::Value| ToolEventData::Started {
+            identity: ToolEventIdentity::direct("call-1", "task"),
+            params,
+            timeout_seconds: None,
+        };
+        // The web backgroundSubagentActivity signal rides exactly this input.
+        assert!(
+            convert_tool_event(started(serde_json::json!({
+                "prompt": "research",
+                "run_in_background": true,
+            })))
+            .background
+        );
+        // Foreground task tools (and every other event) stay unflagged.
+        assert!(
+            !convert_tool_event(started(serde_json::json!({
+                "prompt": "research",
+            })))
+            .background
+        );
+        assert!(
+            !convert_tool_event(ToolEventData::Progress {
+                identity: ToolEventIdentity::direct("call-1", "task"),
+                message: "working".into(),
+                percentage: 0.5,
+            })
+            .background
+        );
+    }
 
     fn summary(id: &str, last_active_at_ms: u64) -> AgentSessionSummary {
         AgentSessionSummary {

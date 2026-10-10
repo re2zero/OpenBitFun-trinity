@@ -357,6 +357,9 @@ gpui-shell-workspace-open-path-description = 作为本壳工作区使用的文�
 gpui-shell-subagent-badge = 子代理运行
 gpui-shell-subagent-open = 查看运行
 gpui-shell-btw-badge = 侧问（/btw）
+
+# Sidebar review activity badge (T2-6), copy follows web nav.sessions.reviewRunning
+gpui-shell-sidebar-review-running = 审核中
 gpui-shell-child-back = 返回父会话
 gpui-shell-btw-empty = /btw 后面要写问题。
 

@@ -381,6 +381,9 @@ gpui-shell-workspace-open-path-description = Folder to use as this shell's works
 gpui-shell-subagent-badge = Subagent run
 gpui-shell-subagent-open = View run
 gpui-shell-btw-badge = Side question (/btw)
+
+# Sidebar review activity badge (T2-6), copy follows web nav.sessions.reviewRunning
+gpui-shell-sidebar-review-running = Reviewing
 gpui-shell-child-back = Back to parent
 gpui-shell-btw-empty = Write a question after /btw.
 

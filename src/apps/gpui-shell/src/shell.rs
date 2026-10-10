@@ -151,6 +151,27 @@ pub(crate) struct SubagentLink {
     pub agent_type: Option<String>,
 }
 
+/// Which review flavor a linked subagent belongs to (T2-6, the web review
+/// badge): deep review runs report `DeepReview`, the plain review family
+/// (worker/judge/fixer, `CodeReview`, and the legacy `Review*` ids) reports
+/// its own type. Web derives this from a client-set session kind; the shell
+/// classifies the agent type the runtime already reports on the link.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReviewActivityKind {
+    Review,
+    DeepReview,
+}
+
+fn review_activity_kind(agent_type: &str) -> Option<ReviewActivityKind> {
+    if agent_type == "DeepReview" {
+        Some(ReviewActivityKind::DeepReview)
+    } else if agent_type.starts_with("Review") || agent_type == "CodeReview" {
+        Some(ReviewActivityKind::Review)
+    } else {
+        None
+    }
+}
+
 /// A child session the user asked to open whose transcript is still loading
 /// (`RuntimeEvent::SessionOpened` settles it into the chat's child context).
 #[derive(Debug, Clone)]
@@ -541,6 +562,42 @@ impl SidebarItem for SidebarEntry {
                     view.clone(),
                     tx.clone(),
                 );
+                // Background subagent activity (T2-6, the web
+                // backgroundSubagentActivity + review badge pair): a count
+                // pill while hidden subagent turns run, and the review label
+                // when one of them is a review-family run.
+                let (background_count, review_kind) = view
+                    .upgrade()
+                    .map(|shell| shell.read(cx).session_activity_badges(&id))
+                    .unwrap_or((0, None));
+                let text = i18n::current(cx);
+                let activity_badges = div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .flex_shrink_0()
+                    .when_some(review_kind, |this, kind| {
+                        this.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().sidebar_accent)
+                                .child(text.sidebar_review_running.clone()),
+                        )
+                    })
+                    .when(background_count > 0, |this| {
+                        this.child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap_0p5()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(Icon::new(IconName::Bot))
+                                .child(background_count.to_string()),
+                        )
+                    });
                 div()
                     .id(SharedString::from(format!("session-{id}")))
                     .on_click(move |_, _, _| {
@@ -581,6 +638,7 @@ impl SidebarItem for SidebarEntry {
                                     .child(metadata),
                             ),
                     )
+                    .child(activity_badges)
                     .child(menu)
                     .into_any_element()
             }
@@ -998,6 +1056,15 @@ pub(crate) struct ShellWindow {
     /// Hidden subagent sessions linked to parent tool calls (M20), newest
     /// last. Tool cards are annotated from this map on every transcript load.
     subagent_links: Vec<SubagentLink>,
+    /// Task tool calls observed starting with a `run_in_background` input
+    /// (T2-6, the web backgroundSubagentActivity signal), keyed by the tool
+    /// card key. Monotonic: the flag arrives once on the `Started` event.
+    background_task_tools: BTreeSet<SharedString>,
+    /// Sessions with a turn in flight (T2-6). The event pump reports every
+    /// session's lifecycle process-wide; the open chat consumes its own, and
+    /// this set keeps the rest so background subagent activity can be derived
+    /// without opening the session.
+    live_sessions: BTreeSet<String>,
     /// A child session whose transcript is still loading after the user asked
     /// to see it; `SessionOpened` settles it into the chat's child context.
     pending_child: Option<PendingChild>,
@@ -1118,6 +1185,8 @@ impl ShellWindow {
             workspace_error: None,
             pending_attachments: Vec::new(),
             subagent_links: Vec::new(),
+            background_task_tools: BTreeSet::new(),
+            live_sessions: BTreeSet::new(),
             pending_child: None,
             agent_id_input,
             agent_name_input,
@@ -1446,6 +1515,10 @@ impl ShellWindow {
                 }
             }
             RuntimeEvent::TurnStarted { session_id, .. } => {
+                // Session-agnostic bookkeeping first (T2-6): the pump reports
+                // every session's turns, and background subagent activity is
+                // derived from exactly that.
+                self.live_sessions.insert(session_id.clone());
                 if let Some(chat) = self.chat.as_mut() {
                     if chat.matches(&session_id) {
                         chat.submitting = false;
@@ -1470,6 +1543,12 @@ impl ShellWindow {
                 }
             }
             RuntimeEvent::ToolUpdate { session_id, card } => {
+                // The run_in_background flag rides the Started event only:
+                // record it before the chat-scoped upsert, which may never
+                // see this session's transcript at all.
+                if card.background {
+                    self.background_task_tools.insert(card.key.clone());
+                }
                 if let Some(chat) = self.chat.as_mut() {
                     if chat.matches(&session_id) {
                         match chat.upsert_tool(card) {
@@ -1480,6 +1559,7 @@ impl ShellWindow {
                 }
             }
             RuntimeEvent::TurnFinished { session_id, error } => {
+                self.live_sessions.remove(&session_id);
                 let failure = error.clone();
                 if let Some(chat) = self.chat.as_mut() {
                     if chat.matches(&session_id) {
@@ -2117,6 +2197,39 @@ impl ShellWindow {
                 }
             }
         }
+    }
+
+    /// The sidebar activity badges for one session row (T2-6, the web
+    /// backgroundSubagentActivity and review badge pair): how many linked
+    /// subagent turns are running behind the scenes, and whether a
+    /// review-family subagent is among them. A subagent counts when its task
+    /// tool started with `run_in_background`, or — for links whose `Started`
+    /// event predates this process — when it has outlived the parent's turn.
+    fn session_activity_badges(
+        &self,
+        parent_session_id: &str,
+    ) -> (usize, Option<ReviewActivityKind>) {
+        let parent_live = self.live_sessions.contains(parent_session_id);
+        let mut count = 0usize;
+        let mut review = None;
+        for link in self
+            .subagent_links
+            .iter()
+            .filter(|link| link.parent_session_id == parent_session_id)
+        {
+            if !self.live_sessions.contains(&link.subagent_session_id) {
+                continue;
+            }
+            let tool_key = SharedString::from(format!("tool-{}", link.tool_call_id));
+            if !self.background_task_tools.contains(&tool_key) && parent_live {
+                continue;
+            }
+            count += 1;
+            if review.is_none() {
+                review = link.agent_type.as_deref().and_then(review_activity_kind);
+            }
+        }
+        (count, review)
     }
 
     /// Opens a hidden subagent session as the detail view (M20): the chat
@@ -4497,9 +4610,19 @@ impl ShellWindow {
                         // Hidden child view (M20): the badge names what the
                         // pane shows and "back" returns to the parent.
                         .when_some(chat.child_context.as_ref(), |this, child| {
+                            // A review-family run carries the review label
+                            // (T2-6, the web child-session badge), not the
+                            // generic subagent one.
+                            let review_label = child
+                                .agent_type
+                                .as_deref()
+                                .and_then(review_activity_kind)
+                                .map(|_| text.sidebar_review_running.clone());
                             let label = match (child.kind, child.agent_type.as_deref()) {
                                 (ChildKind::Subagent, Some(agent_type)) => {
-                                    format!("{} · {}", text.subagent_badge, agent_type)
+                                    let kind_label =
+                                        review_label.unwrap_or_else(|| text.subagent_badge.clone());
+                                    format!("{kind_label} · {agent_type}")
                                 }
                                 (ChildKind::Subagent, None) => text.subagent_badge.clone(),
                                 (ChildKind::Btw, _) => text.btw_badge.clone(),
@@ -4838,6 +4961,7 @@ mod tests {
             status: ToolStatus::Running,
             detail: String::new(),
             subagent_session: None,
+            background: false,
         };
         let mut chat = chat_with(Vec::new());
         assert!(chat.upsert_tool(card("tool-1")).is_none());
@@ -4885,6 +5009,7 @@ mod tests {
                 status: ToolStatus::Running,
                 detail: String::new(),
                 subagent_session: None,
+                background: false,
             })]
         };
 
@@ -5925,6 +6050,180 @@ mod tests {
             },
         );
         window.run_until_parked();
+    }
+
+    /// Background subagent activity (T2-6): a linked child whose task tool
+    /// started with `run_in_background` badges the parent row while its turn
+    /// runs, and the badge clears when the child settles.
+    #[gpui_kit::test]
+    fn background_subagent_badges_track_the_child_lifecycle(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, _rx, window, cx)));
+        let task_card = |background: bool| RuntimeEvent::ToolUpdate {
+            session_id: "parent".into(),
+            card: crate::runtime::ToolCard {
+                key: "tool-call-1".into(),
+                tool_name: "task".into(),
+                status: crate::runtime::ToolStatus::Running,
+                detail: String::new(),
+                subagent_session: None,
+                background,
+            },
+        };
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(task_card(true), window, cx);
+                shell.apply_runtime_event(
+                    RuntimeEvent::SubagentLinked {
+                        parent_session_id: "parent".into(),
+                        parent_tool_call_id: "call-1".into(),
+                        subagent_session_id: "child-1".into(),
+                        agent_type: None,
+                    },
+                    window,
+                    cx,
+                );
+                // The child has not started: nothing is running yet.
+                assert_eq!(shell.session_activity_badges("parent"), (0, None));
+                shell.apply_runtime_event(
+                    RuntimeEvent::TurnStarted {
+                        session_id: "child-1".into(),
+                        turn_id: "t1".into(),
+                    },
+                    window,
+                    cx,
+                );
+                assert_eq!(shell.session_activity_badges("parent"), (1, None));
+                // The child outlives the parent's turn: still activity.
+                shell.apply_runtime_event(
+                    RuntimeEvent::TurnFinished {
+                        session_id: "parent".into(),
+                        error: None,
+                    },
+                    window,
+                    cx,
+                );
+                assert_eq!(shell.session_activity_badges("parent"), (1, None));
+                shell.apply_runtime_event(
+                    RuntimeEvent::TurnFinished {
+                        session_id: "child-1".into(),
+                        error: None,
+                    },
+                    window,
+                    cx,
+                );
+                assert_eq!(shell.session_activity_badges("parent"), (0, None));
+                // A non-background task tool never badges while the parent
+                // turn is live (the web store's run_in_background signal).
+                shell.apply_runtime_event(task_card(false), window, cx);
+                shell.apply_runtime_event(
+                    RuntimeEvent::SubagentLinked {
+                        parent_session_id: "parent".into(),
+                        parent_tool_call_id: "call-2".into(),
+                        subagent_session_id: "child-2".into(),
+                        agent_type: None,
+                    },
+                    window,
+                    cx,
+                );
+                shell.apply_runtime_event(
+                    RuntimeEvent::TurnStarted {
+                        session_id: "parent".into(),
+                        turn_id: "t2".into(),
+                    },
+                    window,
+                    cx,
+                );
+                shell.apply_runtime_event(
+                    RuntimeEvent::TurnStarted {
+                        session_id: "child-2".into(),
+                        turn_id: "t3".into(),
+                    },
+                    window,
+                    cx,
+                );
+                assert_eq!(shell.session_activity_badges("parent"), (0, None));
+            });
+        });
+    }
+
+    /// A review-family agent type surfaces the review badge on the parent
+    /// row once its run goes background (parent turn settled).
+    #[gpui_kit::test]
+    fn review_subagents_classify_into_the_review_badge(cx: &mut gpui_kit::TestAppContext) {
+        assert_eq!(
+            review_activity_kind("ReviewWorker"),
+            Some(ReviewActivityKind::Review)
+        );
+        assert_eq!(
+            review_activity_kind("ReviewSecurity"),
+            Some(ReviewActivityKind::Review)
+        );
+        assert_eq!(
+            review_activity_kind("CodeReview"),
+            Some(ReviewActivityKind::Review)
+        );
+        assert_eq!(
+            review_activity_kind("DeepReview"),
+            Some(ReviewActivityKind::DeepReview)
+        );
+        assert_eq!(review_activity_kind("Standard"), None);
+        assert_eq!(review_activity_kind("CodebaseResearcher"), None);
+
+        install_shell_globals(cx);
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, _rx, window, cx)));
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(
+                    RuntimeEvent::SubagentLinked {
+                        parent_session_id: "parent".into(),
+                        parent_tool_call_id: "call-1".into(),
+                        subagent_session_id: "reviewer".into(),
+                        agent_type: Some("ReviewWorker".into()),
+                    },
+                    window,
+                    cx,
+                );
+                shell.apply_runtime_event(
+                    RuntimeEvent::TurnStarted {
+                        session_id: "reviewer".into(),
+                        turn_id: "t1".into(),
+                    },
+                    window,
+                    cx,
+                );
+                // Foreground semantics: the parent turn is still live and the
+                // task tool never ran in background, so no badge — matching
+                // the web store.
+                shell.apply_runtime_event(
+                    RuntimeEvent::TurnStarted {
+                        session_id: "parent".into(),
+                        turn_id: "t0".into(),
+                    },
+                    window,
+                    cx,
+                );
+                assert_eq!(shell.session_activity_badges("parent"), (0, None));
+                // Once the parent turn settles, the still-running review run
+                // has outlived it and shows the review badge.
+                shell.apply_runtime_event(
+                    RuntimeEvent::TurnFinished {
+                        session_id: "parent".into(),
+                        error: None,
+                    },
+                    window,
+                    cx,
+                );
+                assert_eq!(
+                    shell.session_activity_badges("parent"),
+                    (1, Some(ReviewActivityKind::Review))
+                );
+            });
+        });
     }
 
     /// Number of session rows the sidebar would render with the current
