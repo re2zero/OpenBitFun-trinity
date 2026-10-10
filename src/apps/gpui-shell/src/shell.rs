@@ -4621,11 +4621,25 @@ pub fn launch_main_window(tokio_handle: tokio::runtime::Handle) {
                     window_min_size: Some(size(px(960.), px(640.))),
                     // Glass sidebar: the design-system palettes paint the
                     // sidebar column at 90% chrome over the window surface, so
-                    // the compositor blur shows through. Opaque themes (CLI
-                    // presets keep the component-default sidebar) simply cover
-                    // the surface; without blur support the 90% tint still
-                    // carries the look.
-                    window_background: WindowBackgroundAppearance::Blurred,
+                    // the compositor blur shows through. Only Wayland has a
+                    // per-window blur protocol (KDE's blur manager); there the
+                    // window surface opts into it. On X11 `Blurred` switches
+                    // the wgpu surface to the transparent pipeline with no
+                    // blur behind it and visibly shifts the whole window's
+                    // color rendition (measured: background #0e0e10 renders
+                    // as rgb(18,19,41), reproduced on Xvfb, absent with
+                    // Opaque), so X11 stays opaque and the 90% tint blends
+                    // against the theme background — visually a slightly
+                    // deeper sidebar. Override with OPENBITFUN_GPUI_FORCE_BLUR
+                    // for X11 blur experiments.
+                    window_background: if std::env::var("WAYLAND_DISPLAY").is_ok()
+                        || std::env::var("WAYLAND_SOCKET").is_ok()
+                        || std::env::var("OPENBITFUN_GPUI_FORCE_BLUR").is_ok()
+                    {
+                        WindowBackgroundAppearance::Blurred
+                    } else {
+                        WindowBackgroundAppearance::Opaque
+                    },
                     ..TitleBar::window_options()
                 },
                 cx,
