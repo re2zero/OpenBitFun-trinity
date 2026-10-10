@@ -67,6 +67,9 @@ pub struct TerminalPane {
     /// Set when the PTY starts and the pane should take keyboard focus on
     /// the next frame (focusing needs `Window`, which the pump lacks).
     needs_focus: bool,
+    /// A profile's startup command, typed into the PTY as soon as it reports
+    /// its id (`None` for the plain default shell).
+    initial_command: Option<String>,
 }
 
 enum PtyMsg {
@@ -138,12 +141,15 @@ fn resolve_shell(configured: &str) -> String {
 impl TerminalPane {
     /// Creates the pane from the shared terminal settings: the font drives the
     /// grid metrics, the scrollback depth sizes the history, and a configured
-    /// shell command replaces `$SHELL`. Preferences that only affect a starting
-    /// pane are read once, here.
+    /// shell command replaces `$SHELL`. `initial_command` (a terminal
+    /// profile's startup command, M17) is typed into the PTY once it reports
+    /// its id. Preferences that only affect a starting pane are read once,
+    /// here.
     pub(crate) fn new(
         tokio: tokio::runtime::Handle,
         settings: &TerminalSettings,
         start_dir: Option<String>,
+        initial_command: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -224,6 +230,7 @@ impl TerminalPane {
             grid_bounds: None,
             selecting: false,
             needs_focus: false,
+            initial_command,
         }
     }
 
@@ -288,6 +295,14 @@ impl TerminalPane {
             PtyMsg::Started(id) => {
                 self.pty_id = Some(id);
                 self.needs_focus = true;
+                // A terminal profile's startup command runs once the PTY is
+                // addressable: one write with the trailing newline is the
+                // same path pasted input takes.
+                if let Some(command) = self.initial_command.take() {
+                    let mut bytes = command.into_bytes();
+                    bytes.push(b'\n');
+                    self.write_bytes(bytes);
+                }
                 // The panel may have reflowed the grid before the pty reported
                 // its id (the first paint can beat `create_process`), in which
                 // case `resize_if_needed` had no pty to talk to. Push the

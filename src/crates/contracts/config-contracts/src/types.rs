@@ -757,6 +757,33 @@ pub struct TerminalConfig {
     pub cursor_blink: bool,
     pub cursor_style: String,
     pub scrollback: u32,
+    /// Named launch profiles the terminal panel offers as extra tabs. Empty
+    /// `working_directory`/`startup_command` mean "workspace default" and
+    /// "none"; unknown fields stay tolerated across versions.
+    pub profiles: Vec<TerminalProfile>,
+}
+
+/// One named terminal launch profile. The gpui-shell terminal panel starts a
+/// tab from a profile's working directory and sends its startup command once
+/// the PTY is up; empty strings mean the defaults.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct TerminalProfile {
+    pub id: String,
+    pub name: String,
+    pub working_directory: String,
+    pub startup_command: String,
+}
+
+impl Default for TerminalProfile {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            working_directory: String::new(),
+            startup_command: String::new(),
+        }
+    }
 }
 
 /// Workspace configuration.
@@ -1988,6 +2015,7 @@ impl Default for TerminalConfig {
             cursor_blink: true,
             cursor_style: "block".to_string(),
             scrollback: 1000,
+            profiles: Vec::new(),
         }
     }
 }
@@ -3982,5 +4010,48 @@ mod user_question_timeout_tests {
                 value
             );
         }
+    }
+
+    /// Terminal profiles are an additive `terminal.*` field: installs that
+    /// never wrote one deserialize to an empty list, and a list written by a
+    /// newer host round trips without reshaping the legacy fields.
+    #[test]
+    fn terminal_profiles_are_additive_and_round_trip() {
+        let legacy = serde_json::json!({
+            "default_shell": "/bin/zsh",
+            "terminal_panel_position": "bottom",
+            "font_size": 13,
+            "font_family": "Mono",
+            "cursor_blink": false,
+            "cursor_style": "underline",
+            "scrollback": 5000
+        });
+        let config: super::TerminalConfig = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(config.profiles.is_empty());
+        assert_eq!(config.default_shell, "/bin/zsh");
+        assert_eq!(config.scrollback, 5000);
+
+        let mut persisted = serde_json::to_value(config).unwrap();
+        persisted["profiles"] = serde_json::json!([{
+            "id": "p1",
+            "name": "dev",
+            "working_directory": "/work",
+            "startup_command": "just dev"
+        }]);
+        let round_tripped: super::TerminalConfig =
+            serde_json::from_value(persisted.clone()).unwrap();
+        assert_eq!(round_tripped.profiles.len(), 1);
+        assert_eq!(round_tripped.profiles[0].name, "dev");
+        assert_eq!(round_tripped.profiles[0].startup_command, "just dev");
+        // The legacy fields survive the profile write untouched.
+        assert_eq!(round_tripped.font_size, legacy["font_size"]);
+        assert_eq!(round_tripped.cursor_blink, legacy["cursor_blink"]);
+
+        // A profile entry missing optional fields still parses (serde
+        // defaults fill the blanks) — the shape tolerates partial writers.
+        let partial: super::TerminalConfig =
+            serde_json::from_value(serde_json::json!({ "profiles": [{ "name": "x" }] })).unwrap();
+        assert_eq!(partial.profiles[0].name, "x");
+        assert!(partial.profiles[0].id.is_empty());
     }
 }

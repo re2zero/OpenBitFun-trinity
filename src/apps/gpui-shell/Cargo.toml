@@ -81,8 +81,9 @@ tracing-subscriber = { workspace = true }
 gpui-kit = { workspace = true, features = ["test-support"] }
 # `tests/pty_integration.rs` drives the real PTY, and `tests/update_integration.rs`
 # serves the release fixture over a local HTTP/1.1 listener and runs the real
-# binary as the updater.
-tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "time"] }
+# binary as the updater. Headless shell tests also construct terminal panes
+# against a leaked tokio runtime (rt), so tab close semantics run for real.
+tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "rt-multi-thread", "time"] }
 
 [lints]
 workspace = true

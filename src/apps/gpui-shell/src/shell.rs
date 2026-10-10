@@ -69,6 +69,15 @@ enum MainView {
     Search,
 }
 
+/// One terminal panel tab (M17): a pane owning its PTY plus the fallback
+/// tab label (a profile's name, or the localized default-shell label; the
+/// pane's OSC title wins once the shell sets one).
+#[derive(Clone)]
+struct TerminalTab {
+    pane: Entity<TerminalPane>,
+    label: SharedString,
+}
+
 /// Lifecycle of the embedded runtime, mirrored into the status line.
 #[derive(Clone)]
 enum RuntimePhase {
@@ -627,8 +636,12 @@ pub(crate) struct ShellWindow {
     modal_owner: Option<ModalOwner>,
     /// Built-in terminal panel (M7): created lazily on first open, shut down
     /// and dropped when the panel closes.
-    terminal: Option<Entity<TerminalPane>>,
     terminal_open: bool,
+    /// Terminal panel tabs (M17): one PTY pane per tab plus its fallback
+    /// label (profile name or the localized default; the pane's OSC title
+    /// wins at render time). Closing a tab tears its PTY down.
+    terminals: Vec<TerminalTab>,
+    active_terminal: usize,
     /// One-shot automation hook (`OPENBITFUN_GPUI_TERMINAL_AUTOOPEN`): opens
     /// the panel once the runtime is ready, so a screenshot run can inspect
     /// the pane without synthesizing input events.
@@ -672,6 +685,14 @@ pub(crate) struct ShellWindow {
     export_input: Entity<InputState>,
     /// Session id the export dialog is writing; `None` while closed.
     export_target: Option<String>,
+    /// Terminal-profile editor inputs (M17), dialog-owned like the rename
+    /// inputs; `pub(crate)` because the settings page fills and reads them.
+    pub(crate) profile_name_input: Entity<InputState>,
+    pub(crate) profile_dir_input: Entity<InputState>,
+    pub(crate) profile_command_input: Entity<InputState>,
+    /// Profile id being edited; `None` while the dialog edits a new profile
+    /// or is closed.
+    pub(crate) profile_edit_id: Option<String>,
     /// Latest session usage report, shown in the usage dialog.
     usage_report: Option<Box<runtime::SessionUsageSummary>>,
     /// Insights page state (M14): latest reports + the open report.
@@ -709,6 +730,9 @@ impl ShellWindow {
         let workspace_input = cx.new(|cx| InputState::new(window, cx));
         let export_input = cx.new(|cx| InputState::new(window, cx));
         let search_input = cx.new(|cx| InputState::new(window, cx));
+        let profile_name_input = cx.new(|cx| InputState::new(window, cx));
+        let profile_dir_input = cx.new(|cx| InputState::new(window, cx));
+        let profile_command_input = cx.new(|cx| InputState::new(window, cx));
         receive_runtime_events(event_rx, window, cx);
         Self {
             draft,
@@ -722,8 +746,9 @@ impl ShellWindow {
             pending_permissions: Vec::new(),
             pending_questions: Vec::new(),
             modal_owner: None,
-            terminal: None,
             terminal_open: false,
+            terminals: Vec::new(),
+            active_terminal: 0,
             terminal_auto_open: std::env::var_os("OPENBITFUN_GPUI_TERMINAL_AUTOOPEN").is_some(),
             main_view: MainView::Chat,
             git: None,
@@ -739,6 +764,10 @@ impl ShellWindow {
             rename_target: None,
             export_input,
             export_target: None,
+            profile_name_input,
+            profile_dir_input,
+            profile_command_input,
+            profile_edit_id: None,
             usage_report: None,
             insights: Default::default(),
             tasks: Default::default(),
@@ -1265,7 +1294,8 @@ impl ShellWindow {
     }
 
     /// Opens or closes the built-in terminal panel. First open creates the
-    /// pane (and its PTY); close shuts the PTY down and drops the pane.
+    /// default tab (and its PTY); close shuts every tab's PTY down and drops
+    /// the panes.
     fn toggle_terminal_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.terminal_open {
             self.terminal_open = false;
@@ -1275,36 +1305,130 @@ impl ShellWindow {
                 self.terminal_height =
                     (*size).clamp(px(MIN_TERMINAL_HEIGHT), px(MAX_TERMINAL_HEIGHT));
             }
-            if let Some(pane) = self.terminal.take() {
-                pane.update(cx, |pane, _| pane.close());
-            }
+            self.close_all_terminal_tabs(cx);
         } else {
             self.open_terminal_panel(window, cx);
         }
         cx.notify();
     }
 
-    /// Opens the terminal panel, creating the pane (and its PTY) on first use.
+    /// Shuts every tab's PTY down and drops the panes (panel close, workspace
+    /// switch).
+    fn close_all_terminal_tabs(&mut self, cx: &mut Context<Self>) {
+        for tab in self.terminals.drain(..) {
+            tab.pane.update(cx, |pane, _| pane.close());
+        }
+        self.active_terminal = 0;
+    }
+
+    /// Opens the terminal panel, creating the default tab (and its PTY) on
+    /// first use.
     fn open_terminal_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.terminal_open = true;
-        if self.terminal.is_none() {
-            let tokio = runtime::runtime_handle()
-                .map(|handle| handle.tokio_handle())
-                .expect("runtime handle ready when terminal opens");
-            // The pane starts from the shared terminal settings: the configured
-            // shell command and scrollback are read here, font preferences are
-            // also re-applied on every render below.
-            let terminal = settings::ShellConfig::try_current(cx)
-                .unwrap_or_else(|| settings::ShellConfig::startup_default(i18n::current(cx).locale))
-                .terminal;
-            // The PTY starts in the active workspace, so the terminal follows
-            // a workspace switch instead of the process launch directory.
-            let start_dir = runtime::runtime_handle()
-                .map(|handle| handle.workspace().root_path.to_string_lossy().to_string());
-            self.terminal =
-                Some(cx.new(|cx| TerminalPane::new(tokio, &terminal, start_dir, window, cx)));
+        if self.terminals.is_empty() {
+            let tab = self.spawn_terminal_tab(None, window, cx);
+            self.terminals.push(tab);
+            self.active_terminal = 0;
         }
         cx.notify();
+    }
+
+    /// One pane launch: `None` means the default shell in the active
+    /// workspace; a profile overrides the working directory and types its
+    /// startup command once the PTY is up.
+    fn spawn_terminal_tab(
+        &mut self,
+        profile: Option<openbitfun_core::service::config::types::TerminalProfile>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> TerminalTab {
+        let tokio = runtime::runtime_handle()
+            .map(|handle| handle.tokio_handle())
+            .expect("runtime handle ready when terminal opens");
+        // The pane starts from the shared terminal settings: the configured
+        // shell command and scrollback are read here, font preferences are
+        // also re-applied on every render below.
+        let terminal = settings::ShellConfig::try_current(cx)
+            .unwrap_or_else(|| settings::ShellConfig::startup_default(i18n::current(cx).locale))
+            .terminal;
+        // The PTY starts in the profile's directory, else the active
+        // workspace, so the terminal follows a workspace switch instead of
+        // the process launch directory.
+        let start_dir = profile
+            .as_ref()
+            .filter(|p| !p.working_directory.trim().is_empty())
+            .map(|p| p.working_directory.clone())
+            .or_else(|| {
+                runtime::runtime_handle()
+                    .map(|handle| handle.workspace().root_path.to_string_lossy().to_string())
+            });
+        let initial_command = profile
+            .as_ref()
+            .map(|p| p.startup_command.clone())
+            .filter(|command| !command.trim().is_empty());
+        let label = profile
+            .as_ref()
+            .map(|p| SharedString::from(p.name.clone()))
+            .unwrap_or_else(|| i18n::current(cx).terminal_new_tab_default.clone().into());
+        let pane = cx
+            .new(|cx| TerminalPane::new(tokio, &terminal, start_dir, initial_command, window, cx));
+        TerminalTab { pane, label }
+    }
+
+    /// Opens a new panel tab: the default shell when `profile_id` is `None`,
+    /// else the configured profile with its directory and startup command.
+    fn open_terminal_tab(
+        &mut self,
+        profile_id: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let profile = profile_id.and_then(|id| {
+            settings::ShellConfig::current(cx)
+                .terminal
+                .profiles
+                .into_iter()
+                .find(|p| p.id == id)
+        });
+        let tab = self.spawn_terminal_tab(profile, window, cx);
+        self.terminals.push(tab);
+        self.active_terminal = self.terminals.len() - 1;
+        self.terminal_open = true;
+        cx.notify();
+    }
+
+    /// Closes one tab: its PTY is shut down and the active index stays on a
+    /// sensible neighbor. Closing the last tab closes the whole panel (the
+    /// dragged dock height is remembered, same as the panel toggle).
+    fn close_terminal_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index >= self.terminals.len() {
+            return;
+        }
+        let tab = self.terminals.remove(index);
+        tab.pane.update(cx, |pane, _| pane.close());
+        if self.terminals.is_empty() {
+            if let Some(size) = self.dock.read(cx).sizes().get(1) {
+                self.terminal_height =
+                    (*size).clamp(px(MIN_TERMINAL_HEIGHT), px(MAX_TERMINAL_HEIGHT));
+            }
+            self.terminal_open = false;
+            self.active_terminal = 0;
+        } else {
+            if self.active_terminal >= self.terminals.len() {
+                self.active_terminal = self.terminals.len() - 1;
+            } else if index < self.active_terminal {
+                self.active_terminal -= 1;
+            }
+        }
+        cx.notify();
+    }
+
+    /// Focuses one tab.
+    fn select_terminal_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+        if index < self.terminals.len() {
+            self.active_terminal = index;
+            cx.notify();
+        }
     }
 
     /// Resets every workspace-scoped surface after the active workspace
@@ -1317,7 +1441,9 @@ impl ShellWindow {
         self.sessions.clear();
         self.list_error = None;
         self.show_archived = false;
-        self.terminal = None;
+        // The terminal PTYs run with the old root: shut them down instead of
+        // dropping the panes (a bare drop leaks the child processes).
+        self.close_all_terminal_tabs(cx);
         self.terminal_open = false;
         self.git = None;
         // The files page binds the abandoned workspace's root and tabs.
@@ -3177,20 +3303,23 @@ impl Render for ShellWindow {
             }
         }
 
-        // Terminal font preferences apply to a live pane: the paint pass
+        // Terminal font preferences apply to live panes: the paint pass
         // remeasures the cell and reflows the grid (and the PTY) when they land.
         // The settings page handlers only get `&mut App`, so the window is what
-        // pushes the shared config into the pane; the call is a no-op unless a
+        // pushes the shared config into the panes; the call is a no-op unless a
         // value actually changed.
-        if let Some(pane) = self.terminal.clone() {
+        if !self.terminals.is_empty() {
             let terminal = settings::ShellConfig::try_current(cx)
                 .unwrap_or_else(|| settings::ShellConfig::startup_default(text.locale))
                 .terminal;
-            pane.update(cx, |pane, cx| pane.apply_font(&terminal, cx));
+            for tab in &self.terminals {
+                tab.pane
+                    .update(cx, |pane, cx| pane.apply_font(&terminal, cx));
+            }
         }
 
         let main_area = match self.main_view {
-            MainView::Settings => settings::render_page(&text, cx),
+            MainView::Settings => settings::render_page(&text, cx.entity().downgrade(), cx),
             MainView::Git => match self.git.clone() {
                 Some(panel) => div()
                     .flex_1()
@@ -3331,22 +3460,121 @@ impl Render for ShellWindow {
 }
 
 impl ShellWindow {
-    /// The docked terminal panel: slim header (OSC title + close) above the
-    /// pane. The pane owns focus, keyboard, wheel scrollback, and reflows to
-    /// whatever size the panel gives it.
+    /// The docked terminal panel: header (new-tab menu, one chip per tab,
+    /// close) above the active pane. Each pane owns focus, keyboard, wheel
+    /// scrollback, and reflows to whatever size the panel gives it.
     fn render_terminal_panel(
         &self,
         text: &ShellText,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
-        let title = self
-            .terminal
-            .as_ref()
-            .map(|pane| {
-                pane.read(cx)
-                    .title_label(text.terminal_title.clone().into())
+        let active_title = self
+            .terminals
+            .get(self.active_terminal)
+            .map(|tab| {
+                let fallback = tab.label.clone();
+                tab.pane.read(cx).title_label(fallback)
             })
             .unwrap_or_else(|| text.terminal_title.clone().into());
+
+        // New-tab menu: the default shell plus every configured profile, and
+        // the settings entry that manages the list (labels resolve here, in
+        // the menu builder, like the insights range menu; item clicks carry
+        // the window so pane creation goes through the ordinary path).
+        let profiles = settings::ShellConfig::current(cx).terminal.profiles.clone();
+        let menu_view = cx.entity().downgrade();
+        let new_tab_button = Button::new("terminal-new-tab")
+            .icon(IconName::Plus)
+            .small()
+            .with_variant(ButtonVariant::Ghost)
+            .tooltip(text.terminal_new_tab.clone())
+            .dropdown_menu_with_anchor(Anchor::BottomLeft, move |menu, _window, cx| {
+                let default_label = crate::i18n::current(cx).terminal_new_tab_default.clone();
+                let manage_label = crate::i18n::current(cx).terminal_profiles_manage.clone();
+                let mut popup = menu.item(PopupMenuItem::new(default_label).on_click({
+                    let menu_view = menu_view.clone();
+                    move |_, window, cx| {
+                        if let Some(shell) = menu_view.upgrade() {
+                            shell.update(cx, |this, cx| this.open_terminal_tab(None, window, cx));
+                        }
+                    }
+                }));
+                for profile in &profiles {
+                    let profile_id = profile.id.clone();
+                    let menu_view = menu_view.clone();
+                    popup = popup.item(PopupMenuItem::new(profile.name.clone()).on_click(
+                        move |_, window, cx| {
+                            if let Some(shell) = menu_view.upgrade() {
+                                shell.update(cx, |this, cx| {
+                                    this.open_terminal_tab(Some(profile_id.clone()), window, cx)
+                                });
+                            }
+                        },
+                    ));
+                }
+                popup = popup.item(PopupMenuItem::new(manage_label).on_click({
+                    let menu_view = menu_view.clone();
+                    move |_, _window, cx| {
+                        if let Some(shell) = menu_view.upgrade() {
+                            shell.update(cx, |this, cx| this.open_settings_view(cx));
+                        }
+                    }
+                }));
+                popup
+            });
+
+        let mut tab_bar = div().flex().items_center().gap_1().min_w_0();
+        for (index, tab) in self.terminals.iter().enumerate() {
+            let active = index == self.active_terminal;
+            let fallback = tab.label.clone();
+            let label = tab.pane.read(cx).title_label(fallback);
+            let close_view = cx.entity();
+            tab_bar = tab_bar.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .px_2()
+                    .py_0p5()
+                    .rounded(cx.theme().radius)
+                    .when(active, |style| style.bg(cx.theme().sidebar_accent))
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("terminal-tab-select-{index}")))
+                            .cursor_pointer()
+                            .max_w_32()
+                            .truncate()
+                            .text_xs()
+                            .text_color(if active {
+                                cx.theme().foreground
+                            } else {
+                                cx.theme().muted_foreground
+                            })
+                            .on_click({
+                                let this = cx.entity();
+                                move |_, _, cx| {
+                                    this.update(cx, |this, cx| this.select_terminal_tab(index, cx));
+                                }
+                            })
+                            .child(label),
+                    )
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("terminal-tab-close-{index}")))
+                            .cursor_pointer()
+                            .on_click(move |_, _, cx| {
+                                close_view
+                                    .update(cx, |this, cx| this.close_terminal_tab(index, cx));
+                            })
+                            .child(
+                                Icon::new(IconName::Close)
+                                    .size_3()
+                                    .text_color(cx.theme().muted_foreground),
+                            ),
+                    ),
+            );
+        }
+
         div()
             .id("shell-terminal-dock")
             .debug_selector(|| "shell-terminal-dock".to_string())
@@ -3360,15 +3588,25 @@ impl ShellWindow {
                 div()
                     .flex()
                     .items_center()
-                    .justify_between()
+                    .gap_2()
                     .px_3()
                     .py_1()
+                    .child(new_tab_button)
+                    .child(
+                        div()
+                            .id("terminal-tabbar-scroll")
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_x_scroll()
+                            .child(div().flex().items_center().gap_1().child(tab_bar)),
+                    )
                     .child(
                         div()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
                             .truncate()
-                            .child(title),
+                            .max_w_48()
+                            .child(active_title),
                     )
                     .child(
                         Button::new("terminal-close")
@@ -3381,8 +3619,12 @@ impl ShellWindow {
                             })),
                     ),
             )
-            .child(match self.terminal.clone() {
-                Some(pane) => div().flex_1().min_h_0().child(pane).into_any_element(),
+            .child(match self.terminals.get(self.active_terminal) {
+                Some(tab) => div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(tab.pane.clone())
+                    .into_any_element(),
                 None => div().flex_1().min_h_0().into_any_element(),
             })
             .into_any_element()
@@ -3978,16 +4220,26 @@ mod tests {
             cx.set_global(settings::ShellConfig::startup_default(
                 openbitfun_core::service::i18n::LocaleId::ZhCN,
             ));
+            cx.set_global(sample_shell_text());
         });
         let window = cx.add_empty_window();
         let text = sample_shell_text();
+        let (ttx, trx) = mpsc::unbounded_channel();
+        let shell_view = window.update(|window, cx| {
+            cx.new(|cx| ShellWindow::new(ttx, trx, window, cx))
+                .downgrade()
+        });
         window.draw(
             point(px(0.), px(0.)),
             size(px(900.), px(600.)),
             move |_, cx| {
                 // The page must render inside a view: the component library
                 // asks the window for the current view id during layout.
-                cx.new(|_| SettingsHarness { text }).into_any_element()
+                cx.new(|_| SettingsHarness {
+                    text: text.clone(),
+                    view: shell_view.clone(),
+                })
+                .into_any_element()
             },
         );
         window.run_until_parked();
@@ -4029,24 +4281,42 @@ mod tests {
                     },
                 ],
             });
+            cx.set_global(sample_shell_text());
         });
         let window = cx.add_empty_window();
         let text = sample_shell_text();
+        // A real shell backs the weak handle the profile rows capture; the
+        // harness layout never upgrades it.
+        let (ttx, trx) = mpsc::unbounded_channel();
+        let shell_view = window.update(|window, cx| {
+            cx.new(|cx| ShellWindow::new(ttx, trx, window, cx))
+                .downgrade()
+        });
         window.draw(
             point(px(0.), px(0.)),
             size(px(900.), px(600.)),
-            move |_, cx| cx.new(|_| SettingsHarness { text }).into_any_element(),
+            move |_, cx| {
+                cx.new(|_| SettingsHarness {
+                    text: text.clone(),
+                    view: shell_view.clone(),
+                })
+                .into_any_element()
+            },
         );
         window.run_until_parked();
     }
 
     struct SettingsHarness {
         text: ShellText,
+        /// The settings page opens profile dialogs through the shell weak
+        /// handle (D57); the harness never upgrades it, a shell-shaped
+        /// placeholder is enough for layout.
+        view: gpui_kit::WeakEntity<ShellWindow>,
     }
 
     impl Render for SettingsHarness {
         fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            settings::render_page(&self.text, cx)
+            settings::render_page(&self.text, self.view.clone(), cx)
         }
     }
 
@@ -4669,6 +4939,7 @@ mod tests {
                 shell.list_error = Some("stale".into());
                 shell.toggle_files_view(cx);
             });
+            inject_terminal_tab(&shell, "old-ws", window, cx);
         });
         window.update(|_, cx| {
             let shell = shell.read(cx);
@@ -4701,7 +4972,10 @@ mod tests {
             );
             assert!(!shell.show_archived, "archive filter resets with the list");
             assert!(shell.list_error.is_none());
-            assert!(shell.terminal.is_none());
+            assert!(
+                shell.terminals.is_empty(),
+                "terminal PTYs shut down with the old workspace"
+            );
             assert!(!shell.terminal_open);
             assert!(shell.git.is_none());
             assert!(shell.files.is_none(), "files page binds the old workspace");
@@ -4757,6 +5031,138 @@ mod tests {
                 shell.toggle_files_view(cx);
                 assert_eq!(shell.main_view, MainView::Files);
             });
+        });
+    }
+
+    /// A process-lifetime tokio runtime for pane construction in headless
+    /// tests: `TerminalPane::new` spawns its PTY pump on the given handle, so
+    /// the runtime must outlive the test (`pty_integration` drives the same
+    /// service directly).
+    fn test_terminal_tokio() -> tokio::runtime::Handle {
+        static RT: std::sync::OnceLock<tokio::runtime::Handle> = std::sync::OnceLock::new();
+        RT.get_or_init(|| {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+                .expect("test terminal runtime");
+            let handle = runtime.handle().clone();
+            std::mem::forget(runtime);
+            handle
+        })
+        .clone()
+    }
+
+    /// Injects one real terminal tab (spawned bash) into the shell; tab
+    /// lifecycle tests then run the ordinary close path end to end.
+    fn inject_terminal_tab(
+        shell: &Entity<ShellWindow>,
+        label: &str,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let settings = settings::ShellConfig::try_current(cx)
+            .unwrap_or_else(|| settings::ShellConfig::startup_default(i18n::current(cx).locale))
+            .terminal;
+        let pane = cx
+            .new(|cx| TerminalPane::new(test_terminal_tokio(), &settings, None, None, window, cx));
+        shell.update(cx, |shell, _| {
+            shell.terminals.push(TerminalTab {
+                pane,
+                label: SharedString::from(label.to_string()),
+            });
+        });
+    }
+
+    /// Terminal tab lifecycle: closing the active tab moves focus to a
+    /// neighbor, and closing the last tab closes the whole panel (each close
+    /// shuts the tab's real PTY down).
+    #[gpui_kit::test]
+    fn terminal_tabs_close_adjusts_active_and_last_closes_panel(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        window.update(|window, cx| {
+            inject_terminal_tab(&shell, "one", window, cx);
+            inject_terminal_tab(&shell, "two", window, cx);
+            shell.update(cx, |shell, cx| {
+                shell.terminal_open = true;
+                shell.active_terminal = 1;
+                assert_eq!(shell.terminals.len(), 2);
+            });
+        });
+        window.update(|_, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.close_terminal_tab(1, cx);
+                assert_eq!(shell.terminals.len(), 1);
+                assert_eq!(shell.active_terminal, 0, "focus moves to the neighbor");
+                assert!(shell.terminal_open);
+            });
+        });
+        window.update(|_, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.close_terminal_tab(0, cx);
+                assert!(shell.terminals.is_empty());
+                assert!(!shell.terminal_open, "the last close closes the panel");
+            });
+        });
+        // The tabbed layout must render: the tab bar, the new-tab menu
+        // button, and the active pane all lay out inside the dock.
+        window.update(|window, cx| {
+            inject_terminal_tab(&shell, "again", window, cx);
+            shell.update(cx, |shell, cx| shell.terminal_open = true);
+        });
+        window.draw(point(px(0.), px(0.)), size(px(1200.), px(800.)), {
+            let shell = shell.clone();
+            move |_, _| shell.into_any_element()
+        });
+        window.run_until_parked();
+        let dock = window
+            .debug_bounds("shell-terminal-dock")
+            .expect("docked terminal renders with tabs");
+        assert!(dock.size.height > px(50.), "dock height: {:?}", dock.size);
+    }
+
+    /// Terminal profiles flow through the shared mirror: an empty id is
+    /// assigned on insert, the same id replaces, delete removes.
+    #[gpui_kit::test]
+    fn terminal_profiles_upsert_and_delete_flow_through_the_mirror(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        install_shell_globals(cx);
+        cx.update(|cx| {
+            let profile = |name: &str| openbitfun_core::service::config::types::TerminalProfile {
+                id: String::new(),
+                name: name.to_string(),
+                working_directory: "/work".to_string(),
+                startup_command: "just dev".to_string(),
+            };
+            settings::upsert_terminal_profile(profile("dev"), cx);
+            let profiles = &settings::ShellConfig::current(cx).terminal.profiles;
+            assert_eq!(profiles.len(), 1);
+            assert!(!profiles[0].id.is_empty(), "insert assigns an id");
+            let id = profiles[0].id.clone();
+
+            settings::upsert_terminal_profile(
+                openbitfun_core::service::config::types::TerminalProfile {
+                    id: id.clone(),
+                    name: "dev2".to_string(),
+                    working_directory: String::new(),
+                    startup_command: String::new(),
+                },
+                cx,
+            );
+            let profiles = &settings::ShellConfig::current(cx).terminal.profiles;
+            assert_eq!(profiles.len(), 1, "same id replaces");
+            assert_eq!(profiles[0].name, "dev2");
+
+            settings::delete_terminal_profile(&id, cx);
+            assert!(settings::ShellConfig::current(cx)
+                .terminal
+                .profiles
+                .is_empty());
         });
     }
 

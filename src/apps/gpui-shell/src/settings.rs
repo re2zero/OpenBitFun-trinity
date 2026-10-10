@@ -9,21 +9,22 @@
 //! the page.
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::button::Button;
+use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
+use gpui_kit::component::input::Input;
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::setting::{
     NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
 };
-use gpui_kit::component::{ActiveTheme, StyledExt};
+use gpui_kit::component::{ActiveTheme, Sizable, StyledExt, WindowExt};
 use gpui_kit::{
-    div, prelude::*, Anchor, App, Global, IntoElement, SharedString, Window, WindowAppearance,
+    div, prelude::*, px, Anchor, App, Global, IntoElement, SharedString, Window, WindowAppearance,
 };
 use openbitfun_core::service::config::get_global_config_service;
 use openbitfun_core::service::config::types::GlobalConfig;
 use openbitfun_core::service::i18n::LocaleId;
 use openbitfun_runtime_ports::PermissionPolicyPreset;
 
-use crate::i18n::ShellText;
+use crate::i18n::{self, ShellText};
 use crate::theme;
 use crate::theme_openbitfun;
 
@@ -37,6 +38,9 @@ pub(crate) const TERMINAL_FONT_SIZE_PATH: &str = "terminal.font_size";
 pub(crate) const TERMINAL_FONT_FAMILY_PATH: &str = "terminal.font_family";
 pub(crate) const TERMINAL_SCROLLBACK_PATH: &str = "terminal.scrollback";
 pub(crate) const TERMINAL_DEFAULT_SHELL_PATH: &str = "terminal.default_shell";
+/// Named launch profiles the terminal panel offers as extra tabs (M17); the
+/// whole list is rewritten on each profile change.
+pub(crate) const TERMINAL_PROFILES_PATH: &str = "terminal.profiles";
 /// Default model new sessions start on (same path the desktop models page
 /// writes).
 pub(crate) const DEFAULT_MODEL_PATH: &str = "ai.default_models.primary";
@@ -51,6 +55,9 @@ pub(crate) struct TerminalSettings {
     pub(crate) font_family: String,
     pub(crate) scrollback: u32,
     pub(crate) default_shell: String,
+    /// Named launch profiles (M17); the shared document type carries them so
+    /// the desktop terminal can adopt the same list later.
+    pub(crate) profiles: Vec<openbitfun_core::service::config::types::TerminalProfile>,
 }
 
 impl Default for TerminalSettings {
@@ -68,6 +75,7 @@ impl TerminalSettings {
             font_family: config.font_family.clone(),
             scrollback: config.scrollback,
             default_shell: config.default_shell.clone(),
+            profiles: config.profiles.clone(),
         }
     }
 }
@@ -302,15 +310,58 @@ pub(crate) fn persist(path: &'static str, value: serde_json::Value) {
     });
 }
 
+/// Inserts or replaces one terminal profile in the shared mirror and
+/// persists the whole list. Callers validate the name; an empty id assigns
+/// a fresh one.
+pub(crate) fn upsert_terminal_profile(
+    mut profile: openbitfun_core::service::config::types::TerminalProfile,
+    cx: &mut App,
+) {
+    if profile.id.is_empty() {
+        profile.id = uuid::Uuid::new_v4().to_string();
+    }
+    let profiles = &mut cx.global_mut::<ShellConfig>().terminal.profiles;
+    match profiles.iter().position(|p| p.id == profile.id) {
+        Some(slot) => profiles[slot] = profile,
+        None => profiles.push(profile),
+    }
+    persist_profiles(cx);
+}
+
+/// Removes one terminal profile from the shared mirror and persists.
+pub(crate) fn delete_terminal_profile(id: &str, cx: &mut App) {
+    let profiles = &mut cx.global_mut::<ShellConfig>().terminal.profiles;
+    let before = profiles.len();
+    profiles.retain(|p| p.id != id);
+    if profiles.len() != before {
+        persist_profiles(cx);
+    } else {
+        tracing::warn!("Ignoring delete for unknown terminal profile {id}");
+    }
+}
+
+fn persist_profiles(cx: &App) {
+    let profiles = ShellConfig::current(cx).terminal.profiles.clone();
+    match serde_json::to_value(profiles) {
+        Ok(value) => persist(TERMINAL_PROFILES_PATH, value),
+        Err(error) => tracing::error!("Failed to serialize terminal profiles: {error}"),
+    }
+}
+
 /// The settings page: appearance (language, theme), models, tool permissions,
-/// and the terminal preferences the built-in terminal reads.
-pub(crate) fn render_page(text: &ShellText, cx: &mut App) -> gpui_kit::AnyElement {
+/// and the terminal preferences the built-in terminal reads. The shell weak
+/// handle lets terminal-profile rows open their editor dialog (D57).
+pub(crate) fn render_page(
+    text: &ShellText,
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    cx: &mut App,
+) -> gpui_kit::AnyElement {
     Settings::new("shell-settings")
         .sidebar_width(gpui_kit::px(180.))
         .pages(vec![
             appearance_page(text),
             models_page(text, cx),
-            terminal_page(text),
+            terminal_page(text, view),
             permissions_page(text, cx),
         ])
         .into_any_element()
@@ -460,7 +511,10 @@ fn models_page(text: &ShellText, cx: &App) -> SettingPage {
 /// the shared `terminal.*` entries, so the desktop terminal and this pane read
 /// the same document; font size and family apply to a running pane, while the
 /// scrollback and shell command are read when a pane starts.
-fn terminal_page(text: &ShellText) -> SettingPage {
+fn terminal_page(
+    text: &ShellText,
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+) -> SettingPage {
     let font_size_field = SettingField::number_input(
         NumberFieldOptions {
             min: f64::from(MIN_FONT_SIZE),
@@ -517,6 +571,11 @@ fn terminal_page(text: &ShellText) -> SettingPage {
         },
     );
 
+    let owned_text = text.clone();
+    let profiles_field = SettingField::render(move |_options, window, cx| {
+        terminal_profiles_field(view.clone(), &owned_text, window, cx)
+    });
+
     SettingPage::new(text.settings_terminal.clone())
         .icon(IconName::SquareTerminal)
         .resettable(false)
@@ -530,7 +589,310 @@ fn terminal_page(text: &ShellText) -> SettingPage {
                 .description(text.settings_terminal_scrollback_description.clone()),
             SettingItem::new(text.settings_terminal_shell.clone(), shell_field)
                 .description(text.settings_terminal_shell_description.clone()),
+            SettingItem::new(text.settings_terminal_profiles.clone(), profiles_field)
+                .description(text.settings_terminal_profiles_description.clone()),
         ]))
+}
+
+/// The terminal-profiles list (M17): one row per profile with edit/delete,
+/// plus the add action. Rows render read-only; editing opens the profile
+/// dialog through the shell (dialog state lives on the window).
+fn terminal_profiles_field(
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    text: &ShellText,
+    _window: &mut gpui_kit::Window,
+    cx: &mut App,
+) -> gpui_kit::AnyElement {
+    let profiles = ShellConfig::current(cx).terminal.profiles.clone();
+    let mut column = div().v_flex().gap_2().w_full();
+
+    if profiles.is_empty() {
+        column = column.child(
+            div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(text.terminal_profiles_empty.clone()),
+        );
+    }
+    for profile in &profiles {
+        let edit_view = view.clone();
+        let edit_id = profile.id.clone();
+        let delete_id = profile.id.clone();
+        let delete_label = profile.name.clone();
+        let mut facts = profile.working_directory.clone();
+        if !profile.startup_command.is_empty() {
+            facts.push_str(" · ");
+            facts.push_str(&profile.startup_command);
+        }
+        column = column.child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(
+                    div()
+                        .v_flex()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().foreground)
+                                .truncate()
+                                .child(profile.name.clone()),
+                        )
+                        .when(!facts.is_empty(), |row| {
+                            row.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .truncate()
+                                    .child(facts),
+                            )
+                        }),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .flex_shrink_0()
+                        .child(
+                            Button::new(SharedString::from(format!(
+                                "terminal-profile-edit-{}",
+                                profile.id
+                            )))
+                            .label(text.terminal_profile_edit.clone())
+                            .small()
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(move |_, window, cx| {
+                                open_profile_dialog(
+                                    edit_view.clone(),
+                                    Some(edit_id.clone()),
+                                    window,
+                                    cx,
+                                );
+                            }),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!(
+                                "terminal-profile-delete-{}",
+                                profile.id
+                            )))
+                            .label(text.terminal_profile_delete.clone())
+                            .small()
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(move |_, _window, cx| {
+                                tracing::info!("Deleting terminal profile {delete_label}");
+                                delete_terminal_profile(&delete_id.clone(), cx);
+                                cx.refresh_windows();
+                            }),
+                        ),
+                ),
+        );
+    }
+
+    column
+        .child(
+            Button::new("terminal-profile-add")
+                .label(text.terminal_profile_add.clone())
+                .small()
+                .with_variant(ButtonVariant::Secondary)
+                .on_click(move |_, window, cx| {
+                    open_profile_dialog(view.clone(), None, window, cx);
+                }),
+        )
+        .into_any_element()
+}
+
+/// Opens the terminal-profile editor: the three inputs live on the shell (a
+/// dialog builder runs every frame), `profile_id` `None` means a new
+/// profile. Dismissable; nothing blocks on it.
+fn open_profile_dialog(
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    profile_id: Option<String>,
+    window: &mut gpui_kit::Window,
+    cx: &mut App,
+) {
+    let Some(shell) = view.upgrade() else {
+        return;
+    };
+    let (name_input, dir_input, command_input) = {
+        let shell = shell.read(cx);
+        (
+            shell.profile_name_input.clone(),
+            shell.profile_dir_input.clone(),
+            shell.profile_command_input.clone(),
+        )
+    };
+    let existing = profile_id.as_ref().and_then(|id| {
+        ShellConfig::current(cx)
+            .terminal
+            .profiles
+            .iter()
+            .find(|p| &p.id == id)
+            .cloned()
+    });
+    name_input.update(cx, |state, cx| {
+        state.set_value(
+            existing
+                .as_ref()
+                .map(|p| p.name.clone())
+                .unwrap_or_default(),
+            window,
+            cx,
+        )
+    });
+    dir_input.update(cx, |state, cx| {
+        state.set_value(
+            existing
+                .as_ref()
+                .map(|p| p.working_directory.clone())
+                .unwrap_or_default(),
+            window,
+            cx,
+        )
+    });
+    command_input.update(cx, |state, cx| {
+        state.set_value(
+            existing
+                .as_ref()
+                .map(|p| p.startup_command.clone())
+                .unwrap_or_default(),
+            window,
+            cx,
+        )
+    });
+    shell.update(cx, |this, cx| {
+        this.profile_edit_id = profile_id;
+        cx.notify();
+    });
+
+    let confirm_view = view.clone();
+    let cancel_view = view.clone();
+    let confirm = move |_: &gpui_kit::ClickEvent, window: &mut gpui_kit::Window, cx: &mut App| {
+        let Some(shell) = confirm_view.upgrade() else {
+            return;
+        };
+        let name = shell
+            .read(cx)
+            .profile_name_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        if name.is_empty() {
+            // Keep the dialog open: a nameless profile is unidentifiable in
+            // the new-tab menu.
+            tracing::warn!("Ignoring terminal profile with empty name");
+            return;
+        }
+        let working_directory = shell
+            .read(cx)
+            .profile_dir_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        let startup_command = shell
+            .read(cx)
+            .profile_command_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        let id = shell.read(cx).profile_edit_id.clone().unwrap_or_default();
+        let profile = openbitfun_core::service::config::types::TerminalProfile {
+            id,
+            name,
+            working_directory,
+            startup_command,
+        };
+        tracing::info!("Saving terminal profile {}", profile.name);
+        upsert_terminal_profile(profile, cx);
+        shell.update(cx, |this, cx| {
+            this.profile_edit_id = None;
+            cx.notify();
+        });
+        cx.refresh_windows();
+        window.close_dialog(cx);
+    };
+    let cancel = move |_: &gpui_kit::ClickEvent, window: &mut gpui_kit::Window, cx: &mut App| {
+        if let Some(shell) = cancel_view.upgrade() {
+            shell.update(cx, |this, cx| {
+                this.profile_edit_id = None;
+                cx.notify();
+            });
+        }
+        window.close_dialog(cx);
+    };
+
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let text = i18n::current(cx);
+        dialog
+            .title(div().child(text.terminal_profile_dialog_title.clone()))
+            .child(
+                div()
+                    .w(px(420.))
+                    .v_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .v_flex()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(text.terminal_profile_name.clone()),
+                            )
+                            .child(Input::new(&name_input)),
+                    )
+                    .child(
+                        div()
+                            .v_flex()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(text.terminal_profile_working_dir.clone()),
+                            )
+                            .child(Input::new(&dir_input)),
+                    )
+                    .child(
+                        div()
+                            .v_flex()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(text.terminal_profile_startup_command.clone()),
+                            )
+                            .child(Input::new(&command_input)),
+                    ),
+            )
+            .footer(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("terminal-profile-cancel")
+                            .label(text.session_action_cancel.clone())
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(cancel.clone()),
+                    )
+                    .child(
+                        Button::new("terminal-profile-confirm")
+                            .label(text.session_action_confirm.clone())
+                            .with_variant(ButtonVariant::Primary)
+                            .on_click(confirm.clone()),
+                    ),
+            )
+    });
 }
 
 fn permissions_page(text: &ShellText, cx: &App) -> SettingPage {
