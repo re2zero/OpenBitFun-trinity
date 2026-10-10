@@ -1700,6 +1700,11 @@ impl Render for GitPanel {
         };
 
         let body = match view {
+            GitView::Files if !self.loading && self.files.is_empty() => crate::shell::brand_empty(
+                IconName::GitBranch,
+                &text.git_empty_title,
+                &text.git_empty,
+            ),
             GitView::Files => div()
                 .flex_1()
                 .min_h_0()

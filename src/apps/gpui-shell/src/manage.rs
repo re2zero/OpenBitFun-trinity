@@ -499,11 +499,11 @@ fn skills_list(text: &ShellText, cx: &mut App) -> gpui_kit::AnyElement {
             .into_any_element();
     };
     if catalog.skills.is_empty() {
-        return div()
-            .text_sm()
-            .text_color(cx.theme().muted_foreground)
-            .child(text.manage_skills_empty.clone())
-            .into_any_element();
+        return crate::shell::brand_empty(
+            IconName::BookOpen,
+            &text.manage_skills_empty_title,
+            &text.manage_skills_empty,
+        );
     }
 
     let mut column = div().v_flex().gap_2().w_full();
@@ -641,11 +641,11 @@ fn agent_cards(kind: AgentListKind, text: &ShellText, cx: &mut App) -> gpui_kit:
         AgentListKind::Subagents => catalog.subagents,
     };
     if rows.is_empty() {
-        return div()
-            .text_sm()
-            .text_color(cx.theme().muted_foreground)
-            .child(text.manage_agents_empty.clone())
-            .into_any_element();
+        return crate::shell::brand_empty(
+            IconName::Bot,
+            &text.manage_agents_empty_title,
+            &text.manage_agents_empty,
+        );
     }
 
     let mut column = div().v_flex().gap_2().w_full();
@@ -757,11 +757,11 @@ fn mcp_server_list(
             .into_any_element();
     };
     if catalog.servers.is_empty() {
-        return div()
-            .text_sm()
-            .text_color(cx.theme().muted_foreground)
-            .child(text.manage_mcp_empty.clone())
-            .into_any_element();
+        return crate::shell::brand_empty(
+            IconName::Plug,
+            &text.manage_mcp_empty_title,
+            &text.manage_mcp_empty,
+        );
     }
 
     let mut column = div().v_flex().gap_3().w_full();

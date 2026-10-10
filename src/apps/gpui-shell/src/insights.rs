@@ -169,12 +169,11 @@ pub(crate) fn render_page(
                 .child(text.insights_loading.clone()),
         );
     } else {
-        column = column.child(
-            div()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child(text.insights_empty.clone()),
-        );
+        column = column.child(crate::shell::brand_empty(
+            gpui_kit::assets::IconName::ChartPie,
+            &text.insights_empty_title,
+            &text.insights_empty,
+        ));
     }
 
     if let Some(report) = &state.report {

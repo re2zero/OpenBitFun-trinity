@@ -74,17 +74,20 @@ pub(crate) fn render_page(
     }
 
     if state.jobs.is_empty() {
-        let empty_label = if state.loaded {
-            text.tasks_empty.clone()
+        if state.loaded {
+            column = column.child(crate::shell::brand_empty(
+                gpui_kit::assets::IconName::Calendar,
+                &text.tasks_empty_title,
+                &text.tasks_empty,
+            ));
         } else {
-            text.insights_loading.clone()
-        };
-        column = column.child(
-            div()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child(empty_label),
-        );
+            column = column.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(text.insights_loading.clone()),
+            );
+        }
     }
 
     for job in &state.jobs {
