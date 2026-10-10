@@ -53,6 +53,10 @@ pub(crate) const CLOSE_BEHAVIOR_PATH: &str = "app.close_button_behavior";
 /// Whether the startup update probe runs (`app.auto_update`); the manual
 /// check ignores it, same as the desktop store.
 pub(crate) const AUTO_UPDATE_PATH: &str = "app.auto_update";
+/// OS notification when a turn finishes in the background
+/// (`app.notifications.dialog_completion_notify`), the desktop's
+/// dialog-completion switch.
+pub(crate) const NOTIFY_TURN_DONE_PATH: &str = "app.notifications.dialog_completion_notify";
 /// Master switch for native agent hooks (`app.hooks.enabled`).
 pub(crate) const HOOKS_ENABLED_PATH: &str = "app.hooks.enabled";
 /// Whether project-scope hooks.json files may run
@@ -142,6 +146,9 @@ pub(crate) struct ShellConfig {
     pub(crate) close_behavior_raw: String,
     /// `app.auto_update`: gates the startup update probe.
     pub(crate) auto_update: bool,
+    /// `app.notifications.dialog_completion_notify`: desktop notification for
+    /// a turn that settles while the window is in the background.
+    pub(crate) dialog_completion_notify: bool,
     /// `app.hooks.enabled`: master switch for native agent hooks.
     pub(crate) hooks_enabled: bool,
     /// `app.hooks.project_hooks_enabled`: whether project-scope hooks.json
@@ -169,6 +176,7 @@ impl ShellConfig {
             default_primary_model: config.ai.default_models.primary.clone(),
             close_behavior_raw: config.app.close_button_behavior.clone(),
             auto_update: config.app.auto_update,
+            dialog_completion_notify: config.app.notifications.dialog_completion_notify,
             hooks_enabled: config.app.hooks.enabled,
             project_hooks_enabled: config.app.hooks.project_hooks_enabled,
             git_commit_coauthor: config.app.ai_experience.enable_git_commit_coauthor,
@@ -201,6 +209,7 @@ impl ShellConfig {
             default_primary_model: None,
             close_behavior_raw: CLOSE_QUIT.to_string(),
             auto_update: true,
+            dialog_completion_notify: true,
             hooks_enabled: true,
             project_hooks_enabled: false,
             git_commit_coauthor: true,
@@ -576,6 +585,15 @@ fn general_page(
         },
     );
 
+    let notify_turn_done_field = SettingField::switch(
+        |cx: &App| ShellConfig::current(cx).dialog_completion_notify,
+        |value: bool, cx: &mut App| {
+            cx.global_mut::<ShellConfig>().dialog_completion_notify = value;
+            persist(NOTIFY_TURN_DONE_PATH, serde_json::Value::Bool(value));
+            cx.refresh_windows();
+        },
+    );
+
     let owned_text = text.clone();
     let update_field = SettingField::render(move |_options, _window, cx| {
         update_check_field(view.clone(), &owned_text, cx)
@@ -591,6 +609,11 @@ fn general_page(
                 .description(text.settings_launch_login_description.clone()),
             SettingItem::new(text.settings_close_behavior.clone(), close_field)
                 .description(text.settings_close_behavior_description.clone()),
+            SettingItem::new(
+                text.settings_notify_turn_done.clone(),
+                notify_turn_done_field,
+            )
+            .description(text.settings_notify_turn_done_description.clone()),
             SettingItem::new(text.settings_auto_update.clone(), auto_update_field)
                 .description(text.settings_auto_update_description.clone()),
             SettingItem::new(text.settings_check_updates.clone(), update_field),
@@ -2192,6 +2215,7 @@ mod tests {
         // M22 general/automation/websearch/diagnostics fields.
         config.app.close_button_behavior = "ask".to_string();
         config.app.auto_update = false;
+        config.app.notifications.dialog_completion_notify = false;
         config.app.hooks.enabled = false;
         config.app.hooks.project_hooks_enabled = true;
         config.app.ai_experience.enable_git_commit_coauthor = false;
@@ -2213,6 +2237,7 @@ mod tests {
         assert_eq!(snapshot.default_primary_model.as_deref(), Some("model-a"));
         assert_eq!(snapshot.close_behavior_raw, "ask");
         assert!(!snapshot.auto_update);
+        assert!(!snapshot.dialog_completion_notify);
         assert!(!snapshot.hooks_enabled);
         assert!(snapshot.project_hooks_enabled);
         assert!(!snapshot.git_commit_coauthor);

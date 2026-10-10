@@ -306,6 +306,8 @@ pub(crate) struct ShellText {
     pub settings_close_minimize: String,
     pub settings_auto_update: String,
     pub settings_auto_update_description: String,
+    pub settings_notify_turn_done: String,
+    pub settings_notify_turn_done_description: String,
     pub settings_check_updates: String,
     pub settings_update_checking: String,
     pub settings_up_to_date: String,
@@ -869,6 +871,11 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
             "Checks the release feed once per launch. The manual check below always runs."
                 .to_string()
         },
+        settings_notify_turn_done: "Task completion notification".to_string(),
+        settings_notify_turn_done_description: {
+            "Notify you when an AI task finishes while the window is in the background."
+                .to_string()
+        },
         settings_check_updates: "Check for updates".to_string(),
         settings_update_checking: "Checking for updates…".to_string(),
         settings_up_to_date: "Up to date".to_string(),
@@ -1285,6 +1292,10 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         settings_auto_update: service.t("gpui-shell-settings-auto-update").await,
         settings_auto_update_description: service
             .t("gpui-shell-settings-auto-update-description")
+            .await,
+        settings_notify_turn_done: service.t("gpui-shell-settings-notify-turn-done").await,
+        settings_notify_turn_done_description: service
+            .t("gpui-shell-settings-notify-turn-done-description")
             .await,
         settings_check_updates: service.t("gpui-shell-settings-check-updates").await,
         settings_update_checking: service.t("gpui-shell-settings-update-checking").await,

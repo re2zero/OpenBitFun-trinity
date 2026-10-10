@@ -14,11 +14,26 @@ use gpui_kit::AssetSource;
 gpui_kit::assets::icon_assets!(
     ExtraIcons,
     // Sparkles is outside the component default bundle (the skills page and
-    // the M23 chat/nav entries use it); without it the SVG resolves missing
-    // at render time.
+    // the M23 chat/nav entries use it); House/Webhook/ChartColumn/Activity
+    // (settings nav) and Plug (manage pages) likewise. Without these the SVG
+    // resolves missing at render time.
     [
-        Archive, Check, Circle, CircleDot, GitBranch, Languages, Shield, Sparkles, Square,
-        TextWrap, X
+        Activity,
+        Archive,
+        ChartColumn,
+        Check,
+        Circle,
+        CircleDot,
+        GitBranch,
+        House,
+        Languages,
+        Plug,
+        Shield,
+        Sparkles,
+        Square,
+        TextWrap,
+        Webhook,
+        X
     ]
 );
 

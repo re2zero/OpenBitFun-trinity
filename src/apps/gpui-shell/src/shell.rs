@@ -2001,6 +2001,15 @@ impl ShellWindow {
         if window.is_window_active() || self.chat.is_none() {
             return;
         }
+        // The shared dialog-completion switch (`app.notifications`
+        // `dialog_completion_notify`) gates this, same as the desktop's
+        // turn-finished toast; before the shared config is read the
+        // default-on path holds.
+        if crate::settings::ShellConfig::try_current(cx)
+            .is_some_and(|config| !config.dialog_completion_notify)
+        {
+            return;
+        }
         let session = self
             .sessions
             .iter()
