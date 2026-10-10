@@ -134,6 +134,10 @@ pub(crate) struct ChildContext {
     pub parent_session_id: String,
     /// Subagent type of a linked run (badge detail); `None` for `/btw`.
     pub agent_type: Option<String>,
+    /// The coordinator dialog turn of a `/btw` child, the stop button's
+    /// target; `None` for subagent runs, which cancel through the session
+    /// loop.
+    pub btw_turn_id: Option<String>,
 }
 
 /// One hidden subagent session linked to its parent tool call (M20). Kept on
@@ -1390,6 +1394,7 @@ impl ShellWindow {
             RuntimeEvent::BtwStarted {
                 parent_session_id,
                 child_session_id,
+                turn_id,
             } => {
                 // The child transcript loads asynchronously; the opened echo
                 // settles the child context onto the chat pane.
@@ -1399,6 +1404,7 @@ impl ShellWindow {
                         kind: ChildKind::Btw,
                         parent_session_id,
                         agent_type: None,
+                        btw_turn_id: Some(turn_id),
                     },
                 });
                 if let Some(handle) = runtime::runtime_handle() {
@@ -2134,6 +2140,7 @@ impl ShellWindow {
                 kind: ChildKind::Subagent,
                 parent_session_id,
                 agent_type,
+                btw_turn_id: None,
             },
         });
         if let Some(handle) = runtime::runtime_handle() {
@@ -2956,12 +2963,27 @@ impl ShellWindow {
         let view_for_send = cx.entity().downgrade();
 
         let action_button = if busy {
+            // A `/btw` side-question turn lives in the coordinator as a
+            // dialog turn (the D68 direct-call pipeline), not in the agent
+            // runtime's session loop: the stop must target the recorded
+            // dialog turn, or it would be a silent no-op.
+            let btw_cancel = chat
+                .child_context
+                .as_ref()
+                .filter(|child| child.kind == ChildKind::Btw)
+                .and_then(|child| child.btw_turn_id.clone())
+                .map(|turn_id| (session_id.clone(), turn_id));
             Button::new("chat-stop")
                 .label(text.chat_stop.clone())
                 .with_variant(ButtonVariant::Danger)
                 .on_click(move |_, _, _| {
                     if let Some(handle) = runtime::runtime_handle() {
-                        handle.cancel_turn(session_id.clone());
+                        match &btw_cancel {
+                            Some((child_session_id, turn_id)) => {
+                                handle.cancel_btw(child_session_id.clone(), turn_id.clone())
+                            }
+                            None => handle.cancel_turn(session_id.clone()),
+                        }
                     }
                 })
         } else {
@@ -4935,13 +4957,15 @@ mod tests {
             }
         });
 
-        // `/btw` rides the same child machinery with its own badge kind.
+        // `/btw` rides the same child machinery with its own badge kind; the
+        // dialog turn id rides along so the stop button can target it.
         window.update(|window, cx| {
             shell.update(cx, |shell, cx| {
                 shell.apply_runtime_event(
                     RuntimeEvent::BtwStarted {
                         parent_session_id: "parent".into(),
                         child_session_id: "btw-1".into(),
+                        turn_id: "turn-1".into(),
                     },
                     window,
                     cx,
@@ -4955,6 +4979,7 @@ mod tests {
             let child = chat.child_context.as_ref().expect("btw child context");
             assert_eq!(child.kind, ChildKind::Btw);
             assert_eq!(child.parent_session_id, "parent");
+            assert_eq!(child.btw_turn_id.as_deref(), Some("turn-1"));
         });
     }
 

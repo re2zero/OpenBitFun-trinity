@@ -243,6 +243,9 @@ pub(crate) enum RuntimeEvent {
     BtwStarted {
         parent_session_id: String,
         child_session_id: String,
+        /// The coordinator dialog turn, kept so the pane's stop button can
+        /// cancel the turn it belongs to (desktop side_question semantics).
+        turn_id: String,
     },
     /// A session's model selector was updated successfully.
     SessionModelChanged {
@@ -814,11 +817,12 @@ impl RuntimeHandle {
                 )
                 .await
             {
-                Ok(_turn_id) => {
+                Ok(turn_id) => {
                     tracing::info!("Started /btw turn for {session_id} -> {child_session_id}");
                     let _ = tx.send(RuntimeEvent::BtwStarted {
                         parent_session_id: session_id,
                         child_session_id,
+                        turn_id,
                     });
                 }
                 Err(error) => {
@@ -828,6 +832,30 @@ impl RuntimeHandle {
                         error: error.to_string(),
                     });
                 }
+            }
+        });
+    }
+
+    /// Cancels a running `/btw` side-question turn. The turn lives in the
+    /// coordinator as a dialog turn (the D68 direct-call pipeline), not in
+    /// the agent runtime's session loop, so the pane's stop button must come
+    /// here instead of [`Self::cancel_turn`], which would be a silent no-op.
+    pub(crate) fn cancel_btw(&self, child_session_id: String, turn_id: String) {
+        self.tokio.spawn(async move {
+            let Some(coordinator) =
+                openbitfun_core::agentic::coordination::get_global_coordinator()
+            else {
+                tracing::error!("Coordinator not initialized; /btw cancel unavailable");
+                return;
+            };
+            match coordinator
+                .cancel_dialog_turn(&child_session_id, &turn_id)
+                .await
+            {
+                Ok(()) => tracing::info!("Cancelled /btw turn {turn_id} for {child_session_id}"),
+                Err(error) => tracing::error!(
+                    "Failed to cancel /btw turn {turn_id} for {child_session_id}: {error}"
+                ),
             }
         });
     }
