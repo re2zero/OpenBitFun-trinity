@@ -118,6 +118,15 @@ impl FileSystemService {
             .map_err(FileSystemError::service)
     }
 
+    /// One-level directory listing with ignore-file filtering; see
+    /// [`FileTreeService::get_directory_listing`].
+    pub async fn get_directory_listing(&self, path: &str) -> FileSystemResult<Vec<FileTreeNode>> {
+        self.file_tree_service
+            .get_directory_listing(path)
+            .await
+            .map_err(FileSystemError::service)
+    }
+
     /// Searches files.
     pub async fn search_files(
         &self,

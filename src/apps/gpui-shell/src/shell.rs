@@ -30,6 +30,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::assets::ShellAssets;
+use crate::files::FilesPage;
 use crate::git::GitPanel;
 use crate::i18n::ShellText;
 use crate::runtime::{ChatEntry, RuntimeEvent, ToolCard, ToolStatus, WorkspaceChoice};
@@ -62,6 +63,8 @@ enum MainView {
     Insights,
     /// Scheduled jobs management (M14).
     Tasks,
+    /// Workspace file tree + viewer (M15).
+    Files,
 }
 
 /// Lifecycle of the embedded runtime, mirrored into the status line.
@@ -634,6 +637,10 @@ struct ShellWindow {
     /// Workspace changes panel (M8): created when the view opens, dropped when
     /// it closes so the snapshot is refetched on the next open.
     git: Option<Entity<GitPanel>>,
+    /// Workspace files page (M15): created on first open and kept for the
+    /// window's lifetime (tabs survive view switches), dropped on workspace
+    /// switches.
+    files: Option<Entity<FilesPage>>,
     /// Split state of the docked terminal panel: the panel keeps whatever
     /// height the divider was dragged to for as long as the window lives.
     dock: Entity<ResizableState>,
@@ -710,6 +717,7 @@ impl ShellWindow {
             terminal_auto_open: std::env::var_os("OPENBITFUN_GPUI_TERMINAL_AUTOOPEN").is_some(),
             main_view: MainView::Chat,
             git: None,
+            files: None,
             dock,
             terminal_height: TerminalPane::panel_height(),
             settings_auto_open: std::env::var_os("OPENBITFUN_GPUI_SETTINGS_AUTOOPEN").is_some(),
@@ -1280,6 +1288,8 @@ impl ShellWindow {
         self.terminal = None;
         self.terminal_open = false;
         self.git = None;
+        // The files page binds the abandoned workspace's root and tabs.
+        self.files = None;
         self.main_view = MainView::Chat;
         // Staged images belong to the abandoned workspace's draft.
         self.pending_attachments.clear();
@@ -1427,6 +1437,19 @@ impl ShellWindow {
                     handle.reload_cron_jobs(self.event_tx.clone());
                 }
             }
+        }
+        cx.notify();
+    }
+
+    /// Files page toggle; the page is created on first open (which starts the
+    /// root listing) and kept so open tabs survive switching back to chat.
+    fn toggle_files_view(&mut self, cx: &mut Context<Self>) {
+        if self.main_view == MainView::Files {
+            self.main_view = MainView::Chat;
+        } else {
+            self.main_view = MainView::Files;
+            self.files
+                .get_or_insert_with(|| cx.new(crate::files::FilesPage::new));
         }
         cx.notify();
     }
@@ -1618,6 +1641,14 @@ impl ShellWindow {
                     .with_variant(active_variant(self.main_view == MainView::Tasks))
                     .tooltip(text.tasks_title.clone())
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_tasks_view(cx))),
+            )
+            .child(
+                Button::new("footer-files")
+                    .icon(IconName::FolderOpen)
+                    .small()
+                    .with_variant(active_variant(self.main_view == MainView::Files))
+                    .tooltip(text.files_title.clone())
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_files_view(cx))),
             )
             .child(
                 Button::new("footer-terminal")
@@ -3105,6 +3136,15 @@ impl Render for ShellWindow {
                     cx,
                 ))
                 .into_any_element(),
+            MainView::Files => match self.files.clone() {
+                Some(page) => div()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .child(page)
+                    .into_any_element(),
+                None => div().into_any_element(),
+            },
             MainView::Chat => self.render_chat_column(&text, cx),
         };
 
@@ -4522,6 +4562,7 @@ mod tests {
                 );
                 shell.show_archived = true;
                 shell.list_error = Some("stale".into());
+                shell.toggle_files_view(cx);
             });
         });
         window.update(|_, cx| {
@@ -4558,6 +4599,7 @@ mod tests {
             assert!(shell.terminal.is_none());
             assert!(!shell.terminal_open);
             assert!(shell.git.is_none());
+            assert!(shell.files.is_none(), "files page binds the old workspace");
             assert_eq!(shell.main_view, MainView::Chat);
             assert!(shell.workspace_error.is_none());
         });
@@ -4577,6 +4619,39 @@ mod tests {
                 shell.read(cx).workspace_error.as_deref(),
                 Some("owned by a shared runtime")
             );
+        });
+    }
+
+    /// The files page toggles from the footer and its entity (open tabs
+    /// included) survives switching back to chat; without a runtime the page
+    /// degrades loudly instead of rendering a dead tree.
+    #[gpui_kit::test]
+    fn files_view_toggles_and_survives_view_switches(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        window.update(|_, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.toggle_files_view(cx);
+                assert_eq!(shell.main_view, MainView::Files);
+                assert!(shell.files.is_some());
+            });
+        });
+        window.update(|_, cx| {
+            shell.update(cx, |shell, cx| {
+                let page = shell.files.as_ref().unwrap().read(cx);
+                assert!(page.error().is_some(), "no runtime here: degrade loudly");
+            });
+            shell.update(cx, |shell, cx| {
+                shell.toggle_files_view(cx);
+                assert_eq!(shell.main_view, MainView::Chat);
+                assert!(shell.files.is_some(), "tabs survive the view switch");
+
+                shell.toggle_files_view(cx);
+                assert_eq!(shell.main_view, MainView::Files);
+            });
         });
     }
 

@@ -8,6 +8,7 @@
 
 pub mod assets;
 pub mod cli;
+pub mod files;
 pub mod git;
 pub mod i18n;
 pub mod insights;

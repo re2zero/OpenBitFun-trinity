@@ -69,6 +69,13 @@ pub(crate) struct ShellText {
     pub tasks_enable: String,
     pub tasks_disable: String,
     pub tasks_run_now: String,
+    pub files_title: String,
+    pub files_loading: String,
+    pub files_empty: String,
+    pub files_reload: String,
+    pub files_too_large: String,
+    pub files_binary: String,
+    pub files_truncated: String,
     pub model_picker: String,
     pub model_picker_empty: String,
     pub model_default: String,
@@ -224,6 +231,15 @@ pub(crate) fn git_failed(error: &str, cx: &App) -> String {
     )
 }
 
+/// Resolves the localized files-page failure line for one concrete error.
+pub(crate) fn files_failed(error: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-files-failed",
+        TranslationArgs::new().with_string("error", error),
+        cx,
+    )
+}
+
 /// Resolves the unsupported-image-attachment notice for one rejected item.
 pub(crate) fn attachment_unsupported(name: &str, cx: &App) -> String {
     resolve_with(
@@ -344,6 +360,13 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         tasks_enable: "Enable".to_string(),
         tasks_disable: "Disable".to_string(),
         tasks_run_now: "Run now".to_string(),
+        files_title: "Files".to_string(),
+        files_loading: "Loading workspace files…".to_string(),
+        files_empty: "No files in this workspace.".to_string(),
+        files_reload: "Reload file tree".to_string(),
+        files_too_large: "File is too large to display".to_string(),
+        files_binary: "Binary file, no preview".to_string(),
+        files_truncated: "Showing the first 1 MB of this file.".to_string(),
         model_picker: "Session model".to_string(),
         model_picker_empty: "No configured models".to_string(),
         model_default: "Default model".to_string(),
@@ -500,6 +523,13 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         tasks_enable: service.t("gpui-shell-tasks-enable").await,
         tasks_disable: service.t("gpui-shell-tasks-disable").await,
         tasks_run_now: service.t("gpui-shell-tasks-run-now").await,
+        files_title: service.t("gpui-shell-files-title").await,
+        files_loading: service.t("gpui-shell-files-loading").await,
+        files_empty: service.t("gpui-shell-files-empty").await,
+        files_reload: service.t("gpui-shell-files-reload").await,
+        files_too_large: service.t("gpui-shell-files-too-large").await,
+        files_binary: service.t("gpui-shell-files-binary").await,
+        files_truncated: service.t("gpui-shell-files-truncated").await,
         model_picker: service.t("gpui-shell-model-picker").await,
         model_picker_empty: service.t("gpui-shell-model-picker-empty").await,
         model_default: service.t("gpui-shell-model-default").await,

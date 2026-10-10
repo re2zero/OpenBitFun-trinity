@@ -68,6 +68,9 @@ uuid = { workspace = true }
 # Unwrapped diff rows size to the widest line; display width (CJK = two columns)
 # selects that row instead of character count.
 unicode-width = { workspace = true }
+# M15 files viewer: syntax highlighting for the code tab. The workspace pins
+# the feature set (default syntaxes/themes, regex-onig) the CLI already ships.
+syntect = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
