@@ -22,6 +22,13 @@ use gpui_kit::{
     div, list, prelude::*, px, App, Context, Entity, IntoElement, ListAlignment, ListState, Pixels,
     Render, SharedString, TextRun, Window,
 };
+use openbitfun_core::service::snapshot::open_snapshot_manager_for_view;
+use openbitfun_core::service::workspace::WorkspaceKind;
+use openbitfun_core::service::worktree::{
+    WorktreeCreateBranchRequest, WorktreeCreateRequest, WorktreeListRequest,
+    WorktreePromoteRequest, WorktreeRemoveRequest, WorktreeService, WorktreeSessionBindingRequest,
+};
+use openbitfun_core_types::{WorktreeLifecycle, WorktreeSummary};
 use openbitfun_runtime_ports::{
     GitCommitSummary, GitPort, GitRepositoryOverview, GitTrustSnapshot, GitTrustState, PortError,
     PortErrorKind, WorkspaceDiffContent, WorkspaceDiffFile, WorkspaceDiffFileStatus,
@@ -172,10 +179,87 @@ fn row_stage_action(file: &WorkspaceDiffFile) -> StageAction {
 enum GitView {
     Files,
     History,
+    /// Managed-worktree lifecycle over the core `WorktreeService` (M19).
+    Worktrees,
+    /// Snapshot-system session list over the workspace snapshot manager (M19).
+    Snapshots,
 }
 
 /// How many commits the history view loads per request.
 const HISTORY_LIMIT: usize = 50;
+
+/// One snapshot-session row of the snapshots view: the core `SessionStats`
+/// facts the snapshot manager serves per session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SnapshotRow {
+    pub session_id: String,
+    pub total_files: usize,
+    pub total_turns: usize,
+    pub total_changes: usize,
+}
+
+/// Parses the stats payload served by the snapshot manager
+/// (`SessionStats` serialized with its plain field names) into a row.
+/// Missing facts keep the row renderable with zeros instead of dropping it.
+pub(crate) fn snapshot_row_from_stats(session_id: &str, stats: &serde_json::Value) -> SnapshotRow {
+    let read = |key: &str| stats.get(key).and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+    SnapshotRow {
+        session_id: session_id.to_string(),
+        total_files: read("total_files"),
+        total_turns: read("total_turns"),
+        total_changes: read("total_changes"),
+    }
+}
+
+/// Display model of one worktree row: the identity line plus the flags the
+/// row renders as badges, resolved off the render path for testability.
+pub(crate) struct WorktreeRowView {
+    pub title: String,
+    pub subtitle: String,
+    pub head: String,
+    pub lifecycle: WorktreeLifecycle,
+    pub main: bool,
+    pub dirty: bool,
+    pub locked: bool,
+    pub missing: bool,
+    pub session_count: usize,
+    /// Whether promote (managed-only) applies to this row.
+    pub promotable: bool,
+    /// Whether remove applies: the main checkout is never removable here.
+    pub removable: bool,
+}
+
+impl WorktreeRowView {
+    /// Short HEAD hash for the identity line (`None`/all-zero heads degrade
+    /// to a dash).
+    pub(crate) fn head_short(&self) -> String {
+        let head = self.head.trim();
+        if head.len() >= 7 && head.chars().any(|c| c != '0') {
+            head[..7].to_string()
+        } else {
+            "-".to_string()
+        }
+    }
+}
+
+pub(crate) fn worktree_row_view(summary: &WorktreeSummary) -> WorktreeRowView {
+    WorktreeRowView {
+        title: summary
+            .branch
+            .clone()
+            .unwrap_or_else(|| summary.path.clone()),
+        subtitle: summary.path.clone(),
+        head: summary.head.clone(),
+        lifecycle: summary.lifecycle,
+        main: summary.is_main,
+        dirty: summary.dirty,
+        locked: summary.locked,
+        missing: summary.missing,
+        session_count: summary.associated_session_count,
+        promotable: summary.lifecycle == WorktreeLifecycle::Managed,
+        removable: !summary.is_main,
+    }
+}
 
 /// The docked changes view: a changed-file list on the left, the diff of the
 /// selected file on the right, plus the write path (stage/unstage, commit,
@@ -214,13 +298,50 @@ pub(crate) struct GitPanel {
     /// the only place holding the window `set_value` needs).
     clear_commit_input: bool,
     history_list: ListState,
+    /// Managed worktrees of the project owning the active workspace (M19).
+    worktrees: Vec<WorktreeSummary>,
+    /// Whether the worktrees view already loaded its rows.
+    worktrees_loaded: bool,
+    worktree_list: ListState,
+    /// Branch name (optional) for the next worktree: non-empty names a branch
+    /// for the freshly created worktree after it exists.
+    worktree_branch_input: Entity<InputState>,
+    /// Base ref (optional) the next worktree is cut from; empty follows the
+    /// service default (HEAD).
+    worktree_base_input: Entity<InputState>,
+    /// Set after a created worktree; render clears the branch input.
+    clear_worktree_input: bool,
+    /// Snapshot-system session rows of the active workspace (M19).
+    snapshots: Vec<SnapshotRow>,
+    /// Whether the snapshots view already loaded its rows.
+    snapshots_loaded: bool,
+    snapshot_list: ListState,
+    /// The chat's open session, captured at panel open; the session-isolation
+    /// toggle addresses it. `None` (no open session) disables the toggle.
+    active_session: Option<String>,
+    /// The active workspace is remote: worktree management and the local
+    /// snapshot runtime do not reach it, so both views say so explicitly.
+    remote_workspace: bool,
 }
 
 impl GitPanel {
-    pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(
+        active_session: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let text = i18n::current(cx);
         let commit_input = cx
             .new(|cx| InputState::new(window, cx).placeholder(text.git_commit_placeholder.clone()));
+        let worktree_branch_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(text.git_worktree_branch_placeholder.clone())
+        });
+        let worktree_base_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(text.git_worktree_base_ref_placeholder.clone())
+        });
+        let remote_workspace = crate::runtime::runtime_handle()
+            .map(|handle| matches!(handle.workspace().workspace_kind, WorkspaceKind::Remote))
+            .unwrap_or(false);
         let mut panel = Self {
             files: Vec::new(),
             selected: 0,
@@ -241,6 +362,17 @@ impl GitPanel {
             trust: None,
             clear_commit_input: false,
             history_list: ListState::new(0, ListAlignment::Top, px(40.)),
+            worktrees: Vec::new(),
+            worktrees_loaded: false,
+            worktree_list: ListState::new(0, ListAlignment::Top, px(64.)),
+            worktree_branch_input,
+            worktree_base_input,
+            clear_worktree_input: false,
+            snapshots: Vec::new(),
+            snapshots_loaded: false,
+            snapshot_list: ListState::new(0, ListAlignment::Top, px(56.)),
+            active_session,
+            remote_workspace,
         };
         panel.refresh(cx);
         panel
@@ -485,15 +617,370 @@ impl GitPanel {
         cx.notify();
     }
 
-    fn toggle_view(&mut self, cx: &mut Context<Self>) {
-        self.view = match self.view {
-            GitView::Files => GitView::History,
-            GitView::History => GitView::Files,
-        };
-        if self.view == GitView::History && !self.history_loaded {
-            self.load_history(cx);
+    fn set_view(&mut self, view: GitView, cx: &mut Context<Self>) {
+        if self.view == view {
+            return;
+        }
+        self.view = view;
+        match view {
+            GitView::History if !self.history_loaded => self.load_history(cx),
+            GitView::Worktrees if !self.worktrees_loaded => self.load_worktrees(cx),
+            GitView::Snapshots if !self.snapshots_loaded => self.load_snapshots(cx),
+            _ => {}
         }
         cx.notify();
+    }
+
+    /// Reloads the view the panel currently shows (the header refresh button
+    /// dispatches here): diff views refresh the workspace snapshot, the M19
+    /// views reload their own lists.
+    fn refresh_current_view(&mut self, cx: &mut Context<Self>) {
+        match self.view {
+            GitView::Files | GitView::History => self.refresh(cx),
+            GitView::Worktrees => self.load_worktrees(cx),
+            GitView::Snapshots => self.load_snapshots(cx),
+        }
+    }
+
+    /// Active-workspace facts the M19 service calls need. Fails loudly for a
+    /// remote workspace (no local runtime behind it) instead of inventing a
+    /// local path.
+    fn service_workspace() -> Result<(String, Option<String>), String> {
+        let handle = crate::runtime::runtime_handle().ok_or("runtime not ready")?;
+        let workspace = handle.workspace();
+        if matches!(workspace.workspace_kind, WorkspaceKind::Remote) {
+            return Err("remote workspace unsupported".to_string());
+        }
+        // A session executing inside a linked worktree still manages the
+        // worktrees of the project checkout that owns the registry.
+        let project_id = workspace.project_workspace_id().ok().map(str::to_string);
+        Ok((
+            workspace.root_path.to_string_lossy().to_string(),
+            project_id,
+        ))
+    }
+
+    fn load_worktrees(&mut self, cx: &mut Context<Self>) {
+        let (active_path, project_id) = match Self::service_workspace() {
+            Ok(facts) => facts,
+            Err(message) => {
+                self.action_error = Some(message);
+                self.worktrees_loaded = true;
+                cx.notify();
+                return;
+            }
+        };
+        self.busy = true;
+        cx.notify();
+        let task = crate::runtime::runtime_handle()
+            .expect("runtime handle checked by service_workspace")
+            .tokio_handle()
+            .spawn(async move {
+                let project_path = WorktreeService::resolve_project_workspace_path(&active_path)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                WorktreeService::list(WorktreeListRequest {
+                    project_workspace_id: project_id,
+                    project_workspace_path: project_path,
+                })
+                .await
+                .map_err(|error| error.to_string())
+            });
+        cx.spawn(async move |this, cx| {
+            let outcome = task.await;
+            this.update(cx, |panel, cx| {
+                panel.busy = false;
+                panel.worktrees_loaded = true;
+                match outcome {
+                    Ok(Ok(worktrees)) => {
+                        panel.action_error = None;
+                        panel.worktrees = worktrees;
+                        panel.worktree_list.reset(panel.worktrees.len());
+                    }
+                    Ok(Err(message)) => {
+                        tracing::warn!("Worktree list failed: {message}");
+                        panel.action_error = Some(message);
+                    }
+                    Err(join_error) => {
+                        tracing::error!("Worktree list task failed: {join_error}");
+                        panel.action_error = Some("worktree list task failed".to_string());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn create_worktree(&mut self, cx: &mut Context<Self>) {
+        let branch = self
+            .worktree_branch_input
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        let base_ref = self.worktree_base_input.read(cx).value().trim().to_string();
+        if self.busy || (branch.is_empty() && base_ref.is_empty()) {
+            return;
+        }
+        let Ok((active_path, project_id)) = Self::service_workspace() else {
+            return;
+        };
+        let request_id = format!("gpui-shell-worktree-{}", uuid::Uuid::new_v4());
+        let branch_request_id = format!("gpui-shell-worktree-br-{}", uuid::Uuid::new_v4());
+        // The inputs are captured up front; the branch box clears on success
+        // in the next paint (set_value needs the window, which only render
+        // holds). A named branch is created for the worktree right after the
+        // (detached) worktree exists; the base ref selects the cut point.
+        self.run_service(
+            move || async move {
+                let project_path = WorktreeService::resolve_project_workspace_path(&active_path)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let created = WorktreeService::create(WorktreeCreateRequest {
+                    request_id,
+                    project_workspace_id: project_id,
+                    project_workspace_path: project_path,
+                    source_workspace_path: None,
+                    base_ref: (!base_ref.is_empty()).then_some(base_ref),
+                    copy_local_changes: false,
+                    claimed_by: None,
+                })
+                .await
+                .map_err(|error| error.to_string())?;
+                if !branch.is_empty() {
+                    WorktreeService::create_branch(WorktreeCreateBranchRequest {
+                        request_id: branch_request_id,
+                        project_workspace_id: None,
+                        project_workspace_path: created.worktree.project_workspace_path,
+                        worktree_id: created.worktree.worktree_id,
+                        branch,
+                    })
+                    .await
+                    .map_err(|error| error.to_string())?;
+                }
+                Ok(())
+            },
+            |panel, _| panel.clear_worktree_input = true,
+            cx,
+        );
+    }
+
+    fn remove_worktree(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(worktree_id) = self.worktrees.get(index).map(|row| row.worktree_id.clone()) else {
+            return;
+        };
+        let Ok((active_path, project_id)) = Self::service_workspace() else {
+            return;
+        };
+        let request_id = format!("gpui-shell-worktree-rm-{}", uuid::Uuid::new_v4());
+        // Non-force removal: a dirty or locked worktree fails loudly with the
+        // git reason instead of destroying local work behind one click.
+        self.run_service(
+            move || async move {
+                let project_path = WorktreeService::resolve_project_workspace_path(&active_path)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                WorktreeService::remove(WorktreeRemoveRequest {
+                    request_id,
+                    project_workspace_id: project_id,
+                    project_workspace_path: project_path,
+                    worktree_id,
+                    force: false,
+                })
+                .await
+                .map_err(|error| error.to_string())?;
+                Ok(())
+            },
+            |panel, cx| panel.load_worktrees(cx),
+            cx,
+        );
+    }
+
+    fn promote_worktree(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(worktree_id) = self.worktrees.get(index).map(|row| row.worktree_id.clone()) else {
+            return;
+        };
+        let Ok((active_path, project_id)) = Self::service_workspace() else {
+            return;
+        };
+        let request_id = format!("gpui-shell-worktree-keep-{}", uuid::Uuid::new_v4());
+        self.run_service(
+            move || async move {
+                let project_path = WorktreeService::resolve_project_workspace_path(&active_path)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                WorktreeService::promote(WorktreePromoteRequest {
+                    request_id,
+                    project_workspace_id: project_id,
+                    project_workspace_path: project_path,
+                    worktree_id,
+                })
+                .await
+                .map_err(|error| error.to_string())?;
+                Ok(())
+            },
+            |panel, cx| panel.load_worktrees(cx),
+            cx,
+        );
+    }
+
+    /// Moves the chat's open session into a managed worktree (isolation) or
+    /// back to the project checkout. The runtime keeps executing the session;
+    /// only its execution root changes.
+    fn toggle_session_isolation(&mut self, enable: bool, cx: &mut Context<Self>) {
+        let Some(session_id) = self.active_session.clone() else {
+            return;
+        };
+        let Ok((active_path, project_id)) = Self::service_workspace() else {
+            return;
+        };
+        let request_id = format!("gpui-shell-worktree-bind-{}", uuid::Uuid::new_v4());
+        self.run_service(
+            move || async move {
+                let project_path = WorktreeService::resolve_project_workspace_path(&active_path)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                WorktreeService::bind_session(WorktreeSessionBindingRequest {
+                    request_id,
+                    session_id,
+                    project_workspace_id: project_id,
+                    project_workspace_path: Some(project_path),
+                    enabled: enable,
+                })
+                .await
+                .map_err(|error| error.to_string())?;
+                Ok(())
+            },
+            |panel, cx| panel.load_worktrees(cx),
+            cx,
+        );
+    }
+
+    fn load_snapshots(&mut self, cx: &mut Context<Self>) {
+        let Some(handle) = crate::runtime::runtime_handle() else {
+            return;
+        };
+        if Self::service_workspace().is_err() {
+            self.action_error = Some("remote workspace unsupported".to_string());
+            self.snapshots_loaded = true;
+            cx.notify();
+            return;
+        }
+        let workspace_id = handle.workspace().id;
+        self.busy = true;
+        cx.notify();
+        let task = handle.tokio_handle().spawn(async move {
+            let manager = open_snapshot_manager_for_view(&workspace_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            let sessions = manager
+                .list_sessions()
+                .await
+                .map_err(|error| error.to_string())?;
+            let mut rows = Vec::with_capacity(sessions.len());
+            for session_id in sessions {
+                let stats = manager
+                    .get_session_stats(&session_id)
+                    .await
+                    .unwrap_or(serde_json::Value::Null);
+                rows.push(snapshot_row_from_stats(&session_id, &stats));
+            }
+            Ok(rows)
+        });
+        cx.spawn(async move |this, cx| {
+            let outcome = task.await;
+            this.update(cx, |panel, cx| {
+                panel.busy = false;
+                panel.snapshots_loaded = true;
+                match outcome {
+                    Ok(Ok(rows)) => {
+                        panel.action_error = None;
+                        panel.snapshots = rows;
+                        panel.snapshot_list.reset(panel.snapshots.len());
+                    }
+                    Ok(Err(message)) => {
+                        tracing::warn!("Snapshot list failed: {message}");
+                        panel.action_error = Some(message);
+                    }
+                    Err(join_error) => {
+                        tracing::error!("Snapshot list task failed: {join_error}");
+                        panel.action_error = Some("snapshot list task failed".to_string());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Restores the workspace files a session changed back to their
+    /// pre-session snapshots (the desktop rollback_session semantics: files
+    /// only, the transcript keeps its history).
+    fn restore_snapshot_files(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(session_id) = self.snapshots.get(index).map(|row| row.session_id.clone()) else {
+            return;
+        };
+        let Some(handle) = crate::runtime::runtime_handle() else {
+            return;
+        };
+        let workspace_id = handle.workspace().id;
+        self.run_service(
+            move || async move {
+                let manager = open_snapshot_manager_for_view(&workspace_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                manager
+                    .rollback_session(&session_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Ok(())
+            },
+            |panel, cx| panel.load_snapshots(cx),
+            cx,
+        );
+    }
+
+    /// Runs one core-service task for the M19 views: disables the actions,
+    /// awaits the result on the runtime thread, then lets the success hook
+    /// reload or surfaces the failure.
+    fn run_service<F, Fut, Done>(&mut self, op: F, on_success: Done, cx: &mut Context<Self>)
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<(), String>> + Send + 'static,
+        Done: FnOnce(&mut Self, &mut Context<Self>) + 'static,
+    {
+        let Some(handle) = crate::runtime::runtime_handle() else {
+            return;
+        };
+        self.busy = true;
+        cx.notify();
+        let task = handle.tokio_handle().spawn(op());
+        cx.spawn(async move |this, cx| {
+            let outcome = task.await;
+            this.update(cx, |panel, cx| {
+                panel.busy = false;
+                match outcome {
+                    Ok(Ok(())) => {
+                        panel.action_error = None;
+                        on_success(panel, cx);
+                    }
+                    Ok(Err(message)) => {
+                        tracing::warn!("Service action failed: {message}");
+                        panel.action_error = Some(message);
+                    }
+                    Err(join_error) => {
+                        tracing::error!("Service task failed: {join_error}");
+                        panel.action_error = Some("service task failed".to_string());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn load_history(&mut self, cx: &mut Context<Self>) {
@@ -597,20 +1084,27 @@ fn render_header(panel: &GitPanel, text: &ShellText, cx: &mut Context<GitPanel>)
         .map(|handle| handle.workspace().name.clone())
         .unwrap_or_default();
     let (additions, deletions) = panel.totals();
-    let summary = match (panel.loading, panel.files.is_empty()) {
-        (true, _) => text.git_loading.clone(),
-        (false, true) => text.git_empty.clone(),
-        (false, false) => format!(
-            "{}: {} · +{} -{}",
-            text.git_title,
-            panel.files.len(),
-            additions,
-            deletions
-        ),
+    let summary = match panel.view {
+        GitView::Worktrees => format!("{}: {}", text.git_worktrees_view, panel.worktrees.len()),
+        GitView::Snapshots => format!("{}: {}", text.git_snapshots_view, panel.snapshots.len()),
+        GitView::Files | GitView::History => match (panel.loading, panel.files.is_empty()) {
+            (true, _) => text.git_loading.clone(),
+            (false, true) => text.git_empty.clone(),
+            (false, false) => format!(
+                "{}: {} · +{} -{}",
+                text.git_title,
+                panel.files.len(),
+                additions,
+                deletions
+            ),
+        },
     };
-    let (files_variant, history_variant) = match panel.view {
-        GitView::Files => (ButtonVariant::Secondary, ButtonVariant::Ghost),
-        GitView::History => (ButtonVariant::Ghost, ButtonVariant::Secondary),
+    let active_variant = |view: GitView| {
+        if panel.view == view {
+            ButtonVariant::Secondary
+        } else {
+            ButtonVariant::Ghost
+        }
     };
     // Without an overview yet the push stays enabled and fails loudly; with
     // one, a remote-less repository disables it instead.
@@ -674,54 +1168,76 @@ fn render_header(panel: &GitPanel, text: &ShellText, cx: &mut Context<GitPanel>)
                     Button::new("git-view-files")
                         .label(text.git_files_view.clone())
                         .small()
-                        .with_variant(files_variant)
+                        .with_variant(active_variant(GitView::Files))
                         .tooltip(text.git_files_view.clone())
                         .disabled(panel.busy)
                         .on_click(cx.listener(|this, _, _, cx| {
-                            if this.view != GitView::Files {
-                                this.toggle_view(cx);
-                            }
+                            this.set_view(GitView::Files, cx);
                         })),
                 )
                 .child(
                     Button::new("git-view-history")
                         .label(text.git_history.clone())
                         .small()
-                        .with_variant(history_variant)
+                        .with_variant(active_variant(GitView::History))
                         .tooltip(text.git_history.clone())
                         .disabled(panel.busy)
                         .on_click(cx.listener(|this, _, _, cx| {
-                            if this.view != GitView::History {
-                                this.toggle_view(cx);
-                            }
+                            this.set_view(GitView::History, cx);
                         })),
                 )
                 .child(
-                    Button::new("git-stage-all")
-                        .icon(IconName::ListTodo)
+                    Button::new("git-view-worktrees")
+                        .label(text.git_worktrees_view.clone())
                         .small()
-                        .with_variant(ButtonVariant::Ghost)
-                        .tooltip(text.git_stage_all.clone())
+                        .with_variant(active_variant(GitView::Worktrees))
+                        .tooltip(text.git_worktrees_view.clone())
                         .disabled(panel.busy)
-                        .on_click(cx.listener(|this, _, _, cx| this.stage_all(cx))),
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_view(GitView::Worktrees, cx);
+                        })),
                 )
                 .child(
-                    Button::new("git-push")
-                        .icon(IconName::Upload)
+                    Button::new("git-view-snapshots")
+                        .label(text.git_snapshots_view.clone())
                         .small()
-                        .with_variant(ButtonVariant::Ghost)
-                        .tooltip(text.git_push.clone())
-                        .disabled(!push_enabled)
-                        .on_click(cx.listener(|this, _, _, cx| this.push(cx))),
+                        .with_variant(active_variant(GitView::Snapshots))
+                        .tooltip(text.git_snapshots_view.clone())
+                        .disabled(panel.busy)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_view(GitView::Snapshots, cx);
+                        })),
                 )
+                // Stage-all and push address the workspace diff; they hide
+                // outside the files view where they have no meaning.
+                .when(panel.view == GitView::Files, |this| {
+                    this.child(
+                        Button::new("git-stage-all")
+                            .icon(IconName::ListTodo)
+                            .small()
+                            .with_variant(ButtonVariant::Ghost)
+                            .tooltip(text.git_stage_all.clone())
+                            .disabled(panel.busy)
+                            .on_click(cx.listener(|this, _, _, cx| this.stage_all(cx))),
+                    )
+                    .child(
+                        Button::new("git-push")
+                            .icon(IconName::Upload)
+                            .small()
+                            .with_variant(ButtonVariant::Ghost)
+                            .tooltip(text.git_push.clone())
+                            .disabled(!push_enabled)
+                            .on_click(cx.listener(|this, _, _, cx| this.push(cx))),
+                    )
+                })
                 .child(
                     Button::new("git-refresh")
                         .icon(IconName::RefreshCw)
                         .small()
                         .with_variant(ButtonVariant::Ghost)
                         .tooltip(text.git_refresh.clone())
-                        .disabled(panel.loading)
-                        .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+                        .disabled(panel.loading || panel.busy)
+                        .on_click(cx.listener(|this, _, _, cx| this.refresh_current_view(cx))),
                 ),
         )
 }
@@ -975,10 +1491,20 @@ fn diff_content_width(lines: &[DiffLine], window: &mut Window, cx: &App) -> Pixe
 impl Render for GitPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // A successful commit clears its message box here: render is the only
-        // place holding the window that InputState::set_value requires.
+        // place holding the window that InputState::set_value requires. A
+        // created worktree clears its branch name the same way.
         if self.clear_commit_input {
             self.clear_commit_input = false;
             cx.update_entity(&self.commit_input, |input, cx| {
+                input.set_value("", window, cx);
+            });
+        }
+        if self.clear_worktree_input {
+            self.clear_worktree_input = false;
+            cx.update_entity(&self.worktree_branch_input, |input, cx| {
+                input.set_value("", window, cx);
+            });
+            cx.update_entity(&self.worktree_base_input, |input, cx| {
                 input.set_value("", window, cx);
             });
         }
@@ -1214,6 +1740,8 @@ impl Render for GitPanel {
                 )
                 .into_any_element(),
             GitView::History => render_history(self, &text, cx),
+            GitView::Worktrees => render_worktrees(self, &text, cx),
+            GitView::Snapshots => render_snapshots(self, &text, cx),
         };
 
         div()
@@ -1256,6 +1784,343 @@ fn render_commit_box(
                 .disabled(panel.busy || message_empty)
                 .on_click(cx.listener(|this, _, _, cx| this.commit_staged(cx))),
         )
+}
+
+/// Centered muted body line shared by the M19 views' empty/unsupported states.
+fn render_centered_note(note: &str, cx: &App) -> gpui_kit::AnyElement {
+    div()
+        .flex_1()
+        .flex()
+        .items_center()
+        .justify_center()
+        .p_4()
+        .text_sm()
+        .text_color(cx.theme().muted_foreground)
+        .child(note.to_string())
+        .into_any_element()
+}
+
+/// The M19 worktrees body: a session-isolation toggle for the chat's open
+/// session, the create form, and one reconciled row per managed worktree.
+fn render_worktrees(
+    panel: &GitPanel,
+    text: &ShellText,
+    cx: &mut Context<GitPanel>,
+) -> gpui_kit::AnyElement {
+    if panel.remote_workspace {
+        return render_centered_note(&text.git_remote_unsupported, cx);
+    }
+    // The chat's open session sits inside a managed worktree when any row
+    // lists it; the toggle offers the opposite transition.
+    let isolated = panel.active_session.as_ref().is_some_and(|session_id| {
+        panel
+            .worktrees
+            .iter()
+            .any(|row| row.sessions.iter().any(|s| &s.session_id == session_id))
+    });
+    let isolation_button = match (&panel.active_session, isolated) {
+        (None, _) => Button::new("git-worktree-isolate")
+            .icon(IconName::GitBranch)
+            .small()
+            .with_variant(ButtonVariant::Ghost)
+            .tooltip(text.git_worktree_no_session.clone())
+            .disabled(true),
+        (Some(_), false) => Button::new("git-worktree-isolate")
+            .icon(IconName::GitBranch)
+            .label(text.git_worktree_isolate.clone())
+            .small()
+            .with_variant(ButtonVariant::Secondary)
+            .tooltip(text.git_worktree_isolate.clone())
+            .disabled(panel.busy)
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_session_isolation(true, cx))),
+        (Some(_), true) => Button::new("git-worktree-isolate")
+            .icon(IconName::GitBranch)
+            .label(text.git_worktree_release.clone())
+            .small()
+            .with_variant(ButtonVariant::Secondary)
+            .tooltip(text.git_worktree_release.clone())
+            .disabled(panel.busy)
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_session_isolation(false, cx))),
+    };
+    let create_form = div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .px_3()
+        .py_2()
+        .border_b_1()
+        .border_color(cx.theme().border)
+        .child(
+            div()
+                .w(px(180.))
+                .min_w_0()
+                .child(Input::new(&panel.worktree_branch_input)),
+        )
+        .child(
+            div()
+                .w(px(180.))
+                .min_w_0()
+                .child(Input::new(&panel.worktree_base_input)),
+        )
+        .child(
+            Button::new("git-worktree-create")
+                .icon(IconName::Plus)
+                .small()
+                .with_variant(ButtonVariant::Ghost)
+                .tooltip(text.git_worktree_create.clone())
+                .disabled(panel.busy)
+                .on_click(cx.listener(|this, _, _, cx| this.create_worktree(cx))),
+        );
+    let body: gpui_kit::AnyElement = if panel.worktrees.is_empty() {
+        if panel.busy && !panel.worktrees_loaded {
+            render_centered_note(&text.git_loading, cx)
+        } else {
+            render_centered_note(&text.git_worktree_empty, cx)
+        }
+    } else {
+        let this = cx.entity();
+        let rows = list(panel.worktree_list.clone(), move |index, _window, cx| {
+            let panel = this.read(cx);
+            let Some(summary) = panel.worktrees.get(index) else {
+                return div().into_any_element();
+            };
+            let view = worktree_row_view(summary);
+            let busy = panel.busy;
+            let text = i18n::current(cx);
+            let this = this.clone();
+            div()
+                .id(gpui_kit::SharedString::from(format!(
+                    "git-worktree-{}",
+                    index
+                )))
+                .child(render_worktree_row(index, &view, busy, &this, &text, cx))
+                .into_any_element()
+        });
+        rows.flex_1().min_h_0().into_any_element()
+    };
+    div()
+        .v_flex()
+        .flex_1()
+        .min_h_0()
+        .child(create_form)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .justify_end()
+                .px_3()
+                .py_2()
+                .border_b_1()
+                .border_color(cx.theme().border)
+                .child(isolation_button),
+        )
+        .child(body)
+        .into_any_element()
+}
+
+/// One worktree row: identity line, fact badges, bound-session count, and the
+/// lifecycle actions (keep permanently, remove).
+fn render_worktree_row(
+    index: usize,
+    view: &WorktreeRowView,
+    busy: bool,
+    panel: &Entity<GitPanel>,
+    text: &ShellText,
+    cx: &App,
+) -> gpui_kit::AnyElement {
+    let lifecycle_label = match view.lifecycle {
+        WorktreeLifecycle::Managed => &text.git_worktree_managed,
+        WorktreeLifecycle::Permanent => &text.git_worktree_permanent,
+        WorktreeLifecycle::External => &text.git_worktree_external,
+    };
+    let mut badges = vec![lifecycle_label.as_str()];
+    if view.main {
+        badges.push(text.git_worktree_main.as_str());
+    }
+    if view.dirty {
+        badges.push(text.git_worktree_dirty.as_str());
+    }
+    if view.locked {
+        badges.push(text.git_worktree_locked.as_str());
+    }
+    if view.missing {
+        badges.push(text.git_worktree_missing.as_str());
+    }
+    let promote_panel = panel.clone();
+    let remove_panel = panel.clone();
+    div()
+        .v_flex()
+        .gap_0p5()
+        .min_w_0()
+        .p_2()
+        .rounded(cx.theme().radius)
+        .hover(|style| style.bg(cx.theme().sidebar_accent))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .min_w_0()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_sm()
+                        .text_color(cx.theme().sidebar_foreground)
+                        .truncate()
+                        .child(view.title.clone()),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .font_family(cx.theme().mono_font_family.clone())
+                        .text_color(cx.theme().muted_foreground)
+                        .child(view.head_short()),
+                )
+                .when(view.promotable, |this| {
+                    this.child(
+                        Button::new(gpui_kit::SharedString::from(format!(
+                            "git-worktree-promote-{}",
+                            index
+                        )))
+                        .icon(IconName::Pin)
+                        .small()
+                        .with_variant(ButtonVariant::Ghost)
+                        .tooltip(text.git_worktree_promote.clone())
+                        .disabled(busy)
+                        .on_click(move |_, _, cx| {
+                            promote_panel.update(cx, |panel, cx| panel.promote_worktree(index, cx));
+                        }),
+                    )
+                })
+                .when(view.removable, |this| {
+                    this.child(
+                        Button::new(gpui_kit::SharedString::from(format!(
+                            "git-worktree-remove-{}",
+                            index
+                        )))
+                        .icon(IconName::Trash)
+                        .small()
+                        .with_variant(ButtonVariant::Ghost)
+                        .tooltip(text.git_worktree_remove.clone())
+                        .disabled(busy)
+                        .on_click(move |_, _, cx| {
+                            remove_panel.update(cx, |panel, cx| panel.remove_worktree(index, cx));
+                        }),
+                    )
+                }),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .min_w_0()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .truncate()
+                        .child(badges.join(" · ")),
+                )
+                .when(view.session_count > 0, |this| {
+                    this.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(i18n::worktree_sessions_label(view.session_count, cx)),
+                    )
+                }),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .truncate()
+                .child(view.subtitle.clone()),
+        )
+        .into_any_element()
+}
+
+/// The M19 snapshots body: one row per session the snapshot system recorded,
+/// with its file/turn/change facts and the file-restore action. Turn-level
+/// rollback lives in the chat's per-turn menu.
+fn render_snapshots(
+    panel: &GitPanel,
+    text: &ShellText,
+    cx: &mut Context<GitPanel>,
+) -> gpui_kit::AnyElement {
+    if panel.remote_workspace {
+        return render_centered_note(&text.git_remote_unsupported, cx);
+    }
+    if panel.snapshots.is_empty() {
+        if panel.busy && !panel.snapshots_loaded {
+            return render_centered_note(&text.git_loading, cx);
+        }
+        return render_centered_note(&text.git_snapshot_empty, cx);
+    }
+    let this = cx.entity();
+    let rows = list(panel.snapshot_list.clone(), move |index, _window, cx| {
+        let panel = this.read(cx);
+        let Some(row) = panel.snapshots.get(index) else {
+            return div().into_any_element();
+        };
+        let session_id = row.session_id.clone();
+        let stats =
+            i18n::snapshot_stats_label(row.total_files, row.total_turns, row.total_changes, cx);
+        let text = i18n::current(cx);
+        let busy = panel.busy;
+        let restore_panel = this.clone();
+        div()
+            .id(gpui_kit::SharedString::from(format!(
+                "git-snapshot-{}",
+                index
+            )))
+            .flex()
+            .items_center()
+            .gap_2()
+            .min_w_0()
+            .p_2()
+            .rounded(cx.theme().radius)
+            .hover(|style| style.bg(cx.theme().sidebar_accent))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .v_flex()
+                    .gap_0p5()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .text_color(cx.theme().sidebar_foreground)
+                            .truncate()
+                            .child(session_id),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(stats),
+                    ),
+            )
+            .child(
+                Button::new(gpui_kit::SharedString::from(format!(
+                    "git-snapshot-restore-{}",
+                    index
+                )))
+                .icon(IconName::Undo2)
+                .small()
+                .with_variant(ButtonVariant::Ghost)
+                .tooltip(text.git_snapshot_restore.clone())
+                .disabled(busy)
+                .on_click(move |_, _, cx| {
+                    restore_panel.update(cx, |panel, cx| panel.restore_snapshot_files(index, cx));
+                }),
+            )
+            .into_any_element()
+    });
+    rows.flex_1().min_h_0().into_any_element()
 }
 
 /// The read-only history body: recent commits of the current branch, newest
@@ -1485,7 +2350,7 @@ mod tests {
         let window = cx.add_empty_window();
         let panel = window.update(|window, cx| {
             cx.new(|cx| {
-                let mut panel = GitPanel::new(window, cx);
+                let mut panel = GitPanel::new(None, window, cx);
                 // The panel is driven with a fixture snapshot instead of the
                 // git port so the render path is exercised without a runtime.
                 panel.error = None;
@@ -1527,7 +2392,7 @@ mod tests {
             ));
         });
         let window = cx.add_empty_window();
-        let panel = window.update(|window, cx| cx.new(|cx| GitPanel::new(window, cx)));
+        let panel = window.update(|window, cx| cx.new(|cx| GitPanel::new(None, window, cx)));
         window.update(|_, cx| {
             panel.update(cx, |panel, cx| {
                 panel.commits = vec![GitCommitSummary {
@@ -1571,6 +2436,132 @@ mod tests {
                 }];
                 panel.file_list.reset(panel.files.len());
                 panel.rebuild_diff(cx);
+                cx.notify();
+            });
+        });
+        window.draw(
+            gpui_kit::point(px(0.), px(0.)),
+            gpui_kit::size(px(900.), px(600.)),
+            move |_, _| panel.into_any_element(),
+        );
+        window.run_until_parked();
+    }
+
+    fn sample_worktree(
+        branch: &str,
+        lifecycle: WorktreeLifecycle,
+        is_main: bool,
+    ) -> WorktreeSummary {
+        WorktreeSummary {
+            workspace_id: None,
+            worktree_id: format!("wt-{branch}"),
+            project_workspace_path: "/repo".into(),
+            path: format!("/repo/.worktrees/{branch}"),
+            head: "0123456789abcdef0123456789abcdef01234567".into(),
+            branch: Some(branch.into()),
+            lifecycle,
+            is_main,
+            dirty: !is_main,
+            locked: false,
+            missing: false,
+            has_unpublished_commits: false,
+            associated_session_count: usize::from(!is_main),
+            running_session_count: 0,
+            sessions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn snapshot_row_parses_core_stats_json() {
+        let row = snapshot_row_from_stats(
+            "sess-1",
+            &serde_json::json!({ "session_id": "sess-1", "total_files": 3, "total_turns": 5, "total_changes": 9 }),
+        );
+        assert_eq!(row.session_id, "sess-1");
+        assert_eq!(row.total_files, 3);
+        assert_eq!(row.total_turns, 5);
+        assert_eq!(row.total_changes, 9);
+        // Missing or malformed facts keep the row renderable with zeros.
+        let degraded = snapshot_row_from_stats("sess-2", &serde_json::Value::Null);
+        assert_eq!(
+            degraded,
+            SnapshotRow {
+                session_id: "sess-2".into(),
+                total_files: 0,
+                total_turns: 0,
+                total_changes: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn worktree_row_view_resolves_actions_and_head() {
+        let main = worktree_row_view(&sample_worktree("main", WorktreeLifecycle::External, true));
+        assert!(main.removable == false);
+        assert!(main.promotable == false);
+        assert!(main.dirty == false);
+        assert_eq!(main.head_short(), "0123456");
+
+        let managed = worktree_row_view(&sample_worktree(
+            "feature",
+            WorktreeLifecycle::Managed,
+            false,
+        ));
+        assert!(managed.removable);
+        assert!(managed.promotable);
+        assert!(managed.dirty);
+
+        // An unborn or placeholder HEAD degrades to a dash instead of a
+        // misleading hash prefix.
+        let mut unborn = sample_worktree("fresh", WorktreeLifecycle::Managed, false);
+        unborn.head = "0".repeat(40);
+        assert_eq!(worktree_row_view(&unborn).head_short(), "-");
+    }
+
+    /// The M19 bodies must draw without a runtime: fixture worktree rows with
+    /// their badges and actions, the isolation row without an open session,
+    /// and the snapshot list over fixture stats.
+    #[gpui_kit::test]
+    fn worktree_and_snapshot_views_render(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(crate::i18n::fallback_text(
+                openbitfun_core::service::i18n::LocaleId::EnUS,
+            ));
+        });
+        let window = cx.add_empty_window();
+        let panel = window.update(|window, cx| cx.new(|cx| GitPanel::new(None, window, cx)));
+        window.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.worktrees = vec![
+                    sample_worktree("main", WorktreeLifecycle::External, true),
+                    sample_worktree("feature", WorktreeLifecycle::Managed, false),
+                ];
+                panel.worktrees_loaded = true;
+                panel.worktree_list.reset(panel.worktrees.len());
+                panel.view = GitView::Worktrees;
+                cx.notify();
+            });
+        });
+        {
+            let panel = panel.clone();
+            window.draw(
+                gpui_kit::point(px(0.), px(0.)),
+                gpui_kit::size(px(900.), px(600.)),
+                move |_, _| panel.into_any_element(),
+            );
+            window.run_until_parked();
+        }
+
+        window.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.snapshots = vec![snapshot_row_from_stats(
+                    "0123456789abcdef",
+                    &serde_json::json!({ "total_files": 2, "total_turns": 4, "total_changes": 7 }),
+                )];
+                panel.snapshots_loaded = true;
+                panel.snapshot_list.reset(panel.snapshots.len());
+                panel.view = GitView::Snapshots;
                 cx.notify();
             });
         });

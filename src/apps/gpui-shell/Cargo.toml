@@ -33,6 +33,10 @@ openbitfun-core = { path = "../../crates/assembly/core", features = [
 ] }
 openbitfun-agent-runtime = { path = "../../crates/execution/agent-runtime", features = ["agent-runtime"] }
 openbitfun-events = { path = "../../crates/contracts/events" }
+# M19 worktree management: the reconciled worktree summary and error contracts
+# live in the stable core-types crate (the desktop adapter depends on it the
+# same way).
+openbitfun-core-types = { path = "../../crates/contracts/core-types" }
 openbitfun-runtime-ports = { path = "../../crates/contracts/runtime-ports", features = [
     "agent-api",
     # M8 changes view: the workspace diff port served by the local runtime

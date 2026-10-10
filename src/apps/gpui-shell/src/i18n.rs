@@ -183,6 +183,29 @@ pub(crate) struct ShellText {
     pub git_no_commits: String,
     pub git_untrusted_title: String,
     pub git_untrusted_action: String,
+    pub git_worktrees_view: String,
+    pub git_snapshots_view: String,
+    pub git_remote_unsupported: String,
+    pub git_worktree_empty: String,
+    pub git_worktree_create: String,
+    pub git_worktree_branch_placeholder: String,
+    pub git_worktree_base_ref_placeholder: String,
+    pub git_worktree_remove: String,
+    pub git_worktree_promote: String,
+    pub git_worktree_isolate: String,
+    pub git_worktree_release: String,
+    pub git_worktree_no_session: String,
+    pub git_worktree_main: String,
+    pub git_worktree_dirty: String,
+    pub git_worktree_locked: String,
+    pub git_worktree_missing: String,
+    pub git_worktree_managed: String,
+    pub git_worktree_permanent: String,
+    pub git_worktree_external: String,
+    pub git_snapshot_empty: String,
+    pub git_snapshot_restore: String,
+    pub rollback_at_turn: String,
+    pub turn_menu: String,
 }
 
 impl Global for ShellText {}
@@ -250,6 +273,27 @@ pub(crate) fn turns_label(turn_count: usize, cx: &App) -> String {
     resolve_with(
         "gpui-shell-session-turns",
         TranslationArgs::new().with_number("count", turn_count as f64),
+        cx,
+    )
+}
+
+/// Resolves the localized bound-session count label for one worktree row.
+pub(crate) fn worktree_sessions_label(count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-git-worktree-sessions",
+        TranslationArgs::new().with_number("count", count as f64),
+        cx,
+    )
+}
+
+/// Resolves the localized facts line for one snapshot-session row.
+pub(crate) fn snapshot_stats_label(files: usize, turns: usize, changes: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-git-snapshot-stats",
+        TranslationArgs::new()
+            .with_number("files", files as f64)
+            .with_number("turns", turns as f64)
+            .with_number("changes", changes as f64),
         cx,
     )
 }
@@ -530,6 +574,31 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         git_no_commits: "No commits yet.".to_string(),
         git_untrusted_title: "Repository ownership is not trusted".to_string(),
         git_untrusted_action: "Trust repository".to_string(),
+        git_worktrees_view: "Worktrees".to_string(),
+        git_snapshots_view: "Snapshots".to_string(),
+        git_remote_unsupported:
+            "Worktree management and snapshots are not supported for remote workspaces."
+                .to_string(),
+        git_worktree_empty: "No managed worktrees yet.".to_string(),
+        git_worktree_create: "Create worktree".to_string(),
+        git_worktree_branch_placeholder: "Branch name (optional)".to_string(),
+        git_worktree_base_ref_placeholder: "Base ref (default HEAD)".to_string(),
+        git_worktree_remove: "Remove".to_string(),
+        git_worktree_promote: "Keep permanently".to_string(),
+        git_worktree_isolate: "Move this session into a managed worktree".to_string(),
+        git_worktree_release: "Move this session back to the project checkout".to_string(),
+        git_worktree_no_session: "Open a session in the chat first.".to_string(),
+        git_worktree_main: "main".to_string(),
+        git_worktree_dirty: "dirty".to_string(),
+        git_worktree_locked: "locked".to_string(),
+        git_worktree_missing: "missing".to_string(),
+        git_worktree_managed: "managed".to_string(),
+        git_worktree_permanent: "permanent".to_string(),
+        git_worktree_external: "external".to_string(),
+        git_snapshot_empty: "The snapshot system has no recorded sessions yet.".to_string(),
+        git_snapshot_restore: "Undo file changes".to_string(),
+        rollback_at_turn: "Roll back to this turn".to_string(),
+        turn_menu: "Turn actions".to_string(),
     }
 }
 
@@ -726,6 +795,33 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         git_no_commits: service.t("gpui-shell-git-no-commits").await,
         git_untrusted_title: service.t("gpui-shell-git-untrusted-title").await,
         git_untrusted_action: service.t("gpui-shell-git-untrusted-action").await,
+        git_worktrees_view: service.t("gpui-shell-git-worktrees-view").await,
+        git_snapshots_view: service.t("gpui-shell-git-snapshots-view").await,
+        git_remote_unsupported: service.t("gpui-shell-git-remote-unsupported").await,
+        git_worktree_empty: service.t("gpui-shell-git-worktree-empty").await,
+        git_worktree_create: service.t("gpui-shell-git-worktree-create").await,
+        git_worktree_branch_placeholder: service
+            .t("gpui-shell-git-worktree-branch-placeholder")
+            .await,
+        git_worktree_base_ref_placeholder: service
+            .t("gpui-shell-git-worktree-base-ref-placeholder")
+            .await,
+        git_worktree_remove: service.t("gpui-shell-git-worktree-remove").await,
+        git_worktree_promote: service.t("gpui-shell-git-worktree-promote").await,
+        git_worktree_isolate: service.t("gpui-shell-git-worktree-isolate").await,
+        git_worktree_release: service.t("gpui-shell-git-worktree-release").await,
+        git_worktree_no_session: service.t("gpui-shell-git-worktree-no-session").await,
+        git_worktree_main: service.t("gpui-shell-git-worktree-main").await,
+        git_worktree_dirty: service.t("gpui-shell-git-worktree-dirty").await,
+        git_worktree_locked: service.t("gpui-shell-git-worktree-locked").await,
+        git_worktree_missing: service.t("gpui-shell-git-worktree-missing").await,
+        git_worktree_managed: service.t("gpui-shell-git-worktree-managed").await,
+        git_worktree_permanent: service.t("gpui-shell-git-worktree-permanent").await,
+        git_worktree_external: service.t("gpui-shell-git-worktree-external").await,
+        git_snapshot_empty: service.t("gpui-shell-git-snapshot-empty").await,
+        git_snapshot_restore: service.t("gpui-shell-git-snapshot-restore").await,
+        rollback_at_turn: service.t("gpui-shell-rollback-at-turn").await,
+        turn_menu: service.t("gpui-shell-turn-menu").await,
     }
 }
 

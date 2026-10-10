@@ -1559,6 +1559,8 @@ impl ShellWindow {
 
     /// Opens the changes view (creating the panel, which fetches the workspace
     /// diff snapshot) or returns to the chat when it is already showing.
+    /// The chat's open session rides along: the worktree view's session
+    /// isolation toggle addresses it (M19).
     fn toggle_git_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.main_view == MainView::Git {
             self.main_view = MainView::Chat;
@@ -1566,7 +1568,8 @@ impl ShellWindow {
             self.git = None;
         } else {
             self.main_view = MainView::Git;
-            self.git = Some(cx.new(|cx| GitPanel::new(window, cx)));
+            let active_session = self.chat.as_ref().map(|chat| chat.session_id.clone());
+            self.git = Some(cx.new(|cx| GitPanel::new(active_session, window, cx)));
         }
         cx.notify();
     }
@@ -1991,9 +1994,10 @@ fn render_chat_item(
     }
 }
 
-/// Per-turn fork menu under a user prompt: fork including the selected turn,
-/// or from just before it. Both open the forked session when the runtime
-/// confirms the copy.
+/// Per-turn menu under a user prompt: fork including the selected turn, from
+/// just before it, or roll the session back to the turn boundary (M19). Forks
+/// open the copy when the runtime confirms; rollback reverts transcript and
+/// workspace files in place and refreshes through the history-changed event.
 fn turn_fork_menu(
     session_id: String,
     turn_id: String,
@@ -2020,17 +2024,31 @@ fn turn_fork_menu(
             }
         }
     };
+    let rollback_action = {
+        let session_id = session_id.clone();
+        let turn_id = turn_id.clone();
+        move |_: &gpui_kit::ClickEvent, _window: &mut Window, _cx: &mut App| {
+            if let Some(handle) = runtime::runtime_handle() {
+                handle.rollback_session_to_turn(session_id.clone(), turn_id.clone(), tx.clone());
+            }
+        }
+    };
     Button::new(SharedString::from(format!("turn-fork-{turn_id}")))
         .icon(IconName::GitBranch)
         .small()
         .with_variant(ButtonVariant::Ghost)
-        .tooltip(text.fork_at_turn.clone())
+        .tooltip(text.turn_menu.clone())
         .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _window, cx| {
             let text = i18n::current(cx);
             menu.item(PopupMenuItem::new(text.fork_at_turn.clone()).on_click(at_action.clone()))
                 .item(
                     PopupMenuItem::new(text.fork_before_turn.clone())
                         .on_click(before_action.clone()),
+                )
+                .separator()
+                .item(
+                    PopupMenuItem::new(text.rollback_at_turn.clone())
+                        .on_click(rollback_action.clone()),
                 )
         })
         .into_any_element()
@@ -4396,7 +4414,7 @@ mod tests {
             cx.set_global(sample_shell_text());
         });
         let window = cx.add_empty_window();
-        let panel = window.update(|window, cx| cx.new(|cx| GitPanel::new(window, cx)));
+        let panel = window.update(|window, cx| cx.new(|cx| GitPanel::new(None, window, cx)));
         window.draw(
             point(px(0.), px(0.)),
             size(px(900.), px(600.)),

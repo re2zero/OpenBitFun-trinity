@@ -184,6 +184,9 @@ gpui-shell-session-compact = Compact context
 gpui-shell-session-export = Export transcript
 gpui-shell-fork-at-turn = Fork from this turn
 gpui-shell-fork-before-turn = Fork before this turn
+
+gpui-shell-rollback-at-turn = Roll back to this turn
+gpui-shell-turn-menu = Turn actions
 gpui-shell-export-title = Export transcript
 gpui-shell-export-done-prefix = Exported to
 gpui-shell-compaction-started = Compacting session context…
@@ -333,6 +336,30 @@ gpui-shell-git-files-view = Changes
 gpui-shell-git-no-commits = No commits yet.
 gpui-shell-git-untrusted-title = Repository ownership is not trusted
 gpui-shell-git-untrusted-action = Trust repository
+
+gpui-shell-git-worktrees-view = Worktrees
+gpui-shell-git-snapshots-view = Snapshots
+gpui-shell-git-remote-unsupported = Worktree management and snapshots are not supported for remote workspaces.
+gpui-shell-git-worktree-empty = No managed worktrees yet.
+gpui-shell-git-worktree-create = Create worktree
+gpui-shell-git-worktree-branch-placeholder = Branch name (optional; names a branch for the worktree)
+gpui-shell-git-worktree-base-ref-placeholder = Base ref (default HEAD)
+gpui-shell-git-worktree-remove = Remove
+gpui-shell-git-worktree-promote = Keep permanently
+gpui-shell-git-worktree-isolate = Move this session into a managed worktree
+gpui-shell-git-worktree-release = Move this session back to the project checkout
+gpui-shell-git-worktree-no-session = Open a session in the chat first.
+gpui-shell-git-worktree-main = main
+gpui-shell-git-worktree-dirty = dirty
+gpui-shell-git-worktree-locked = locked
+gpui-shell-git-worktree-missing = missing
+gpui-shell-git-worktree-managed = managed
+gpui-shell-git-worktree-permanent = permanent
+gpui-shell-git-worktree-external = external
+gpui-shell-git-worktree-sessions = { $count } sessions
+gpui-shell-git-snapshot-empty = The snapshot system has no recorded sessions yet.
+gpui-shell-git-snapshot-restore = Undo file changes
+gpui-shell-git-snapshot-stats = { $files } files · { $turns } turns · { $changes } changes
 
 
 gpui-shell-question-title = Your answer is needed

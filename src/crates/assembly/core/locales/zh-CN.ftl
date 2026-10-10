@@ -163,6 +163,9 @@ gpui-shell-session-compact = 压缩上下文
 gpui-shell-session-export = 导出会话记录
 gpui-shell-fork-at-turn = 从此轮分叉
 gpui-shell-fork-before-turn = 在此轮前分叉
+
+gpui-shell-rollback-at-turn = 回滚到此轮
+gpui-shell-turn-menu = 本轮操作
 gpui-shell-export-title = 导出会话记录
 gpui-shell-export-done-prefix = 已导出到
 gpui-shell-compaction-started = 正在压缩会话上下文…
@@ -309,6 +312,30 @@ gpui-shell-git-files-view = 变更
 gpui-shell-git-no-commits = 暂无提交。
 gpui-shell-git-untrusted-title = 仓库归属未受信任
 gpui-shell-git-untrusted-action = 信任此仓库
+
+gpui-shell-git-worktrees-view = Worktree
+gpui-shell-git-snapshots-view = 快照
+gpui-shell-git-remote-unsupported = 远程工作区暂不支持 Worktree 管理与快照。
+gpui-shell-git-worktree-empty = 还没有托管 worktree。
+gpui-shell-git-worktree-create = 创建 worktree
+gpui-shell-git-worktree-branch-placeholder = 分支名（可选，填了就为 worktree 建分支）
+gpui-shell-git-worktree-base-ref-placeholder = 基线 ref（默认 HEAD）
+gpui-shell-git-worktree-remove = 删除
+gpui-shell-git-worktree-promote = 转为永久保留
+gpui-shell-git-worktree-isolate = 将当前会话迁入托管 worktree
+gpui-shell-git-worktree-release = 将当前会话迁回主工作区
+gpui-shell-git-worktree-no-session = 请先在聊天里打开一个会话。
+gpui-shell-git-worktree-main = 主工作区
+gpui-shell-git-worktree-dirty = 有未提交改动
+gpui-shell-git-worktree-locked = 已锁定
+gpui-shell-git-worktree-missing = 目录缺失
+gpui-shell-git-worktree-managed = 托管
+gpui-shell-git-worktree-permanent = 永久
+gpui-shell-git-worktree-external = 外部
+gpui-shell-git-worktree-sessions = { $count } 个会话
+gpui-shell-git-snapshot-empty = 快照系统还没有记录。
+gpui-shell-git-snapshot-restore = 撤销文件改动
+gpui-shell-git-snapshot-stats = { $files } 文件 · { $turns } 轮 · { $changes } 处改动
 
 
 gpui-shell-question-title = 需要你的回答

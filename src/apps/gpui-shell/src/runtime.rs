@@ -22,7 +22,8 @@ use openbitfun_agent_runtime::sdk::{
     AgentSessionArchiveStateRequest, AgentSessionCompactionRequest, AgentSessionCreateRequest,
     AgentSessionDeleteRequest, AgentSessionForkAtTurnRequest, AgentSessionForkBeforeTurnRequest,
     AgentSessionForkRequest, AgentSessionModelUpdateRequest, AgentSessionRenameRequest,
-    AgentSessionRestoreRequest, AgentSessionUsageRequest, AgentTurnCancellationRequest,
+    AgentSessionRestoreRequest, AgentSessionRollbackToTurnOutcome,
+    AgentSessionRollbackToTurnRequest, AgentSessionUsageRequest, AgentTurnCancellationRequest,
     AgentUserAnswersRequest, PendingUserQuestion, PermissionReply, PermissionRequest,
     PermissionRequestEvent, SessionState, SessionTranscript, SessionTranscriptRequest,
     SessionUsageReport,
@@ -659,6 +660,66 @@ impl RuntimeHandle {
                     );
                     let _ = tx.send(RuntimeEvent::SessionActionFailed {
                         message: format!("fork: {message}"),
+                    });
+                }
+            }
+        });
+    }
+
+    /// Rolls a session back to a persisted turn boundary: the runtime reverts
+    /// the transcript and the workspace files together (M19) and emits
+    /// SessionHistoryChanged, which refreshes the open transcript through the
+    /// regular event pump. Idle is required up front so an in-flight turn
+    /// rejects the rollback instead of interleaving with it.
+    pub(crate) fn rollback_session_to_turn(
+        &self,
+        session_id: String,
+        turn_id: String,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+    ) {
+        let runtime = self.agent_runtime.clone();
+        let workspace_id = Some(self.workspace().id);
+        self.tokio.spawn(async move {
+            let request = AgentSessionRollbackToTurnRequest {
+                workspace_id,
+                workspace_path: String::new(),
+                workspace_hostname: None,
+                session_id: session_id.clone(),
+                target_turn_id: turn_id.clone(),
+                require_idle: true,
+                expected_storage_turn_index: None,
+                expected_catalog_revision: None,
+                remote_connection_id: None,
+                remote_ssh_host: None,
+            };
+            match runtime.rollback_session_to_turn(request).await {
+                Ok(AgentSessionRollbackToTurnOutcome::Completed { .. }) => {
+                    tracing::info!("Rolled back session {session_id} to turn {turn_id}");
+                    // Transcript refresh rides the runtime's
+                    // SessionHistoryChanged event; nothing to send here.
+                }
+                Ok(AgentSessionRollbackToTurnOutcome::RecoveryRequired {
+                    reason,
+                    affected_files,
+                    ..
+                }) => {
+                    tracing::error!(
+                        "Rollback of session {session_id} to turn {turn_id} needs recovery: {reason}"
+                    );
+                    let _ = tx.send(RuntimeEvent::SessionActionFailed {
+                        message: format!(
+                            "rollback: {reason} ({} files affected)",
+                            affected_files.len()
+                        ),
+                    });
+                }
+                Err(error) => {
+                    let message = error.into_message();
+                    tracing::error!(
+                        "Failed to roll back session {session_id} to turn {turn_id}: {message}"
+                    );
+                    let _ = tx.send(RuntimeEvent::SessionActionFailed {
+                        message: format!("rollback: {message}"),
                     });
                 }
             }

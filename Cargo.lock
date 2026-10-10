@@ -8837,6 +8837,7 @@ dependencies = [
  "minisign-verify",
  "openbitfun-agent-runtime",
  "openbitfun-core",
+ "openbitfun-core-types",
  "openbitfun-events",
  "openbitfun-runtime-ports",
  "openbitfun-services-core",
