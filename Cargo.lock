@@ -8829,6 +8829,7 @@ version = "1.0.3"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
+ "async-trait",
  "base64 0.22.1",
  "chrono",
  "flate2",

@@ -13,6 +13,7 @@ pub mod git;
 pub mod i18n;
 pub mod insights;
 pub mod instance;
+pub mod manage;
 pub mod runtime;
 pub mod search;
 pub mod settings;

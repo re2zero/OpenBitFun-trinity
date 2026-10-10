@@ -65,6 +65,9 @@ openbitfun-services-core = { path = "../../crates/services/services-core", featu
 ] }
 flate2 = { workspace = true }
 futures-util = { workspace = true }
+# M21 MCP interaction pump: the emitter forwarding server asks into the shell
+# event pump implements the core backend-bus trait.
+async-trait = { workspace = true }
 reqwest = { workspace = true, features = ["http2", "rustls-no-provider", "stream"] }
 sha2 = { workspace = true }
 tar = { workspace = true }

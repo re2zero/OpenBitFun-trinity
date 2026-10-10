@@ -361,8 +361,11 @@ pub(crate) fn render_page(
         .pages(vec![
             appearance_page(text),
             models_page(text, cx),
-            terminal_page(text, view),
+            terminal_page(text, view.clone()),
             permissions_page(text, cx),
+            crate::manage::skills_page(text),
+            crate::manage::agents_page(text, view.clone()),
+            crate::manage::mcp_page(text, view),
         ])
         .into_any_element()
 }

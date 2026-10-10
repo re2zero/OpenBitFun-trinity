@@ -11,7 +11,7 @@
 //! module; results cross into GPUI through an mpsc channel of [`RuntimeEvent`]
 //! so the render path stays synchronous.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Result};
@@ -34,6 +34,7 @@ use openbitfun_core::agentic::system::{
     init_agentic_system_for_profile_with_runtime_ownership, select_agentic_system_profile,
 };
 use openbitfun_core::infrastructure::ai::AIClientFactory;
+use openbitfun_core::infrastructure::events::event_system::get_global_event_system;
 use openbitfun_core::infrastructure::try_get_path_manager_arc;
 use openbitfun_core::product_assembly::{DeliveryProfile, ProductAssembler, ProductAssemblyInput};
 use openbitfun_core::product_runtime::{
@@ -69,6 +70,19 @@ const TOOL_DETAIL_LIMIT: usize = 400;
 const VISITED_WORKSPACES_LIMIT: usize = 12;
 
 static RUNTIME_HANDLE: OnceLock<RuntimeHandle> = OnceLock::new();
+
+/// Event sender parked at bootstrap so management actions fired from settings
+/// closures (which hold no runtime handles) can publish catalog refreshes.
+static SHELL_EVENT_TX: OnceLock<mpsc::UnboundedSender<RuntimeEvent>> = OnceLock::new();
+
+fn publish(event: RuntimeEvent) {
+    match SHELL_EVENT_TX.get() {
+        Some(tx) => {
+            let _ = tx.send(event);
+        }
+        None => tracing::warn!("Dropping a runtime event before the shell pump is wired"),
+    }
+}
 
 /// Returns the embedded runtime handle once the bootstrap has finished.
 pub(crate) fn runtime_handle() -> Option<&'static RuntimeHandle> {
@@ -106,9 +120,15 @@ pub(crate) enum RuntimeEvent {
         message: String,
     },
     /// Submitting a message failed; the turn never started.
-    SendFailed { session_id: String, error: String },
+    SendFailed {
+        session_id: String,
+        error: String,
+    },
     /// A dialog turn started executing (busy marker for the open session).
-    TurnStarted { session_id: String, turn_id: String },
+    TurnStarted {
+        session_id: String,
+        turn_id: String,
+    },
     /// Streaming assistant text for the open session.
     TextChunk {
         session_id: String,
@@ -117,27 +137,39 @@ pub(crate) enum RuntimeEvent {
         text: String,
     },
     /// Tool lifecycle update; upserted by the tool id in the open session.
-    ToolUpdate { session_id: String, card: ToolCard },
+    ToolUpdate {
+        session_id: String,
+        card: ToolCard,
+    },
     /// A dialog turn reached a terminal state.
     TurnFinished {
         session_id: String,
         error: Option<String>,
     },
     /// The authoritative history changed (undo/restore/repair); reload it.
-    HistoryChanged { session_id: String },
+    HistoryChanged {
+        session_id: String,
+    },
     /// A tool asked for permission (process-local `PermissionRequestManager`
     /// broadcast). The turn parks until the shell answers it through
     /// [`RuntimeHandle::respond_permission`].
-    PermissionAsked { request: PermissionRequest },
+    PermissionAsked {
+        request: PermissionRequest,
+    },
     /// A pending request was answered or cancelled; `request_id` drops out of
     /// the shell's pending queue. This includes echoes of the shell's own
     /// replies, which keeps the queue a pure projection of the runtime state.
-    PermissionResolved { request_id: String },
+    PermissionResolved {
+        request_id: String,
+    },
     /// Full pending-request snapshot replacing the queue, sent when the
     /// permission broadcast lags so no ask can be stranded unanswered.
     PermissionSnapshot(Vec<PermissionRequest>),
     /// A session rename was applied by the runtime; adopt the new name.
-    SessionRenamed { session_id: String, name: String },
+    SessionRenamed {
+        session_id: String,
+        name: String,
+    },
     /// A fork of an existing session was created; the runtime opens it right
     /// away, so the chat pane switches to the fork when its transcript
     /// arrives through [`RuntimeEvent::SessionOpened`].
@@ -147,9 +179,14 @@ pub(crate) enum RuntimeEvent {
     },
     /// A manual context-compaction maintenance turn was accepted for the open
     /// session; completion flows through the normal turn-settlement events.
-    CompactionStarted { session_id: String },
+    CompactionStarted {
+        session_id: String,
+    },
     /// A transcript export was written to `path`.
-    ExportFinished { session_id: String, path: String },
+    ExportFinished {
+        session_id: String,
+        path: String,
+    },
     /// Session usage report for the usage dialog.
     SessionUsage(Box<SessionUsageSummary>),
     /// Insight report metadata (latest first) for the insights page.
@@ -181,10 +218,14 @@ pub(crate) enum RuntimeEvent {
     /// A search action failed; the page shows the reason inline.
     SearchFailed(String),
     /// A session was deleted; the chat pane must close when it shows it.
-    SessionDeleted { session_id: String },
+    SessionDeleted {
+        session_id: String,
+    },
     /// A session action (rename / archive / delete / model change) failed;
     /// surfaced as a shell notice line, never silently dropped.
-    SessionActionFailed { message: String },
+    SessionActionFailed {
+        message: String,
+    },
     /// A hidden subagent session was linked to the parent tool call that
     /// launched it (M20). The parent's tool card grows the "view run" entry
     /// point; the child opens directly as the detail view.
@@ -226,6 +267,20 @@ pub(crate) enum RuntimeEvent {
     /// through this one path, and questions that predate the subscription
     /// still surface.
     QuestionsChanged(Vec<PendingUserQuestion>),
+    /// M21 management catalogs for the settings pages (skills, agents, MCP
+    /// servers). Each replaces the corresponding gpui global wholesale.
+    SkillCatalog(crate::manage::SkillCatalog),
+    AgentCatalog(crate::manage::AgentCatalog),
+    McpCatalog(crate::manage::McpCatalog),
+    /// Resources/prompts snapshot for one MCP server (browse dialog).
+    McpServerCatalog(Box<crate::manage::McpServerCatalogView>),
+    /// An MCP server asked for an interactive decision (elicitation or
+    /// sampling); the turn parks until the shell answers through
+    /// [`RuntimeHandle::submit_mcp_interaction`].
+    McpInteractionAsked(Box<crate::manage::McpInteractionRequest>),
+    /// A management action (agent creation, MCP lifecycle) failed; the
+    /// settings pages surface it as a dismissible banner.
+    ManageFailed(String),
 }
 
 /// One session list row: the runtime summary plus its persisted archive state.
@@ -1225,6 +1280,174 @@ impl RuntimeHandle {
         });
     }
 
+    /// M21: the skills catalog plus the global disable sets, for the skills
+    /// management page.
+    pub(crate) fn reload_skill_catalog(&self) {
+        let workspace = self.workspace();
+        self.tokio.spawn(async move {
+            let catalog = fetch_skill_catalog(&workspace.root_path, &workspace.id).await;
+            publish(RuntimeEvent::SkillCatalog(catalog));
+        });
+    }
+
+    /// M21: mode and subagent cards for the agents management page.
+    pub(crate) fn reload_agent_catalog(&self) {
+        let workspace = self.workspace();
+        self.tokio.spawn(async move {
+            let catalog = fetch_agent_catalog(Some(&workspace.id)).await;
+            publish(RuntimeEvent::AgentCatalog(catalog));
+        });
+    }
+
+    /// M21: configured MCP servers with their runtime status.
+    pub(crate) fn reload_mcp_catalog(&self) {
+        self.tokio.spawn(async move {
+            publish(RuntimeEvent::McpCatalog(fetch_mcp_catalog().await));
+        });
+    }
+
+    /// M21: resources/prompts snapshot for one server (browse dialog).
+    pub(crate) fn reload_mcp_server_catalog(&self, server_id: String, force: bool) {
+        self.tokio.spawn(async move {
+            match fetch_mcp_server_catalog(&server_id, force).await {
+                Ok(view) => publish(RuntimeEvent::McpServerCatalog(Box::new(view))),
+                Err(message) => {
+                    tracing::warn!("Failed to load MCP catalog for {server_id}: {message}");
+                    publish(RuntimeEvent::ManageFailed(message));
+                }
+            }
+        });
+    }
+
+    /// M21: flips one skill's global enablement and reloads the catalog.
+    /// Desktop parity: every skill-settings write is followed by a global
+    /// config reload so resolution picks the new set up.
+    pub(crate) fn set_skill_disabled(&self, key: String, user_level: bool, disabled: bool) {
+        let workspace = self.workspace();
+        self.tokio.spawn(async move {
+            use openbitfun_core::agentic::tools::implementations::skills::mode_overrides;
+            let result = if user_level {
+                mode_overrides::set_global_user_skill_disabled(&key, disabled).await
+            } else {
+                mode_overrides::set_global_project_skill_disabled(
+                    openbitfun_core::agentic::tools::implementations::skills::mode_overrides::SkillPolicyWorkspace::from_record(&workspace),
+                    &key,
+                    disabled,
+                )
+                .await
+            };
+            if let Err(error) = result {
+                tracing::error!("Failed to set skill {key} disabled={disabled}: {error}");
+                publish(RuntimeEvent::ManageFailed(format!("skill {key}: {error}")));
+            }
+            if let Err(error) = openbitfun_core::service::config::reload_global_config().await {
+                tracing::warn!("Failed to reload global config after skill change: {error}");
+            }
+            let catalog = fetch_skill_catalog(&workspace.root_path, &workspace.id).await;
+            publish(RuntimeEvent::SkillCatalog(catalog));
+        });
+    }
+
+    /// M21: writes a custom agent definition from the create dialog and
+    /// reloads the catalog. The dialog closes when the catalog event lands;
+    /// a failure surfaces as the dismissible banner (and inline on submit).
+    pub(crate) fn create_custom_agent(&self, draft: crate::manage::AgentDraft) {
+        let workspace = self.workspace();
+        self.tokio.spawn(async move {
+            match crate::manage::persist_agent_draft(draft, &workspace.id, &workspace.root_path)
+                .await
+            {
+                Ok(()) => {
+                    let catalog = fetch_agent_catalog(Some(&workspace.id)).await;
+                    publish(RuntimeEvent::AgentCatalog(catalog));
+                }
+                Err(message) => {
+                    tracing::warn!("Agent creation failed: {message}");
+                    publish(RuntimeEvent::ManageFailed(message));
+                }
+            }
+        });
+    }
+
+    /// M21: one MCP server lifecycle action; the catalog reloads either way.
+    pub(crate) fn mcp_server_action(&self, action: crate::manage::McpAction, server_id: String) {
+        self.tokio.spawn(async move {
+            let Some(service) = openbitfun_core::service::mcp::get_global_mcp_service() else {
+                publish(RuntimeEvent::ManageFailed(
+                    "MCP service is not initialized".to_string(),
+                ));
+                return;
+            };
+            let manager = service.server_manager();
+            let result = match action {
+                crate::manage::McpAction::Start => manager
+                    .start_server(&server_id)
+                    .await
+                    .map_err(|error| error.to_string()),
+                crate::manage::McpAction::Stop => manager
+                    .stop_server(&server_id)
+                    .await
+                    .map_err(|error| error.to_string()),
+                crate::manage::McpAction::Restart => manager
+                    .restart_server(&server_id)
+                    .await
+                    .map_err(|error| error.to_string()),
+                crate::manage::McpAction::SetEnabled(enabled) => {
+                    set_mcp_server_enabled(&service, &server_id, enabled).await
+                }
+                crate::manage::McpAction::Delete => manager
+                    .remove_server(&server_id)
+                    .await
+                    .map_err(|error| error.to_string()),
+            };
+            if let Err(message) = result {
+                tracing::warn!("MCP action failed for {server_id}: {message}");
+                publish(RuntimeEvent::ManageFailed(format!(
+                    "MCP {server_id}: {message}"
+                )));
+            }
+            publish(RuntimeEvent::McpCatalog(fetch_mcp_catalog().await));
+        });
+    }
+
+    /// M21: answers one pending MCP interaction (elicitation/sampling). A
+    /// rejection carries the same message the desktop UI sends.
+    pub(crate) fn submit_mcp_interaction(
+        &self,
+        interaction_id: String,
+        approve: bool,
+        result: Option<serde_json::Value>,
+    ) {
+        self.tokio.spawn(async move {
+            let Some(service) = openbitfun_core::service::mcp::get_global_mcp_service() else {
+                tracing::error!("MCP service unavailable while answering {interaction_id}");
+                return;
+            };
+            let (error_message, error_code) = if approve {
+                (None, None)
+            } else {
+                (
+                    Some("Rejected by the user in the OpenBitFun shell".to_string()),
+                    None,
+                )
+            };
+            if let Err(error) = service
+                .server_manager()
+                .submit_interaction_response(
+                    &interaction_id,
+                    approve,
+                    result,
+                    error_message,
+                    error_code,
+                    None,
+                )
+                .await
+            {
+                tracing::warn!("Failed to submit MCP interaction response: {error}");
+            }
+        });
+    }
+
     /// A short-lived handle clone for follow-up work inside a spawned task
     /// (`reload_sessions` needs the workspace + tokio facts only).
     fn clone_handle_after_action(&self) -> RuntimeHandleLite {
@@ -1234,6 +1457,315 @@ impl RuntimeHandle {
             workspace: self.workspace.clone(),
             tokio: self.tokio.clone(),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// M21 management catalog loaders (core service reads, projected into the
+// shell-owned row types so the UI layer stays free of MCP/registry types)
+// ---------------------------------------------------------------------------
+
+async fn fetch_skill_catalog(root: &Path, workspace_id: &str) -> crate::manage::SkillCatalog {
+    use openbitfun_agent_runtime::skills::SkillLocation;
+    use openbitfun_core::agentic::tools::implementations::skills::{mode_overrides, SkillRegistry};
+
+    let registry = SkillRegistry::global();
+    let skills = registry.get_all_skills_for_workspace(Some(root)).await;
+    let disabled_user = mode_overrides::load_globally_disabled_user_skills()
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!("Failed to load disabled user skills: {error}");
+            Vec::new()
+        });
+    let disabled_project = mode_overrides::load_globally_disabled_project_skills(
+        mode_overrides::SkillPolicyWorkspace { workspace_id, root },
+    )
+    .await
+    .unwrap_or_else(|error| {
+        tracing::warn!("Failed to load disabled project skills: {error}");
+        Vec::new()
+    });
+    let rows = skills
+        .into_iter()
+        .map(|skill| {
+            let project_level = matches!(skill.level, SkillLocation::Project);
+            crate::manage::SkillRow {
+                disabled: crate::manage::SkillRow::disabled_for(
+                    &skill.key,
+                    !project_level,
+                    project_level,
+                    &disabled_user,
+                    &disabled_project,
+                ),
+                key: skill.key,
+                name: skill.name,
+                description: skill.description,
+                project_level,
+                builtin: skill.is_builtin,
+                shadowed: skill.is_shadowed,
+            }
+        })
+        .collect();
+    crate::manage::SkillCatalog {
+        loaded: true,
+        skills: rows,
+    }
+}
+
+async fn fetch_agent_catalog(workspace_id: Option<&str>) -> crate::manage::AgentCatalog {
+    use openbitfun_core::agentic::agents::{get_agent_registry, AgentSource};
+
+    let registry = get_agent_registry();
+    let map_source = |source: &AgentSource| match source {
+        AgentSource::Builtin => crate::manage::AgentSourceKind::Builtin,
+        AgentSource::User => crate::manage::AgentSourceKind::User,
+        AgentSource::Project => crate::manage::AgentSourceKind::Project,
+        AgentSource::External => crate::manage::AgentSourceKind::External,
+    };
+    let modes = registry
+        .get_modes_info_for_workspace(workspace_id, false)
+        .await
+        .into_iter()
+        .map(|info| crate::manage::AgentCardRow {
+            id: info.id,
+            name: info.name,
+            description: info.description,
+            tool_count: info.tool_count,
+            readonly: info.is_readonly,
+            review: info.is_review,
+            source: map_source(&info.source),
+            enabled: None,
+        })
+        .collect();
+    let subagents = registry
+        .get_subagents_info(workspace_id)
+        .await
+        .into_iter()
+        .map(|info| crate::manage::AgentCardRow {
+            id: info.id,
+            name: info.name,
+            description: info.description,
+            tool_count: info.tool_count,
+            readonly: info.is_readonly,
+            review: info.is_review,
+            source: map_source(&info.source),
+            enabled: Some(info.effective_enabled),
+        })
+        .collect();
+    crate::manage::AgentCatalog {
+        loaded: true,
+        modes,
+        subagents,
+    }
+}
+
+/// Projects a core MCP status onto the shell-side enum (exhaustive so a new
+/// core status fails the build here instead of rendering blank).
+fn map_mcp_status(
+    status: openbitfun_core::service::mcp::MCPServerStatus,
+) -> crate::manage::McpServerState {
+    use openbitfun_core::service::mcp::MCPServerStatus;
+    match status {
+        MCPServerStatus::Uninitialized => crate::manage::McpServerState::Uninitialized,
+        MCPServerStatus::Starting => crate::manage::McpServerState::Starting,
+        MCPServerStatus::Connected => crate::manage::McpServerState::Connected,
+        MCPServerStatus::Healthy => crate::manage::McpServerState::Healthy,
+        MCPServerStatus::NeedsAuth => crate::manage::McpServerState::NeedsAuth,
+        MCPServerStatus::Reconnecting => crate::manage::McpServerState::Reconnecting,
+        MCPServerStatus::Failed => crate::manage::McpServerState::Failed,
+        MCPServerStatus::Stopping => crate::manage::McpServerState::Stopping,
+        MCPServerStatus::Stopped => crate::manage::McpServerState::Stopped,
+    }
+}
+
+async fn fetch_mcp_catalog() -> crate::manage::McpCatalog {
+    use openbitfun_core::service::mcp::{ConfigLocation, MCPServerType};
+
+    let Some(service) = openbitfun_core::service::mcp::get_global_mcp_service() else {
+        // No service means the manager never came up; the page shows the
+        // empty state instead of pretending servers exist.
+        return crate::manage::McpCatalog {
+            loaded: true,
+            servers: Vec::new(),
+        };
+    };
+    let configs = service
+        .config_service()
+        .load_all_configs()
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!("Failed to load MCP server configs: {error}");
+            Vec::new()
+        });
+    let manager = service.server_manager();
+    let mut servers = Vec::with_capacity(configs.len());
+    for config in configs {
+        let state = match manager.get_server_status(&config.id).await {
+            Ok(status) => map_mcp_status(status),
+            Err(error) => {
+                tracing::debug!("MCP status unavailable for {}: {error}", config.id);
+                crate::manage::McpServerState::Uninitialized
+            }
+        };
+        let state_message = manager
+            .get_server_status_message(&config.id)
+            .await
+            .ok()
+            .flatten();
+        let remote = config.server_type == MCPServerType::Remote;
+        let target = if remote {
+            config.url.clone().unwrap_or_default()
+        } else {
+            let mut command = config.command.clone().unwrap_or_default();
+            for argument in &config.args {
+                command.push(' ');
+                command.push_str(argument);
+            }
+            command
+        };
+        servers.push(crate::manage::McpServerRow {
+            id: config.id,
+            name: config.name,
+            remote,
+            target,
+            state,
+            state_message,
+            enabled: config.enabled,
+            auto_start: config.auto_start,
+            builtin: config.location == ConfigLocation::BuiltIn,
+        });
+    }
+    crate::manage::McpCatalog {
+        loaded: true,
+        servers,
+    }
+}
+
+/// Flips one server's persisted `enabled` flag and reconciles the runtimes
+/// (the same previous/current diff the desktop JSON save path applies).
+async fn set_mcp_server_enabled(
+    service: &openbitfun_core::service::mcp::MCPService,
+    server_id: &str,
+    enabled: bool,
+) -> Result<(), String> {
+    let config_service = service.config_service();
+    let previous = config_service
+        .load_all_configs()
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut config = config_service
+        .get_server_config(server_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("MCP server config not found: {server_id}"))?;
+    config.enabled = enabled;
+    config_service
+        .save_server_config(&config)
+        .await
+        .map_err(|error| error.to_string())?;
+    let current = config_service
+        .load_all_configs()
+        .await
+        .map_err(|error| error.to_string())?;
+    service
+        .server_manager()
+        .reconcile_persisted_configs(previous, current)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn fetch_mcp_server_catalog(
+    server_id: &str,
+    force: bool,
+) -> Result<crate::manage::McpServerCatalogView, String> {
+    let Some(service) = openbitfun_core::service::mcp::get_global_mcp_service() else {
+        return Err("MCP service is not initialized".to_string());
+    };
+    let config = service
+        .config_service()
+        .get_server_config(server_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("MCP server config not found: {server_id}"))?;
+    let manager = service.server_manager();
+    let mut resources = manager.get_cached_resources(server_id).await;
+    let mut prompts = manager.get_cached_prompts(server_id).await;
+    // Desktop convention: refresh on request, or when both caches are cold.
+    if force || (resources.is_empty() && prompts.is_empty()) {
+        if let Err(error) = manager.refresh_server_resource_catalog(server_id).await {
+            tracing::warn!("Failed to refresh MCP resources for {server_id}: {error}");
+        }
+        if let Err(error) = manager.refresh_server_prompt_catalog(server_id).await {
+            tracing::warn!("Failed to refresh MCP prompts for {server_id}: {error}");
+        }
+        resources = manager.get_cached_resources(server_id).await;
+        prompts = manager.get_cached_prompts(server_id).await;
+    }
+    Ok(crate::manage::McpServerCatalogView {
+        server_id: server_id.to_string(),
+        server_name: config.name,
+        resources: resources
+            .into_iter()
+            .map(|resource| crate::manage::McpResourceRow {
+                name: resource.title.clone().unwrap_or(resource.name),
+                uri: resource.uri,
+                description: resource.description,
+            })
+            .collect(),
+        prompts: prompts
+            .into_iter()
+            .map(|prompt| crate::manage::McpPromptRow {
+                arguments: prompt.arguments.map(|args| args.len()).unwrap_or(0),
+                name: prompt.title.clone().unwrap_or(prompt.name),
+                description: prompt.description,
+            })
+            .collect(),
+    })
+}
+
+/// Installs the shell's backend-bus emitter: MCP interactive requests
+/// (elicitation/sampling) are forwarded into the UI pump; every other event
+/// keeps the previous behavior (dropped — nothing else consumed this bus in
+/// the shell process).
+fn install_backend_emitter(
+    handle: tokio::runtime::Handle,
+    tx: mpsc::UnboundedSender<RuntimeEvent>,
+) {
+    handle.spawn(async move {
+        get_global_event_system()
+            .set_emitter(Arc::new(ShellBackendEmitter { tx }))
+            .await;
+        tracing::info!("Backend event emitter installed for MCP interactions");
+    });
+}
+
+/// Forwards MCP interaction asks from the process-global backend bus into the
+/// shell event pump.
+struct ShellBackendEmitter {
+    tx: mpsc::UnboundedSender<RuntimeEvent>,
+}
+
+#[async_trait::async_trait]
+impl openbitfun_events::EventEmitter for ShellBackendEmitter {
+    async fn emit(&self, event_name: &str, payload: serde_json::Value) -> anyhow::Result<()> {
+        if event_name == crate::manage::MCP_INTERACTION_EVENT {
+            match serde_json::from_value::<crate::manage::McpInteractionRequest>(payload) {
+                Ok(request) => {
+                    tracing::info!(
+                        "MCP interaction requested: server={} method={}",
+                        request.server_name,
+                        request.method
+                    );
+                    let _ = self
+                        .tx
+                        .send(RuntimeEvent::McpInteractionAsked(Box::new(request)));
+                }
+                Err(error) => {
+                    tracing::warn!("Failed to parse MCP interaction request: {error}");
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -1695,6 +2227,11 @@ impl RuntimeHandle {
             handle.reload_sessions(tx.clone());
             if let Some(handle) = runtime_handle() {
                 handle.reload_workspaces(tx);
+                // The management catalogs are workspace-scoped (project skills
+                // and agents); refresh them together with the sessions.
+                handle.reload_skill_catalog();
+                handle.reload_agent_catalog();
+                handle.reload_mcp_catalog();
             }
         });
     }
@@ -2267,6 +2804,9 @@ pub(crate) fn spawn_bootstrap(
 
 /// Assembles the embedded runtime following the CLI order of operations.
 async fn bootstrap(tx: mpsc::UnboundedSender<RuntimeEvent>) -> Result<()> {
+    // Management actions publish through this sender; wire it before any
+    // reload can fire so nothing is dropped on the startup path.
+    let _ = SHELL_EVENT_TX.set(tx.clone());
     // Delivery profile must be selected before configuration canonicalization
     // initializes the global tool registry (same as CLI).
     select_agentic_system_profile(DeliveryProfile::Cli)
@@ -2413,6 +2953,34 @@ async fn bootstrap(tx: mpsc::UnboundedSender<RuntimeEvent>) -> Result<()> {
     ));
     tracing::info!("Workspace search service initialized");
 
+    // M21: the shell hosts the MCP service the CLI host hosts — the global
+    // manager over the shared config store, servers started off the bootstrap
+    // path so a slow spawn never blocks the window. Without it, MCP tools
+    // never register and there is nothing to manage.
+    match get_global_config_service().await {
+        Ok(config_service) => {
+            match openbitfun_core::service::mcp::MCPService::new(config_service) {
+                Ok(service) => {
+                    let service = Arc::new(service);
+                    openbitfun_core::service::mcp::set_global_mcp_service(service.clone());
+                    tracing::info!("MCP service initialized");
+                    tokio::spawn(async move {
+                        match service.server_manager().initialize_all().await {
+                            Ok(()) => tracing::info!("MCP servers initialized"),
+                            Err(error) => {
+                                tracing::warn!("Failed to initialize MCP servers: {error}")
+                            }
+                        }
+                    });
+                }
+                Err(error) => {
+                    tracing::warn!("Failed to initialize MCP service: {error}");
+                }
+            }
+        }
+        Err(error) => tracing::warn!("Config service unavailable for MCP service: {error}"),
+    }
+
     let handle = RuntimeHandle {
         agent_runtime,
         compat: compatibility,
@@ -2433,10 +3001,17 @@ async fn bootstrap(tx: mpsc::UnboundedSender<RuntimeEvent>) -> Result<()> {
     spawn_event_pump(tokio::runtime::Handle::current(), tx.clone());
     spawn_permission_pump(tokio::runtime::Handle::current(), tx.clone());
     spawn_question_pump(tokio::runtime::Handle::current(), tx.clone());
+    // M21: MCP interactive requests ride the process-global backend event bus.
+    // The shell installs its emitter so an eliciting server cannot strand a
+    // running turn with an invisible ask.
+    install_backend_emitter(tokio::runtime::Handle::current(), tx.clone());
     if let Some(handle) = runtime_handle() {
         handle.reload_sessions(tx.clone());
         handle.reload_model_catalog(tx.clone());
         handle.reload_workspaces(tx.clone());
+        handle.reload_skill_catalog();
+        handle.reload_agent_catalog();
+        handle.reload_mcp_catalog();
         match handle.agent_runtime.pending_permission_requests() {
             Ok(requests) if !requests.is_empty() => {
                 tracing::info!("{} permission requests pending at startup", requests.len());

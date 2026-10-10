@@ -757,6 +757,23 @@ pub(crate) struct ShellWindow {
     /// A child session whose transcript is still loading after the user asked
     /// to see it; `SessionOpened` settles it into the chat's child context.
     pending_child: Option<PendingChild>,
+    /// M21 management state: dialog input states (dialog builders run every
+    /// frame), agent-creation scratch, the pending MCP interaction queue, and
+    /// the browse/delete dialog scratch.
+    pub(crate) agent_id_input: Entity<InputState>,
+    pub(crate) agent_name_input: Entity<InputState>,
+    pub(crate) agent_description_input: Entity<InputState>,
+    pub(crate) agent_prompt_input: Entity<TextareaState>,
+    pub(crate) agent_create_active: bool,
+    pub(crate) agent_create_kind_mode: bool,
+    pub(crate) agent_create_project_level: bool,
+    pub(crate) agent_create_error: Option<String>,
+    pub(crate) mcp_pending_delete: Option<String>,
+    pub(crate) mcp_browse: Option<crate::manage::McpServerCatalogView>,
+    pub(crate) mcp_browse_loading: Option<(String, String)>,
+    pub(crate) mcp_interactions: crate::manage::McpInteractionQueue,
+    pub(crate) mcp_interaction_result_input: Entity<InputState>,
+    pub(crate) mcp_interaction_error: Option<String>,
 }
 
 impl ShellWindow {
@@ -779,6 +796,11 @@ impl ShellWindow {
         let profile_name_input = cx.new(|cx| InputState::new(window, cx));
         let profile_dir_input = cx.new(|cx| InputState::new(window, cx));
         let profile_command_input = cx.new(|cx| InputState::new(window, cx));
+        let agent_id_input = cx.new(|cx| InputState::new(window, cx));
+        let agent_name_input = cx.new(|cx| InputState::new(window, cx));
+        let agent_description_input = cx.new(|cx| InputState::new(window, cx));
+        let agent_prompt_input = cx.new(|cx| TextareaState::new(window, cx));
+        let mcp_interaction_result_input = cx.new(|cx| InputState::new(window, cx));
         receive_runtime_events(event_rx, window, cx);
         Self {
             draft,
@@ -823,6 +845,20 @@ impl ShellWindow {
             pending_attachments: Vec::new(),
             subagent_links: Vec::new(),
             pending_child: None,
+            agent_id_input,
+            agent_name_input,
+            agent_description_input,
+            agent_prompt_input,
+            agent_create_active: false,
+            agent_create_kind_mode: false,
+            agent_create_project_level: false,
+            agent_create_error: None,
+            mcp_pending_delete: None,
+            mcp_browse: None,
+            mcp_browse_loading: None,
+            mcp_interactions: Default::default(),
+            mcp_interaction_result_input,
+            mcp_interaction_error: None,
         }
     }
 
@@ -1266,6 +1302,47 @@ impl ShellWindow {
             }
             RuntimeEvent::QuestionsChanged(questions) => {
                 self.apply_questions_changed(questions, window, cx);
+            }
+            RuntimeEvent::SkillCatalog(catalog) => {
+                cx.set_global(catalog);
+                cx.refresh_windows();
+            }
+            RuntimeEvent::AgentCatalog(catalog) => {
+                cx.set_global(catalog);
+                if self.agent_create_active {
+                    // The submission landed; the create dialog closes on the
+                    // catalog event that proves it.
+                    self.agent_create_active = false;
+                    window.close_dialog(cx);
+                }
+                cx.refresh_windows();
+            }
+            RuntimeEvent::McpCatalog(catalog) => {
+                cx.set_global(catalog);
+                cx.refresh_windows();
+            }
+            RuntimeEvent::McpServerCatalog(view) => {
+                self.mcp_browse = Some(*view);
+                self.mcp_browse_loading = None;
+                cx.refresh_windows();
+            }
+            RuntimeEvent::McpInteractionAsked(request) => {
+                let request = *request;
+                let queue_was_empty = self.mcp_interactions.is_empty();
+                self.mcp_interactions.push_back(request);
+                if queue_was_empty {
+                    crate::manage::open_interaction_dialog(cx.entity().downgrade(), window, cx);
+                }
+                cx.refresh_windows();
+            }
+            RuntimeEvent::ManageFailed(message) => {
+                tracing::warn!("Management action failed: {message}");
+                if self.agent_create_active {
+                    self.agent_create_error = Some(i18n::failed_status(&message, cx));
+                } else {
+                    crate::manage::ManageNotice::set(Some(i18n::failed_status(&message, cx)), cx);
+                }
+                cx.refresh_windows();
             }
             RuntimeEvent::Workspaces(choices) => {
                 self.workspaces = choices;
@@ -4437,6 +4514,73 @@ mod tests {
             .w(px(800.))
             .h(px(600.))
         }
+    }
+
+    #[gpui_kit::test]
+    fn management_catalogs_project_onto_the_shell(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(
+                    RuntimeEvent::SkillCatalog(crate::manage::SkillCatalog {
+                        loaded: true,
+                        skills: vec![crate::manage::SkillRow {
+                            key: "user::demo".into(),
+                            name: "Demo".into(),
+                            description: "demo skill".into(),
+                            project_level: false,
+                            builtin: false,
+                            shadowed: false,
+                            disabled: true,
+                        }],
+                    }),
+                    window,
+                    cx,
+                );
+                shell.apply_runtime_event(
+                    RuntimeEvent::McpCatalog(crate::manage::McpCatalog {
+                        loaded: true,
+                        servers: vec![crate::manage::McpServerRow {
+                            id: "demo".into(),
+                            name: "Demo".into(),
+                            remote: false,
+                            target: "demo-server --stdio".into(),
+                            state: crate::manage::McpServerState::Failed,
+                            state_message: Some("spawn failed".into()),
+                            enabled: true,
+                            auto_start: true,
+                            builtin: false,
+                        }],
+                    }),
+                    window,
+                    cx,
+                );
+                // A failure outside a dialog lands in the banner state.
+                shell.apply_runtime_event(RuntimeEvent::ManageFailed("boom".into()), window, cx);
+            });
+        });
+        window.update(|_, cx| {
+            let skills = cx
+                .try_global::<crate::manage::SkillCatalog>()
+                .expect("skill catalog global");
+            assert_eq!(skills.skills.len(), 1);
+            assert!(skills.skills[0].disabled);
+
+            let servers = cx
+                .try_global::<crate::manage::McpCatalog>()
+                .expect("mcp catalog global");
+            assert_eq!(servers.servers.len(), 1);
+            assert_eq!(
+                servers.servers[0].state,
+                crate::manage::McpServerState::Failed
+            );
+
+            assert!(crate::manage::ManageNotice::current(cx).is_some());
+        });
     }
 
     fn sample_shell_text() -> ShellText {
