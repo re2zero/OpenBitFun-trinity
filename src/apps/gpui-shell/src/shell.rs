@@ -111,6 +111,46 @@ struct ChatView {
     /// A submission is in flight; the optimistic user entry awaits
     /// [`RuntimeEvent::TurnAccepted`].
     submitting: bool,
+    /// The pane shows a hidden child session (subagent run or `/btw` side
+    /// question, M20): the header grows its badge and the "back to parent"
+    /// entry point. `None` = a normal, user-visible session.
+    child_context: Option<ChildContext>,
+}
+
+/// Why the chat pane is showing a hidden child session (M20).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChildKind {
+    /// A subagent run opened from its parent tool card.
+    Subagent,
+    /// A `/btw` side-question session.
+    Btw,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ChildContext {
+    pub kind: ChildKind,
+    pub parent_session_id: String,
+    /// Subagent type of a linked run (badge detail); `None` for `/btw`.
+    pub agent_type: Option<String>,
+}
+
+/// One hidden subagent session linked to its parent tool call (M20). Kept on
+/// the window so the mapping survives transcript reloads; tool cards are
+/// re-annotated from here whenever a transcript (re)loads.
+#[derive(Debug, Clone)]
+pub(crate) struct SubagentLink {
+    pub parent_session_id: String,
+    pub tool_call_id: String,
+    pub subagent_session_id: String,
+    pub agent_type: Option<String>,
+}
+
+/// A child session the user asked to open whose transcript is still loading
+/// (`RuntimeEvent::SessionOpened` settles it into the chat's child context).
+#[derive(Debug, Clone)]
+struct PendingChild {
+    child_session_id: String,
+    context: ChildContext,
 }
 
 /// One pending approval: the runtime request plus display lines composed once
@@ -711,6 +751,12 @@ pub(crate) struct ShellWindow {
     /// the `TurnAccepted` echo, not optimistically, so a failed submission
     /// keeps the images for a retry.
     pending_attachments: Vec<PendingAttachment>,
+    /// Hidden subagent sessions linked to parent tool calls (M20), newest
+    /// last. Tool cards are annotated from this map on every transcript load.
+    subagent_links: Vec<SubagentLink>,
+    /// A child session whose transcript is still loading after the user asked
+    /// to see it; `SessionOpened` settles it into the chat's child context.
+    pending_child: Option<PendingChild>,
 }
 
 impl ShellWindow {
@@ -775,6 +821,8 @@ impl ShellWindow {
             workspace_input,
             workspace_error: None,
             pending_attachments: Vec::new(),
+            subagent_links: Vec::new(),
+            pending_child: None,
         }
     }
 
@@ -963,12 +1011,27 @@ impl ShellWindow {
                 // Opening a session is a chat action: leave the settings or
                 // changes surface and show the transcript.
                 self.main_view = MainView::Chat;
+                // A requested child view (subagent run / /btw) settles here:
+                // when the opened session is the awaited child its context
+                // attaches to the chat; a different session drops the wait
+                // (the user navigated elsewhere) and opens as a normal view.
+                let mut settled_child: Option<ChildContext> = None;
+                if let Some(pending) = self.pending_child.take() {
+                    if pending.child_session_id == opened.session_id {
+                        settled_child = Some(pending.context);
+                    }
+                }
                 match self.chat.as_mut() {
-                    // Transcript reload for the open session keeps the pane title.
+                    // Transcript reload for the open session keeps the pane
+                    // title and its child context (a reloaded child stays a
+                    // child view).
                     Some(chat) if chat.matches(&opened.session_id) => {
                         chat.entries = opened.entries;
                         chat.busy = opened.busy;
                         chat.submitting = false;
+                        if settled_child.is_some() {
+                            chat.child_context = settled_child;
+                        }
                     }
                     _ => {
                         self.chat = Some(ChatView {
@@ -979,14 +1042,54 @@ impl ShellWindow {
                             entries: opened.entries,
                             busy: opened.busy,
                             submitting: false,
+                            child_context: settled_child,
                         });
                     }
                 }
+                self.apply_subagent_links();
                 self.list_sync_reset(cx);
                 tracing::info!("Session transcript ready in chat pane");
             }
             RuntimeEvent::SessionOpenFailed(error) => {
                 self.chat_error = Some(i18n::failed_status(&error, cx));
+            }
+            RuntimeEvent::SubagentLinked {
+                parent_session_id,
+                parent_tool_call_id,
+                subagent_session_id,
+                agent_type,
+            } => {
+                // Newest link wins for a repeated tool id; the mapping lives
+                // on the window so transcript reloads re-annotate the cards.
+                self.subagent_links.retain(|link| {
+                    link.parent_session_id != parent_session_id
+                        || link.tool_call_id != parent_tool_call_id
+                });
+                self.subagent_links.push(SubagentLink {
+                    parent_session_id,
+                    tool_call_id: parent_tool_call_id,
+                    subagent_session_id,
+                    agent_type,
+                });
+                self.apply_subagent_links();
+            }
+            RuntimeEvent::BtwStarted {
+                parent_session_id,
+                child_session_id,
+            } => {
+                // The child transcript loads asynchronously; the opened echo
+                // settles the child context onto the chat pane.
+                self.pending_child = Some(PendingChild {
+                    child_session_id: child_session_id.clone(),
+                    context: ChildContext {
+                        kind: ChildKind::Btw,
+                        parent_session_id,
+                        agent_type: None,
+                    },
+                });
+                if let Some(handle) = runtime::runtime_handle() {
+                    handle.open_session(child_session_id, self.event_tx.clone());
+                }
             }
             RuntimeEvent::TurnAccepted {
                 session_id,
@@ -1550,6 +1653,73 @@ impl ShellWindow {
             })
     }
 
+    /// Re-annotates the open transcript's tool cards from the subagent link
+    /// map (M20). Called on every transcript load and on each new link, so
+    /// reloads never lose the "view run" entry points.
+    fn apply_subagent_links(&mut self) {
+        let Some(chat) = self.chat.as_mut() else {
+            return;
+        };
+        for link in self
+            .subagent_links
+            .iter()
+            .filter(|link| link.parent_session_id == chat.session_id)
+        {
+            let tool_key = format!("tool-{}", link.tool_call_id);
+            for entry in &mut chat.entries {
+                if let ChatEntry::Tool(card) = entry {
+                    if card.key.as_ref() == tool_key {
+                        card.subagent_session = Some(link.subagent_session_id.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Opens a hidden subagent session as the detail view (M20): the chat
+    /// pane switches to the child transcript with a "back to parent" header
+    /// entry point once the load settles.
+    fn open_subagent_run(
+        &mut self,
+        subagent_session_id: String,
+        parent_session_id: String,
+        cx: &mut Context<Self>,
+    ) {
+        // The link records the subagent type; the badge shows it when known.
+        let agent_type = self
+            .subagent_links
+            .iter()
+            .find(|link| link.subagent_session_id == subagent_session_id)
+            .and_then(|link| link.agent_type.clone());
+        self.pending_child = Some(PendingChild {
+            child_session_id: subagent_session_id.clone(),
+            context: ChildContext {
+                kind: ChildKind::Subagent,
+                parent_session_id,
+                agent_type,
+            },
+        });
+        if let Some(handle) = runtime::runtime_handle() {
+            handle.open_session(subagent_session_id, self.event_tx.clone());
+        }
+        cx.notify();
+    }
+
+    /// Returns from a child view (subagent run / /btw) to its parent session.
+    fn return_from_child(&mut self, cx: &mut Context<Self>) {
+        let Some(chat) = self.chat.as_ref() else {
+            return;
+        };
+        let Some(child) = chat.child_context.as_ref() else {
+            return;
+        };
+        let parent_session_id = child.parent_session_id.clone();
+        if let Some(handle) = runtime::runtime_handle() {
+            handle.open_session(parent_session_id, self.event_tx.clone());
+        }
+        cx.notify();
+    }
+
     /// Shows the settings page in the main area. The page owns its own
     /// sidebar; the session sidebar stays where it is.
     fn open_settings_view(&mut self, cx: &mut Context<Self>) {
@@ -1919,12 +2089,16 @@ fn tool_status_label<'a>(status: ToolStatus, text: &'a ShellText) -> &'a str {
     }
 }
 
-/// Everything the per-turn fork menu needs; `None` in list harnesses that
-/// render entries without a live session attached.
+/// Everything the per-turn fork menu and the subagent "view run" entry point
+/// need; `None` in list harnesses that render entries without a live session
+/// attached.
 #[derive(Clone)]
 struct ChatForkContext {
     session_id: String,
     tx: mpsc::UnboundedSender<RuntimeEvent>,
+    /// Weak handle back to the shell window: the subagent run entry point
+    /// settles the pending child context before opening the child session.
+    view: gpui_kit::WeakEntity<ShellWindow>,
 }
 
 /// One transcript entry as a scroller row. Row insets and the inter-row gap
@@ -1978,7 +2152,12 @@ fn render_chat_item(
                 .selectable(true),
             )
             .into_any_element(),
-        ChatEntry::Tool(card) => render_tool_card(card, text, cx).into_any_element(),
+        ChatEntry::Tool(card) => {
+            // The "view run" entry point needs the shell handle; harnesses
+            // that render without a fork render bare cards (M20).
+            let run = fork.filter(|_| card.subagent_session.is_some());
+            render_tool_card(card, run, text, cx).into_any_element()
+        }
         ChatEntry::Notice { text: body } => div()
             .w_full()
             .text_sm()
@@ -2063,7 +2242,12 @@ fn markdown_id_key(body: &str) -> u64 {
     std::hash::Hasher::finish(&hasher)
 }
 
-fn render_tool_card(card: &ToolCard, text: &ShellText, cx: &App) -> gpui_kit::Div {
+fn render_tool_card(
+    card: &ToolCard,
+    run: Option<&ChatForkContext>,
+    text: &ShellText,
+    cx: &App,
+) -> gpui_kit::Div {
     let status_color = match card.status {
         ToolStatus::Running | ToolStatus::WaitingConfirm => cx.theme().warning,
         ToolStatus::Done => cx.theme().success,
@@ -2108,6 +2292,29 @@ fn render_tool_card(card: &ToolCard, text: &ShellText, cx: &App) -> gpui_kit::Di
                 .child(card.detail.clone()),
         );
     }
+    // A linked hidden subagent session (M20): the card grows the entry point
+    // that opens the child transcript as the detail view.
+    if let (Some(subagent_session_id), Some(fork)) = (&card.subagent_session, run) {
+        let child = subagent_session_id.clone();
+        let parent = fork.session_id.clone();
+        let view = fork.view.clone();
+        let label = text.subagent_open.clone();
+        row = row.child(
+            div().flex().justify_end().child(
+                Button::new(SharedString::from(format!("{}-view-run", card.key)))
+                    .label(label)
+                    .small()
+                    .with_variant(ButtonVariant::Ghost)
+                    .on_click(move |_, _, cx| {
+                        if let Some(view) = view.upgrade() {
+                            view.update(cx, |shell, cx| {
+                                shell.open_subagent_run(child.clone(), parent.clone(), cx);
+                            });
+                        }
+                    }),
+            ),
+        );
+    }
     row
 }
 
@@ -2145,6 +2352,7 @@ impl ShellWindow {
                 let fork = snapshot.chat.as_ref().map(|chat| ChatForkContext {
                     session_id: chat.session_id.clone(),
                     tx: snapshot.event_tx.clone(),
+                    view: this.downgrade(),
                 });
                 match entry {
                     Some(entry) => div()
@@ -2279,7 +2487,32 @@ impl ShellWindow {
                 .disabled(submitting || (draft_value.trim().is_empty() && !has_attachments))
                 .on_click(move |_, window, cx| {
                     let body = draft_for_send.read(cx).value().to_string();
-                    if body.trim().is_empty() && !has_attachments {
+                    let trimmed = body.trim();
+                    if trimmed.is_empty() && !has_attachments {
+                        return;
+                    }
+                    // `/btw <question>` routes to a side-question child
+                    // session (M20); attachments stay behind — the child
+                    // forks the parent context instead of carrying media.
+                    if let Some(question) = btw_question(&body) {
+                        if question.is_empty() {
+                            if let Some(view) = view_for_send.upgrade() {
+                                view.update(cx, |shell, cx| {
+                                    shell.chat_error = Some(i18n::btw_empty(cx));
+                                });
+                            }
+                            return;
+                        }
+                        if let Some(handle) = runtime::runtime_handle() {
+                            handle.start_btw(
+                                session_for_send.clone(),
+                                question.to_string(),
+                                tx_for_send.clone(),
+                            );
+                        }
+                        draft_for_send.update(cx, |state, cx| {
+                            state.set_value("", window, cx);
+                        });
                         return;
                     }
                     let attachments = view_for_send
@@ -2538,6 +2771,21 @@ fn answer_permission(request_id: String, reply: PermissionReply) {
 
 /// Forwards the dialog's submitted answers to the embedded runtime. The queue
 /// advances on the mailbox rebuild, not here.
+/// Splits a `/btw <question>` composer input into its question. `None` when
+/// the text is not the command ("/btwfoo" is just a message); `Some("")`
+/// when the command is there but the question is missing.
+fn btw_question(input: &str) -> Option<&str> {
+    let trimmed = input.trim();
+    let rest = trimmed.strip_prefix("/btw")?;
+    if rest.is_empty() {
+        Some("")
+    } else if rest.starts_with(char::is_whitespace) {
+        Some(rest.trim())
+    } else {
+        None
+    }
+}
+
 fn submit_question(tool_id: String, answers: serde_json::Value) {
     if let Some(handle) = runtime::runtime_handle() {
         handle.respond_user_question(tool_id, answers);
@@ -3726,6 +3974,37 @@ impl ShellWindow {
                         .flex()
                         .items_center()
                         .gap_2()
+                        // Hidden child view (M20): the badge names what the
+                        // pane shows and "back" returns to the parent.
+                        .when_some(chat.child_context.as_ref(), |this, child| {
+                            let label = match (child.kind, child.agent_type.as_deref()) {
+                                (ChildKind::Subagent, Some(agent_type)) => {
+                                    format!("{} · {}", text.subagent_badge, agent_type)
+                                }
+                                (ChildKind::Subagent, None) => text.subagent_badge.clone(),
+                                (ChildKind::Btw, _) => text.btw_badge.clone(),
+                            };
+                            let back_label = text.child_back.clone();
+                            this.child(
+                                div()
+                                    .px_2()
+                                    .py_0p5()
+                                    .rounded(cx.theme().radius)
+                                    .bg(cx.theme().sidebar_accent)
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(label),
+                            )
+                            .child(
+                                Button::new("chat-child-back")
+                                    .label(back_label)
+                                    .small()
+                                    .with_variant(ButtonVariant::Ghost)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.return_from_child(cx);
+                                    })),
+                            )
+                        })
                         .child(self.render_usage_button(cx))
                         .child(self.render_model_picker(text, cx))
                         .child({
@@ -3961,6 +4240,7 @@ mod tests {
             entries,
             busy: false,
             submitting: false,
+            child_context: None,
         }
     }
 
@@ -3980,6 +4260,7 @@ mod tests {
             tool_name: "read_file".into(),
             status: ToolStatus::Running,
             detail: String::new(),
+            subagent_session: None,
         };
         let mut chat = chat_with(Vec::new());
         assert!(chat.upsert_tool(card("tool-1")).is_none());
@@ -3987,6 +4268,139 @@ mod tests {
         assert_eq!(chat.upsert_tool(card("tool-1")), Some(0));
         assert!(chat.upsert_tool(card("tool-3")).is_none());
         assert_eq!(chat.entries.len(), 3);
+    }
+
+    #[test]
+    fn btw_question_parses_the_command_prefix() {
+        assert_eq!(btw_question("/btw what is this?"), Some("what is this?"));
+        assert_eq!(btw_question("/btw"), Some(""));
+        assert_eq!(btw_question("  /btw   spaced  "), Some("spaced"));
+        // "/btwfoo" is a plain message, not the command.
+        assert_eq!(btw_question("/btwfoo"), None);
+        assert_eq!(btw_question("plain question"), None);
+    }
+
+    /// The M20 child-view loop projects onto the shell: a linked subagent
+    /// annotates the parent tool card, the card entry point opens the child
+    /// with a settled child context, and returning to the parent re-annotates
+    /// the reloaded transcript from the link map. `/btw` rides the same path.
+    #[gpui_kit::test]
+    fn subagent_and_btw_child_views_project_onto_the_shell(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        let opened = |session_id: &str, name: &str, entries: Vec<ChatEntry>| {
+            RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                session_id: session_id.into(),
+                name: name.into(),
+                agent_type: "Standard".into(),
+                model_id: None,
+                entries,
+                busy: false,
+            })
+        };
+        let parent_entries = || {
+            vec![ChatEntry::Tool(crate::runtime::ToolCard {
+                key: "tool-call-1".into(),
+                tool_name: "task".into(),
+                status: ToolStatus::Running,
+                detail: String::new(),
+                subagent_session: None,
+            })]
+        };
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(opened("parent", "Parent", parent_entries()), window, cx);
+                // The runtime links the hidden child to that tool call.
+                shell.apply_runtime_event(
+                    RuntimeEvent::SubagentLinked {
+                        parent_session_id: "parent".into(),
+                        parent_tool_call_id: "call-1".into(),
+                        subagent_session_id: "child-1".into(),
+                        agent_type: Some("Explore".into()),
+                    },
+                    window,
+                    cx,
+                );
+            });
+        });
+        window.update(|_, cx| {
+            let shell = shell.read(cx);
+            assert_eq!(shell.subagent_links.len(), 1);
+            let chat = shell.chat.as_ref().unwrap();
+            match &chat.entries[0] {
+                ChatEntry::Tool(card) => {
+                    assert_eq!(card.subagent_session.as_deref(), Some("child-1"))
+                }
+                _ => panic!("expected a tool card"),
+            }
+        });
+
+        // The card entry point opens the child; the opened echo settles the
+        // subagent child context onto the pane.
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.open_subagent_run("child-1".into(), "parent".into(), cx);
+            });
+        });
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(opened("child-1", "child", Vec::new()), window, cx);
+            });
+        });
+        window.update(|_, cx| {
+            let chat = shell.read(cx).chat.as_ref().unwrap();
+            assert_eq!(chat.session_id, "child-1");
+            let child = chat.child_context.as_ref().expect("child context set");
+            assert_eq!(child.kind, ChildKind::Subagent);
+            assert_eq!(child.agent_type.as_deref(), Some("Explore"));
+        });
+
+        // Returning to the parent re-annotates the reloaded card.
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| shell.return_from_child(cx));
+        });
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(opened("parent", "Parent", parent_entries()), window, cx);
+            });
+        });
+        window.update(|_, cx| {
+            let chat = shell.read(cx).chat.as_ref().unwrap();
+            assert_eq!(chat.session_id, "parent");
+            assert!(chat.child_context.is_none());
+            match &chat.entries[0] {
+                ChatEntry::Tool(card) => {
+                    assert_eq!(card.subagent_session.as_deref(), Some("child-1"))
+                }
+                _ => panic!("expected a tool card"),
+            }
+        });
+
+        // `/btw` rides the same child machinery with its own badge kind.
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(
+                    RuntimeEvent::BtwStarted {
+                        parent_session_id: "parent".into(),
+                        child_session_id: "btw-1".into(),
+                    },
+                    window,
+                    cx,
+                );
+                shell.apply_runtime_event(opened("btw-1", "BTW", Vec::new()), window, cx);
+            });
+        });
+        window.update(|_, cx| {
+            let chat = shell.read(cx).chat.as_ref().unwrap();
+            assert_eq!(chat.session_id, "btw-1");
+            let child = chat.child_context.as_ref().expect("btw child context");
+            assert_eq!(child.kind, ChildKind::Btw);
+            assert_eq!(child.parent_session_id, "parent");
+        });
     }
 
     #[test]

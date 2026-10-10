@@ -372,3 +372,9 @@ gpui-shell-question-unreadable = This question could not be displayed.
 gpui-shell-workspace-switch = Switch workspace
 gpui-shell-workspace-open-path = Open workspace by path…
 gpui-shell-workspace-open-path-description = Folder to use as this shell's workspace. It is registered in the shared workspace list without changing the desktop's selection.
+
+gpui-shell-subagent-badge = Subagent run
+gpui-shell-subagent-open = View run
+gpui-shell-btw-badge = Side question (/btw)
+gpui-shell-child-back = Back to parent
+gpui-shell-btw-empty = Write a question after /btw.

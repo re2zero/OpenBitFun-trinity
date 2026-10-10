@@ -185,6 +185,21 @@ pub(crate) enum RuntimeEvent {
     /// A session action (rename / archive / delete / model change) failed;
     /// surfaced as a shell notice line, never silently dropped.
     SessionActionFailed { message: String },
+    /// A hidden subagent session was linked to the parent tool call that
+    /// launched it (M20). The parent's tool card grows the "view run" entry
+    /// point; the child opens directly as the detail view.
+    SubagentLinked {
+        parent_session_id: String,
+        parent_tool_call_id: String,
+        subagent_session_id: String,
+        agent_type: Option<String>,
+    },
+    /// A `/btw` side-question turn started (M20); the child session opens as
+    /// the detail view with a return path to the parent.
+    BtwStarted {
+        parent_session_id: String,
+        child_session_id: String,
+    },
     /// A session's model selector was updated successfully.
     SessionModelChanged {
         session_id: String,
@@ -366,6 +381,10 @@ pub(crate) struct ToolCard {
     pub tool_name: String,
     pub status: ToolStatus,
     pub detail: String,
+    /// Hidden subagent session linked to this tool call (M20): set when the
+    /// runtime's `SubagentSessionLinked` event arrives, and the chat renders
+    /// the "view run" entry point on the card.
+    pub subagent_session: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -660,6 +679,65 @@ impl RuntimeHandle {
                     );
                     let _ = tx.send(RuntimeEvent::SessionActionFailed {
                         message: format!("fork: {message}"),
+                    });
+                }
+            }
+        });
+    }
+
+    /// Starts a `/btw` side-question child turn for the session (M20): the
+    /// coordinator forks the parent context into a hidden child session and
+    /// runs the question there. The child never appears in the session list;
+    /// the shell opens it directly as the detail view when `BtwStarted`
+    /// confirms the turn.
+    pub(crate) fn start_btw(
+        &self,
+        session_id: String,
+        question: String,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+    ) {
+        self.tokio.spawn(async move {
+            let Some(coordinator) =
+                openbitfun_core::agentic::coordination::get_global_coordinator()
+            else {
+                tracing::error!("Coordinator not initialized; /btw unavailable");
+                let _ = tx.send(RuntimeEvent::SendFailed {
+                    session_id: session_id.clone(),
+                    error: "coordinator not ready".to_string(),
+                });
+                return;
+            };
+            let request_id = uuid::Uuid::new_v4().to_string();
+            let child_session_id = format!("btw-{}", uuid::Uuid::new_v4().simple());
+            match coordinator
+                .start_btw_turn(
+                    &request_id,
+                    &session_id,
+                    &child_session_id,
+                    None,
+                    &question,
+                    DialogSubmissionPolicy::for_source(AgentSubmissionSource::Cli),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await
+            {
+                Ok(_turn_id) => {
+                    tracing::info!("Started /btw turn for {session_id} -> {child_session_id}");
+                    let _ = tx.send(RuntimeEvent::BtwStarted {
+                        parent_session_id: session_id,
+                        child_session_id,
+                    });
+                }
+                Err(error) => {
+                    tracing::error!("Failed to start /btw turn: {}", error);
+                    let _ = tx.send(RuntimeEvent::SendFailed {
+                        session_id,
+                        error: error.to_string(),
                     });
                 }
             }
@@ -1751,6 +1829,7 @@ fn convert_message(message: &TranscriptMessage) -> ChatEntry {
                 ToolStatus::Done
             },
             detail: truncate_detail(&result.to_string()),
+            subagent_session: None,
         }),
         TranscriptContent::Mixed {
             text, tool_calls, ..
@@ -1764,6 +1843,7 @@ fn convert_message(message: &TranscriptMessage) -> ChatEntry {
                     tool_name: call.tool_name.clone(),
                     status: ToolStatus::Done,
                     detail: truncate_detail(&call.arguments.to_string()),
+                    subagent_session: None,
                 })
             }) {
                 if text.trim().is_empty() {
@@ -2101,6 +2181,18 @@ fn translate_event(event: AgenticEvent) -> Vec<RuntimeEvent> {
         AgenticEvent::SessionHistoryChanged { session_id, .. } => {
             vec![RuntimeEvent::HistoryChanged { session_id }]
         }
+        AgenticEvent::SubagentSessionLinked {
+            session_id,
+            parent_session_id,
+            parent_tool_call_id,
+            agent_type,
+            ..
+        } => vec![RuntimeEvent::SubagentLinked {
+            parent_session_id,
+            parent_tool_call_id,
+            subagent_session_id: session_id,
+            agent_type,
+        }],
         AgenticEvent::SystemError {
             session_id: Some(session_id),
             error,
@@ -2123,61 +2215,39 @@ fn convert_tool_event(event: ToolEventData) -> ToolCard {
         (identity.tool_id.clone(), identity.tool_name.clone())
     };
     let key = SharedString::from(format!("tool-{tool_id}"));
+    let card = |status: ToolStatus, detail: String| ToolCard {
+        key: key.clone(),
+        tool_name: tool_name.clone(),
+        status,
+        detail,
+        subagent_session: None,
+    };
     match event {
-        ToolEventData::Started { params, .. } => ToolCard {
-            key,
-            tool_name,
-            status: ToolStatus::Running,
-            detail: truncate_detail(&params.to_string()),
-        },
-        ToolEventData::Progress { message, .. } => ToolCard {
-            key,
-            tool_name,
-            status: ToolStatus::Running,
-            detail: truncate_detail(&message),
-        },
-        ToolEventData::ConfirmationNeeded { params, .. } => ToolCard {
-            key,
-            tool_name,
-            status: ToolStatus::WaitingConfirm,
-            detail: truncate_detail(&params.to_string()),
-        },
-        ToolEventData::Rejected { .. } => ToolCard {
-            key,
-            tool_name,
-            status: ToolStatus::Cancelled,
-            detail: String::new(),
-        },
-        ToolEventData::Completed { result, .. } => ToolCard {
-            key,
-            tool_name,
-            status: ToolStatus::Done,
-            detail: truncate_detail(&result.to_string()),
-        },
-        ToolEventData::Failed { error, .. } => ToolCard {
-            key,
-            tool_name,
-            status: ToolStatus::Failed,
-            detail: truncate_detail(&error),
-        },
-        ToolEventData::Cancelled { reason, .. } => ToolCard {
-            key,
-            tool_name,
-            status: ToolStatus::Cancelled,
-            detail: truncate_detail(&reason),
-        },
+        ToolEventData::Started { params, .. } => {
+            card(ToolStatus::Running, truncate_detail(&params.to_string()))
+        }
+        ToolEventData::Progress { message, .. } => {
+            card(ToolStatus::Running, truncate_detail(&message))
+        }
+        ToolEventData::ConfirmationNeeded { params, .. } => card(
+            ToolStatus::WaitingConfirm,
+            truncate_detail(&params.to_string()),
+        ),
+        ToolEventData::Rejected { .. } => card(ToolStatus::Cancelled, String::new()),
+        ToolEventData::Completed { result, .. } => {
+            card(ToolStatus::Done, truncate_detail(&result.to_string()))
+        }
+        ToolEventData::Failed { error, .. } => card(ToolStatus::Failed, truncate_detail(&error)),
+        ToolEventData::Cancelled { reason, .. } => {
+            card(ToolStatus::Cancelled, truncate_detail(&reason))
+        }
         ToolEventData::EarlyDetected { .. }
         | ToolEventData::ParamsPartial { .. }
         | ToolEventData::Queued { .. }
         | ToolEventData::Waiting { .. }
         | ToolEventData::Streaming { .. }
         | ToolEventData::StreamChunk { .. }
-        | ToolEventData::Confirmed { .. } => ToolCard {
-            key,
-            tool_name,
-            status: ToolStatus::Running,
-            detail: String::new(),
-        },
+        | ToolEventData::Confirmed { .. } => card(ToolStatus::Running, String::new()),
     }
 }
 

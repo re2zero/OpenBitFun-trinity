@@ -348,3 +348,9 @@ gpui-shell-question-unreadable = 无法显示该问题的内容。
 gpui-shell-workspace-switch = 切换工作区
 gpui-shell-workspace-open-path = 按路径打开…
 gpui-shell-workspace-open-path-description = 作为本壳工作区使用的文件夹。它只会登记进共享工作区列表，不改桌面端的选择。
+
+gpui-shell-subagent-badge = 子代理运行
+gpui-shell-subagent-open = 查看运行
+gpui-shell-btw-badge = 侧问（/btw）
+gpui-shell-child-back = 返回父会话
+gpui-shell-btw-empty = /btw 后面要写问题。

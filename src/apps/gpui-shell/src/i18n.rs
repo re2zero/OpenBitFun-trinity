@@ -206,6 +206,10 @@ pub(crate) struct ShellText {
     pub git_snapshot_restore: String,
     pub rollback_at_turn: String,
     pub turn_menu: String,
+    pub subagent_badge: String,
+    pub subagent_open: String,
+    pub btw_badge: String,
+    pub child_back: String,
 }
 
 impl Global for ShellText {}
@@ -266,6 +270,11 @@ pub(crate) fn failed_status(error: &str, cx: &App) -> String {
         TranslationArgs::new().with_string("error", error),
         cx,
     )
+}
+
+/// Resolves the localized notice for a `/btw` command without a question.
+pub(crate) fn btw_empty(cx: &App) -> String {
+    resolve_with("gpui-shell-btw-empty", TranslationArgs::new(), cx)
 }
 
 /// Resolves the localized turn-count label for one session row.
@@ -599,6 +608,10 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         git_snapshot_restore: "Undo file changes".to_string(),
         rollback_at_turn: "Roll back to this turn".to_string(),
         turn_menu: "Turn actions".to_string(),
+        subagent_badge: "Subagent run".to_string(),
+        subagent_open: "View run".to_string(),
+        btw_badge: "Side question (/btw)".to_string(),
+        child_back: "Back".to_string(),
     }
 }
 
@@ -822,6 +835,10 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         git_snapshot_restore: service.t("gpui-shell-git-snapshot-restore").await,
         rollback_at_turn: service.t("gpui-shell-rollback-at-turn").await,
         turn_menu: service.t("gpui-shell-turn-menu").await,
+        subagent_badge: service.t("gpui-shell-subagent-badge").await,
+        subagent_open: service.t("gpui-shell-subagent-open").await,
+        btw_badge: service.t("gpui-shell-btw-badge").await,
+        child_back: service.t("gpui-shell-child-back").await,
     }
 }
 
