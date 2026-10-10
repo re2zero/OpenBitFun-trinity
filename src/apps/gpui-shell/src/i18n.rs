@@ -172,6 +172,17 @@ pub(crate) struct ShellText {
     pub git_untracked: String,
     pub git_select: String,
     pub git_diff_wrap: String,
+    pub git_stage_all: String,
+    pub git_stage: String,
+    pub git_unstage: String,
+    pub git_commit: String,
+    pub git_commit_placeholder: String,
+    pub git_push: String,
+    pub git_history: String,
+    pub git_files_view: String,
+    pub git_no_commits: String,
+    pub git_untrusted_title: String,
+    pub git_untrusted_action: String,
 }
 
 impl Global for ShellText {}
@@ -508,6 +519,17 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         git_untracked: "untracked".to_string(),
         git_select: "Select a file to see its diff.".to_string(),
         git_diff_wrap: "Toggle diff line wrapping".to_string(),
+        git_stage_all: "Stage all changes".to_string(),
+        git_stage: "Stage file".to_string(),
+        git_unstage: "Unstage file".to_string(),
+        git_commit: "Commit".to_string(),
+        git_commit_placeholder: "Commit message".to_string(),
+        git_push: "Push to remote".to_string(),
+        git_history: "History".to_string(),
+        git_files_view: "Changes".to_string(),
+        git_no_commits: "No commits yet.".to_string(),
+        git_untrusted_title: "Repository ownership is not trusted".to_string(),
+        git_untrusted_action: "Trust repository".to_string(),
     }
 }
 
@@ -693,6 +715,17 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         git_untracked: service.t("gpui-shell-git-untracked").await,
         git_select: service.t("gpui-shell-git-select").await,
         git_diff_wrap: service.t("gpui-shell-git-diff-wrap").await,
+        git_stage_all: service.t("gpui-shell-git-stage-all").await,
+        git_stage: service.t("gpui-shell-git-stage").await,
+        git_unstage: service.t("gpui-shell-git-unstage").await,
+        git_commit: service.t("gpui-shell-git-commit").await,
+        git_commit_placeholder: service.t("gpui-shell-git-commit-placeholder").await,
+        git_push: service.t("gpui-shell-git-push").await,
+        git_history: service.t("gpui-shell-git-history").await,
+        git_files_view: service.t("gpui-shell-git-files-view").await,
+        git_no_commits: service.t("gpui-shell-git-no-commits").await,
+        git_untrusted_title: service.t("gpui-shell-git-untrusted-title").await,
+        git_untrusted_action: service.t("gpui-shell-git-untrusted-action").await,
     }
 }
 

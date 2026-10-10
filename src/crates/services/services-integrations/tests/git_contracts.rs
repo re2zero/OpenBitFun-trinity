@@ -551,6 +551,133 @@ async fn workspace_diff_port_marks_binary_content_without_text_projection() {
     assert_eq!(binary.content, WorkspaceDiffContent::Binary);
 }
 
+#[tokio::test]
+async fn git_port_stages_commits_and_reports_history_and_overview() {
+    let repo_dir = TempRepoDir::new("git-port-write");
+    run_git(repo_dir.path(), &["init"]);
+    run_git(
+        repo_dir.path(),
+        &["config", "user.name", "OpenBitFun Tests"],
+    );
+    run_git(
+        repo_dir.path(),
+        &["config", "user.email", "tests@openbitfun.dev"],
+    );
+    fs::write(repo_dir.path().join("tracked.txt"), "base\n").unwrap();
+    run_git(repo_dir.path(), &["add", "--", "tracked.txt"]);
+    run_git(repo_dir.path(), &["commit", "-m", "base commit"]);
+
+    fs::write(repo_dir.path().join("tracked.txt"), "base\nchanged\n").unwrap();
+    fs::write(repo_dir.path().join("fresh.txt"), "new\n").unwrap();
+
+    let port = GitWorkspaceDiffPort::new(repo_dir.path());
+    port.stage_files(
+        vec!["tracked.txt".to_string(), "fresh.txt".to_string()],
+        false,
+        false,
+    )
+    .await
+    .expect("stage files");
+
+    let staged = port.workspace_diff().await.expect("staged snapshot");
+    let tracked = staged
+        .files
+        .iter()
+        .find(|file| file.path == "tracked.txt")
+        .expect("tracked file");
+    assert!(tracked.staged);
+    assert!(!tracked.unstaged);
+
+    port.commit_staged("port commit subject\n\nbody line".to_string(), false)
+        .await
+        .expect("commit staged");
+
+    let clean = port.workspace_diff().await.expect("clean snapshot");
+    assert!(clean.files.is_empty(), "commit leaves no changes");
+
+    let history = port.commit_history(10).await.expect("commit history");
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0].subject, "port commit subject");
+    assert_eq!(history[1].subject, "base commit");
+    assert!(!history[0].short_hash.is_empty());
+    assert_eq!(history[0].author, "OpenBitFun Tests");
+    assert!(
+        history[0].hash.starts_with(history[0].short_hash.as_str())
+            && history[0].hash.len() > history[0].short_hash.len(),
+        "short hash must abbreviate the full hash"
+    );
+
+    let overview = port.repository_overview().await.expect("overview");
+    assert!(!overview.has_changes);
+    assert!(overview.remotes.is_empty());
+    assert!(!overview.current_branch.is_empty());
+}
+
+#[tokio::test]
+async fn git_port_unstage_keeps_the_worktree_change() {
+    let repo_dir = TempRepoDir::new("git-port-unstage");
+    run_git(repo_dir.path(), &["init"]);
+    run_git(
+        repo_dir.path(),
+        &["config", "user.name", "OpenBitFun Tests"],
+    );
+    run_git(
+        repo_dir.path(),
+        &["config", "user.email", "tests@openbitfun.dev"],
+    );
+    fs::write(repo_dir.path().join("file.txt"), "base\n").unwrap();
+    run_git(repo_dir.path(), &["add", "--", "file.txt"]);
+    run_git(repo_dir.path(), &["commit", "-m", "base"]);
+
+    fs::write(repo_dir.path().join("file.txt"), "base\nworktree\n").unwrap();
+
+    let port = GitWorkspaceDiffPort::new(repo_dir.path());
+    port.stage_files(vec!["file.txt".to_string()], false, false)
+        .await
+        .expect("stage file");
+    port.unstage_files(vec!["file.txt".to_string()])
+        .await
+        .expect("unstage file");
+
+    let snapshot = port.workspace_diff().await.expect("snapshot");
+    let file = snapshot
+        .files
+        .iter()
+        .find(|file| file.path == "file.txt")
+        .expect("changed file");
+    assert!(!file.staged);
+    assert!(file.unstaged);
+    assert!(matches!(
+        &file.content,
+        WorkspaceDiffContent::Text { patch } if patch.contains("+worktree")
+    ));
+}
+
+#[tokio::test]
+async fn git_port_trust_report_distinguishes_trusted_from_missing_repository() {
+    let repo_dir = TempRepoDir::new("git-port-trust");
+    run_git(repo_dir.path(), &["init"]);
+
+    let trusted = GitWorkspaceDiffPort::new(repo_dir.path())
+        .trust_report()
+        .await
+        .expect("trust report");
+    assert_eq!(
+        trusted.state,
+        openbitfun_runtime_ports::GitTrustState::Trusted
+    );
+
+    let missing = TempRepoDir::new("git-port-trust-missing");
+    let report = GitWorkspaceDiffPort::new(missing.path())
+        .trust_report()
+        .await
+        .expect("trust report for plain directory");
+    assert_eq!(
+        report.state,
+        openbitfun_runtime_ports::GitTrustState::NotARepository
+    );
+}
+
 #[test]
 fn git_name_status_parser_preserves_nul_delimited_unicode_and_rename_paths() {
     let files = parse_name_status_output("M\0src/中文.rs\0R100\0old name.rs\0new name.rs\0");

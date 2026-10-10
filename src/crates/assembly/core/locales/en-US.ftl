@@ -322,6 +322,17 @@ gpui-shell-git-unstaged = unstaged
 gpui-shell-git-untracked = untracked
 gpui-shell-git-select = Select a file to see its diff.
 gpui-shell-git-diff-wrap = Toggle diff line wrapping
+gpui-shell-git-stage-all = Stage all changes
+gpui-shell-git-stage = Stage file
+gpui-shell-git-unstage = Unstage file
+gpui-shell-git-commit = Commit
+gpui-shell-git-commit-placeholder = Commit message
+gpui-shell-git-push = Push to remote
+gpui-shell-git-history = History
+gpui-shell-git-files-view = Changes
+gpui-shell-git-no-commits = No commits yet.
+gpui-shell-git-untrusted-title = Repository ownership is not trusted
+gpui-shell-git-untrusted-action = Trust repository
 
 
 gpui-shell-question-title = Your answer is needed

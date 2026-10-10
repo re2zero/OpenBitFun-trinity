@@ -1559,14 +1559,14 @@ impl ShellWindow {
 
     /// Opens the changes view (creating the panel, which fetches the workspace
     /// diff snapshot) or returns to the chat when it is already showing.
-    fn toggle_git_view(&mut self, cx: &mut Context<Self>) {
+    fn toggle_git_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.main_view == MainView::Git {
             self.main_view = MainView::Chat;
             // Drop the panel with the view so the next open refetches.
             self.git = None;
         } else {
             self.main_view = MainView::Git;
-            self.git = Some(cx.new(GitPanel::new));
+            self.git = Some(cx.new(|cx| GitPanel::new(window, cx)));
         }
         cx.notify();
     }
@@ -1832,7 +1832,7 @@ impl ShellWindow {
                     .small()
                     .with_variant(active_variant(self.main_view == MainView::Git))
                     .tooltip(text.git_title.clone())
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_git_view(cx))),
+                    .on_click(cx.listener(|this, _, window, cx| this.toggle_git_view(window, cx))),
             )
             .child(
                 Button::new("footer-insights")
@@ -3298,7 +3298,7 @@ impl Render for ShellWindow {
             if self.git_auto_open {
                 self.git_auto_open = false;
                 if self.main_view != MainView::Git {
-                    self.toggle_git_view(cx);
+                    self.toggle_git_view(window, cx);
                 }
             }
         }
@@ -4395,8 +4395,8 @@ mod tests {
             gpui_kit::init(cx);
             cx.set_global(sample_shell_text());
         });
-        let panel = cx.new(GitPanel::new);
         let window = cx.add_empty_window();
+        let panel = window.update(|window, cx| cx.new(|cx| GitPanel::new(window, cx)));
         window.draw(
             point(px(0.), px(0.)),
             size(px(900.), px(600.)),

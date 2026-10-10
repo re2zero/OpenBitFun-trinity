@@ -214,19 +214,30 @@ mod local_runtime_tests {
     #[cfg(feature = "git")]
     #[tokio::test]
     async fn local_runtime_services_bind_git_queries_to_the_canonical_workspace() {
+        use openbitfun_runtime_ports::GitPort;
+
         let workspace = tempfile::tempdir().expect("workspace");
         openbitfun_services_integrations::git::execute_git_command_sync(
             workspace.path().to_string_lossy().as_ref(),
             &["init"],
         )
         .expect("git repository");
+        openbitfun_services_integrations::git::execute_git_command_sync(
+            workspace.path().to_string_lossy().as_ref(),
+            &["config", "user.name", "OpenBitFun Tests"],
+        )
+        .expect("git user name");
+        openbitfun_services_integrations::git::execute_git_command_sync(
+            workspace.path().to_string_lossy().as_ref(),
+            &["config", "user.email", "tests@openbitfun.dev"],
+        )
+        .expect("git user email");
         std::fs::write(workspace.path().join("new.txt"), "new file\n").expect("workspace file");
 
         let (_, services) =
             build_local_runtime_services(workspace.path(), 8).expect("local runtime services");
-        let snapshot = services
-            .git
-            .expect("git capability")
+        let git = services.git.expect("git capability");
+        let snapshot = git
             .workspace_diff()
             .await
             .expect("real workspace diff provider");
@@ -236,6 +247,24 @@ mod local_runtime_tests {
                 && file.untracked
                 && matches!(file.content, WorkspaceDiffContent::Text { .. })
         }));
+
+        // The wired provider serves the M18 write path too: stage, commit,
+        // then read the result back through the same port.
+        git.stage_files(vec!["new.txt".to_string()], false, false)
+            .await
+            .expect("stage through the bound git port");
+        git.commit_staged("wired write path\n".to_string(), false)
+            .await
+            .expect("commit through the bound git port");
+        let history = git.commit_history(5).await.expect("history");
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].subject, "wired write path");
+        let overview = git.repository_overview().await.expect("overview");
+        assert!(!overview.has_changes);
+        assert!(
+            git.trust_report().await.expect("trust").state
+                == openbitfun_runtime_ports::GitTrustState::Trusted
+        );
     }
 
     #[test]

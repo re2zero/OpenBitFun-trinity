@@ -1,22 +1,31 @@
-//! Git changes panel: the workspace diff snapshot from the runtime git port,
-//! rendered as a file list plus self-drawn unified-diff rows.
+//! Git changes panel: the workspace git surface over the runtime git port —
+//! the workspace diff snapshot rendered as a file list plus self-drawn
+//! unified-diff rows, and the write path (stage/unstage, commit, push), a
+//! read-only commit history, and the repository ownership-trust banner.
 //!
 //! The pinned component library (0.7.1) has no diff component, so the unified
 //! patch produced by the port is parsed here and painted line by line (PLAN
-//! M8 / D27). The panel is read-only: it shows what changed, it does not
-//! stage, commit, or write.
+//! M8 / D27). Write operations go through the same port the agent's git tools
+//! use (PLAN M18 / D61); every `PermissionDenied` failure probes the trust
+//! report, so an untrusted repository raises its banner instead of staying a
+//! bare error.
 
+use std::future::Future;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
+use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, StyledExt};
 use gpui_kit::{
-    div, list, prelude::*, px, App, Context, IntoElement, ListAlignment, ListState, Pixels, Render,
-    SharedString, TextRun, Window,
+    div, list, prelude::*, px, App, Context, Entity, IntoElement, ListAlignment, ListState, Pixels,
+    Render, SharedString, TextRun, Window,
 };
 use openbitfun_runtime_ports::{
-    WorkspaceDiffContent, WorkspaceDiffFile, WorkspaceDiffFileStatus, WorkspaceDiffSnapshot,
+    GitCommitSummary, GitPort, GitRepositoryOverview, GitTrustSnapshot, GitTrustState, PortError,
+    PortErrorKind, WorkspaceDiffContent, WorkspaceDiffFile, WorkspaceDiffFileStatus,
+    WorkspaceDiffSnapshot,
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -141,8 +150,36 @@ fn stage_markers(file: &WorkspaceDiffFile) -> Vec<StageMarker> {
     markers
 }
 
+/// The one staging action a changed-file row offers. A file with worktree
+/// content (unstaged or untracked) stages; a file whose changes are entirely
+/// staged unstages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StageAction {
+    Stage,
+    Unstage,
+}
+
+fn row_stage_action(file: &WorkspaceDiffFile) -> StageAction {
+    if file.unstaged || file.untracked {
+        StageAction::Stage
+    } else {
+        StageAction::Unstage
+    }
+}
+
+/// Which body the panel shows below the header.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GitView {
+    Files,
+    History,
+}
+
+/// How many commits the history view loads per request.
+const HISTORY_LIMIT: usize = 50;
+
 /// The docked changes view: a changed-file list on the left, the diff of the
-/// selected file on the right.
+/// selected file on the right, plus the write path (stage/unstage, commit,
+/// push), a read-only history view, and the untrusted-repository banner.
 pub(crate) struct GitPanel {
     files: Vec<WorkspaceDiffFile>,
     selected: usize,
@@ -156,10 +193,34 @@ pub(crate) struct GitPanel {
     wrap_lines: bool,
     file_list: ListState,
     diff_list: ListState,
+    /// Files vs commit-history body.
+    view: GitView,
+    /// Branch/remotes facts fetched alongside every diff refresh.
+    overview: Option<GitRepositoryOverview>,
+    /// Recent commits of the current branch (history view).
+    commits: Vec<GitCommitSummary>,
+    /// Whether the history view already loaded its commits.
+    history_loaded: bool,
+    /// Message box for the next commit.
+    commit_input: Entity<InputState>,
+    /// A port operation is in flight; header and commit actions disable.
+    busy: bool,
+    /// Failure of the last write/history action (a failed refresh has its own
+    /// body error). Cleared by the next successful operation or refresh.
+    action_error: Option<String>,
+    /// Untrusted-repository banner state; `Some` only while trust is required.
+    trust: Option<GitTrustSnapshot>,
+    /// Set after a successful commit; render clears the message box (it is
+    /// the only place holding the window `set_value` needs).
+    clear_commit_input: bool,
+    history_list: ListState,
 }
 
 impl GitPanel {
-    pub(crate) fn new(cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let text = i18n::current(cx);
+        let commit_input = cx
+            .new(|cx| InputState::new(window, cx).placeholder(text.git_commit_placeholder.clone()));
         let mut panel = Self {
             files: Vec::new(),
             selected: 0,
@@ -170,12 +231,23 @@ impl GitPanel {
             wrap_lines: true,
             file_list: ListState::new(0, ListAlignment::Top, px(40.)),
             diff_list: ListState::new(0, ListAlignment::Top, px(40.)),
+            view: GitView::Files,
+            overview: None,
+            commits: Vec::new(),
+            history_loaded: false,
+            commit_input,
+            busy: false,
+            action_error: None,
+            trust: None,
+            clear_commit_input: false,
+            history_list: ListState::new(0, ListAlignment::Top, px(40.)),
         };
         panel.refresh(cx);
         panel
     }
 
-    /// Reloads the workspace diff snapshot through the runtime git port.
+    /// Reloads the workspace diff snapshot and repository overview through
+    /// the runtime git port.
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) {
         let Some(handle) = crate::runtime::runtime_handle() else {
             self.fail("runtime not ready", cx);
@@ -190,18 +262,25 @@ impl GitPanel {
         cx.notify();
         // The port runs on the runtime thread (its provider may block on
         // libgit2); the gpui side only awaits the join handle.
-        let task = handle
-            .tokio_handle()
-            .spawn(async move { git.workspace_diff().await });
+        let task = handle.tokio_handle().spawn(async move {
+            let diff = git.workspace_diff().await;
+            let overview = git.repository_overview().await;
+            (diff, overview)
+        });
         cx.spawn(async move |this, cx| {
             let outcome = task.await;
             this.update(cx, |panel, cx| {
                 panel.loading = false;
                 match outcome {
-                    Ok(Ok(snapshot)) => panel.apply_snapshot(snapshot, cx),
-                    Ok(Err(error)) => {
+                    Ok((Ok(snapshot), overview)) => {
+                        panel.action_error = None;
+                        panel.overview = overview.ok();
+                        panel.apply_snapshot(snapshot, cx);
+                    }
+                    Ok((Err(error), _)) => {
                         tracing::warn!("Workspace diff failed: {}", error);
                         panel.fail(&error.to_string(), cx);
+                        panel.handle_port_failure(&error, cx);
                     }
                     Err(join_error) => {
                         tracing::error!("Workspace diff task failed: {}", join_error);
@@ -219,6 +298,238 @@ impl GitPanel {
         self.loading = false;
         self.error = Some(i18n::git_failed(error, cx));
         cx.notify();
+    }
+
+    /// Classifies a port failure. Permission-denied probes the trust report
+    /// (an untrusted repository refuses every operation, reads included) and
+    /// the message becomes the action error; the banner replaces it once the
+    /// user grants trust.
+    fn handle_port_failure(&mut self, error: &PortError, cx: &mut Context<Self>) {
+        if error.kind == PortErrorKind::PermissionDenied {
+            self.probe_trust(cx);
+        }
+        self.action_error = Some(error.message.clone());
+    }
+
+    /// Runs one write-shaped port call: disables the actions, awaits the
+    /// result on the runtime thread, then refreshes or surfaces the failure.
+    fn run_write<F, Fut, Done>(&mut self, op: F, on_success: Done, cx: &mut Context<Self>)
+    where
+        F: FnOnce(Arc<dyn GitPort>) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<(), PortError>> + Send + 'static,
+        Done: FnOnce(&mut Self, &mut Context<Self>) + 'static,
+    {
+        let Some(handle) = crate::runtime::runtime_handle() else {
+            return;
+        };
+        let Some(git) = handle.git() else {
+            return;
+        };
+        self.busy = true;
+        cx.notify();
+        let task = handle.tokio_handle().spawn(op(git));
+        cx.spawn(async move |this, cx| {
+            let outcome = task.await;
+            this.update(cx, |panel, cx| {
+                panel.busy = false;
+                match outcome {
+                    Ok(Ok(())) => {
+                        panel.action_error = None;
+                        on_success(panel, cx);
+                        panel.refresh(cx);
+                    }
+                    Ok(Err(error)) => {
+                        tracing::warn!("Git write failed: {}", error);
+                        panel.handle_port_failure(&error, cx);
+                    }
+                    Err(join_error) => {
+                        tracing::error!("Git write task failed: {}", join_error);
+                        panel.action_error = Some("git write task failed".to_string());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn stage_all(&mut self, cx: &mut Context<Self>) {
+        self.run_write(
+            |git| async move { git.stage_files(Vec::new(), true, false).await },
+            |_, _| {},
+            cx,
+        );
+    }
+
+    fn stage_file(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(path) = self.files.get(index).map(|file| file.path.clone()) else {
+            return;
+        };
+        self.run_write(
+            move |git| async move { git.stage_files(vec![path], false, false).await },
+            |_, _| {},
+            cx,
+        );
+    }
+
+    fn unstage_file(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(path) = self.files.get(index).map(|file| file.path.clone()) else {
+            return;
+        };
+        self.run_write(
+            move |git| async move { git.unstage_files(vec![path]).await },
+            |_, _| {},
+            cx,
+        );
+    }
+
+    fn commit_staged(&mut self, cx: &mut Context<Self>) {
+        let message = self.commit_input.read(cx).value().trim().to_string();
+        if message.is_empty() {
+            return;
+        }
+        // The message is captured up front; the box clears on success in the
+        // next paint (set_value needs the window, which only render holds).
+        self.run_write(
+            move |git| async move { git.commit_staged(message, false).await },
+            |panel, _| panel.clear_commit_input = true,
+            cx,
+        );
+    }
+
+    fn push(&mut self, cx: &mut Context<Self>) {
+        self.run_write(
+            |git| async move { git.push(None, None, false).await },
+            |_, _| {},
+            cx,
+        );
+    }
+
+    /// Probes repository trust without changing anything; the banner shows
+    /// only while the state is `TrustRequired`.
+    fn probe_trust(&mut self, cx: &mut Context<Self>) {
+        let Some(handle) = crate::runtime::runtime_handle() else {
+            return;
+        };
+        let Some(git) = handle.git() else {
+            return;
+        };
+        let task = handle
+            .tokio_handle()
+            .spawn(async move { git.trust_report().await });
+        cx.spawn(async move |this, cx| {
+            let outcome = task.await;
+            this.update(cx, |panel, cx| {
+                panel.trust = match outcome {
+                    Ok(Ok(snapshot)) => {
+                        (snapshot.state == GitTrustState::TrustRequired).then_some(snapshot)
+                    }
+                    _ => None,
+                };
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Applies the explicitly confirmed trust decision; on success the panel
+    /// reloads, on a stubborn state the banner updates in place.
+    fn grant_trust(&mut self, cx: &mut Context<Self>) {
+        let Some(handle) = crate::runtime::runtime_handle() else {
+            return;
+        };
+        let Some(git) = handle.git() else {
+            return;
+        };
+        self.busy = true;
+        cx.notify();
+        let task = handle
+            .tokio_handle()
+            .spawn(async move { git.trust_repository().await });
+        cx.spawn(async move |this, cx| {
+            let outcome = task.await;
+            this.update(cx, |panel, cx| {
+                panel.busy = false;
+                match outcome {
+                    Ok(Ok(snapshot)) => {
+                        panel.trust =
+                            (snapshot.state == GitTrustState::TrustRequired).then_some(snapshot);
+                        if panel.trust.is_none() {
+                            panel.action_error = None;
+                            panel.error = None;
+                            panel.refresh(cx);
+                        }
+                    }
+                    Ok(Err(error)) => panel.handle_port_failure(&error, cx),
+                    Err(join_error) => {
+                        tracing::error!("Trust task failed: {}", join_error);
+                        panel.action_error = Some("trust task failed".to_string());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn dismiss_action_error(&mut self, cx: &mut Context<Self>) {
+        self.action_error = None;
+        cx.notify();
+    }
+
+    fn dismiss_trust_banner(&mut self, cx: &mut Context<Self>) {
+        self.trust = None;
+        cx.notify();
+    }
+
+    fn toggle_view(&mut self, cx: &mut Context<Self>) {
+        self.view = match self.view {
+            GitView::Files => GitView::History,
+            GitView::History => GitView::Files,
+        };
+        if self.view == GitView::History && !self.history_loaded {
+            self.load_history(cx);
+        }
+        cx.notify();
+    }
+
+    fn load_history(&mut self, cx: &mut Context<Self>) {
+        let Some(handle) = crate::runtime::runtime_handle() else {
+            return;
+        };
+        let Some(git) = handle.git() else {
+            return;
+        };
+        self.busy = true;
+        cx.notify();
+        let task = handle
+            .tokio_handle()
+            .spawn(async move { git.commit_history(HISTORY_LIMIT).await });
+        cx.spawn(async move |this, cx| {
+            let outcome = task.await;
+            this.update(cx, |panel, cx| {
+                panel.busy = false;
+                panel.history_loaded = true;
+                match outcome {
+                    Ok(Ok(commits)) => {
+                        panel.action_error = None;
+                        panel.commits = commits;
+                        panel.history_list.reset(panel.commits.len());
+                    }
+                    Ok(Err(error)) => panel.handle_port_failure(&error, cx),
+                    Err(join_error) => {
+                        tracing::error!("History task failed: {}", join_error);
+                        panel.action_error = Some("history task failed".to_string());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn apply_snapshot(&mut self, snapshot: WorkspaceDiffSnapshot, cx: &mut Context<Self>) {
@@ -279,7 +590,8 @@ impl GitPanel {
     }
 }
 
-/// Header: title, workspace name, totals, refresh action.
+/// Header: title, workspace name, totals, branch chip, view toggle, and the
+/// write actions (stage all, push, refresh).
 fn render_header(panel: &GitPanel, text: &ShellText, cx: &mut Context<GitPanel>) -> gpui_kit::Div {
     let workspace = crate::runtime::runtime_handle()
         .map(|handle| handle.workspace().name.clone())
@@ -296,6 +608,18 @@ fn render_header(panel: &GitPanel, text: &ShellText, cx: &mut Context<GitPanel>)
             deletions
         ),
     };
+    let (files_variant, history_variant) = match panel.view {
+        GitView::Files => (ButtonVariant::Secondary, ButtonVariant::Ghost),
+        GitView::History => (ButtonVariant::Ghost, ButtonVariant::Secondary),
+    };
+    // Without an overview yet the push stays enabled and fails loudly; with
+    // one, a remote-less repository disables it instead.
+    let push_enabled = !panel.busy
+        && panel
+            .overview
+            .as_ref()
+            .map(|overview| !overview.remotes.is_empty())
+            .unwrap_or(true);
     div()
         .w_full()
         .flex()
@@ -326,21 +650,180 @@ fn render_header(panel: &GitPanel, text: &ShellText, cx: &mut Context<GitPanel>)
                 ),
         )
         .child(
-            Button::new("git-refresh")
-                .icon(IconName::RefreshCw)
-                .small()
-                .with_variant(ButtonVariant::Ghost)
-                .tooltip(text.git_refresh.clone())
-                .disabled(panel.loading)
-                .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+            div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .when_some(panel.overview.as_ref(), |this, overview| {
+                    let branch = overview.current_branch.clone();
+                    this.child(
+                        div()
+                            .px_2()
+                            .py_0p5()
+                            .rounded(cx.theme().radius)
+                            .bg(cx.theme().sidebar_accent)
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .truncate()
+                            .max_w(px(200.))
+                            .child(branch),
+                    )
+                })
+                .child(
+                    Button::new("git-view-files")
+                        .label(text.git_files_view.clone())
+                        .small()
+                        .with_variant(files_variant)
+                        .tooltip(text.git_files_view.clone())
+                        .disabled(panel.busy)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if this.view != GitView::Files {
+                                this.toggle_view(cx);
+                            }
+                        })),
+                )
+                .child(
+                    Button::new("git-view-history")
+                        .label(text.git_history.clone())
+                        .small()
+                        .with_variant(history_variant)
+                        .tooltip(text.git_history.clone())
+                        .disabled(panel.busy)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            if this.view != GitView::History {
+                                this.toggle_view(cx);
+                            }
+                        })),
+                )
+                .child(
+                    Button::new("git-stage-all")
+                        .icon(IconName::ListTodo)
+                        .small()
+                        .with_variant(ButtonVariant::Ghost)
+                        .tooltip(text.git_stage_all.clone())
+                        .disabled(panel.busy)
+                        .on_click(cx.listener(|this, _, _, cx| this.stage_all(cx))),
+                )
+                .child(
+                    Button::new("git-push")
+                        .icon(IconName::Upload)
+                        .small()
+                        .with_variant(ButtonVariant::Ghost)
+                        .tooltip(text.git_push.clone())
+                        .disabled(!push_enabled)
+                        .on_click(cx.listener(|this, _, _, cx| this.push(cx))),
+                )
+                .child(
+                    Button::new("git-refresh")
+                        .icon(IconName::RefreshCw)
+                        .small()
+                        .with_variant(ButtonVariant::Ghost)
+                        .tooltip(text.git_refresh.clone())
+                        .disabled(panel.loading)
+                        .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+                ),
         )
 }
 
-/// One changed-file row.
+/// The untrusted-repository banner: the port refused on ownership grounds,
+/// so the surface offers the explicit trust decision instead of a bare error.
+fn render_trust_banner(
+    trust: &GitTrustSnapshot,
+    busy: bool,
+    text: &ShellText,
+    cx: &mut Context<GitPanel>,
+) -> gpui_kit::Div {
+    let detail = trust.detail.clone().unwrap_or_default();
+    div()
+        .w_full()
+        .flex()
+        .items_center()
+        .gap_2()
+        .px_4()
+        .py_1p5()
+        .border_b_1()
+        .border_color(cx.theme().title_bar_border)
+        .bg(cx.theme().warning.opacity(0.12))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .v_flex()
+                .gap_0p5()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().warning)
+                        .child(text.git_untrusted_title.clone()),
+                )
+                .when(!detail.is_empty(), |this| {
+                    this.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .truncate()
+                            .child(detail),
+                    )
+                }),
+        )
+        .child(
+            Button::new("git-trust-confirm")
+                .label(text.git_untrusted_action.clone())
+                .small()
+                .with_variant(ButtonVariant::Primary)
+                .disabled(busy)
+                .on_click(cx.listener(|this, _, _, cx| this.grant_trust(cx))),
+        )
+        .child(
+            Button::new("git-trust-dismiss")
+                .icon(IconName::X)
+                .small()
+                .with_variant(ButtonVariant::Ghost)
+                .on_click(cx.listener(|this, _, _, cx| this.dismiss_trust_banner(cx))),
+        )
+}
+
+/// The last failed action's message, dismissible; a following success or the
+/// trust banner supersedes it.
+fn render_action_error(error: &str, cx: &mut Context<GitPanel>) -> gpui_kit::Div {
+    div()
+        .w_full()
+        .flex()
+        .items_center()
+        .gap_2()
+        .px_4()
+        .py_1p5()
+        .border_b_1()
+        .border_color(cx.theme().title_bar_border)
+        .bg(cx.theme().danger.opacity(0.12))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_xs()
+                .text_color(cx.theme().danger)
+                .truncate()
+                .child(error.to_string()),
+        )
+        .child(
+            Button::new("git-action-error-dismiss")
+                .icon(IconName::X)
+                .small()
+                .with_variant(ButtonVariant::Ghost)
+                .on_click(cx.listener(|this, _, _, cx| this.dismiss_action_error(cx))),
+        )
+}
+
+/// One changed-file row: status letter, path, line counts, and the single
+/// staging action the row offers (stage when worktree content exists, unstage
+/// when the changes are fully staged).
 fn render_file_row(
     index: usize,
     file: &WorkspaceDiffFile,
     selected: bool,
+    busy: bool,
+    panel: &Entity<GitPanel>,
     text: &ShellText,
     cx: &App,
 ) -> gpui_kit::AnyElement {
@@ -354,6 +837,12 @@ fn render_file_row(
         .into_iter()
         .map(|marker| marker.label(text))
         .collect();
+    let action = row_stage_action(file);
+    let (action_icon, action_label) = match action {
+        StageAction::Stage => (IconName::Plus, text.git_stage.clone()),
+        StageAction::Unstage => (IconName::Minus, text.git_unstage.clone()),
+    };
+    let action_panel = panel.clone();
     div()
         .id(gpui_kit::SharedString::from(format!("git-file-{}", index)))
         .cursor_pointer()
@@ -398,6 +887,23 @@ fn render_file_row(
                         .text_xs()
                         .text_color(cx.theme().danger)
                         .child(format!("-{}", file.deletions)),
+                )
+                .child(
+                    Button::new(gpui_kit::SharedString::from(format!(
+                        "git-stage-action-{}",
+                        index
+                    )))
+                    .icon(action_icon)
+                    .small()
+                    .with_variant(ButtonVariant::Ghost)
+                    .tooltip(action_label)
+                    .disabled(busy)
+                    .on_click(move |_, _, cx| {
+                        action_panel.update(cx, |panel, cx| match action {
+                            StageAction::Stage => panel.stage_file(index, cx),
+                            StageAction::Unstage => panel.unstage_file(index, cx),
+                        });
+                    }),
                 ),
         )
         .child(
@@ -468,7 +974,19 @@ fn diff_content_width(lines: &[DiffLine], window: &mut Window, cx: &App) -> Pixe
 
 impl Render for GitPanel {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A successful commit clears its message box here: render is the only
+        // place holding the window that InputState::set_value requires.
+        if self.clear_commit_input {
+            self.clear_commit_input = false;
+            cx.update_entity(&self.commit_input, |input, cx| {
+                input.set_value("", window, cx);
+            });
+        }
         let text = i18n::current(cx);
+        let view = self.view;
+        let busy = self.busy;
+        let trust = self.trust.clone();
+        let action_error = self.action_error.clone();
         let selected_file = self.files.get(self.selected).cloned();
         let diff = self.diff.clone();
         let error = self.error.clone();
@@ -489,7 +1007,15 @@ impl Render for GitPanel {
                     return div().into_any_element();
                 };
                 let text = i18n::current(cx);
-                let row = render_file_row(index, file, index == panel.selected, &text, cx);
+                let row = render_file_row(
+                    index,
+                    file,
+                    index == panel.selected,
+                    panel.busy,
+                    &this,
+                    &text,
+                    cx,
+                );
                 let this = this.clone();
                 div()
                     .id(gpui_kit::SharedString::from(format!(
@@ -564,7 +1090,7 @@ impl Render for GitPanel {
                 .into_any_element()
         });
 
-        let body = if let Some(error) = error {
+        let files_body = if let Some(error) = error {
             div()
                 .flex_1()
                 .flex()
@@ -647,51 +1173,164 @@ impl Render for GitPanel {
             }
         };
 
+        let body = match view {
+            GitView::Files => div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_row()
+                .min_w_0()
+                .child(
+                    div()
+                        .w(px(FILE_COLUMN_WIDTH))
+                        .h_full()
+                        .min_h_0()
+                        .v_flex()
+                        .border_r_1()
+                        .border_color(cx.theme().border)
+                        .child(file_list.flex_1().min_h_0())
+                        .child(render_commit_box(self, &text, cx))
+                        .when(truncated, |this| {
+                            this.child(
+                                div()
+                                    .px_2()
+                                    .py_1()
+                                    .border_t_1()
+                                    .border_color(cx.theme().border)
+                                    .text_xs()
+                                    .text_color(cx.theme().warning)
+                                    .child(text.git_truncated.clone()),
+                            )
+                        }),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .min_h_0()
+                        .v_flex()
+                        .when_some(diff_header, |this, header| this.child(header))
+                        .child(files_body),
+                )
+                .into_any_element(),
+            GitView::History => render_history(self, &text, cx),
+        };
+
         div()
             .size_full()
             .v_flex()
             .bg(cx.theme().background)
             .child(render_header(self, &text, cx))
+            .when_some(trust, |this, trust| {
+                this.child(render_trust_banner(&trust, busy, &text, cx))
+            })
+            .when_some(action_error, |this, error| {
+                this.child(render_action_error(&error, cx))
+            })
+            .child(body)
+    }
+}
+
+/// Commit box docked under the file list: the message input plus the commit
+/// button. Committing needs a non-empty message; the busy flag disables the
+/// button while any port operation runs.
+fn render_commit_box(
+    panel: &GitPanel,
+    text: &ShellText,
+    cx: &mut Context<GitPanel>,
+) -> gpui_kit::Div {
+    let message_empty = panel.commit_input.read(cx).value().trim().is_empty();
+    div()
+        .w_full()
+        .v_flex()
+        .gap_1p5()
+        .p_2()
+        .border_t_1()
+        .border_color(cx.theme().border)
+        .child(Input::new(&panel.commit_input))
+        .child(
+            Button::new("git-commit")
+                .label(text.git_commit.clone())
+                .small()
+                .with_variant(ButtonVariant::Primary)
+                .disabled(panel.busy || message_empty)
+                .on_click(cx.listener(|this, _, _, cx| this.commit_staged(cx))),
+        )
+}
+
+/// The read-only history body: recent commits of the current branch, newest
+/// first. Empty until the first load; the loading state reuses the busy flag.
+fn render_history(
+    panel: &GitPanel,
+    text: &ShellText,
+    cx: &mut Context<GitPanel>,
+) -> gpui_kit::AnyElement {
+    let commits = panel.commits.clone();
+    if commits.is_empty() {
+        let placeholder = if panel.busy {
+            text.git_loading.clone()
+        } else {
+            text.git_no_commits.clone()
+        };
+        return div()
+            .flex_1()
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .child(placeholder)
+            .into_any_element();
+    }
+    let history_list = panel.history_list.clone();
+    let rows = list(history_list, move |index, _window, cx| {
+        let Some(commit) = commits.get(index) else {
+            return div().into_any_element();
+        };
+        div()
+            .w_full()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_4()
+            .py_1p5()
+            .child(
+                div()
+                    .w(px(72.))
+                    .flex_shrink_0()
+                    .font_family(cx.theme().mono_font_family.clone())
+                    .text_xs()
+                    .text_color(cx.theme().info)
+                    .child(commit.short_hash.clone()),
+            )
             .child(
                 div()
                     .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .flex_row()
                     .min_w_0()
-                    .child(
-                        div()
-                            .w(px(FILE_COLUMN_WIDTH))
-                            .h_full()
-                            .min_h_0()
-                            .v_flex()
-                            .border_r_1()
-                            .border_color(cx.theme().border)
-                            .child(file_list.flex_1().min_h_0())
-                            .when(truncated, |this| {
-                                this.child(
-                                    div()
-                                        .px_2()
-                                        .py_1()
-                                        .border_t_1()
-                                        .border_color(cx.theme().border)
-                                        .text_xs()
-                                        .text_color(cx.theme().warning)
-                                        .child(text.git_truncated.clone()),
-                                )
-                            }),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .min_h_0()
-                            .v_flex()
-                            .when_some(diff_header, |this, header| this.child(header))
-                            .child(body),
-                    ),
+                    .text_sm()
+                    .text_color(cx.theme().foreground)
+                    .truncate()
+                    .child(commit.subject.clone()),
             )
-    }
+            .child(
+                div()
+                    .max_w(px(160.))
+                    .flex_shrink_0()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .truncate()
+                    .child(commit.author.clone()),
+            )
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(commit.date.clone()),
+            )
+            .into_any_element()
+    });
+    rows.flex_1().min_h_0().into_any_element()
 }
 
 #[cfg(test)]
@@ -798,6 +1437,17 @@ mod tests {
         assert!(widest_line(&[]).is_none());
     }
 
+    #[test]
+    fn row_stage_action_follows_worktree_content() {
+        let mut file = sample_file("+only worktree\n");
+        // Worktree content (unstaged or untracked) stages…
+        assert_eq!(row_stage_action(&file), StageAction::Stage);
+        // …while a fully staged file unstages.
+        file.unstaged = false;
+        file.staged = true;
+        assert_eq!(row_stage_action(&file), StageAction::Unstage);
+    }
+
     fn sample_file(patch: &str) -> WorkspaceDiffFile {
         WorkspaceDiffFile {
             path: "src/wide.rs".into(),
@@ -832,31 +1482,98 @@ mod tests {
                      @@ -1,2 +1,2 @@\n\
                      -let old = \"a very long line that will not fit in the diff column at all\";\n\
                      +let new = \"中文中文中文中文中文中文中文中文中文中文中文中文\";\n";
-        let panel = cx.new(GitPanel::new);
-        panel.update(cx, |panel, cx| {
-            // The panel is driven with a fixture snapshot instead of the git
-            // port so the render path is exercised without a runtime.
-            panel.error = None;
-            panel.files = vec![sample_file(patch)];
-            panel.file_list.reset(panel.files.len());
-            panel.rebuild_diff(cx);
-            assert!(panel.wrap_lines);
+        let window = cx.add_empty_window();
+        let panel = window.update(|window, cx| {
+            cx.new(|cx| {
+                let mut panel = GitPanel::new(window, cx);
+                // The panel is driven with a fixture snapshot instead of the
+                // git port so the render path is exercised without a runtime.
+                panel.error = None;
+                panel.files = vec![sample_file(patch)];
+                panel.file_list.reset(panel.files.len());
+                panel
+            })
         });
         {
-            let window = cx.add_empty_window();
+            let panel = panel.clone();
             window.draw(
                 gpui_kit::point(px(0.), px(0.)),
                 gpui_kit::size(px(900.), px(600.)),
-                {
-                    let panel = panel.clone();
-                    move |_, _| panel.into_any_element()
-                },
+                move |_, _| panel.into_any_element(),
             );
             window.run_until_parked();
         }
 
-        panel.update(cx, |panel, _| panel.wrap_lines = false);
+        window.update(|_, cx| {
+            panel.update(cx, |panel, _| panel.wrap_lines = false);
+        });
+        window.draw(
+            gpui_kit::point(px(0.), px(0.)),
+            gpui_kit::size(px(900.), px(600.)),
+            move |_, _| panel.into_any_element(),
+        );
+        window.run_until_parked();
+    }
+
+    /// The M18 surfaces must draw without a runtime: the history list over
+    /// fixture commits, the untrusted-repository banner, and the files view
+    /// with its commit box and per-row staging action.
+    #[gpui_kit::test]
+    fn history_trust_banner_and_commit_box_render(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(crate::i18n::fallback_text(
+                openbitfun_core::service::i18n::LocaleId::EnUS,
+            ));
+        });
         let window = cx.add_empty_window();
+        let panel = window.update(|window, cx| cx.new(|cx| GitPanel::new(window, cx)));
+        window.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.commits = vec![GitCommitSummary {
+                    hash: "0123456789abcdef0123456789abcdef01234567".into(),
+                    short_hash: "0123456".into(),
+                    subject: "feat(gpui-shell): terminal tabs".into(),
+                    author: "tester".into(),
+                    date: "2026-10-10 12:00:00".into(),
+                }];
+                panel.history_list.reset(panel.commits.len());
+                panel.view = GitView::History;
+                panel.trust = Some(GitTrustSnapshot {
+                    state: GitTrustState::TrustRequired,
+                    repository_path: Some("/srv/repo".into()),
+                    detail: Some("detected ownership mismatch".into()),
+                    manual_command: None,
+                });
+                cx.notify();
+            });
+        });
+        {
+            let panel = panel.clone();
+            window.draw(
+                gpui_kit::point(px(0.), px(0.)),
+                gpui_kit::size(px(900.), px(600.)),
+                move |_, _| panel.into_any_element(),
+            );
+            window.run_until_parked();
+        }
+
+        // Back to the files view: a fully staged file offers unstage and the
+        // commit box docks under the list.
+        window.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.view = GitView::Files;
+                panel.files = vec![{
+                    let mut file = sample_file("+worktree\n");
+                    file.staged = true;
+                    file.unstaged = false;
+                    file
+                }];
+                panel.file_list.reset(panel.files.len());
+                panel.rebuild_diff(cx);
+                cx.notify();
+            });
+        });
         window.draw(
             gpui_kit::point(px(0.), px(0.)),
             gpui_kit::size(px(900.), px(600.)),

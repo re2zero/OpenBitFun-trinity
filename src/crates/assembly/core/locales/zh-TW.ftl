@@ -298,6 +298,17 @@ gpui-shell-git-unstaged = 未暫存
 gpui-shell-git-untracked = 未追蹤
 gpui-shell-git-select = 選擇檔案以查看差異。
 gpui-shell-git-diff-wrap = 切換 diff 換行
+gpui-shell-git-stage-all = 暫存全部變更
+gpui-shell-git-stage = 暫存檔案
+gpui-shell-git-unstage = 取消暫存
+gpui-shell-git-commit = 提交
+gpui-shell-git-commit-placeholder = 提交訊息
+gpui-shell-git-push = 推送到遠端
+gpui-shell-git-history = 歷史
+gpui-shell-git-files-view = 變更
+gpui-shell-git-no-commits = 暫無提交。
+gpui-shell-git-untrusted-title = 儲存庫歸屬未受信任
+gpui-shell-git-untrusted-action = 信任此儲存庫
 
 
 gpui-shell-question-title = 需要你的回答
