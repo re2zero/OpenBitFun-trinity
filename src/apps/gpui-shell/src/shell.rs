@@ -635,6 +635,112 @@ impl SidebarItem for SidebarEntry {
     }
 }
 
+/// One `Sidebar` section: the shell-local collapsible nav group or a plain
+/// component group. One type because `Sidebar` children share one element
+/// type. The collapsible variant exists because `SidebarGroup`'s header is
+/// click-less and its `collapsed` is a construction-time value; the nav
+/// toggle mirrors the web-ui NavPanel extension group (D77).
+#[derive(Clone)]
+enum SidebarSection {
+    Nav {
+        label: SharedString,
+        collapsed: bool,
+        rows: Vec<SidebarEntry>,
+        view: WeakEntity<ShellWindow>,
+    },
+    Group(SidebarGroup<SidebarEntry>),
+}
+
+impl Collapsible for SidebarSection {
+    fn collapsed(mut self, collapsed: bool) -> Self {
+        match &mut self {
+            // The sidebar re-applies its own icon-rail state to every group on
+            // each frame (`Sidebar` render calls `.collapsed(layout
+            // .icon_collapsed)`), which would reset the nav toggle right back.
+            // The nav section owns its state from construction; only the plain
+            // group forwards.
+            SidebarSection::Nav { .. } => {}
+            SidebarSection::Group(group) => *group = group.clone().collapsed(collapsed),
+        }
+        self
+    }
+
+    fn is_collapsed(&self) -> bool {
+        match self {
+            SidebarSection::Nav { collapsed, .. } => *collapsed,
+            SidebarSection::Group(group) => group.is_collapsed(),
+        }
+    }
+}
+
+impl SidebarItem for SidebarSection {
+    fn render(
+        self,
+        id: impl Into<ElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> impl IntoElement {
+        match self {
+            SidebarSection::Group(group) => group.render(id, window, cx).into_any_element(),
+            SidebarSection::Nav {
+                label,
+                collapsed,
+                rows,
+                view,
+            } => {
+                let id = id.into();
+                let toggle_view = view.clone();
+                let header_id = SharedString::from(format!("{}-toggle", id));
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .id(header_id)
+                            .on_click(move |_, _, cx| {
+                                if let Some(view) = toggle_view.upgrade() {
+                                    view.update(cx, |this, cx| {
+                                        this.nav_collapsed = !this.nav_collapsed;
+                                        cx.notify();
+                                    });
+                                }
+                            })
+                            .cursor_pointer()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .gap_1()
+                            .h_8()
+                            .px_2()
+                            .rounded(cx.theme().radius)
+                            .text_xs()
+                            .text_color(cx.theme().sidebar_foreground.opacity(0.7))
+                            .hover(|style| style.bg(cx.theme().sidebar_accent.opacity(0.5)))
+                            .child(label)
+                            .child(
+                                Icon::new(if collapsed {
+                                    IconName::ChevronRight
+                                } else {
+                                    IconName::ChevronDown
+                                })
+                                .small(),
+                            ),
+                    )
+                    .when(!collapsed, |section| {
+                        section.children(rows.into_iter().enumerate().map(|(ix, row)| {
+                            row.collapsed(collapsed)
+                                .render(format!("{}-{}", id, ix), window, cx)
+                                .into_any_element()
+                        }))
+                    })
+                    .into_any_element()
+            }
+        }
+    }
+}
+
 /// Per-row actions menu: rename, fork, compact (open session only), export,
 /// archive toggle, delete. A Button (whose press stops propagation) keeps the
 /// row's own click-to-open handler from firing when the menu trigger is used.
@@ -846,6 +952,9 @@ pub(crate) struct ShellWindow {
     git_auto_open: bool,
     /// Sidebar filter: archived sessions stay hidden until this is on.
     show_archived: bool,
+    /// Sidebar nav group collapse (D77); session-scoped, the component group
+    /// header only takes a construction-time value so the toggle lives here.
+    nav_collapsed: bool,
     /// Rename dialog input, reused across opens (the dialog builder re-reads
     /// it every frame, so the entity is created once with the window).
     rename_input: Entity<InputState>,
@@ -988,6 +1097,7 @@ impl ShellWindow {
             settings_auto_open: std::env::var_os("OPENBITFUN_GPUI_SETTINGS_AUTOOPEN").is_some(),
             git_auto_open: std::env::var_os("OPENBITFUN_GPUI_GIT_AUTOOPEN").is_some(),
             show_archived: false,
+            nav_collapsed: false,
             rename_input,
             rename_target: None,
             export_input,
@@ -2295,11 +2405,7 @@ impl ShellWindow {
     /// The navigation sidebar: session commands in the header, the session
     /// list as the content, and the runtime status plus the settings menu
     /// (theme, language) in the footer.
-    fn render_sidebar(
-        &self,
-        text: &ShellText,
-        cx: &mut Context<Self>,
-    ) -> Sidebar<SidebarGroup<SidebarEntry>> {
+    fn render_sidebar(&self, text: &ShellText, cx: &mut Context<Self>) -> Sidebar<SidebarSection> {
         let new_tx = self.event_tx.clone();
         let reload_tx = self.event_tx.clone();
         let header = div()
@@ -2368,11 +2474,16 @@ impl ShellWindow {
         Sidebar::new("shell-sidebar")
             .w(px(SESSION_PANE_WIDTH))
             .header(header)
-            .child(SidebarGroup::new(text.sidebar_nav_title.clone()).children(nav_rows))
-            .child(
+            .child(SidebarSection::Nav {
+                label: SharedString::from(text.sidebar_nav_title.clone()),
+                collapsed: self.nav_collapsed,
+                rows: nav_rows,
+                view: cx.entity().downgrade(),
+            })
+            .child(SidebarSection::Group(
                 SidebarGroup::new(text.sessions_title.clone())
                     .children(self.render_session_entries(text, cx)),
-            )
+            ))
             .footer(
                 SidebarFooter::new().child(
                     div()
