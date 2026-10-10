@@ -29,6 +29,12 @@ const DARK_TOKENS: &str =
 pub(crate) const DARK_PRESET_ID: &str = "theme-openbitfun-dark";
 pub(crate) const LIGHT_PRESET_ID: &str = "theme-openbitfun-light";
 
+/// Glass sidebar tint weight: the web-ui `sidebar-glass` surface recipe lays
+/// `color.surface.chrome` at 90% over a blurred window (the compositor blur
+/// supplies the rest through the shell's `Blurred` window background), so the
+/// shell token carries the same mix instead of an opaque panel color.
+const SIDEBAR_GLASS_CHROME_PERCENT: f32 = 90.0;
+
 /// Builds both design-system presets; a failure degrades to skipping that
 /// palette with a warning, mirroring the CLI preset loader.
 pub(crate) fn load() -> Vec<ThemePreset> {
@@ -216,6 +222,18 @@ fn build_config(
     theme_json: &str,
 ) -> Result<ThemeConfig, String> {
     let table = token_table(REFERENCE_TOKENS, theme_json)?;
+    // Glass sidebar: chrome at 90% over the transparent window surface (the
+    // web-ui `sidebar-glass` recipe); with the `Blurred` window background the
+    // compositor blur shows through the remaining 10%. The web evaluates the
+    // same color-mix in CSS; gpui needs the resolved `#rrggbbaa`. Computed
+    // before `table` moves into the resolve closure.
+    let glass_sidebar = {
+        let expression = format!(
+            "color-mix(in srgb, {{color.surface.chrome}} {}%, transparent)",
+            SIDEBAR_GLASS_CHROME_PERCENT
+        );
+        to_hex8(evaluate(&expression, &table, 0)?)
+    };
     let mut cache: HashMap<String, String> = HashMap::new();
     let mut resolve = move |key: &str| -> Result<String, String> {
         if let Some(hit) = cache.get(key) {
@@ -279,7 +297,7 @@ fn build_config(
     colors.link = Some(resolve("color.link.default")?.into());
     colors.link_hover = Some(resolve("color.link.hover")?.into());
     colors.overlay = Some(resolve("color.overlay.scrim")?.into());
-    colors.sidebar = Some(resolve("color.surface.panel")?.into());
+    colors.sidebar = Some(glass_sidebar.into());
     colors.sidebar_border = Some(resolve("color.border.subtle")?.into());
     colors.sidebar_foreground = Some(resolve("color.content.primary")?.into());
     colors.sidebar_accent = Some(resolve("color.accent.surface")?.into());
@@ -384,6 +402,16 @@ mod tests {
         assert_eq!(config.colors.foreground.as_deref(), Some("#e8e8e8ff"));
         // Status content stays readable on the dark canvas.
         assert_eq!(config.colors.danger_foreground.as_deref(), Some("#ffffff"));
+    }
+
+    /// The sidebar token is the glass mix of `color.surface.chrome` at 90%:
+    /// dark chrome = neutral.950, light chrome = neutral.70.
+    #[test]
+    fn sidebar_token_is_translucent_glass_chrome() {
+        let dark = build_config("test", ThemeMode::Dark, DARK_TOKENS).expect("dark config");
+        assert_eq!(dark.colors.sidebar.as_deref(), Some("#0e0e10e6"));
+        let light = build_config("test", ThemeMode::Light, LIGHT_TOKENS).expect("light config");
+        assert_eq!(light.colors.sidebar.as_deref(), Some("#f8f8f9e6"));
     }
 
     #[test]

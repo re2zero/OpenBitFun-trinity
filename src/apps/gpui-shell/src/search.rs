@@ -10,6 +10,7 @@
 //! handle: file hits open in the files viewer, session hits open the session
 //! in the chat pane.
 
+use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::{ActiveTheme, Sizable, StyledExt as _};
@@ -220,7 +221,7 @@ fn render_results(
     match state.tab {
         SearchTab::Files => {
             if state.content.is_empty() {
-                return empty_results(text, cx);
+                return empty_results(text);
             }
             let rows = state.content.clone();
             let mut list = div()
@@ -271,7 +272,7 @@ fn render_results(
         }
         SearchTab::Sessions => {
             if state.sessions.is_empty() {
-                return empty_results(text, cx);
+                return empty_results(text);
             }
             let hits = state.sessions.clone();
             let mut list = div()
@@ -330,14 +331,12 @@ fn render_results(
     }
 }
 
-fn empty_results(text: &ShellText, cx: &App) -> gpui_kit::AnyElement {
-    div()
-        .flex_1()
-        .p_2()
-        .text_sm()
-        .text_color(cx.theme().muted_foreground)
-        .child(text.search_empty.clone())
-        .into_any_element()
+fn empty_results(text: &ShellText) -> gpui_kit::AnyElement {
+    crate::shell::brand_empty(
+        IconName::Search,
+        &text.search_empty_title,
+        &text.search_empty,
+    )
 }
 
 #[cfg(test)]

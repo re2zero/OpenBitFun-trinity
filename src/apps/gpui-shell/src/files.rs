@@ -799,12 +799,11 @@ impl FilesPage {
                 .into_any_element();
         }
         if self.loaded && self.top.is_empty() {
-            return div()
-                .p_2()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child(text.files_empty.clone())
-                .into_any_element();
+            return crate::shell::brand_empty(
+                IconName::FolderOpen,
+                &text.files_empty_title,
+                &text.files_empty,
+            );
         }
 
         let rows = self.rows.clone();
@@ -883,18 +882,21 @@ impl FilesPage {
         cx: &App,
     ) -> gpui_kit::AnyElement {
         if self.tabs.is_empty() {
-            return div()
-                .flex_1()
-                .items_center()
-                .justify_center()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child(if self.opening.is_some() {
-                    text.files_loading.clone()
-                } else {
-                    text.files_empty.clone()
-                })
-                .into_any_element();
+            if self.opening.is_some() {
+                return div()
+                    .flex_1()
+                    .items_center()
+                    .justify_center()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(text.files_loading.clone())
+                    .into_any_element();
+            }
+            return crate::shell::brand_empty(
+                IconName::FileText,
+                &text.files_empty_title,
+                &text.files_empty,
+            );
         }
 
         let active_path = self.active.clone();

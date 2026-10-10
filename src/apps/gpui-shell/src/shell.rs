@@ -7,11 +7,13 @@ use gpui_kit::component::resizable::{resizable_panel, v_resizable, ResizableStat
 use gpui_kit::component::{
     bubble::{Bubble, BubbleVariant},
     button::{Button, ButtonVariant, ButtonVariants},
+    empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle},
     input::{Input, InputState, Textarea, TextareaState},
     menu::{DropdownMenu, PopupMenuItem},
     message::MessageAlignment,
     message_scroller::{MessageScroller, MessageScrollerState},
     scroll::ScrollableElement,
+    shimmer::ShimmerText,
     sidebar::{Sidebar, SidebarFooter, SidebarGroup, SidebarItem},
     text::TextView,
     ActiveTheme, Collapsible, Disableable, Icon, Sizable, StyledExt, TitleBar, WindowExt,
@@ -20,7 +22,7 @@ use gpui_kit::InteractiveElement as _;
 use gpui_kit::{
     div, img, point, prelude::*, px, size, Anchor, App, Bounds, ClipboardEntry, Context, ElementId,
     Entity, ExternalPaths, Image, ImageFormat, Pixels, SharedString, SystemNotification,
-    TitlebarOptions, WeakEntity, Window, WindowBounds, WindowOptions,
+    TitlebarOptions, WeakEntity, Window, WindowBackgroundAppearance, WindowBounds, WindowOptions,
 };
 use openbitfun_agent_runtime::sdk::{PendingUserQuestion, PermissionReply, PermissionRequest};
 use openbitfun_runtime_ports::AgentInputAttachment;
@@ -390,9 +392,91 @@ impl ChatView {
     }
 }
 
-/// One `Sidebar` content entry: a session row, the empty-state line, or the
-/// list error line. One type because `Sidebar` children share one element
-/// type; collapsed-state is inert because entries are always rendered.
+/// Sidebar navigation destinations (M23): one row per main surface, mirroring
+/// the web-ui NavPanel order (nav sections first, sessions below).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NavAction {
+    Chat,
+    Git,
+    Insights,
+    Tasks,
+    Files,
+    Search,
+}
+
+impl NavAction {
+    fn icon(self) -> IconName {
+        match self {
+            NavAction::Chat => IconName::Sparkles,
+            NavAction::Git => IconName::GitBranch,
+            NavAction::Insights => IconName::ChartPie,
+            NavAction::Tasks => IconName::Calendar,
+            NavAction::Files => IconName::FolderOpen,
+            NavAction::Search => IconName::Search,
+        }
+    }
+
+    /// Whether the row is the active surface.
+    fn is_active(self, view: MainView) -> bool {
+        match self {
+            NavAction::Chat => view == MainView::Chat,
+            NavAction::Git => view == MainView::Git,
+            NavAction::Insights => view == MainView::Insights,
+            NavAction::Tasks => view == MainView::Tasks,
+            NavAction::Files => view == MainView::Files,
+            NavAction::Search => view == MainView::Search,
+        }
+    }
+}
+
+/// Branded empty state (M23): the component `Empty` layout with an icon in a
+/// muted frame over a title and description. Shared by the chat, files, and
+/// search surfaces so the treatment stays identical; theme resolution happens
+/// at render time inside the component.
+pub(crate) fn brand_empty(icon: IconName, title: &str, description: &str) -> gpui_kit::AnyElement {
+    Empty::new()
+        .header(
+            EmptyHeader::new()
+                .media(
+                    EmptyMedia::new()
+                        .with_variant(EmptyMediaVariant::Icon)
+                        .child(Icon::new(icon)),
+                )
+                .title(EmptyTitle::new().child(title.to_string()))
+                .description(EmptyDescription::new().child(description.to_string())),
+        )
+        .into_any_element()
+}
+
+/// All nav rows in display order; a pure projection so tests can pin the
+/// active-state wiring without a window.
+fn nav_actions() -> Vec<NavAction> {
+    vec![
+        NavAction::Chat,
+        NavAction::Files,
+        NavAction::Git,
+        NavAction::Search,
+        NavAction::Insights,
+        NavAction::Tasks,
+    ]
+}
+
+/// Row label for a nav destination; the surface titles double as nav nouns.
+fn nav_label<'a>(action: NavAction, text: &'a ShellText) -> &'a str {
+    match action {
+        NavAction::Chat => &text.chat_title,
+        NavAction::Git => &text.git_title,
+        NavAction::Insights => &text.insights_title,
+        NavAction::Tasks => &text.tasks_title,
+        NavAction::Files => &text.files_title,
+        NavAction::Search => &text.search_title,
+    }
+}
+
+/// One `Sidebar` content entry: a session row, a navigation row, the
+/// empty-state line, or the list error line. One type because `Sidebar`
+/// children share one element type; collapsed-state is inert because entries
+/// are always rendered.
 #[derive(Clone)]
 enum SidebarEntry {
     Session {
@@ -403,7 +487,13 @@ enum SidebarEntry {
         /// (row rendering runs outside the view's own context).
         view: WeakEntity<ShellWindow>,
     },
-    Muted(SharedString),
+    Nav {
+        action: NavAction,
+        label: SharedString,
+        active: bool,
+        view: WeakEntity<ShellWindow>,
+    },
+    Empty(SharedString),
     Danger(SharedString),
 }
 
@@ -490,9 +580,50 @@ impl SidebarItem for SidebarEntry {
                     .child(menu)
                     .into_any_element()
             }
-            SidebarEntry::Muted(text) => div()
+            SidebarEntry::Nav {
+                action,
+                label,
+                active,
+                view,
+            } => {
+                let id = SharedString::from(format!("nav-{:?}", action));
+                div()
+                    .id(id)
+                    .on_click(move |_, window, cx| {
+                        if let Some(view) = view.upgrade() {
+                            view.update(cx, |this, cx| this.apply_nav(action, window, cx));
+                        }
+                    })
+                    .cursor_pointer()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_x_2()
+                    .min_w_0()
+                    .p_2()
+                    .rounded(cx.theme().radius)
+                    .text_sm()
+                    .when(active, |this| {
+                        this.font_medium()
+                            .bg(cx.theme().sidebar_accent)
+                            .text_color(cx.theme().sidebar_accent_foreground)
+                    })
+                    .when(!active, |this| {
+                        this.hover(|style| style.bg(cx.theme().sidebar_accent.opacity(0.8)))
+                    })
+                    .child(Icon::new(action.icon()))
+                    .child(div().truncate().child(label))
+                    .into_any_element()
+            }
+            SidebarEntry::Empty(text) => div()
+                .flex()
+                .flex_row()
+                .items_start()
+                .gap_x_2()
+                .p_2()
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
+                .child(Icon::new(IconName::Inbox))
                 .child(text)
                 .into_any_element(),
             SidebarEntry::Danger(text) => div()
@@ -1997,6 +2128,23 @@ impl ShellWindow {
         cx.notify();
     }
 
+    /// Sidebar nav row activation (M23): every destination routes through the
+    /// same toggle the footer actions used, so an active row toggles back to
+    /// chat. Chat itself never toggles (it is the resting surface).
+    fn apply_nav(&mut self, action: NavAction, window: &mut Window, cx: &mut Context<Self>) {
+        match action {
+            NavAction::Chat => {
+                self.main_view = MainView::Chat;
+                cx.notify();
+            }
+            NavAction::Git => self.toggle_git_view(window, cx),
+            NavAction::Insights => self.toggle_insights_view(cx),
+            NavAction::Tasks => self.toggle_tasks_view(cx),
+            NavAction::Files => self.toggle_files_view(cx),
+            NavAction::Search => self.toggle_search_view(cx),
+        }
+    }
+
     /// Insights page toggle; the first open fetches the latest report list.
     fn toggle_insights_view(&mut self, cx: &mut Context<Self>) {
         if self.main_view == MainView::Insights {
@@ -2130,7 +2278,7 @@ impl ShellWindow {
             .filter(|row| self.show_archived || !row.archived)
             .collect();
         if visible.is_empty() {
-            entries.push(SidebarEntry::Muted(text.sessions_empty.clone().into()));
+            entries.push(SidebarEntry::Empty(text.sessions_empty.clone().into()));
         }
         let view = cx.entity().downgrade();
         for row in visible {
@@ -2205,9 +2353,22 @@ impl ShellWindow {
                     ),
             );
 
+        // Nav rows first (web-ui NavPanel order: navigation sections above the
+        // session list), then the sessions group with the live list.
+        let nav_rows: Vec<SidebarEntry> = nav_actions()
+            .into_iter()
+            .map(|action| SidebarEntry::Nav {
+                action,
+                label: SharedString::from(nav_label(action, text)),
+                active: action.is_active(self.main_view),
+                view: cx.entity().downgrade(),
+            })
+            .collect();
+
         Sidebar::new("shell-sidebar")
             .w(px(SESSION_PANE_WIDTH))
             .header(header)
+            .child(SidebarGroup::new(text.sidebar_nav_title.clone()).children(nav_rows))
             .child(
                 SidebarGroup::new(text.sessions_title.clone())
                     .children(self.render_session_entries(text, cx)),
@@ -2231,13 +2392,11 @@ impl ShellWindow {
             )
     }
 
-    /// Footer actions: the surface toggles live here, not in the title bar. On
-    /// Linux with client-side decorations the component title bar paints an
-    /// absolute right-click window-menu overlay above its children, which
-    /// swallows hover and clicks for every element inside it
-    /// (gpui-component 0.7.1, reproduced on Xvfb 2026-10-09: sidebar buttons
-    /// react, title-bar buttons never do). The sidebar footer is always
-    /// visible and receives input; the active toggle keeps a raised variant.
+    /// Footer actions: workspace, terminal dock toggle, settings. The surface
+    /// destinations moved into the sidebar nav group (M23); this footer stays
+    /// because it is always visible and reliably receives input (the component
+    /// title bar's right-click menu overlay swallows clicks above it —
+    /// gpui-component 0.7.1, reproduced on Xvfb 2026-10-09).
     fn render_footer_actions(&self, text: &ShellText, cx: &mut Context<Self>) -> gpui_kit::Div {
         let active_variant = |active: bool| {
             if active {
@@ -2252,46 +2411,6 @@ impl ShellWindow {
             .items_center()
             .gap_1()
             .child(self.render_workspace_button(text, cx))
-            .child(
-                Button::new("footer-changes")
-                    .icon(IconName::GitBranch)
-                    .small()
-                    .with_variant(active_variant(self.main_view == MainView::Git))
-                    .tooltip(text.git_title.clone())
-                    .on_click(cx.listener(|this, _, window, cx| this.toggle_git_view(window, cx))),
-            )
-            .child(
-                Button::new("footer-insights")
-                    .icon(IconName::ChartPie)
-                    .small()
-                    .with_variant(active_variant(self.main_view == MainView::Insights))
-                    .tooltip(text.insights_title.clone())
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_insights_view(cx))),
-            )
-            .child(
-                Button::new("footer-tasks")
-                    .icon(IconName::Calendar)
-                    .small()
-                    .with_variant(active_variant(self.main_view == MainView::Tasks))
-                    .tooltip(text.tasks_title.clone())
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_tasks_view(cx))),
-            )
-            .child(
-                Button::new("footer-files")
-                    .icon(IconName::FolderOpen)
-                    .small()
-                    .with_variant(active_variant(self.main_view == MainView::Files))
-                    .tooltip(text.files_title.clone())
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_files_view(cx))),
-            )
-            .child(
-                Button::new("footer-search")
-                    .icon(IconName::Search)
-                    .small()
-                    .with_variant(active_variant(self.main_view == MainView::Search))
-                    .tooltip(text.search_title.clone())
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_search_view(cx))),
-            )
             .child(
                 Button::new("footer-terminal")
                     .icon(IconName::SquareTerminal)
@@ -2579,15 +2698,7 @@ impl ShellWindow {
     /// the newest content until the user scrolls up.
     fn render_chat_area(&self, text: &ShellText, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         if self.chat.is_none() {
-            return div()
-                .flex_1()
-                .min_h_0()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(cx.theme().muted_foreground)
-                .child(text.chat_empty.clone())
-                .into_any_element();
+            return brand_empty(IconName::Sparkles, &text.chat_empty_title, &text.chat_empty);
         }
         let this = cx.entity();
         let jump_label = text.chat_jump_latest.clone();
@@ -3901,10 +4012,13 @@ impl Render for ShellWindow {
             MainView::Chat => self.render_chat_column(&text, cx),
         };
 
+        // No root background: the glass sidebar paints a 90% chrome tint over
+        // the window surface (compositor blur shows through), so only the
+        // main area and the docked terminal lay an opaque canvas below their
+        // content. Every other surface paints its own background.
         div()
             .size_full()
             .v_flex()
-            .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .child(
                 TitleBar::new().child(
@@ -3959,7 +4073,15 @@ impl Render for ShellWindow {
                                         .h_full()
                                         .child(self.render_sidebar(&text, cx)),
                                 )
-                                .child(div().flex_1().min_h_0().min_w_0().flex().child(main_area)),
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_h_0()
+                                        .min_w_0()
+                                        .flex()
+                                        .bg(cx.theme().background)
+                                        .child(main_area),
+                                ),
                         )];
                         if self.terminal_open {
                             panels.push(
@@ -4184,7 +4306,10 @@ impl ShellWindow {
                         .pb_1()
                         .text_sm()
                         .text_color(cx.theme().muted_foreground)
-                        .child(label),
+                        // The streaming marker sweeps a highlight across the
+                        // label; the component degrades to plain text under
+                        // reduced motion.
+                        .child(ShimmerText::new(label)),
                 )
             })
             .child(self.render_composer(text, cx))
@@ -4494,6 +4619,13 @@ pub fn launch_main_window(tokio_handle: tokio::runtime::Handle) {
                         size: size(px(1180.), px(760.)),
                     })),
                     window_min_size: Some(size(px(960.), px(640.))),
+                    // Glass sidebar: the design-system palettes paint the
+                    // sidebar column at 90% chrome over the window surface, so
+                    // the compositor blur shows through. Opaque themes (CLI
+                    // presets keep the component-default sidebar) simply cover
+                    // the surface; without blur support the 90% tint still
+                    // carries the look.
+                    window_background: WindowBackgroundAppearance::Blurred,
                     ..TitleBar::window_options()
                 },
                 cx,
@@ -6178,5 +6310,43 @@ mod tests {
             attachment.metadata.get("metadata"),
             Some(&serde_json::json!({ "name": "shot.png" }))
         );
+    }
+
+    /// M23 sidebar nav: the row set is fixed and exactly one row lights up
+    /// per surface (Settings activates none — its own footer button keeps the
+    /// raised variant).
+    #[test]
+    fn nav_rows_map_active_state_to_main_views() {
+        let actions = nav_actions();
+        assert_eq!(
+            actions,
+            vec![
+                NavAction::Chat,
+                NavAction::Files,
+                NavAction::Git,
+                NavAction::Search,
+                NavAction::Insights,
+                NavAction::Tasks,
+            ]
+        );
+        for view in [
+            MainView::Chat,
+            MainView::Files,
+            MainView::Git,
+            MainView::Search,
+            MainView::Insights,
+            MainView::Tasks,
+            MainView::Settings,
+        ] {
+            let active = actions
+                .iter()
+                .filter(|candidate| candidate.is_active(view))
+                .count();
+            assert_eq!(
+                active,
+                if view == MainView::Settings { 0 } else { 1 },
+                "view {view:?} must light exactly one nav row"
+            );
+        }
     }
 }
