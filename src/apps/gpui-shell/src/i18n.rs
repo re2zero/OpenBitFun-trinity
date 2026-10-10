@@ -283,6 +283,72 @@ pub(crate) struct ShellText {
     pub manage_interaction_approve: String,
     pub manage_interaction_reject: String,
     pub manage_error_dismiss: String,
+    // M22 general page (tray/autostart/updates) and the new settings pages.
+    pub value_unsupported: String,
+    pub settings_general: String,
+    pub settings_version: String,
+    pub settings_launch_login: String,
+    pub settings_launch_login_description: String,
+    pub settings_close_behavior: String,
+    pub settings_close_behavior_description: String,
+    pub settings_close_quit: String,
+    pub settings_close_minimize: String,
+    pub settings_auto_update: String,
+    pub settings_auto_update_description: String,
+    pub settings_check_updates: String,
+    pub settings_update_checking: String,
+    pub settings_up_to_date: String,
+    pub settings_update_available: String,
+    pub settings_update_install: String,
+    pub settings_update_installing: String,
+    pub settings_update_installed: String,
+    pub settings_update_restart: String,
+    pub settings_update_unsupported: String,
+    pub settings_update_failed: String,
+    pub settings_automation: String,
+    pub settings_hooks: String,
+    pub settings_hooks_description: String,
+    pub settings_hooks_project: String,
+    pub settings_hooks_project_description: String,
+    pub settings_git_coauthor: String,
+    pub settings_git_coauthor_description: String,
+    pub settings_websearch: String,
+    pub settings_websearch_provider: String,
+    pub settings_websearch_provider_description: String,
+    pub websearch_provider_free: String,
+    pub websearch_provider_exa: String,
+    pub websearch_provider_tavily: String,
+    pub websearch_provider_http: String,
+    pub websearch_credential: String,
+    pub websearch_credential_description: String,
+    pub websearch_configured: String,
+    pub websearch_not_configured: String,
+    pub websearch_save: String,
+    pub websearch_no_credential: String,
+    pub websearch_desktop_only: String,
+    pub settings_usage: String,
+    pub settings_usage_range: String,
+    pub settings_usage_today: String,
+    pub settings_usage_week: String,
+    pub settings_usage_month: String,
+    pub settings_usage_all: String,
+    pub settings_usage_refresh: String,
+    pub settings_usage_loading: String,
+    pub settings_usage_empty: String,
+    pub settings_usage_requests: String,
+    pub settings_usage_cache_hit: String,
+    pub settings_archived: String,
+    pub settings_archived_list: String,
+    pub settings_archived_description: String,
+    pub settings_archived_empty: String,
+    pub settings_archived_restore: String,
+    pub settings_archived_delete_title: String,
+    pub settings_diagnostics: String,
+    pub settings_logging_level: String,
+    pub settings_logging_level_description: String,
+    pub settings_logs_dir: String,
+    pub settings_logs_open: String,
+    pub settings_diagnostics_note: String,
 }
 
 impl Global for ShellText {}
@@ -304,6 +370,9 @@ pub(crate) fn load_locale(locale: LocaleId, cx: &mut App) {
     // The component library keeps its own copy (settings page navigation,
     // list search placeholders, dialog defaults); point it at the same locale.
     gpui_kit::component::set_locale(component_locale(locale));
+    // The tray labels are resolved through the same service; refresh them so
+    // the menu follows the switch (M22).
+    crate::tray::apply_locale(locale, cx);
     cx.refresh_windows();
     tracing::info!("Shell locale loaded: {}", locale.as_str());
 }
@@ -758,6 +827,105 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         manage_interaction_approve: "Approve".to_string(),
         manage_interaction_reject: "Reject".to_string(),
         manage_error_dismiss: "Dismiss".to_string(),
+        value_unsupported: "unsupported".to_string(),
+        settings_general: "General".to_string(),
+        settings_version: "Version".to_string(),
+        settings_launch_login: "Launch at login".to_string(),
+        settings_launch_login_description: {
+            "Start OpenBitFun automatically when you sign in.".to_string()
+        },
+        settings_close_behavior: "Close button behavior".to_string(),
+        settings_close_behavior_description: {
+            "What the window close button does: quit OpenBitFun, or minimize it so the \
+             tray icon keeps it reachable."
+                .to_string()
+        },
+        settings_close_quit: "Quit".to_string(),
+        settings_close_minimize: "Minimize".to_string(),
+        settings_auto_update: "Check for updates at startup".to_string(),
+        settings_auto_update_description: {
+            "Checks the release feed once per launch. The manual check below always runs."
+                .to_string()
+        },
+        settings_check_updates: "Check for updates".to_string(),
+        settings_update_checking: "Checking for updates…".to_string(),
+        settings_up_to_date: "Up to date".to_string(),
+        settings_update_available: "New version available:".to_string(),
+        settings_update_install: "Download and install".to_string(),
+        settings_update_installing: "Downloading and installing…".to_string(),
+        settings_update_installed: "Installed".to_string(),
+        settings_update_restart: "Restart to apply".to_string(),
+        settings_update_unsupported: "Self-update unavailable".to_string(),
+        settings_update_failed: "Update check failed".to_string(),
+        settings_automation: "Automation".to_string(),
+        settings_hooks: "Agent hooks".to_string(),
+        settings_hooks_description: {
+            "Master switch for native lifecycle hooks (hooks.json).".to_string()
+        },
+        settings_hooks_project: "Project hooks".to_string(),
+        settings_hooks_project_description: {
+            "Allow hook files from the checked-out repository. Only enable this for \
+             workspaces you trust."
+                .to_string()
+        },
+        settings_git_coauthor: "Git co-author".to_string(),
+        settings_git_coauthor_description: {
+            "Add OpenBitFun as a co-author in built-in commit workflows.".to_string()
+        },
+        settings_websearch: "Web search".to_string(),
+        settings_websearch_provider: "Provider".to_string(),
+        settings_websearch_provider_description: {
+            "The search provider the agent's web search tool uses.".to_string()
+        },
+        websearch_provider_free: "Exa (free, MCP)".to_string(),
+        websearch_provider_exa: "Exa Search API".to_string(),
+        websearch_provider_tavily: "Tavily".to_string(),
+        websearch_provider_http: "OpenBitFun Search HTTP".to_string(),
+        websearch_credential: "API credential".to_string(),
+        websearch_credential_description: {
+            "Stored in the local encrypted vault; the key never lands in the settings \
+             file."
+                .to_string()
+        },
+        websearch_configured: "Credential configured".to_string(),
+        websearch_not_configured: "No credential configured".to_string(),
+        websearch_save: "Save credential".to_string(),
+        websearch_no_credential: "This provider needs no credential.".to_string(),
+        websearch_desktop_only: {
+            "Configure this provider in the desktop or web app.".to_string()
+        },
+        settings_usage: "Usage statistics".to_string(),
+        settings_usage_range: "Time range".to_string(),
+        settings_usage_today: "Today".to_string(),
+        settings_usage_week: "This week".to_string(),
+        settings_usage_month: "This month".to_string(),
+        settings_usage_all: "All time".to_string(),
+        settings_usage_refresh: "Refresh".to_string(),
+        settings_usage_loading: "Loading usage statistics…".to_string(),
+        settings_usage_empty: "No usage recorded in this range.".to_string(),
+        settings_usage_requests: "Requests".to_string(),
+        settings_usage_cache_hit: "Cache hit".to_string(),
+        settings_archived: "Archived sessions".to_string(),
+        settings_archived_list: "This workspace".to_string(),
+        settings_archived_description: {
+            "Sessions archived from the sidebar; restore them or delete them for good."
+                .to_string()
+        },
+        settings_archived_empty: "No archived sessions in this workspace.".to_string(),
+        settings_archived_restore: "Restore".to_string(),
+        settings_archived_delete_title: "Delete archived session".to_string(),
+        settings_diagnostics: "Diagnostics".to_string(),
+        settings_logging_level: "Log level".to_string(),
+        settings_logging_level_description: {
+            "Applies immediately and persists for future launches.".to_string()
+        },
+        settings_logs_dir: "Log directory".to_string(),
+        settings_logs_open: "Open".to_string(),
+        settings_diagnostics_note: {
+            "This shell logs to stdout; the desktop app's log bundle export is a \
+             desktop capability."
+                .to_string()
+        },
     }
 }
 
@@ -1068,6 +1236,89 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         manage_interaction_approve: service.t("gpui-shell-manage-interaction-approve").await,
         manage_interaction_reject: service.t("gpui-shell-manage-interaction-reject").await,
         manage_error_dismiss: service.t("gpui-shell-manage-error-dismiss").await,
+        value_unsupported: service.t("gpui-shell-value-unsupported").await,
+        settings_general: service.t("gpui-shell-settings-general").await,
+        settings_version: service.t("gpui-shell-settings-version").await,
+        settings_launch_login: service.t("gpui-shell-settings-launch-login").await,
+        settings_launch_login_description: service
+            .t("gpui-shell-settings-launch-login-description")
+            .await,
+        settings_close_behavior: service.t("gpui-shell-settings-close-behavior").await,
+        settings_close_behavior_description: service
+            .t("gpui-shell-settings-close-behavior-description")
+            .await,
+        settings_close_quit: service.t("gpui-shell-settings-close-quit").await,
+        settings_close_minimize: service.t("gpui-shell-settings-close-minimize").await,
+        settings_auto_update: service.t("gpui-shell-settings-auto-update").await,
+        settings_auto_update_description: service
+            .t("gpui-shell-settings-auto-update-description")
+            .await,
+        settings_check_updates: service.t("gpui-shell-settings-check-updates").await,
+        settings_update_checking: service.t("gpui-shell-settings-update-checking").await,
+        settings_up_to_date: service.t("gpui-shell-settings-up-to-date").await,
+        settings_update_available: service.t("gpui-shell-settings-update-available").await,
+        settings_update_install: service.t("gpui-shell-settings-update-install").await,
+        settings_update_installing: service.t("gpui-shell-settings-update-installing").await,
+        settings_update_installed: service.t("gpui-shell-settings-update-installed").await,
+        settings_update_restart: service.t("gpui-shell-settings-update-restart").await,
+        settings_update_unsupported: service.t("gpui-shell-settings-update-unsupported").await,
+        settings_update_failed: service.t("gpui-shell-settings-update-failed").await,
+        settings_automation: service.t("gpui-shell-settings-automation").await,
+        settings_hooks: service.t("gpui-shell-settings-hooks").await,
+        settings_hooks_description: service.t("gpui-shell-settings-hooks-description").await,
+        settings_hooks_project: service.t("gpui-shell-settings-hooks-project").await,
+        settings_hooks_project_description: service
+            .t("gpui-shell-settings-hooks-project-description")
+            .await,
+        settings_git_coauthor: service.t("gpui-shell-settings-git-coauthor").await,
+        settings_git_coauthor_description: service
+            .t("gpui-shell-settings-git-coauthor-description")
+            .await,
+        settings_websearch: service.t("gpui-shell-settings-websearch").await,
+        settings_websearch_provider: service.t("gpui-shell-settings-websearch-provider").await,
+        settings_websearch_provider_description: service
+            .t("gpui-shell-settings-websearch-provider-description")
+            .await,
+        websearch_provider_free: service.t("gpui-shell-websearch-provider-free").await,
+        websearch_provider_exa: service.t("gpui-shell-websearch-provider-exa").await,
+        websearch_provider_tavily: service.t("gpui-shell-websearch-provider-tavily").await,
+        websearch_provider_http: service.t("gpui-shell-websearch-provider-http").await,
+        websearch_credential: service.t("gpui-shell-websearch-credential").await,
+        websearch_credential_description: service
+            .t("gpui-shell-websearch-credential-description")
+            .await,
+        websearch_configured: service.t("gpui-shell-websearch-configured").await,
+        websearch_not_configured: service.t("gpui-shell-websearch-not-configured").await,
+        websearch_save: service.t("gpui-shell-websearch-save").await,
+        websearch_no_credential: service.t("gpui-shell-websearch-no-credential").await,
+        websearch_desktop_only: service.t("gpui-shell-websearch-desktop-only").await,
+        settings_usage: service.t("gpui-shell-settings-usage").await,
+        settings_usage_range: service.t("gpui-shell-settings-usage-range").await,
+        settings_usage_today: service.t("gpui-shell-settings-usage-today").await,
+        settings_usage_week: service.t("gpui-shell-settings-usage-week").await,
+        settings_usage_month: service.t("gpui-shell-settings-usage-month").await,
+        settings_usage_all: service.t("gpui-shell-settings-usage-all").await,
+        settings_usage_refresh: service.t("gpui-shell-settings-usage-refresh").await,
+        settings_usage_loading: service.t("gpui-shell-settings-usage-loading").await,
+        settings_usage_empty: service.t("gpui-shell-settings-usage-empty").await,
+        settings_usage_requests: service.t("gpui-shell-settings-usage-requests").await,
+        settings_usage_cache_hit: service.t("gpui-shell-settings-usage-cache-hit").await,
+        settings_archived: service.t("gpui-shell-settings-archived").await,
+        settings_archived_list: service.t("gpui-shell-settings-archived-list").await,
+        settings_archived_description: service.t("gpui-shell-settings-archived-description").await,
+        settings_archived_empty: service.t("gpui-shell-settings-archived-empty").await,
+        settings_archived_restore: service.t("gpui-shell-settings-archived-restore").await,
+        settings_archived_delete_title: service
+            .t("gpui-shell-settings-archived-delete-title")
+            .await,
+        settings_diagnostics: service.t("gpui-shell-settings-diagnostics").await,
+        settings_logging_level: service.t("gpui-shell-settings-logging-level").await,
+        settings_logging_level_description: service
+            .t("gpui-shell-settings-logging-level-description")
+            .await,
+        settings_logs_dir: service.t("gpui-shell-settings-logs-dir").await,
+        settings_logs_open: service.t("gpui-shell-settings-logs-open").await,
+        settings_diagnostics_note: service.t("gpui-shell-settings-diagnostics-note").await,
     }
 }
 

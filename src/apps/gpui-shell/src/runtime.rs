@@ -75,7 +75,10 @@ static RUNTIME_HANDLE: OnceLock<RuntimeHandle> = OnceLock::new();
 /// closures (which hold no runtime handles) can publish catalog refreshes.
 static SHELL_EVENT_TX: OnceLock<mpsc::UnboundedSender<RuntimeEvent>> = OnceLock::new();
 
-fn publish(event: RuntimeEvent) {
+/// Publishes one event into the shell pump from anywhere in the process
+/// (tray thread, settings closures, spawned service tasks). Events fired
+/// before the pump is wired are dropped with a warning.
+pub(crate) fn publish(event: RuntimeEvent) {
     match SHELL_EVENT_TX.get() {
         Some(tx) => {
             let _ = tx.send(event);
@@ -281,6 +284,36 @@ pub(crate) enum RuntimeEvent {
     /// A management action (agent creation, MCP lifecycle) failed; the
     /// settings pages surface it as a dismissible banner.
     ManageFailed(String),
+    /// M22 tray: show (and focus) the main window. Left click or the tray
+    /// menu; there is no per-window hide in gpui, so this is activate-only.
+    TrayShowWindow,
+    /// The window close button or the tray asked to quit. The pump shuts the
+    /// terminal PTYs down before the process exits — closing the window
+    /// directly would orphan them.
+    QuitRequested,
+    /// Restart after a successful self-update: shut PTYs down, hand off to
+    /// the freshly installed binary, and exit.
+    RestartRequested,
+    /// An update check was requested (settings button or tray menu).
+    UpdateCheckRequested,
+    /// A download+install of the offered release was requested (settings
+    /// button).
+    UpdateInstallRequested,
+    /// An update check finished (manual or the startup auto-check).
+    UpdateCheckFinished {
+        result: Result<crate::update::UpdateCheckReport, String>,
+    },
+    /// A self-update download+install finished; `Ok` carries the installed
+    /// version. The running process keeps the old image until it restarts.
+    UpdateInstallFinished {
+        result: Result<String, String>,
+    },
+    /// Launch-at-login state read from the platform backend at bootstrap.
+    AutostartState(bool),
+    /// Global token-usage statistics for the settings usage page.
+    UsageReady(Result<Box<openbitfun_services_core::token_usage::UsageStatistics>, String>),
+    /// Web-search credential state for one provider (`provider`, `configured`).
+    WebSearchStatus(Result<(String, bool), String>),
 }
 
 /// One session list row: the runtime summary plus its persisted archive state.
@@ -1445,6 +1478,82 @@ impl RuntimeHandle {
             {
                 tracing::warn!("Failed to submit MCP interaction response: {error}");
             }
+        });
+    }
+
+    /// M22: fetches global token-usage statistics for the settings usage
+    /// page. Same core service the desktop dashboard reads; the result rides
+    /// the pump as [`RuntimeEvent::UsageReady`].
+    pub(crate) fn fetch_usage_stats(&self, time_range: String) {
+        self.tokio.spawn(async move {
+            let result =
+                match openbitfun_core::service::token_usage::get_global_token_usage_service() {
+                    Some(service) => {
+                        let request =
+                            openbitfun_services_core::token_usage::TokenUsageStatisticsRequest {
+                                time_range: time_range.clone(),
+                                granularity: "day".to_string(),
+                                start: None,
+                                end: None,
+                                time_zone: None,
+                                include_subagent: true,
+                                filter_kind: Default::default(),
+                                filter_query: None,
+                            };
+                        match service.get_statistics_for_request(request).await {
+                            Ok(stats) => Ok(Box::new(stats)),
+                            Err(error) => Err(format!("{error:#}")),
+                        }
+                    }
+                    None => Err("token usage service is not available".to_string()),
+                };
+            if let Err(message) = &result {
+                tracing::warn!("Usage statistics for {time_range} failed: {message}");
+            }
+            publish(RuntimeEvent::UsageReady(result));
+        });
+    }
+
+    /// M22: saves (or clears, with an empty secret refused by core) the
+    /// web-search credential for one provider, then reports the new state.
+    pub(crate) fn save_web_search_credential(&self, provider: String, secret: String) {
+        self.tokio.spawn(async move {
+            let result = openbitfun_core::service::web_search::save_web_search_credential(
+                openbitfun_core::service::web_search::SaveWebSearchCredentialRequest {
+                    provider: provider.clone(),
+                    secret,
+                },
+            )
+            .await;
+            match &result {
+                Ok(status) => tracing::info!(
+                    "WebSearch credential saved for {} (configured: {})",
+                    status.provider,
+                    status.configured
+                ),
+                Err(error) => {
+                    tracing::warn!("Failed to save WebSearch credential for {provider}: {error}")
+                }
+            }
+            publish(RuntimeEvent::WebSearchStatus(
+                result
+                    .map(|status| (status.provider, status.configured))
+                    .map_err(|error| error.to_string()),
+            ));
+        });
+    }
+
+    /// M22: reads whether one web-search provider has a stored credential.
+    pub(crate) fn load_web_search_credential_status(&self, provider: String) {
+        self.tokio.spawn(async move {
+            let result =
+                openbitfun_core::service::web_search::get_web_search_credential_status(&provider)
+                    .await;
+            publish(RuntimeEvent::WebSearchStatus(
+                result
+                    .map(|status| (status.provider, status.configured))
+                    .map_err(|error| error.to_string()),
+            ));
         });
     }
 
@@ -2822,9 +2931,11 @@ async fn bootstrap(tx: mpsc::UnboundedSender<RuntimeEvent>) -> Result<()> {
     // snapshot; the UI thread applies it (theme and locale need gpui state).
     // A failed read keeps the shell on its defaults instead of blocking the
     // bootstrap.
+    let mut auto_update_enabled = true;
     match get_global_config_service().await {
         Ok(service) => match service.get_config::<GlobalConfig>(None).await {
             Ok(config) => {
+                auto_update_enabled = config.app.auto_update;
                 let _ = tx.send(RuntimeEvent::Config(Box::new(
                     crate::settings::ShellConfig::from_global(&config),
                 )));
@@ -2840,6 +2951,15 @@ async fn bootstrap(tx: mpsc::UnboundedSender<RuntimeEvent>) -> Result<()> {
     // is applied on the UI thread (same source, same fallback).
     let locale = get_app_language().await;
     tracing::debug!("Bootstrap locale resolved: {}", locale.as_str());
+
+    // M22: the tray comes up early so it is present while the runtime boots.
+    // Label resolution needs the i18n service (already initialized on the UI
+    // thread before the runtime bootstrap starts).
+    crate::tray::spawn(locale, tx.clone()).await;
+    // M22: launch-at-login state for the general settings page; one stat call
+    // against the platform autostart entry.
+    let autostart = crate::tray::autostart::is_enabled().unwrap_or(false);
+    let _ = tx.send(RuntimeEvent::AutostartState(autostart));
 
     let workspace_root = std::env::current_dir().context("Failed to read current directory")?;
     let path_manager =
@@ -3025,6 +3145,23 @@ async fn bootstrap(tx: mpsc::UnboundedSender<RuntimeEvent>) -> Result<()> {
                 );
             }
         }
+    }
+
+    // M22: the auto-update preference gates the automatic check the same way
+    // the desktop store does — the toggle only silences this startup probe,
+    // never the manual button. Delayed so the check never competes with the
+    // boot path; a failure stays a log line for the automatic case.
+    if auto_update_enabled {
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+            match crate::update::check_for_update(None).await {
+                Ok(report) => {
+                    let _ = tx.send(RuntimeEvent::UpdateCheckFinished { result: Ok(report) });
+                }
+                Err(error) => tracing::info!("Startup update check skipped: {error:#}"),
+            }
+        });
     }
     Ok(())
 }

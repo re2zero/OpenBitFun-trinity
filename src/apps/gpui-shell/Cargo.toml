@@ -64,6 +64,12 @@ openbitfun-services-core = { path = "../../crates/services/services-core", featu
     "tls-provider",
 ] }
 flate2 = { workspace = true }
+# M22 tray icon (StatusNotifierItem) and launch-at-login; auto-launch shares
+# the version the desktop's tauri-plugin-autostart already pulls. `image`
+# decodes the embedded brand PNG into the SNI icon pixmap.
+ksni = { workspace = true }
+auto-launch = { workspace = true }
+image = { workspace = true, features = ["png"] }
 futures-util = { workspace = true }
 # M21 MCP interaction pump: the emitter forwarding server asks into the shell
 # event pump implements the core backend-bus trait.

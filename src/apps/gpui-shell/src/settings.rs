@@ -27,6 +27,7 @@ use openbitfun_runtime_ports::PermissionPolicyPreset;
 use crate::i18n::{self, ShellText};
 use crate::theme;
 use crate::theme_openbitfun;
+use crate::update::UpdateUiState;
 
 /// Dot-paths of the shared-config entries this page owns. They are the same
 /// paths the desktop app and the Web UI read and write.
@@ -44,6 +45,47 @@ pub(crate) const TERMINAL_PROFILES_PATH: &str = "terminal.profiles";
 /// Default model new sessions start on (same path the desktop models page
 /// writes).
 pub(crate) const DEFAULT_MODEL_PATH: &str = "ai.default_models.primary";
+/// What the window close button does (`app.close_button_behavior`). The shell
+/// renders `quit`/`minimize_to_tray`; anything else (the desktop's `ask`, for
+/// one) stays displayed verbatim and behaves like the desktop fallback:
+/// minimize with the tray present.
+pub(crate) const CLOSE_BEHAVIOR_PATH: &str = "app.close_button_behavior";
+/// Whether the startup update probe runs (`app.auto_update`); the manual
+/// check ignores it, same as the desktop store.
+pub(crate) const AUTO_UPDATE_PATH: &str = "app.auto_update";
+/// Master switch for native agent hooks (`app.hooks.enabled`).
+pub(crate) const HOOKS_ENABLED_PATH: &str = "app.hooks.enabled";
+/// Whether project-scope hooks.json files may run
+/// (`app.hooks.project_hooks_enabled`).
+pub(crate) const HOOKS_PROJECT_PATH: &str = "app.hooks.project_hooks_enabled";
+/// OpenBitFun co-author line in built-in commit workflows
+/// (`app.ai_experience.enable_git_commit_coauthor`).
+pub(crate) const GIT_COAUTHOR_PATH: &str = "app.ai_experience.enable_git_commit_coauthor";
+/// Active web-search provider (`ai.web_search.provider`).
+pub(crate) const WEB_SEARCH_PROVIDER_PATH: &str = "ai.web_search.provider";
+/// Runtime log level (`app.logging.level`), applied live through the tracing
+/// reload handle.
+pub(crate) const LOGGING_LEVEL_PATH: &str = "app.logging.level";
+
+/// Serialized close-button values the shell offers.
+pub(crate) const CLOSE_QUIT: &str = "quit";
+pub(crate) const CLOSE_MINIMIZE: &str = "minimize_to_tray";
+
+/// What a window close request does, resolved from the raw shared value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CloseBehavior {
+    Quit,
+    MinimizeToTray,
+}
+
+/// The desktop treats every non-`quit` value as "tray on close"; the shell
+/// cannot hide a window, so those values minimize.
+pub(crate) fn parse_close_behavior(raw: &str) -> CloseBehavior {
+    match raw {
+        CLOSE_QUIT => CloseBehavior::Quit,
+        _ => CloseBehavior::MinimizeToTray,
+    }
+}
 
 /// Terminal preferences the built-in terminal consumes. Mirrors the shared
 /// `terminal.*` section the desktop terminal reads, in the same value domain:
@@ -95,6 +137,22 @@ pub(crate) struct ShellConfig {
     /// `ai.default_models.primary`: the model new sessions start on. `None`
     /// means the runtime picks the first enabled model.
     pub(crate) default_primary_model: Option<String>,
+    /// Raw `app.close_button_behavior` (`quit` | `minimize_to_tray` | `ask`).
+    /// Kept verbatim so the page can show an unsupported value as-is.
+    pub(crate) close_behavior_raw: String,
+    /// `app.auto_update`: gates the startup update probe.
+    pub(crate) auto_update: bool,
+    /// `app.hooks.enabled`: master switch for native agent hooks.
+    pub(crate) hooks_enabled: bool,
+    /// `app.hooks.project_hooks_enabled`: whether project-scope hooks.json
+    /// files may run.
+    pub(crate) project_hooks_enabled: bool,
+    /// `app.ai_experience.enable_git_commit_coauthor`.
+    pub(crate) git_commit_coauthor: bool,
+    /// `ai.web_search.provider`, kept verbatim; unknown ids render as-is.
+    pub(crate) web_search_provider: String,
+    /// `app.logging.level`, one of the tracing level names.
+    pub(crate) logging_level: String,
 }
 
 impl Global for ShellConfig {}
@@ -109,6 +167,13 @@ impl ShellConfig {
             auto_approve_ask: config.tool_permissions.interaction.auto_approve_ask,
             terminal: TerminalSettings::from_global(&config.terminal),
             default_primary_model: config.ai.default_models.primary.clone(),
+            close_behavior_raw: config.app.close_button_behavior.clone(),
+            auto_update: config.app.auto_update,
+            hooks_enabled: config.app.hooks.enabled,
+            project_hooks_enabled: config.app.hooks.project_hooks_enabled,
+            git_commit_coauthor: config.app.ai_experience.enable_git_commit_coauthor,
+            web_search_provider: config.ai.web_search.provider.clone(),
+            logging_level: config.app.logging.level.clone(),
         }
     }
 
@@ -123,7 +188,9 @@ impl ShellConfig {
     }
 
     /// Mirror installed before the shared config has been read: the shell
-    /// defaults, matching the theme applied on the first frame.
+    /// defaults, matching the theme applied on the first frame. The close
+    /// button starts as `quit` so the very first seconds keep the historic
+    /// behavior (no tray is up yet); the snapshot applies the shared default.
     pub(crate) fn startup_default(locale: LocaleId) -> Self {
         Self {
             language: locale,
@@ -132,9 +199,24 @@ impl ShellConfig {
             auto_approve_ask: false,
             terminal: TerminalSettings::default(),
             default_primary_model: None,
+            close_behavior_raw: CLOSE_QUIT.to_string(),
+            auto_update: true,
+            hooks_enabled: true,
+            project_hooks_enabled: false,
+            git_commit_coauthor: true,
+            web_search_provider: "exa_mcp_free".to_string(),
+            logging_level: "info".to_string(),
         }
     }
 }
+
+/// Launch-at-login state read from the platform backend at bootstrap and
+/// flipped optimistically by the toggle; a failed write publishes the real
+/// state back through [`crate::runtime::RuntimeEvent::AutostartState`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AutostartState(pub(crate) bool);
+
+impl Global for AutostartState {}
 
 /// Appearance applied on the first frame, before the shared config is read.
 pub(crate) const DEFAULT_APPEARANCE_ID: &str = "openbitfun-dark";
@@ -348,9 +430,10 @@ fn persist_profiles(cx: &App) {
     }
 }
 
-/// The settings page: appearance (language, theme), models, tool permissions,
-/// and the terminal preferences the built-in terminal reads. The shell weak
-/// handle lets terminal-profile rows open their editor dialog (D57).
+/// The settings page: general (M22 tray/autostart/updates), appearance
+/// (language, theme), models, tool permissions, terminal preferences, and the
+/// M21/M22 management and data pages. The shell weak handle lets page rows
+/// open dialogs and read window state (D57).
 pub(crate) fn render_page(
     text: &ShellText,
     view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
@@ -359,13 +442,19 @@ pub(crate) fn render_page(
     Settings::new("shell-settings")
         .sidebar_width(gpui_kit::px(180.))
         .pages(vec![
+            general_page(text, view.clone(), cx),
             appearance_page(text),
             models_page(text, cx),
             terminal_page(text, view.clone()),
             permissions_page(text, cx),
+            automation_page(text),
+            websearch_page(text, view.clone()),
             crate::manage::skills_page(text),
             crate::manage::agents_page(text, view.clone()),
-            crate::manage::mcp_page(text, view),
+            crate::manage::mcp_page(text, view.clone()),
+            usage_page(text, view.clone()),
+            archived_page(text, view.clone()),
+            diagnostics_page(text, view),
         ])
         .into_any_element()
 }
@@ -408,6 +497,236 @@ fn appearance_page(text: &ShellText) -> SettingPage {
             SettingItem::new(text.theme.clone(), theme_field)
                 .description(text.settings_theme_description.clone()),
         ]))
+}
+
+/// General page (M22): launch-at-login, the close-button behavior, and the
+/// self-update flow (auto-update preference plus the manual check / install /
+/// restart actions). The update state lives on the window and arrives through
+/// the event pump; the tray is the other half of this page (menu events land
+/// on the same actions).
+fn general_page(
+    text: &ShellText,
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    cx: &App,
+) -> SettingPage {
+    let version_field = SettingField::render(|_options, _window, cx| {
+        div()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .child(format!("v{}", env!("CARGO_PKG_VERSION")))
+            .into_any_element()
+    });
+
+    let login_field = SettingField::switch(
+        |cx: &App| {
+            cx.try_global::<AutostartState>()
+                .map(|s| s.0)
+                .unwrap_or(false)
+        },
+        |value: bool, cx: &mut App| set_autostart(value, cx),
+    );
+
+    // Close behavior: the two values the shell renders, plus the persisted
+    // value verbatim when it is outside that domain (the desktop's `ask`).
+    let current_close = ShellConfig::current(cx).close_behavior_raw.clone();
+    let mut close_options = vec![
+        (
+            SharedString::from(CLOSE_QUIT),
+            SharedString::from(text.settings_close_quit.clone()),
+        ),
+        (
+            SharedString::from(CLOSE_MINIMIZE),
+            SharedString::from(text.settings_close_minimize.clone()),
+        ),
+    ];
+    if current_close != CLOSE_QUIT && current_close != CLOSE_MINIMIZE {
+        close_options.insert(
+            0,
+            (
+                SharedString::from(current_close.clone()),
+                SharedString::from(format!(
+                    "{current_close} ({})",
+                    text.value_unsupported.clone()
+                )),
+            ),
+        );
+    }
+    let close_field = SettingField::dropdown(
+        close_options,
+        |cx: &App| SharedString::from(ShellConfig::current(cx).close_behavior_raw.clone()),
+        |value: SharedString, cx: &mut App| {
+            let value = value.to_string();
+            if value != CLOSE_QUIT && value != CLOSE_MINIMIZE {
+                tracing::warn!("Ignoring unsupported close behavior: {value}");
+                return;
+            }
+            cx.global_mut::<ShellConfig>().close_behavior_raw = value.clone();
+            crate::shell::sync_close_quits(cx);
+            persist(CLOSE_BEHAVIOR_PATH, serde_json::Value::String(value));
+            cx.refresh_windows();
+        },
+    );
+
+    let auto_update_field = SettingField::switch(
+        |cx: &App| ShellConfig::current(cx).auto_update,
+        |value: bool, cx: &mut App| {
+            cx.global_mut::<ShellConfig>().auto_update = value;
+            persist(AUTO_UPDATE_PATH, serde_json::Value::Bool(value));
+            cx.refresh_windows();
+        },
+    );
+
+    let owned_text = text.clone();
+    let update_field = SettingField::render(move |_options, _window, cx| {
+        update_check_field(view.clone(), &owned_text, cx)
+    });
+
+    SettingPage::new(text.settings_general.clone())
+        .icon(IconName::House)
+        .resettable(false)
+        .default_open(true)
+        .group(SettingGroup::new().items(vec![
+            SettingItem::new(text.settings_version.clone(), version_field),
+            SettingItem::new(text.settings_launch_login.clone(), login_field)
+                .description(text.settings_launch_login_description.clone()),
+            SettingItem::new(text.settings_close_behavior.clone(), close_field)
+                .description(text.settings_close_behavior_description.clone()),
+            SettingItem::new(text.settings_auto_update.clone(), auto_update_field)
+                .description(text.settings_auto_update_description.clone()),
+            SettingItem::new(text.settings_check_updates.clone(), update_field),
+        ]))
+}
+
+/// Flips launch-at-login. The toggle is optimistic; a failed platform write
+/// logs the reason and publishes the real state back through the pump.
+fn set_autostart(enabled: bool, cx: &mut App) {
+    cx.set_global(AutostartState(enabled));
+    let Some(handle) = crate::runtime::runtime_handle() else {
+        tracing::error!("Cannot change launch-at-login before the runtime is ready");
+        return;
+    };
+    handle.tokio_handle().spawn(async move {
+        if let Err(reason) = crate::tray::autostart::set_enabled(enabled) {
+            tracing::error!("Launch-at-login write failed: {reason}");
+            let real = crate::tray::autostart::is_enabled().unwrap_or(!enabled);
+            crate::runtime::publish(crate::runtime::RuntimeEvent::AutostartState(real));
+        } else {
+            tracing::info!("Launch-at-login set to {enabled}");
+        }
+    });
+}
+
+/// The check / install / restart control, projected from the window's update
+/// state machine. Every button publishes the same event the tray menu uses,
+/// so there is exactly one update flow.
+fn update_check_field(
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    text: &ShellText,
+    cx: &mut App,
+) -> gpui_kit::AnyElement {
+    let state = view
+        .upgrade()
+        .map(|shell| shell.read(cx).update_state.clone())
+        .unwrap_or_default();
+    let note = |value: String, danger: bool| {
+        div()
+            .text_sm()
+            .text_color(if danger {
+                cx.theme().danger
+            } else {
+                cx.theme().muted_foreground
+            })
+            .child(value)
+    };
+    let mut column = div().v_flex().gap_2().w_full();
+    match state {
+        UpdateUiState::Idle | UpdateUiState::UpToDate => {
+            if let UpdateUiState::UpToDate = state {
+                column = column.child(note(
+                    format!(
+                        "{} (v{})",
+                        text.settings_up_to_date,
+                        env!("CARGO_PKG_VERSION")
+                    ),
+                    false,
+                ));
+            }
+            column = column.child(
+                Button::new("update-check")
+                    .label(text.settings_check_updates.clone())
+                    .small()
+                    .with_variant(ButtonVariant::Secondary)
+                    .on_click(|_, _window, _cx| {
+                        crate::runtime::publish(crate::runtime::RuntimeEvent::UpdateCheckRequested);
+                    }),
+            );
+        }
+        UpdateUiState::Checking => {
+            column = column.child(note(text.settings_update_checking.clone(), false));
+        }
+        UpdateUiState::Available { version } => {
+            column = column
+                .child(note(
+                    format!("{} v{version}", text.settings_update_available),
+                    false,
+                ))
+                .child(
+                    Button::new("update-install")
+                        .label(text.settings_update_install.clone())
+                        .small()
+                        .with_variant(ButtonVariant::Primary)
+                        .on_click(|_, _window, _cx| {
+                            crate::runtime::publish(
+                                crate::runtime::RuntimeEvent::UpdateInstallRequested,
+                            );
+                        }),
+                );
+        }
+        UpdateUiState::Installing => {
+            column = column.child(note(text.settings_update_installing.clone(), false));
+        }
+        UpdateUiState::Installed { version } => {
+            column = column
+                .child(note(
+                    format!("{} v{version}", text.settings_update_installed),
+                    false,
+                ))
+                .child(
+                    Button::new("update-restart")
+                        .label(text.settings_update_restart.clone())
+                        .small()
+                        .with_variant(ButtonVariant::Primary)
+                        .on_click(|_, _window, _cx| {
+                            crate::runtime::publish(crate::runtime::RuntimeEvent::RestartRequested);
+                        }),
+                );
+        }
+        UpdateUiState::Unsupported { reason } => {
+            column = column.child(note(
+                format!("{}: {reason}", text.settings_update_unsupported),
+                false,
+            ));
+        }
+        UpdateUiState::Failed { message } => {
+            column = column
+                .child(note(
+                    format!("{}: {message}", text.settings_update_failed),
+                    true,
+                ))
+                .child(
+                    Button::new("update-retry")
+                        .label(text.settings_check_updates.clone())
+                        .small()
+                        .with_variant(ButtonVariant::Secondary)
+                        .on_click(|_, _window, _cx| {
+                            crate::runtime::publish(
+                                crate::runtime::RuntimeEvent::UpdateCheckRequested,
+                            );
+                        }),
+                );
+        }
+    }
+    column.into_any_element()
 }
 
 /// Models page (M11 minimal version): the configured models with their
@@ -953,6 +1272,714 @@ fn permissions_page(text: &ShellText, cx: &App) -> SettingPage {
         ]))
 }
 
+/// Automation page (M22): the native-hooks master switches and the commit
+/// co-author preference. The toggles are the same shared values the desktop
+/// automation page writes; hook declarations themselves stay in hooks.json.
+fn automation_page(text: &ShellText) -> SettingPage {
+    let hooks_field = SettingField::switch(
+        |cx: &App| ShellConfig::current(cx).hooks_enabled,
+        |value: bool, cx: &mut App| {
+            cx.global_mut::<ShellConfig>().hooks_enabled = value;
+            persist(HOOKS_ENABLED_PATH, serde_json::Value::Bool(value));
+            cx.refresh_windows();
+        },
+    );
+    let project_hooks_field = SettingField::switch(
+        |cx: &App| ShellConfig::current(cx).project_hooks_enabled,
+        |value: bool, cx: &mut App| {
+            cx.global_mut::<ShellConfig>().project_hooks_enabled = value;
+            persist(HOOKS_PROJECT_PATH, serde_json::Value::Bool(value));
+            cx.refresh_windows();
+        },
+    );
+    let coauthor_field = SettingField::switch(
+        |cx: &App| ShellConfig::current(cx).git_commit_coauthor,
+        |value: bool, cx: &mut App| {
+            cx.global_mut::<ShellConfig>().git_commit_coauthor = value;
+            persist(GIT_COAUTHOR_PATH, serde_json::Value::Bool(value));
+            cx.refresh_windows();
+        },
+    );
+
+    SettingPage::new(text.settings_automation.clone())
+        .icon(IconName::Webhook)
+        .resettable(false)
+        .group(SettingGroup::new().items(vec![
+            SettingItem::new(text.settings_hooks.clone(), hooks_field)
+                .description(text.settings_hooks_description.clone()),
+            SettingItem::new(text.settings_hooks_project.clone(), project_hooks_field)
+                .description(text.settings_hooks_project_description.clone()),
+            SettingItem::new(text.settings_git_coauthor.clone(), coauthor_field)
+                .description(text.settings_git_coauthor_description.clone()),
+        ]))
+}
+
+/// Web search page (M22): the active provider plus credential management for
+/// the key-based providers. The credential itself goes into the shared
+/// encrypted vault through the same core service the server and CLI use.
+fn websearch_page(
+    text: &ShellText,
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+) -> SettingPage {
+    let provider_field = SettingField::dropdown(
+        vec![
+            ("exa_mcp_free", text.websearch_provider_free.clone()),
+            ("exa_search_api", text.websearch_provider_exa.clone()),
+            ("tavily", text.websearch_provider_tavily.clone()),
+            (
+                "openbitfun_search_http",
+                text.websearch_provider_http.clone(),
+            ),
+        ]
+        .into_iter()
+        .map(|(id, label)| (SharedString::from(id), SharedString::from(label)))
+        .collect::<Vec<(SharedString, SharedString)>>(),
+        |cx: &App| SharedString::from(ShellConfig::current(cx).web_search_provider.clone()),
+        |value: SharedString, cx: &mut App| {
+            let value = value.to_string();
+            cx.global_mut::<ShellConfig>().web_search_provider = value.clone();
+            persist(
+                WEB_SEARCH_PROVIDER_PATH,
+                serde_json::Value::String(value.clone()),
+            );
+            refresh_web_search_runtime();
+            if matches!(value.as_str(), "exa_search_api" | "tavily") {
+                if let Some(handle) = crate::runtime::runtime_handle() {
+                    handle.load_web_search_credential_status(value);
+                }
+            }
+            cx.refresh_windows();
+        },
+    );
+
+    let owned_text = text.clone();
+    let credential_field = SettingField::render(move |_options, _window, cx| {
+        websearch_credential_field(view.clone(), &owned_text, cx)
+    });
+
+    SettingPage::new(text.settings_websearch.clone())
+        .icon(IconName::Globe)
+        .resettable(false)
+        .group(SettingGroup::new().items(vec![
+            SettingItem::new(text.settings_websearch_provider.clone(), provider_field)
+                .description(text.settings_websearch_provider_description.clone()),
+            SettingItem::new(text.websearch_credential.clone(), credential_field)
+                .description(text.websearch_credential_description.clone()),
+        ]))
+}
+
+/// Re-reads the shared config and pushes the web-search section into the
+/// global provider runtime, so a provider change takes effect without a
+/// restart (the credential save path does this itself).
+fn refresh_web_search_runtime() {
+    let Some(handle) = crate::runtime::runtime_handle() else {
+        return;
+    };
+    handle.tokio_handle().spawn(async move {
+        let Ok(service) = get_global_config_service().await else {
+            return;
+        };
+        if let Ok(config) = service.get_config::<GlobalConfig>(None).await {
+            openbitfun_core::service::web_search::refresh_global_web_search_runtime(&config.ai)
+                .await;
+        }
+    });
+}
+
+/// The credential row for the selected provider: a status line, an input and
+/// a save button for the key-based providers. The input entity lives on the
+/// window (dialog-builder convention: the render closure runs every frame).
+fn websearch_credential_field(
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    text: &ShellText,
+    cx: &mut App,
+) -> gpui_kit::AnyElement {
+    let Some(shell) = view.upgrade() else {
+        return div().into_any_element();
+    };
+    let provider = ShellConfig::current(cx).web_search_provider;
+    let input = shell.read(cx).websearch_credential_input.clone();
+    let status = shell.read(cx).websearch_status.clone();
+
+    let mut column = div().v_flex().gap_2().w_full();
+    match provider.as_str() {
+        "exa_search_api" | "tavily" => {
+            let configured = matches!(&status, Some((p, true)) if p == &provider);
+            column = column.child(
+                div()
+                    .text_sm()
+                    .text_color(if configured {
+                        cx.theme().muted_foreground
+                    } else {
+                        cx.theme().danger
+                    })
+                    .child(if configured {
+                        text.websearch_configured.clone()
+                    } else {
+                        text.websearch_not_configured.clone()
+                    }),
+            );
+            let save_view = view.clone();
+            column = column.child(Input::new(&input)).child(
+                Button::new("websearch-save-credential")
+                    .label(text.websearch_save.clone())
+                    .small()
+                    .with_variant(ButtonVariant::Secondary)
+                    .on_click(move |_, _window, cx| {
+                        let Some(shell) = save_view.upgrade() else {
+                            return;
+                        };
+                        let secret = shell
+                            .read(cx)
+                            .websearch_credential_input
+                            .read(cx)
+                            .value()
+                            .trim()
+                            .to_string();
+                        if secret.is_empty() {
+                            tracing::warn!("Ignoring an empty WebSearch credential");
+                            return;
+                        }
+                        let provider = ShellConfig::current(cx).web_search_provider.clone();
+                        if let Some(handle) = crate::runtime::runtime_handle() {
+                            handle.save_web_search_credential(provider, secret);
+                        }
+                    }),
+            );
+        }
+        "openbitfun_search_http" => {
+            column = column.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(text.websearch_desktop_only.clone()),
+            );
+        }
+        _ => {
+            // exa_mcp_free and anything unrecognized needs no credential.
+            column = column.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(text.websearch_no_credential.clone()),
+            );
+        }
+    }
+    column.into_any_element()
+}
+
+/// Usage statistics page (M22): global token usage for a chosen time range —
+/// totals plus per-model rows from the same core service the desktop
+/// dashboard reads. The snapshot lives on the window; the settings-open path
+/// and the refresh button fetch.
+fn usage_page(
+    text: &ShellText,
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+) -> SettingPage {
+    let owned_text = text.clone();
+    let range_field = SettingField::render(move |_options, _window, cx| {
+        usage_stats_field(view.clone(), &owned_text, cx)
+    });
+
+    SettingPage::new(text.settings_usage.clone())
+        .icon(IconName::ChartColumn)
+        .resettable(false)
+        .group(SettingGroup::new().items(vec![SettingItem::new(
+            text.settings_usage_range.clone(),
+            range_field,
+        )]))
+}
+
+/// One selectable time range of the usage page; the values are the shared
+/// service's `time_range` strings.
+const USAGE_RANGES: &[(&str, &str)] = &[
+    ("today", "settings_usage_today"),
+    ("thisWeek", "settings_usage_week"),
+    ("thisMonth", "settings_usage_month"),
+    ("all", "settings_usage_all"),
+];
+
+/// Maps a range value onto its localized label; unknown values render as-is.
+fn usage_range_label(value: &str, text: &ShellText) -> String {
+    match value {
+        "today" => text.settings_usage_today.clone(),
+        "thisWeek" => text.settings_usage_week.clone(),
+        "thisMonth" => text.settings_usage_month.clone(),
+        "all" => text.settings_usage_all.clone(),
+        other => other.to_string(),
+    }
+}
+
+fn usage_stats_field(
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    text: &ShellText,
+    cx: &mut App,
+) -> gpui_kit::AnyElement {
+    let Some(shell) = view.upgrade() else {
+        return div().into_any_element();
+    };
+    let (range, loading, stats) = {
+        let shell_ref = shell.read(cx);
+        (
+            shell_ref.usage_range.clone(),
+            shell_ref.usage_loading,
+            shell_ref.usage_stats.clone(),
+        )
+    };
+    // The menu builder and item closures are `Fn` and outlive this render, so
+    // everything they touch is cloned in (D70).
+
+    let mut column = div().v_flex().gap_2().w_full();
+    let mut controls = div().flex().items_center().gap_2();
+    let menu_view = view.clone();
+    let menu_text = text.clone();
+    let menu_range = range.clone();
+    controls = controls.child(
+        Button::new("usage-range")
+            .label(usage_range_label(&range, text))
+            .dropdown_caret(true)
+            .outline()
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _window, _cx| {
+                let mut menu = menu;
+                for (value, _key) in USAGE_RANGES {
+                    let value = (*value).to_string();
+                    let selected = value == menu_range;
+                    let item_view = menu_view.clone();
+                    let item_text = menu_text.clone();
+                    let item_value = value.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(usage_range_label(&value, &item_text))
+                            .checked(selected)
+                            .on_click(move |_, _window, cx| {
+                                if let Some(target) = item_view.upgrade() {
+                                    target.update(cx, |this, cx| {
+                                        this.usage_range = item_value.clone();
+                                        this.usage_loading = true;
+                                        cx.notify();
+                                    });
+                                }
+                                if let Some(handle) = crate::runtime::runtime_handle() {
+                                    handle.fetch_usage_stats(item_value.clone());
+                                }
+                            }),
+                    );
+                }
+                menu
+            }),
+    );
+    let refresh_view = view.clone();
+    controls = controls.child(
+        Button::new("usage-refresh")
+            .label(text.settings_usage_refresh.clone())
+            .small()
+            .with_variant(ButtonVariant::Ghost)
+            .on_click(move |_, _window, cx| {
+                let Some(target) = refresh_view.upgrade() else {
+                    return;
+                };
+                target.update(cx, |this, _| this.usage_loading = true);
+                let range = target.read(cx).usage_range.clone();
+                if let Some(handle) = crate::runtime::runtime_handle() {
+                    handle.fetch_usage_stats(range);
+                }
+            }),
+    );
+    column = column.child(controls);
+
+    if loading {
+        column = column.child(
+            div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(text.settings_usage_loading.clone()),
+        );
+        return column.into_any_element();
+    }
+    let Some(stats) = stats else {
+        column = column.child(
+            div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(text.settings_usage_empty.clone()),
+        );
+        return column.into_any_element();
+    };
+
+    let mut totals = div().flex().flex_wrap().gap_4().w_full();
+    let total = |label: String, value: String| {
+        div()
+            .v_flex()
+            .gap_0p5()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(label),
+            )
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().foreground)
+                    .child(value),
+            )
+    };
+    totals = totals
+        .child(total(
+            text.settings_usage_requests.clone(),
+            stats.total_requests.to_string(),
+        ))
+        .child(total(
+            text.usage_total_tokens.clone(),
+            stats.total_tokens.to_string(),
+        ))
+        .child(total(
+            text.usage_input_tokens.clone(),
+            stats.total_input_tokens.to_string(),
+        ))
+        .child(total(
+            text.usage_output_tokens.clone(),
+            stats.total_output_tokens.to_string(),
+        ));
+    if stats.total_cache_reported_input_tokens > 0 {
+        let rate =
+            stats.total_cached_tokens as f64 / stats.total_cache_reported_input_tokens as f64;
+        totals = totals.child(total(
+            text.settings_usage_cache_hit.clone(),
+            format!("{:.0}%", rate * 100.),
+        ));
+    }
+    column = column.child(totals);
+
+    if !stats.by_model.is_empty() {
+        column = column.child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(text.usage_models.clone()),
+        );
+        let mut rows = div().v_flex().gap_1().w_full();
+        for model in stats.by_model.iter().take(20) {
+            let mut facts = format!("{} · {}", model.requests, model.tokens);
+            if let Some(rate) = model.cache_hit_rate {
+                facts.push_str(&format!(" · {:.0}%", rate * 100.));
+            }
+            rows = rows.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_sm()
+                            .text_color(cx.theme().foreground)
+                            .child(model.name.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(facts),
+                    ),
+            );
+        }
+        column = column.child(rows);
+    }
+    column.into_any_element()
+}
+
+/// Archived sessions page (M22): the active workspace's archived sessions
+/// with restore and delete. The rows reuse the sidebar's session snapshot
+/// (archived rows are already carried for the show-archived toggle), and the
+/// actions are the same SDK calls the sidebar uses.
+fn archived_page(
+    text: &ShellText,
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+) -> SettingPage {
+    let owned_text = text.clone();
+    let list_field = SettingField::render(move |_options, window, cx| {
+        archived_sessions_field(view.clone(), &owned_text, window, cx)
+    });
+
+    SettingPage::new(text.settings_archived.clone())
+        .icon(IconName::Archive)
+        .resettable(false)
+        .group(SettingGroup::new().items(vec![SettingItem::new(
+            text.settings_archived_list.clone(),
+            list_field,
+        )
+        .description(text.settings_archived_description.clone())]))
+}
+
+fn archived_sessions_field(
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    text: &ShellText,
+    _window: &mut gpui_kit::Window,
+    cx: &mut App,
+) -> gpui_kit::AnyElement {
+    let Some(shell) = view.upgrade() else {
+        return div().into_any_element();
+    };
+    let rows: Vec<(String, String)> = shell
+        .read(cx)
+        .sessions
+        .iter()
+        .filter(|row| row.archived)
+        .map(|row| (row.id.clone(), row.name.clone()))
+        .collect();
+
+    let mut column = div().v_flex().gap_2().w_full();
+    if rows.is_empty() {
+        column = column.child(
+            div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(text.settings_archived_empty.clone()),
+        );
+        return column.into_any_element();
+    }
+    for (session_id, name) in rows {
+        let restore_view = view.clone();
+        let restore_id = session_id.clone();
+        let delete_view = view.clone();
+        let delete_id = session_id.clone();
+        column = column.child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_sm()
+                        .text_color(cx.theme().foreground)
+                        .child(name),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .flex_shrink_0()
+                        .child(
+                            Button::new(SharedString::from(format!(
+                                "archived-restore-{session_id}"
+                            )))
+                            .label(text.settings_archived_restore.clone())
+                            .small()
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(move |_, _window, cx| {
+                                let Some(target) = restore_view.upgrade() else {
+                                    return;
+                                };
+                                let tx = target.read(cx).event_tx.clone();
+                                if let Some(handle) = crate::runtime::runtime_handle() {
+                                    tracing::info!("Restoring archived session {restore_id}");
+                                    handle.set_session_archived(restore_id.clone(), false, tx);
+                                }
+                            }),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!(
+                                "archived-delete-{session_id}"
+                            )))
+                            .label(text.session_delete.clone())
+                            .small()
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(move |_, window, cx| {
+                                open_archived_delete_dialog(
+                                    delete_view.clone(),
+                                    delete_id.clone(),
+                                    window,
+                                    cx,
+                                );
+                            }),
+                        ),
+                ),
+        );
+    }
+    column.into_any_element()
+}
+
+/// Confirm dialog for deleting one archived session; the destructive action
+/// never runs from the row directly (same shape as the MCP delete dialog).
+fn open_archived_delete_dialog(
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    session_id: String,
+    window: &mut gpui_kit::Window,
+    cx: &mut App,
+) {
+    let Some(shell) = view.upgrade() else {
+        return;
+    };
+    shell.update(cx, |this, cx| {
+        this.archived_delete_target = Some(session_id.clone());
+        cx.notify();
+    });
+
+    let confirm_view = view.clone();
+    let cancel_view = view.clone();
+    let confirm = move |_: &gpui_kit::ClickEvent, window: &mut gpui_kit::Window, cx: &mut App| {
+        let Some(target) = confirm_view.upgrade() else {
+            return;
+        };
+        let pending = target.read(cx).archived_delete_target.clone();
+        target.update(cx, |this, cx| {
+            this.archived_delete_target = None;
+            cx.notify();
+        });
+        if let Some(session_id) = pending {
+            let tx = confirm_view
+                .upgrade()
+                .map(|target| target.read(cx).event_tx.clone());
+            if let (Some(handle), Some(tx)) = (crate::runtime::runtime_handle(), tx) {
+                tracing::info!("Deleting archived session {session_id}");
+                handle.delete_session(session_id, tx);
+            }
+        }
+        window.close_dialog(cx);
+    };
+    let cancel = move |_: &gpui_kit::ClickEvent, window: &mut gpui_kit::Window, cx: &mut App| {
+        if let Some(target) = cancel_view.upgrade() {
+            target.update(cx, |this, cx| {
+                this.archived_delete_target = None;
+                cx.notify();
+            });
+        }
+        window.close_dialog(cx);
+    };
+
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let text = i18n::current(cx);
+        dialog
+            .title(div().child(text.settings_archived_delete_title.clone()))
+            .child(
+                div()
+                    .w(px(380.))
+                    .text_sm()
+                    .text_color(cx.theme().foreground)
+                    .child(text.session_delete_warning.clone()),
+            )
+            .footer(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("archived-delete-cancel")
+                            .label(text.session_action_cancel.clone())
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(cancel.clone()),
+                    )
+                    .child(
+                        Button::new("archived-delete-confirm")
+                            .label(text.session_delete.clone())
+                            .with_variant(ButtonVariant::Primary)
+                            .on_click(confirm.clone()),
+                    ),
+            )
+    });
+}
+
+/// Diagnostics page (M22): the runtime log level (applied live through the
+/// tracing reload handle) and the shared log directory. The shell logs to
+/// stdout; the desktop's file bundle export is a desktop capability.
+fn diagnostics_page(
+    text: &ShellText,
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+) -> SettingPage {
+    let level_field = SettingField::dropdown(
+        ["trace", "debug", "info", "warn", "error", "off"]
+            .into_iter()
+            .map(|level| (SharedString::from(level), SharedString::from(level)))
+            .collect::<Vec<(SharedString, SharedString)>>(),
+        |cx: &App| SharedString::from(ShellConfig::current(cx).logging_level.clone()),
+        |value: SharedString, cx: &mut App| {
+            let value = value.to_string();
+            cx.global_mut::<ShellConfig>().logging_level = value.clone();
+            crate::shell::apply_log_level(&value);
+            persist(LOGGING_LEVEL_PATH, serde_json::Value::String(value));
+            cx.refresh_windows();
+        },
+    );
+
+    let owned_text = text.clone();
+    let logs_field = SettingField::render(move |_options, _window, cx| {
+        let Some(manager) = openbitfun_core::infrastructure::try_get_path_manager_arc()
+            .ok()
+            .map(|manager| manager.logs_dir())
+        else {
+            return div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child("—")
+                .into_any_element();
+        };
+        let display = manager.display().to_string();
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .w_full()
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(display),
+            )
+            .child(
+                Button::new("diagnostics-open-logs")
+                    .label(owned_text.settings_logs_open.clone())
+                    .small()
+                    .with_variant(ButtonVariant::Ghost)
+                    .on_click(move |_, _window, _cx| {
+                        open_logs_directory();
+                    }),
+            )
+            .into_any_element()
+    });
+    // Keep the weak handle alive for future window-bound diagnostics state.
+    let _ = view;
+
+    SettingPage::new(text.settings_diagnostics.clone())
+        .icon(IconName::Activity)
+        .resettable(false)
+        .group(SettingGroup::new().items(vec![
+            SettingItem::new(text.settings_logging_level.clone(), level_field)
+                .description(text.settings_logging_level_description.clone()),
+            SettingItem::new(text.settings_logs_dir.clone(), logs_field)
+                .description(text.settings_diagnostics_note.clone()),
+        ]))
+}
+
+/// Opens the shared log directory in the platform file manager. Failures are
+/// logged; there is nothing to show in the window for them.
+fn open_logs_directory() {
+    let Ok(manager) = openbitfun_core::infrastructure::try_get_path_manager_arc() else {
+        return;
+    };
+    let dir = manager.logs_dir();
+    match openbitfun_services_core::process_manager::create_command("xdg-open")
+        .arg(&dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(_) => tracing::info!("Opened log directory {}", dir.display()),
+        Err(error) => tracing::warn!("Failed to open {}: {error}", dir.display()),
+    }
+}
+
 /// Appearance picker: a dropdown button whose menu resolves `system` against
 /// the live window appearance at click time. Uses the same
 /// `Button + caret + dropdown_menu_with_anchor` shape as the typed setting
@@ -1124,6 +2151,33 @@ mod tests {
     }
 
     #[test]
+    fn close_behavior_follows_the_desktop_domain() {
+        // `quit` quits; everything else (the shared default `minimize_to_tray`,
+        // the desktop-only `ask`, or any unknown value) minimizes.
+        assert_eq!(parse_close_behavior(CLOSE_QUIT), CloseBehavior::Quit);
+        for raw in [CLOSE_MINIMIZE, "ask", "", "nonsense"] {
+            assert_eq!(parse_close_behavior(raw), CloseBehavior::MinimizeToTray);
+        }
+    }
+
+    #[test]
+    fn usage_range_label_covers_the_service_domain() {
+        let text = sample_text();
+        assert_eq!(usage_range_label("today", &text), text.settings_usage_today);
+        assert_eq!(
+            usage_range_label("thisWeek", &text),
+            text.settings_usage_week
+        );
+        assert_eq!(
+            usage_range_label("thisMonth", &text),
+            text.settings_usage_month
+        );
+        assert_eq!(usage_range_label("all", &text), text.settings_usage_all);
+        // Unknown values stay verbatim instead of pretending to be a choice.
+        assert_eq!(usage_range_label("custom", &text), "custom");
+    }
+
+    #[test]
     fn shell_config_snapshot_reads_the_shared_fields() {
         let mut config = GlobalConfig::default();
         config.app.language = "en-US".to_string();
@@ -1135,6 +2189,14 @@ mod tests {
         config.terminal.scrollback = 50_000;
         config.terminal.default_shell = "/usr/bin/zsh".to_string();
         config.ai.default_models.primary = Some("model-a".to_string());
+        // M22 general/automation/websearch/diagnostics fields.
+        config.app.close_button_behavior = "ask".to_string();
+        config.app.auto_update = false;
+        config.app.hooks.enabled = false;
+        config.app.hooks.project_hooks_enabled = true;
+        config.app.ai_experience.enable_git_commit_coauthor = false;
+        config.ai.web_search.provider = "tavily".to_string();
+        config.app.logging.level = "debug".to_string();
 
         let snapshot = ShellConfig::from_global(&config);
         assert_eq!(snapshot.language, LocaleId::EnUS);
@@ -1149,6 +2211,13 @@ mod tests {
         assert_eq!(snapshot.terminal.scrollback, 50_000);
         assert_eq!(snapshot.terminal.default_shell, "/usr/bin/zsh");
         assert_eq!(snapshot.default_primary_model.as_deref(), Some("model-a"));
+        assert_eq!(snapshot.close_behavior_raw, "ask");
+        assert!(!snapshot.auto_update);
+        assert!(!snapshot.hooks_enabled);
+        assert!(snapshot.project_hooks_enabled);
+        assert!(!snapshot.git_commit_coauthor);
+        assert_eq!(snapshot.web_search_provider, "tavily");
+        assert_eq!(snapshot.logging_level, "debug");
     }
 
     #[test]

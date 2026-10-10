@@ -22,4 +22,5 @@ pub mod tasks;
 pub mod terminal;
 pub mod theme;
 pub mod theme_openbitfun;
+pub mod tray;
 pub mod update;

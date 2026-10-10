@@ -582,6 +582,11 @@ const THIRD_PARTY_CAPABILITY_PROFILES = new Map([
       ['openbitfun-desktop', dependencyProfile(['bmp', 'gif', 'jpeg', 'png', 'webp'], {
         useDefaultFeatures: false,
       })],
+      // The gpui-shell tray decodes the embedded brand PNG into the
+      // StatusNotifierItem pixmap; PNG is all it reads.
+      ['openbitfun-gpui-shell', dependencyProfile(['png'], {
+        useDefaultFeatures: false,
+      })],
       ['openbitfun-miniapp-market-service', dependencyProfile(['jpeg', 'png', 'webp'], {
         useDefaultFeatures: false,
       })],

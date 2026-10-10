@@ -214,53 +214,105 @@ pub fn answer_update_command(
 }
 
 async fn run(request: UpdateRequest) -> Result<UpdateOutcome> {
-    let current_exe = std::env::current_exe().context("resolve the running shell executable")?;
-    if let Some(reason) = unsupported_reason(&current_exe) {
-        eprintln!("{reason}");
-        return Ok(UpdateOutcome::Unsupported);
-    }
-    let platform_key = platform_key().expect("a supported platform has a manifest key");
-
-    let client = build_client()?;
-    let manifest = load_manifest(&client, &request.source).await?;
-    let current = ReleaseVersion::parse(env!("CARGO_PKG_VERSION"))
-        .ok_or_else(|| anyhow!("this build's version is not a release version"))?;
-    let offered = ReleaseVersion::parse(&manifest.version)
-        .ok_or_else(|| anyhow!("the manifest announces a non-release version"))?;
-    if !offered.is_newer_than(&current) {
-        println!(
-            "{BIN_NAME} {} is up to date (manifest {}, {})",
-            env!("CARGO_PKG_VERSION"),
-            manifest.version,
-            request.source.label()
-        );
-        return Ok(UpdateOutcome::Current);
-    }
-
-    // The asset matters only once there is something to install: a feed that
-    // predates this frontend must not fail an otherwise clean check.
-    let asset = shell_asset(&manifest, platform_key)?;
+    let plan = match plan_update(&request.source).await? {
+        PlanOutcome::Unsupported(reason) => {
+            eprintln!("{reason}");
+            return Ok(UpdateOutcome::Unsupported);
+        }
+        PlanOutcome::UpToDate { manifest } => {
+            println!(
+                "{BIN_NAME} {} is up to date (manifest {}, {})",
+                env!("CARGO_PKG_VERSION"),
+                manifest.version,
+                request.source.label()
+            );
+            return Ok(UpdateOutcome::Current);
+        }
+        PlanOutcome::Ready(plan) => plan,
+    };
     if request.check_only {
         println!(
             "{BIN_NAME} {} is available (current {}, from {})",
-            manifest.version,
+            plan.offered_version,
             env!("CARGO_PKG_VERSION"),
             request.source.label()
         );
         return Ok(UpdateOutcome::Available);
     }
+    let installed = install_planned_update(plan).await?;
+    println!("{BIN_NAME} was updated to {installed}. Restart the shell to use it.");
+    Ok(UpdateOutcome::Updated)
+}
+
+/// What a manifest check concluded, before anything is downloaded.
+enum PlanOutcome {
+    /// The feed offers nothing newer than this build; carries the manifest so
+    /// the caller can report the offered version.
+    UpToDate { manifest: ReleaseManifest },
+    /// A newer release with a usable `gpuiShell` asset is offered.
+    Ready(UpdatePlan),
+    /// This build cannot update itself; the reason is user-facing.
+    Unsupported(String),
+}
+
+/// Everything the install step needs, resolved and validated up front.
+struct UpdatePlan {
+    client: Client,
+    manifest: ReleaseManifest,
+    asset: ReleaseAsset,
+    offered_version: String,
+}
+
+/// Resolves the release feed into an executable plan: current build, a ready
+/// install, or an explicit unsupported state. No bytes are downloaded here.
+async fn plan_update(source: &ManifestSource) -> Result<PlanOutcome> {
+    let current_exe = std::env::current_exe().context("resolve the running shell executable")?;
+    if let Some(reason) = unsupported_reason(&current_exe) {
+        return Ok(PlanOutcome::Unsupported(reason));
+    }
+    let platform_key = platform_key().expect("a supported platform has a manifest key");
+
+    let client = build_client()?;
+    let manifest = load_manifest(&client, source).await?;
+    let current = ReleaseVersion::parse(env!("CARGO_PKG_VERSION"))
+        .ok_or_else(|| anyhow!("this build's version is not a release version"))?;
+    let offered = ReleaseVersion::parse(&manifest.version)
+        .ok_or_else(|| anyhow!("the manifest announces a non-release version"))?;
+    if !offered.is_newer_than(&current) {
+        return Ok(PlanOutcome::UpToDate { manifest });
+    }
+
+    // The asset matters only once there is something to install: a feed that
+    // predates this frontend must not fail an otherwise clean check.
+    let asset = shell_asset(&manifest, platform_key)?.clone();
+    let offered_version = manifest.version.clone();
+    Ok(PlanOutcome::Ready(UpdatePlan {
+        client,
+        manifest,
+        asset,
+        offered_version,
+    }))
+}
+
+/// Downloads, verifies, and swaps in the planned release. Returns the version
+/// that now sits on disk (the running process keeps the old image until it
+/// restarts).
+async fn install_planned_update(plan: UpdatePlan) -> Result<String> {
+    let current_exe = std::env::current_exe().context("resolve the running shell executable")?;
+    let manifest = &plan.manifest;
+    let asset = &plan.asset;
+    let filename = asset.filename.clone();
 
     let sig_url = asset.sig_url.clone();
-    let filename = asset.filename.clone();
     match (release_pubkey(), &sig_url) {
         (Some(_), Some(_)) => {}
         (Some(_), None) => bail!(
             "this build requires signed releases but {} publishes no signature for {filename}; refusing to install",
-            request.source.label()
+            plan.offered_version
         ),
         (None, Some(_)) => tracing::warn!(
             "Release {} publishes a signature, but this build verifies only the SHA256 digest (no release public key was injected at build time)",
-            manifest.version
+            plan.offered_version
         ),
         (None, None) => {}
     }
@@ -268,15 +320,15 @@ async fn run(request: UpdateRequest) -> Result<UpdateOutcome> {
     let _lock = InstallLock::acquire()?;
     let work = tempfile::tempdir().context("create the update work directory")?;
     let archive_path = work.path().join(asset_file_name(&asset.filename)?);
-    let digest = download_archive(&client, asset, &archive_path).await?;
-    let checksum_text = fetch_text(&client, &asset.sha256_url).await?;
+    let digest = download_archive(&plan.client, asset, &archive_path).await?;
+    let checksum_text = fetch_text(&plan.client, &asset.sha256_url).await?;
     verify_sha256(&digest, &checksum_text, &filename)?;
 
     // The signature covers the archive itself, so it is checked against the
     // downloaded bytes after the transfer (the digest gate above has already
     // bounded what those bytes can be).
     if let (Some(pubkey), Some(sig_url)) = (release_pubkey(), sig_url) {
-        let signature = fetch_text(&client, &sig_url)
+        let signature = fetch_text(&plan.client, &sig_url)
             .await
             .with_context(|| format!("fetch release signature {sig_url}"))?;
         let archive = fs::read(&archive_path).with_context(|| {
@@ -290,11 +342,106 @@ async fn run(request: UpdateRequest) -> Result<UpdateOutcome> {
     let new_binary = package_dir.join(BIN_NAME);
     let verify = |path: &Path| validate_shell_binary(path, &manifest.version);
     install_binary(&new_binary, &current_exe, &verify)?;
-    println!(
-        "{BIN_NAME} was updated to {}. Restart the shell to use it.",
-        manifest.version
-    );
-    Ok(UpdateOutcome::Updated)
+    Ok(manifest.version.clone())
+}
+
+/// What an update check concluded, shaped for the running shell's UI. The
+/// install path is a separate call so a check never downloads anything.
+#[derive(Debug, Clone)]
+pub(crate) struct UpdateCheckReport {
+    /// The feed offers this newer version, or `None` when this build is
+    /// current.
+    pub(crate) offered_version: Option<String>,
+    /// This build cannot update itself (development tree, unsupported
+    /// platform, wrong executable name); the reason is user-facing.
+    pub(crate) unsupported_reason: Option<String>,
+}
+
+/// Feed source for the GUI entry points: `None` means the official feed, a
+/// URL or file path overrides it (same parsing as the CLI flags).
+pub(crate) async fn check_for_update(manifest: Option<&str>) -> Result<UpdateCheckReport> {
+    let source = ManifestSource::parse(manifest)?;
+    Ok(match plan_update(&source).await? {
+        PlanOutcome::Unsupported(reason) => UpdateCheckReport {
+            offered_version: None,
+            unsupported_reason: Some(reason),
+        },
+        PlanOutcome::UpToDate { .. } => UpdateCheckReport {
+            offered_version: None,
+            unsupported_reason: None,
+        },
+        PlanOutcome::Ready(plan) => UpdateCheckReport {
+            offered_version: Some(plan.offered_version),
+            unsupported_reason: None,
+        },
+    })
+}
+
+/// Runs the full install for an offered release. A check should run first:
+/// an up-to-date build has nothing to install and this reports that as an
+/// error instead of pretending.
+pub(crate) async fn install_available_update(manifest: Option<&str>) -> Result<String> {
+    let source = ManifestSource::parse(manifest)?;
+    match plan_update(&source).await? {
+        PlanOutcome::Unsupported(reason) => Err(anyhow!("{reason}")),
+        PlanOutcome::UpToDate { .. } => Err(anyhow!(
+            "{BIN_NAME} {} is already up to date",
+            env!("CARGO_PKG_VERSION")
+        )),
+        PlanOutcome::Ready(plan) => install_planned_update(plan).await,
+    }
+}
+
+/// Projection of the update flow the general settings page renders. Idle
+/// until the first check; the pump applies the check/install events.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) enum UpdateUiState {
+    #[default]
+    Idle,
+    Checking,
+    /// The feed offers nothing newer.
+    UpToDate,
+    Available {
+        version: String,
+    },
+    /// This build cannot update itself; the reason is shown instead of a
+    /// button that would fail.
+    Unsupported {
+        reason: String,
+    },
+    Installing,
+    /// The new binary sits on disk; a restart applies it.
+    Installed {
+        version: String,
+    },
+    Failed {
+        message: String,
+    },
+}
+
+/// Spawns a detached watcher that waits for this process to exit and then
+/// execs the freshly installed binary. Needed because the single-instance
+/// lock dies with the process: a plain spawn-then-quit would race the new
+/// instance against the lock and lose. Linux only, matching the updater.
+pub(crate) fn spawn_detached_restart() -> Result<()> {
+    if !cfg!(target_os = "linux") {
+        bail!("self-update restart is only implemented on Linux");
+    }
+    let exe = std::env::current_exe().context("resolve the shell executable")?;
+    let pid = std::process::id();
+    openbitfun_services_core::process_manager::create_command("/bin/sh")
+        .arg("-c")
+        // Polls until this pid is gone (the lock dies with it), then replaces
+        // itself with the installed binary. `$0` is the executable path.
+        .arg("while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done; exec \"$0\"")
+        .arg(&exe)
+        .arg(pid.to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("spawn the restart watcher")?;
+    Ok(())
 }
 
 /// Why this build cannot replace itself, or `None` when it can. Stated as an
@@ -1030,6 +1177,27 @@ mod tests {
         let development = dir.path().join("target").join("release").join(BIN_NAME);
         let reason = unsupported_reason(&development).expect("a cargo artifact is refused");
         assert!(reason.contains("target"), "{reason}");
+    }
+
+    /// The GUI check reuses the same gate as the CLI: under `cargo test` the
+    /// binary lives in a `target` tree, so the structured report must say
+    /// "unsupported" instead of offering a download that would refuse to
+    /// install.
+    #[tokio::test]
+    async fn gui_check_reports_unsupported_for_development_builds() {
+        let report = check_for_update(None)
+            .await
+            .expect("an unsupported build is not a check failure");
+        assert!(report.offered_version.is_none());
+        let reason = report
+            .unsupported_reason
+            .expect("a cargo-tree binary is unsupported");
+        assert!(reason.contains("target"), "{reason}");
+    }
+
+    #[test]
+    fn update_ui_state_defaults_to_idle() {
+        assert_eq!(UpdateUiState::default(), UpdateUiState::Idle);
     }
 
     fn executable_script(dir: &Path, name: &str, body: &str) -> PathBuf {

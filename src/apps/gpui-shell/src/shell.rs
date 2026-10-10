@@ -89,13 +89,13 @@ enum RuntimePhase {
 /// One session list entry, composed (including localized metadata) when the
 /// snapshot arrives so the render path never touches the i18n service.
 #[derive(Clone)]
-struct SessionRow {
-    id: String,
-    name: String,
+pub(crate) struct SessionRow {
+    pub(crate) id: String,
+    pub(crate) name: String,
     metadata: String,
     /// Persisted archive state (from the session metadata store, not a local
     /// flag): archived rows are hidden until the "show archived" toggle is on.
-    archived: bool,
+    pub(crate) archived: bool,
 }
 
 /// One open session in the chat pane.
@@ -651,7 +651,7 @@ fn image_format_for_extension(extension: &str) -> Option<ImageFormat> {
 pub(crate) struct ShellWindow {
     draft: Entity<TextareaState>,
     phase: RuntimePhase,
-    sessions: Vec<SessionRow>,
+    pub(crate) sessions: Vec<SessionRow>,
     list_error: Option<String>,
     chat: Option<ChatView>,
     chat_error: Option<String>,
@@ -660,7 +660,7 @@ pub(crate) struct ShellWindow {
     /// through the `list_sync_*` helpers and tail-following keeps the newest
     /// content in view until the user scrolls up.
     chat_scroller: Entity<MessageScrollerState>,
-    event_tx: mpsc::UnboundedSender<RuntimeEvent>,
+    pub(crate) event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     /// Approvals waiting for a user decision, oldest first. Every ask in this
     /// process surfaces here regardless of which session is open — an
     /// unanswered ask parks its turn at the tool pipeline until cancellation,
@@ -774,6 +774,19 @@ pub(crate) struct ShellWindow {
     pub(crate) mcp_interactions: crate::manage::McpInteractionQueue,
     pub(crate) mcp_interaction_result_input: Entity<InputState>,
     pub(crate) mcp_interaction_error: Option<String>,
+    /// M22 self-update state machine; the general settings page projects it.
+    pub(crate) update_state: crate::update::UpdateUiState,
+    /// M22 archived-sessions delete confirmation target (dialog input lives
+    /// on the window like every other dialog scratch value).
+    pub(crate) archived_delete_target: Option<String>,
+    /// M22 global usage statistics snapshot for the settings usage page.
+    pub(crate) usage_stats: Option<Box<openbitfun_services_core::token_usage::UsageStatistics>>,
+    pub(crate) usage_range: String,
+    pub(crate) usage_loading: bool,
+    /// M22 web-search credential state for the selected provider
+    /// (`provider`, `configured`); fetched when the settings view opens.
+    pub(crate) websearch_status: Option<(String, bool)>,
+    pub(crate) websearch_credential_input: Entity<InputState>,
 }
 
 impl ShellWindow {
@@ -801,7 +814,23 @@ impl ShellWindow {
         let agent_description_input = cx.new(|cx| InputState::new(window, cx));
         let agent_prompt_input = cx.new(|cx| TextareaState::new(window, cx));
         let mcp_interaction_result_input = cx.new(|cx| InputState::new(window, cx));
+        let websearch_credential_input = cx.new(|cx| InputState::new(window, cx));
         receive_runtime_events(event_rx, window, cx);
+
+        // M22 close-button behavior: the callback mirrors the shared setting
+        // through `CLOSE_QUITS` and always vetoes the direct close — quit
+        // goes through the pump so the terminal PTYs shut down first, and
+        // minimize keeps the window reachable from the taskbar.
+        let close_tx = event_tx.clone();
+        window.on_window_should_close(cx, move |window, _cx| {
+            if CLOSE_QUITS.load(std::sync::atomic::Ordering::Relaxed) {
+                let _ = close_tx.send(RuntimeEvent::QuitRequested);
+            } else {
+                window.minimize_window();
+            }
+            false
+        });
+
         Self {
             draft,
             phase: RuntimePhase::Starting,
@@ -859,6 +888,13 @@ impl ShellWindow {
             mcp_interactions: Default::default(),
             mcp_interaction_result_input,
             mcp_interaction_error: None,
+            update_state: Default::default(),
+            archived_delete_target: None,
+            usage_stats: None,
+            usage_range: "thisMonth".to_string(),
+            usage_loading: false,
+            websearch_status: None,
+            websearch_credential_input,
         }
     }
 
@@ -1015,6 +1051,7 @@ impl ShellWindow {
                 let config = *config;
                 let locale = config.language;
                 cx.set_global(config.clone());
+                sync_close_quits(cx);
                 i18n::load_locale(locale, cx);
                 let text = i18n::current(cx);
                 self.apply_locale(&text, window, cx);
@@ -1341,6 +1378,79 @@ impl ShellWindow {
                     self.agent_create_error = Some(i18n::failed_status(&message, cx));
                 } else {
                     crate::manage::ManageNotice::set(Some(i18n::failed_status(&message, cx)), cx);
+                }
+                cx.refresh_windows();
+            }
+            RuntimeEvent::TrayShowWindow => {
+                window.activate_window();
+                cx.activate(true);
+            }
+            RuntimeEvent::QuitRequested => {
+                // Terminal PTYs die with the window; close them properly so
+                // no child is orphaned by the exit.
+                self.close_all_terminal_tabs(cx);
+                cx.quit();
+            }
+            RuntimeEvent::RestartRequested => {
+                self.close_all_terminal_tabs(cx);
+                match crate::update::spawn_detached_restart() {
+                    Ok(()) => tracing::info!("Restart watcher spawned"),
+                    Err(error) => tracing::error!("Restart failed: {error:#}"),
+                }
+                cx.quit();
+            }
+            RuntimeEvent::UpdateCheckRequested => {
+                self.start_update_check(cx);
+            }
+            RuntimeEvent::UpdateCheckFinished { result } => {
+                self.update_state = match result {
+                    Ok(report) => match (&report.offered_version, &report.unsupported_reason) {
+                        (Some(version), _) => crate::update::UpdateUiState::Available {
+                            version: version.clone(),
+                        },
+                        (None, Some(reason)) => crate::update::UpdateUiState::Unsupported {
+                            reason: reason.clone(),
+                        },
+                        (None, None) => crate::update::UpdateUiState::UpToDate,
+                    },
+                    Err(message) => crate::update::UpdateUiState::Failed { message },
+                };
+                cx.notify();
+            }
+            RuntimeEvent::UpdateInstallRequested => {
+                self.start_update_install(cx);
+            }
+            RuntimeEvent::UpdateInstallFinished { result } => {
+                self.update_state = match result {
+                    Ok(version) => crate::update::UpdateUiState::Installed { version },
+                    Err(message) => crate::update::UpdateUiState::Failed { message },
+                };
+                cx.notify();
+            }
+            RuntimeEvent::AutostartState(enabled) => {
+                cx.set_global(settings::AutostartState(enabled));
+                cx.refresh_windows();
+            }
+            RuntimeEvent::UsageReady(result) => {
+                self.usage_loading = false;
+                match result {
+                    Ok(stats) => self.usage_stats = Some(stats),
+                    Err(message) => tracing::warn!("Usage statistics failed: {message}"),
+                }
+                cx.refresh_windows();
+            }
+            RuntimeEvent::WebSearchStatus(result) => {
+                match result {
+                    Ok((provider, configured)) => {
+                        self.websearch_status = Some((provider, configured));
+                        // A save leaves no stale secret in the input.
+                        self.websearch_credential_input.update(cx, |state, cx| {
+                            state.set_value("", window, cx);
+                        });
+                    }
+                    Err(message) => {
+                        tracing::warn!("WebSearch credential status failed: {message}")
+                    }
                 }
                 cx.refresh_windows();
             }
@@ -1798,10 +1908,76 @@ impl ShellWindow {
     }
 
     /// Shows the settings page in the main area. The page owns its own
-    /// sidebar; the session sidebar stays where it is.
+    /// sidebar; the session sidebar stays where it is. M22 page data (global
+    /// usage stats, web-search credential status) loads here so a page render
+    /// never triggers fetches.
     fn open_settings_view(&mut self, cx: &mut Context<Self>) {
         self.main_view = MainView::Settings;
+        if self.usage_stats.is_none() && !self.usage_loading {
+            self.usage_loading = true;
+            if let Some(handle) = runtime::runtime_handle() {
+                handle.fetch_usage_stats(self.usage_range.clone());
+            }
+        }
+        let provider = settings::ShellConfig::try_current(cx)
+            .map(|config| config.web_search_provider)
+            .unwrap_or_default();
+        if matches!(provider.as_str(), "exa_search_api" | "tavily") {
+            if let Some(handle) = runtime::runtime_handle() {
+                handle.load_web_search_credential_status(provider);
+            }
+        }
         cx.notify();
+    }
+
+    /// Runs one update check through the updater; the result lands back
+    /// through the pump. Shared by the settings button and the tray menu.
+    fn start_update_check(&mut self, cx: &mut Context<Self>) {
+        if matches!(
+            self.update_state,
+            crate::update::UpdateUiState::Checking | crate::update::UpdateUiState::Installing
+        ) {
+            return;
+        }
+        self.update_state = crate::update::UpdateUiState::Checking;
+        cx.notify();
+        let Some(handle) = runtime::runtime_handle() else {
+            self.update_state = crate::update::UpdateUiState::Failed {
+                message: "runtime is not ready".to_string(),
+            };
+            return;
+        };
+        handle.tokio_handle().spawn(async move {
+            let result = crate::update::check_for_update(None)
+                .await
+                .map_err(|error| format!("{error:#}"));
+            runtime::publish(RuntimeEvent::UpdateCheckFinished { result });
+        });
+    }
+
+    /// Downloads and installs the offered release; the finished event carries
+    /// the installed version and the page offers the restart.
+    fn start_update_install(&mut self, cx: &mut Context<Self>) {
+        if !matches!(
+            self.update_state,
+            crate::update::UpdateUiState::Available { .. }
+        ) {
+            return;
+        }
+        self.update_state = crate::update::UpdateUiState::Installing;
+        cx.notify();
+        let Some(handle) = runtime::runtime_handle() else {
+            self.update_state = crate::update::UpdateUiState::Failed {
+                message: "runtime is not ready".to_string(),
+            };
+            return;
+        };
+        handle.tokio_handle().spawn(async move {
+            let result = crate::update::install_available_update(None)
+                .await
+                .map_err(|error| format!("{error:#}"));
+            runtime::publish(RuntimeEvent::UpdateInstallFinished { result });
+        });
     }
 
     /// Opens the changes view (creating the panel, which fetches the workspace
@@ -4227,13 +4403,49 @@ fn receive_runtime_events(
 }
 
 /// Installs the tracing subscriber honoring `RUST_LOG`. Called once from the
-/// binary entry before any logging happens.
+/// binary entry before any logging happens. The filter is installed behind a
+/// reload handle so `app.logging.level` applies live (M22 diagnostics page).
 pub fn init_tracing() {
     let filter = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
-        .with_writer(std::io::stdout)
+    let (filter_layer, handle) =
+        tracing_subscriber::reload::Layer::new(tracing_subscriber::EnvFilter::new(filter));
+    let _ = LOG_FILTER.set(handle);
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::util::SubscriberInitExt as _;
+    let _ = tracing_subscriber::registry()
+        .with(filter_layer)
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stdout))
         .try_init();
+}
+
+/// Live handle onto the log filter; `L` is the inner filter type and `S` the
+/// registry the layer is installed on. `reload` only swaps the filter.
+type LogFilterHandle =
+    tracing_subscriber::reload::Handle<tracing_subscriber::EnvFilter, tracing_subscriber::Registry>;
+static LOG_FILTER: std::sync::OnceLock<LogFilterHandle> = std::sync::OnceLock::new();
+
+/// Applies one `app.logging.level` value to the live filter. Before the
+/// subscriber exists this is a no-op.
+pub(crate) fn apply_log_level(level: &str) {
+    if let Some(handle) = LOG_FILTER.get() {
+        let _ = handle.reload(tracing_subscriber::EnvFilter::new(level.to_string()));
+        tracing::info!("Log level applied: {level}");
+    }
+}
+
+/// Whether the window close button quits (`true`) or minimizes (`false`),
+/// mirrored from the shared close-button setting. Read by the
+/// `on_window_should_close` callback, which has no cx access.
+static CLOSE_QUITS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Re-reads the close-button setting into [`CLOSE_QUITS`]. Called when the
+/// config snapshot lands and when the general settings page changes it.
+pub(crate) fn sync_close_quits(cx: &App) {
+    let raw = settings::ShellConfig::try_current(cx)
+        .map(|config| config.close_behavior_raw)
+        .unwrap_or_else(|| settings::CLOSE_QUIT.to_string());
+    let quits = settings::parse_close_behavior(&raw) == settings::CloseBehavior::Quit;
+    CLOSE_QUITS.store(quits, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Bootstraps theme/i18n/runtime assembly and opens the main window. Called
@@ -4484,6 +4696,109 @@ mod tests {
     fn list_sync_ranges_match_entry_counts() {
         assert_eq!(tail_changed_range(1), 0..1);
         assert_eq!(tail_changed_range(40), 39..40);
+    }
+
+    fn sample_usage_stats() -> openbitfun_services_core::token_usage::UsageStatistics {
+        openbitfun_services_core::token_usage::UsageStatistics {
+            total_requests: 3,
+            total_tokens: 300,
+            total_input_tokens: 200,
+            total_output_tokens: 100,
+            total_cached_tokens: 50,
+            total_cache_write_tokens: 0,
+            total_cache_reported_input_tokens: 200,
+            by_model: Vec::new(),
+            by_group: Vec::new(),
+            by_endpoint: Vec::new(),
+            trend: Vec::new(),
+            granularity: openbitfun_services_core::token_usage::UsageGranularity::Day,
+        }
+    }
+
+    /// M22 pump projections: the update state machine, the launch-at-login
+    /// global, and the settings-page data events land on the window in the
+    /// shape the general/usage/web-search pages render.
+    #[gpui_kit::test]
+    fn m22_settings_events_project_onto_the_window(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                // An offered release becomes Available; the install finishing
+                // moves to Installed; a failed check surfaces its message.
+                shell.apply_runtime_event(
+                    RuntimeEvent::UpdateCheckFinished {
+                        result: Ok(crate::update::UpdateCheckReport {
+                            offered_version: Some("9.9.9".into()),
+                            unsupported_reason: None,
+                        }),
+                    },
+                    window,
+                    cx,
+                );
+                assert_eq!(
+                    shell.update_state,
+                    crate::update::UpdateUiState::Available {
+                        version: "9.9.9".into()
+                    }
+                );
+                shell.apply_runtime_event(
+                    RuntimeEvent::UpdateInstallFinished {
+                        result: Ok("9.9.9".into()),
+                    },
+                    window,
+                    cx,
+                );
+                assert_eq!(
+                    shell.update_state,
+                    crate::update::UpdateUiState::Installed {
+                        version: "9.9.9".into()
+                    }
+                );
+                shell.apply_runtime_event(
+                    RuntimeEvent::UpdateCheckFinished {
+                        result: Err("offline".into()),
+                    },
+                    window,
+                    cx,
+                );
+                assert_eq!(
+                    shell.update_state,
+                    crate::update::UpdateUiState::Failed {
+                        message: "offline".into()
+                    }
+                );
+
+                // Launch-at-login state lands in its global for the toggle.
+                shell.apply_runtime_event(RuntimeEvent::AutostartState(true), window, cx);
+                assert!(
+                    cx.try_global::<settings::AutostartState>()
+                        .expect("autostart global")
+                        .0
+                );
+
+                // The usage snapshot replaces the loading flag.
+                shell.usage_loading = true;
+                shell.apply_runtime_event(
+                    RuntimeEvent::UsageReady(Ok(Box::new(sample_usage_stats()))),
+                    window,
+                    cx,
+                );
+                assert!(!shell.usage_loading);
+                assert!(shell.usage_stats.is_some());
+
+                // The credential status arrives with its provider attached.
+                shell.apply_runtime_event(
+                    RuntimeEvent::WebSearchStatus(Ok(("tavily".into(), true))),
+                    window,
+                    cx,
+                );
+                assert_eq!(shell.websearch_status, Some(("tavily".to_string(), true)));
+            });
+        });
     }
 
     /// A harness view mirroring `ShellWindow::render_chat_area` so the test
