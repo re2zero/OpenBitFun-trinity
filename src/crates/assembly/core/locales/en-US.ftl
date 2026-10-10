@@ -525,6 +525,11 @@ gpui-shell-settings-archived-description = Sessions archived from the sidebar; r
 gpui-shell-settings-archived-empty = No archived sessions in this workspace.
 gpui-shell-settings-archived-restore = Restore
 gpui-shell-settings-archived-delete-title = Delete archived session
+
+# Archived bulk action (T1-4), copy follows web nav.sessions.deleteAllArchived*
+gpui-shell-settings-archived-delete-all = Delete All Archived
+gpui-shell-settings-archived-delete-all-confirm-title = Delete All Archived Sessions
+gpui-shell-settings-archived-delete-all-confirm-message = Permanently delete { $count } archived sessions? This action cannot be undone.
 gpui-shell-settings-diagnostics = Diagnostics
 gpui-shell-settings-logging-level = Log level
 gpui-shell-settings-logging-level-description = Applies immediately and persists for future launches.

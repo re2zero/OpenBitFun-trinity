@@ -356,6 +356,8 @@ pub(crate) struct ShellText {
     pub settings_archived_empty: String,
     pub settings_archived_restore: String,
     pub settings_archived_delete_title: String,
+    pub settings_archived_delete_all: String,
+    pub settings_archived_delete_all_confirm_title: String,
     pub settings_diagnostics: String,
     pub settings_logging_level: String,
     pub settings_logging_level_description: String,
@@ -522,6 +524,16 @@ pub(crate) fn permission_subagent_label(subagent_type: &str, cx: &App) -> String
     resolve_with(
         "gpui-shell-permission-subagent",
         TranslationArgs::new().with_string("subagent", subagent_type),
+        cx,
+    )
+}
+
+/// Resolves the delete-all-archived confirmation body for the count the
+/// dialog was opened with.
+pub(crate) fn archived_delete_all_confirm_message(count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-settings-archived-delete-all-confirm-message",
+        TranslationArgs::new().with_number("count", count as f64),
         cx,
     )
 }
@@ -943,6 +955,8 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_archived_empty: "No archived sessions in this workspace.".to_string(),
         settings_archived_restore: "Restore".to_string(),
         settings_archived_delete_title: "Delete archived session".to_string(),
+        settings_archived_delete_all: "Delete All Archived".to_string(),
+        settings_archived_delete_all_confirm_title: "Delete All Archived Sessions".to_string(),
         settings_diagnostics: "Diagnostics".to_string(),
         settings_logging_level: "Log level".to_string(),
         settings_logging_level_description: {
@@ -1354,6 +1368,10 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         settings_archived_restore: service.t("gpui-shell-settings-archived-restore").await,
         settings_archived_delete_title: service
             .t("gpui-shell-settings-archived-delete-title")
+            .await,
+        settings_archived_delete_all: service.t("gpui-shell-settings-archived-delete-all").await,
+        settings_archived_delete_all_confirm_title: service
+            .t("gpui-shell-settings-archived-delete-all-confirm-title")
             .await,
         settings_diagnostics: service.t("gpui-shell-settings-diagnostics").await,
         settings_logging_level: service.t("gpui-shell-settings-logging-level").await,

@@ -5477,6 +5477,20 @@ mod tests {
         }
     }
 
+    /// Renders only the archived list body for the bulk-delete test (T1-4);
+    /// the field needs a view wrapper for the same layout reason as
+    /// [`SettingsHarness`].
+    struct ArchivedFieldHarness {
+        text: ShellText,
+        view: gpui_kit::WeakEntity<ShellWindow>,
+    }
+
+    impl Render for ArchivedFieldHarness {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            settings::archived_sessions_field(self.view.clone(), &self.text, window, cx)
+        }
+    }
+
     /// The dock split must hand the body a real box whether or not the terminal
     /// is docked: a `ResizablePanelGroup` carries `size_full()` internally and
     /// collapses inside a parent whose height is only flex-derived, which is why
@@ -5839,6 +5853,53 @@ mod tests {
         });
         let count = visible_session_rows(&mut window, &shell, &text);
         assert_eq!(count, 2);
+    }
+
+    /// The archived settings page renders its bulk delete affordance next to
+    /// the rows (T1-4); the destructive step stays behind its confirm dialog,
+    /// so the render alone must not delete anything.
+    #[gpui_kit::test]
+    fn archived_settings_page_renders_the_bulk_delete(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+        let text = sample_shell_text();
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(
+                    RuntimeEvent::Sessions(vec![
+                        crate::runtime::SessionListRow {
+                            summary: sample_summary("s-1", "Active"),
+                            archived: false,
+                        },
+                        crate::runtime::SessionListRow {
+                            summary: sample_summary("s-2", "Archived"),
+                            archived: true,
+                        },
+                    ]),
+                    window,
+                    cx,
+                );
+            });
+        });
+
+        let view = shell.downgrade();
+        window.draw(
+            point(px(0.), px(0.)),
+            size(px(900.), px(600.)),
+            move |_, cx| {
+                // The component library asks the window for the current view
+                // id during layout, so the field renders inside a view.
+                cx.new(|_| ArchivedFieldHarness {
+                    text: text.clone(),
+                    view: view.clone(),
+                })
+                .into_any_element()
+            },
+        );
+        window.run_until_parked();
     }
 
     /// Number of session rows the sidebar would render with the current

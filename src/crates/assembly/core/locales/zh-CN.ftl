@@ -501,6 +501,11 @@ gpui-shell-settings-archived-description = 从侧栏归档的会话在此恢复�
 gpui-shell-settings-archived-empty = 当前工作区没有归档会话。
 gpui-shell-settings-archived-restore = 恢复
 gpui-shell-settings-archived-delete-title = 删除归档会话
+
+# Archived bulk action (T1-4), copy follows web nav.sessions.deleteAllArchived*
+gpui-shell-settings-archived-delete-all = 删除全部已归档
+gpui-shell-settings-archived-delete-all-confirm-title = 删除全部已归档会话
+gpui-shell-settings-archived-delete-all-confirm-message = 将永久删除 { $count } 个已归档会话。此操作无法撤销。
 gpui-shell-settings-diagnostics = 诊断
 gpui-shell-settings-logging-level = 日志级别
 gpui-shell-settings-logging-level-description = 立即生效，并持久化到以后的启动。

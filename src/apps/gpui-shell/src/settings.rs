@@ -1737,7 +1737,9 @@ fn archived_page(
         .description(text.settings_archived_description.clone())]))
 }
 
-fn archived_sessions_field(
+/// The archived list body, exposed for the headless render test; the page
+/// itself stays private behind [`render_page`].
+pub(crate) fn archived_sessions_field(
     view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
     text: &ShellText,
     _window: &mut gpui_kit::Window,
@@ -1764,6 +1766,20 @@ fn archived_sessions_field(
         );
         return column.into_any_element();
     }
+    // The bulk action sits above the list, same slot as the web page's header
+    // button; the destructive step goes through its own confirm dialog.
+    let delete_all_view = view.clone();
+    column = column.child(
+        div().flex().justify_end().child(
+            Button::new("archived-delete-all")
+                .label(text.settings_archived_delete_all.clone())
+                .small()
+                .with_variant(ButtonVariant::Ghost)
+                .on_click(move |_, window, cx| {
+                    open_archived_delete_all_dialog(delete_all_view.clone(), window, cx);
+                }),
+        ),
+    );
     for (session_id, name) in rows {
         let restore_view = view.clone();
         let restore_id = session_id.clone();
@@ -1903,6 +1919,84 @@ fn open_archived_delete_dialog(
                     .child(
                         Button::new("archived-delete-confirm")
                             .label(text.session_delete.clone())
+                            .with_variant(ButtonVariant::Primary)
+                            .on_click(confirm.clone()),
+                    ),
+            )
+    });
+}
+
+/// Confirm dialog for deleting every archived session of this workspace. The
+/// ids are read at confirm time so the dialog never acts on a stale list;
+/// each deletion goes through the same per-session call as the row action.
+fn open_archived_delete_all_dialog(
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    window: &mut gpui_kit::Window,
+    cx: &mut App,
+) {
+    let Some(shell) = view.upgrade() else {
+        return;
+    };
+    let count = shell
+        .read(cx)
+        .sessions
+        .iter()
+        .filter(|row| row.archived)
+        .count();
+    if count == 0 {
+        return;
+    }
+
+    let confirm_view = view.clone();
+    let confirm = move |_: &gpui_kit::ClickEvent, window: &mut gpui_kit::Window, cx: &mut App| {
+        if let Some(target) = confirm_view.upgrade() {
+            let ids: Vec<String> = target
+                .read(cx)
+                .sessions
+                .iter()
+                .filter(|row| row.archived)
+                .map(|row| row.id.clone())
+                .collect();
+            let tx = target.read(cx).event_tx.clone();
+            if let Some(handle) = crate::runtime::runtime_handle() {
+                tracing::info!("Deleting all {} archived sessions", ids.len());
+                for session_id in ids {
+                    handle.delete_session(session_id, tx.clone());
+                }
+            }
+        }
+        window.close_dialog(cx);
+    };
+    let cancel = move |_: &gpui_kit::ClickEvent, window: &mut gpui_kit::Window, cx: &mut App| {
+        window.close_dialog(cx);
+    };
+
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let text = i18n::current(cx);
+        dialog
+            .title(div().child(text.settings_archived_delete_all_confirm_title.clone()))
+            .child(
+                div()
+                    .w(px(380.))
+                    .text_sm()
+                    .text_color(cx.theme().foreground)
+                    .child(i18n::archived_delete_all_confirm_message(count, cx)),
+            )
+            .footer(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("archived-delete-all-cancel")
+                            .label(text.session_action_cancel.clone())
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(cancel.clone()),
+                    )
+                    .child(
+                        Button::new("archived-delete-all-confirm")
+                            .label(text.settings_archived_delete_all.clone())
                             .with_variant(ButtonVariant::Primary)
                             .on_click(confirm.clone()),
                     ),
