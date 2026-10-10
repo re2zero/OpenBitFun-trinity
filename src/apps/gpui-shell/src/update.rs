@@ -32,7 +32,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use flate2::read::GzDecoder;
 use futures_util::StreamExt as _;
 use reqwest::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tar::Archive;
 use tokio::io::AsyncWriteExt as _;
@@ -361,7 +361,7 @@ pub(crate) struct UpdateCheckReport {
 /// URL or file path overrides it (same parsing as the CLI flags).
 pub(crate) async fn check_for_update(manifest: Option<&str>) -> Result<UpdateCheckReport> {
     let source = ManifestSource::parse(manifest)?;
-    Ok(match plan_update(&source).await? {
+    let report = match plan_update(&source).await? {
         PlanOutcome::Unsupported(reason) => UpdateCheckReport {
             offered_version: None,
             unsupported_reason: Some(reason),
@@ -374,7 +374,9 @@ pub(crate) async fn check_for_update(manifest: Option<&str>) -> Result<UpdateChe
             offered_version: Some(plan.offered_version),
             unsupported_reason: None,
         },
-    })
+    };
+    record_check_snapshot(&report);
+    Ok(report)
 }
 
 /// Runs the full install for an offered release. A check should run first:
@@ -389,6 +391,142 @@ pub(crate) async fn install_available_update(manifest: Option<&str>) -> Result<S
             env!("CARGO_PKG_VERSION")
         )),
         PlanOutcome::Ready(plan) => install_planned_update(plan).await,
+    }
+}
+
+/// The automatic startup probe runs at most once per day, anchored to the
+/// last completed check no matter which button triggered it. The manual
+/// check is never gated.
+const AUTO_CHECK_INTERVAL_MS: u64 = 24 * 60 * 60 * 1000;
+/// Next to the update lock, in the shell's shared config directory.
+const CHECK_SNAPSHOT_FILE: &str = "gpui-shell-update-check.json";
+
+/// What the last completed check concluded, persisted so a restart can skip
+/// re-asking the feed within the daily window and still show the offered
+/// version — the same snapshot shape the desktop keeps in its update store.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct UpdateCheckSnapshot {
+    /// Wall-clock milliseconds of the last completed check.
+    pub(crate) checked_at_ms: u64,
+    /// The version the feed offered then; `None` when this build was current.
+    #[serde(default)]
+    pub(crate) offered_version: Option<String>,
+}
+
+impl UpdateCheckSnapshot {
+    /// Reads a persisted snapshot, or `None` when there is none or it cannot
+    /// be trusted. Mirrors the desktop snapshot read: a future timestamp
+    /// (clock correction) counts as never checked, and an unreadable record
+    /// stays on disk but is ignored rather than deleted.
+    fn read_from(path: &Path, now_ms: u64) -> Option<Self> {
+        let raw = fs::read_to_string(path).ok()?;
+        let snapshot = serde_json::from_str::<Self>(&raw).ok()?;
+        if snapshot.checked_at_ms == 0 || snapshot.checked_at_ms > now_ms {
+            return None;
+        }
+        if snapshot
+            .offered_version
+            .as_deref()
+            .is_some_and(|version| version.trim().is_empty())
+        {
+            return None;
+        }
+        Some(snapshot)
+    }
+
+    fn write_to(&self, path: &Path) -> std::io::Result<()> {
+        let json = serde_json::to_string(self).map_err(std::io::Error::other)?;
+        fs::write(path, json)
+    }
+}
+
+/// The persisted snapshot lives next to the update lock, in the shared config
+/// directory.
+fn snapshot_path() -> Result<PathBuf> {
+    let manager = openbitfun_core::infrastructure::try_get_path_manager_arc()
+        .map_err(|error| anyhow!("cannot resolve the update snapshot location: {error}"))?;
+    Ok(manager.user_config_dir().join(CHECK_SNAPSHOT_FILE))
+}
+
+/// Wall-clock milliseconds since the Unix epoch, for snapshot bookkeeping.
+pub(crate) fn unix_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|since| since.as_millis() as u64)
+        // A clock before the epoch has no usable date: the snapshot this
+        // would write is rejected on read anyway.
+        .unwrap_or(0)
+}
+
+/// The automatic startup probe's verdict.
+pub(crate) enum StartupCheckDecision {
+    /// Ask the feed: no usable snapshot, or the last check is older than a
+    /// day.
+    Due,
+    /// A fresh-enough snapshot stands in for the probe; carries the verdict
+    /// it recorded so the UI can restore it without any network traffic.
+    Cached(UpdateCheckReport),
+}
+
+/// Decides the startup probe from the persisted snapshot. A failed check
+/// leaves the previous snapshot untouched, so a restart inside the window
+/// stays quiet and the next one probes again.
+pub(crate) fn startup_check_decision(now_ms: u64) -> StartupCheckDecision {
+    let snapshot = snapshot_path()
+        .ok()
+        .and_then(|path| UpdateCheckSnapshot::read_from(&path, now_ms));
+    startup_decision_for_snapshot(snapshot, now_ms)
+}
+
+/// The pure half of [`startup_check_decision`], split out so the daily
+/// window is testable without touching the real config directory.
+fn startup_decision_for_snapshot(
+    snapshot: Option<UpdateCheckSnapshot>,
+    now_ms: u64,
+) -> StartupCheckDecision {
+    match snapshot {
+        Some(snapshot)
+            if snapshot.checked_at_ms <= now_ms
+                && now_ms.saturating_sub(snapshot.checked_at_ms) < AUTO_CHECK_INTERVAL_MS =>
+        {
+            // An update that has since been installed is no longer news; the
+            // offered version only stands in while it is still newer.
+            StartupCheckDecision::Cached(UpdateCheckReport {
+                offered_version: snapshot
+                    .offered_version
+                    .filter(|version| *version != env!("CARGO_PKG_VERSION")),
+                unsupported_reason: None,
+            })
+        }
+        _ => StartupCheckDecision::Due,
+    }
+}
+
+/// Persists a completed check so the startup gate has an anchor. Only an
+/// answer that actually reached the feed is recorded — a dev build's
+/// "unsupported" verdict must not silence later probes. Best effort, like
+/// the desktop cache: a failed write costs at most one extra probe after the
+/// next restart.
+fn record_check_snapshot(report: &UpdateCheckReport) {
+    if report.unsupported_reason.is_some() {
+        return;
+    }
+    let path = match snapshot_path() {
+        Ok(path) => path,
+        Err(error) => {
+            tracing::warn!("Update check snapshot not recorded: {error:#}");
+            return;
+        }
+    };
+    let snapshot = UpdateCheckSnapshot {
+        checked_at_ms: unix_time_ms(),
+        offered_version: report.offered_version.clone(),
+    };
+    if let Err(error) = snapshot.write_to(&path) {
+        tracing::warn!(
+            "Failed to record the update check snapshot {}: {error}",
+            path.display()
+        );
     }
 }
 
@@ -1404,5 +1542,124 @@ mod tests {
         let stale = dir.path().join("stale.lock");
         fs::write(&stale, "1").expect("write the stale lock");
         InstallLock::acquire_at(&stale, Duration::ZERO).expect("a stale lock is taken over");
+    }
+
+    #[test]
+    fn snapshot_read_rejects_unusable_records() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("snapshot.json");
+        let now = 1_000_000;
+
+        // Absent.
+        assert!(UpdateCheckSnapshot::read_from(&path, now).is_none());
+        // Garbage.
+        fs::write(&path, "not json").expect("write garbage");
+        assert!(UpdateCheckSnapshot::read_from(&path, now).is_none());
+        // A future timestamp (clock correction) counts as never checked.
+        fs::write(&path, r#"{"checked_at_ms":2000000,"offered_version":null}"#)
+            .expect("write a future timestamp");
+        assert!(UpdateCheckSnapshot::read_from(&path, now).is_none());
+        // Zero is no date.
+        fs::write(&path, r#"{"checked_at_ms":0,"offered_version":null}"#)
+            .expect("write a zero timestamp");
+        assert!(UpdateCheckSnapshot::read_from(&path, now).is_none());
+        // An empty offered version is no version.
+        fs::write(&path, r#"{"checked_at_ms":500,"offered_version":"  "}"#)
+            .expect("write an empty version");
+        assert!(UpdateCheckSnapshot::read_from(&path, now).is_none());
+    }
+
+    #[test]
+    fn snapshot_round_trips_the_completed_check() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("snapshot.json");
+        let available = UpdateCheckSnapshot {
+            checked_at_ms: 500,
+            offered_version: Some("9.9.9".to_string()),
+        };
+        available.write_to(&path).expect("write the snapshot");
+        assert_eq!(
+            UpdateCheckSnapshot::read_from(&path, 1_000).expect("read back"),
+            available
+        );
+
+        // An up-to-date verdict survives the round trip as well.
+        let current = UpdateCheckSnapshot {
+            checked_at_ms: 700,
+            offered_version: None,
+        };
+        current.write_to(&path).expect("overwrite the snapshot");
+        assert_eq!(
+            UpdateCheckSnapshot::read_from(&path, 1_000).expect("read back"),
+            current
+        );
+    }
+
+    #[test]
+    fn startup_probe_is_due_without_a_fresh_snapshot() {
+        let now = 10 * AUTO_CHECK_INTERVAL_MS;
+        // Nothing persisted.
+        assert!(matches!(
+            startup_decision_for_snapshot(None, now),
+            StartupCheckDecision::Due
+        ));
+        // The last completed check is exactly the window old: due again.
+        let stale = UpdateCheckSnapshot {
+            checked_at_ms: now - AUTO_CHECK_INTERVAL_MS,
+            offered_version: None,
+        };
+        assert!(matches!(
+            startup_decision_for_snapshot(Some(stale), now),
+            StartupCheckDecision::Due
+        ));
+        // A snapshot from the future is rejected by the read, not by luck.
+        assert!(matches!(
+            startup_decision_for_snapshot(
+                Some(UpdateCheckSnapshot {
+                    checked_at_ms: now + 1,
+                    offered_version: None
+                }),
+                now
+            ),
+            StartupCheckDecision::Due
+        ));
+    }
+
+    #[test]
+    fn a_fresh_snapshot_stands_in_for_the_startup_probe() {
+        let now = 10 * AUTO_CHECK_INTERVAL_MS;
+        let available = UpdateCheckSnapshot {
+            checked_at_ms: now - AUTO_CHECK_INTERVAL_MS + 1,
+            offered_version: Some("9.9.9".to_string()),
+        };
+        match startup_decision_for_snapshot(Some(available), now) {
+            StartupCheckDecision::Cached(report) => {
+                assert_eq!(report.offered_version.as_deref(), Some("9.9.9"));
+                assert_eq!(report.unsupported_reason, None);
+            }
+            StartupCheckDecision::Due => panic!("a fresh snapshot must defer the probe"),
+        }
+
+        // An offered version that has since been installed is no longer news.
+        let installed = UpdateCheckSnapshot {
+            checked_at_ms: now - 1,
+            offered_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        };
+        match startup_decision_for_snapshot(Some(installed), now) {
+            StartupCheckDecision::Cached(report) => {
+                assert_eq!(report.offered_version, None);
+            }
+            StartupCheckDecision::Due => panic!("a fresh snapshot defers the probe"),
+        }
+
+        // An up-to-date verdict defers too, with nothing to offer.
+        let current = UpdateCheckSnapshot {
+            checked_at_ms: now - 1,
+            offered_version: None,
+        };
+        match startup_decision_for_snapshot(Some(current), now) {
+            StartupCheckDecision::Cached(report) => assert_eq!(report.offered_version, None),
+            StartupCheckDecision::Due => panic!("a fresh snapshot defers the probe"),
+        }
     }
 }

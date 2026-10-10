@@ -868,7 +868,7 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_close_minimize: "Minimize".to_string(),
         settings_auto_update: "Check for updates at startup".to_string(),
         settings_auto_update_description: {
-            "Checks the release feed once per launch. The manual check below always runs."
+            "Checks the release feed once a day. The manual check below always runs."
                 .to_string()
         },
         settings_notify_turn_done: "Task completion notification".to_string(),

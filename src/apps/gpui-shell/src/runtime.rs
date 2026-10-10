@@ -3151,15 +3151,27 @@ async fn bootstrap(tx: mpsc::UnboundedSender<RuntimeEvent>) -> Result<()> {
     // the desktop store does — the toggle only silences this startup probe,
     // never the manual button. Delayed so the check never competes with the
     // boot path; a failure stays a log line for the automatic case.
+    // T1-3: the probe itself runs at most once a day, anchored to the
+    // persisted snapshot (the desktop storage contract); inside the window
+    // the recorded verdict is restored into the UI instead of re-asking the
+    // feed.
     if auto_update_enabled {
         let tx = tx.clone();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(15)).await;
-            match crate::update::check_for_update(None).await {
-                Ok(report) => {
+            match crate::update::startup_check_decision(crate::update::unix_time_ms()) {
+                crate::update::StartupCheckDecision::Due => {
+                    match crate::update::check_for_update(None).await {
+                        Ok(report) => {
+                            let _ =
+                                tx.send(RuntimeEvent::UpdateCheckFinished { result: Ok(report) });
+                        }
+                        Err(error) => tracing::info!("Startup update check skipped: {error:#}"),
+                    }
+                }
+                crate::update::StartupCheckDecision::Cached(report) => {
                     let _ = tx.send(RuntimeEvent::UpdateCheckFinished { result: Ok(report) });
                 }
-                Err(error) => tracing::info!("Startup update check skipped: {error:#}"),
             }
         });
     }
