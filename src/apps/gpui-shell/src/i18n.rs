@@ -76,6 +76,14 @@ pub(crate) struct ShellText {
     pub files_too_large: String,
     pub files_binary: String,
     pub files_truncated: String,
+    pub search_title: String,
+    pub search_files_tab: String,
+    pub search_sessions_tab: String,
+    pub search_run: String,
+    pub search_running: String,
+    pub search_empty: String,
+    pub search_unavailable: String,
+    pub search_truncated: String,
     pub model_picker: String,
     pub model_picker_empty: String,
     pub model_default: String,
@@ -240,6 +248,15 @@ pub(crate) fn files_failed(error: &str, cx: &App) -> String {
     )
 }
 
+/// Resolves the localized search failure line for one concrete error.
+pub(crate) fn search_failed(error: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-search-failed",
+        TranslationArgs::new().with_string("error", error),
+        cx,
+    )
+}
+
 /// Resolves the unsupported-image-attachment notice for one rejected item.
 pub(crate) fn attachment_unsupported(name: &str, cx: &App) -> String {
     resolve_with(
@@ -367,6 +384,14 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         files_too_large: "File is too large to display".to_string(),
         files_binary: "Binary file, no preview".to_string(),
         files_truncated: "Showing the first 1 MB of this file.".to_string(),
+        search_title: "Search".to_string(),
+        search_files_tab: "Files".to_string(),
+        search_sessions_tab: "Sessions".to_string(),
+        search_run: "Search".to_string(),
+        search_running: "Searching…".to_string(),
+        search_empty: "No results.".to_string(),
+        search_unavailable: "Workspace search is unavailable here.".to_string(),
+        search_truncated: "More results available; refine the query.".to_string(),
         model_picker: "Session model".to_string(),
         model_picker_empty: "No configured models".to_string(),
         model_default: "Default model".to_string(),
@@ -530,6 +555,14 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         files_too_large: service.t("gpui-shell-files-too-large").await,
         files_binary: service.t("gpui-shell-files-binary").await,
         files_truncated: service.t("gpui-shell-files-truncated").await,
+        search_title: service.t("gpui-shell-search-title").await,
+        search_files_tab: service.t("gpui-shell-search-files-tab").await,
+        search_sessions_tab: service.t("gpui-shell-search-sessions-tab").await,
+        search_run: service.t("gpui-shell-search-run").await,
+        search_running: service.t("gpui-shell-search-running").await,
+        search_empty: service.t("gpui-shell-search-empty").await,
+        search_unavailable: service.t("gpui-shell-search-unavailable").await,
+        search_truncated: service.t("gpui-shell-search-truncated").await,
         model_picker: service.t("gpui-shell-model-picker").await,
         model_picker_empty: service.t("gpui-shell-model-picker-empty").await,
         model_default: service.t("gpui-shell-model-default").await,

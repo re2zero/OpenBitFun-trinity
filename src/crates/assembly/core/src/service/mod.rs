@@ -120,15 +120,15 @@ pub use review_platform::{
 pub use runtime::{ResolvedCommand, RuntimeCommandCapability, RuntimeManager, RuntimeSource};
 #[cfg(feature = "workspace-search")]
 pub use search::{
-    get_global_workspace_search_service, set_global_workspace_search_service, ContentSearchRequest,
-    ContentSearchResult, GlobSearchRequest, GlobSearchResult, IndexTaskHandle,
-    WorkspaceIndexStatus, WorkspaceSearchAutoIndexDecision, WorkspaceSearchAutoIndexPriority,
-    WorkspaceSearchAutoIndexStatus, WorkspaceSearchBackend, WorkspaceSearchContextLine,
-    WorkspaceSearchDirtyFiles, WorkspaceSearchFileCount, WorkspaceSearchHit, WorkspaceSearchLine,
-    WorkspaceSearchMatch, WorkspaceSearchMatchLocation, WorkspaceSearchOverlayStatus,
-    WorkspaceSearchRepoPhase, WorkspaceSearchRepoStatus, WorkspaceSearchService,
-    WorkspaceSearchTaskKind, WorkspaceSearchTaskPhase, WorkspaceSearchTaskState,
-    WorkspaceSearchTaskStatus,
+    get_global_workspace_search_service, set_global_workspace_search_service,
+    ContentSearchOutputMode, ContentSearchRequest, ContentSearchResult, GlobSearchRequest,
+    GlobSearchResult, IndexTaskHandle, WorkspaceIndexStatus, WorkspaceSearchAutoIndexDecision,
+    WorkspaceSearchAutoIndexPriority, WorkspaceSearchAutoIndexStatus, WorkspaceSearchBackend,
+    WorkspaceSearchContextLine, WorkspaceSearchDirtyFiles, WorkspaceSearchFileCount,
+    WorkspaceSearchHit, WorkspaceSearchLine, WorkspaceSearchMatch, WorkspaceSearchMatchLocation,
+    WorkspaceSearchOverlayStatus, WorkspaceSearchRepoPhase, WorkspaceSearchRepoStatus,
+    WorkspaceSearchService, WorkspaceSearchTaskKind, WorkspaceSearchTaskPhase,
+    WorkspaceSearchTaskState, WorkspaceSearchTaskStatus,
 };
 #[cfg(feature = "agent-runtime")]
 pub use snapshot::SnapshotService;

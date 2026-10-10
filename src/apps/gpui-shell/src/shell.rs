@@ -65,6 +65,8 @@ enum MainView {
     Tasks,
     /// Workspace file tree + viewer (M15).
     Files,
+    /// Global search: file content + sessions (M16).
+    Search,
 }
 
 /// Lifecycle of the embedded runtime, mirrored into the status line.
@@ -597,7 +599,7 @@ fn image_format_for_extension(extension: &str) -> Option<ImageFormat> {
     }
 }
 
-struct ShellWindow {
+pub(crate) struct ShellWindow {
     draft: Entity<TextareaState>,
     phase: RuntimePhase,
     sessions: Vec<SessionRow>,
@@ -641,6 +643,13 @@ struct ShellWindow {
     /// window's lifetime (tabs survive view switches), dropped on workspace
     /// switches.
     files: Option<Entity<FilesPage>>,
+    /// Global search page state (M16): results cross the event pump, jumps
+    /// reach the shell through the weak handle the render path carries.
+    /// The search page module mutates `tab` directly (same-crate render).
+    pub(crate) search: crate::search::SearchPageState,
+    /// Search query input; lives on the window like the other dialogs'
+    /// inputs so its text survives view switches.
+    search_input: Entity<InputState>,
     /// Split state of the docked terminal panel: the panel keeps whatever
     /// height the divider was dragged to for as long as the window lives.
     dock: Entity<ResizableState>,
@@ -699,6 +708,7 @@ impl ShellWindow {
         let rename_input = cx.new(|cx| InputState::new(window, cx));
         let workspace_input = cx.new(|cx| InputState::new(window, cx));
         let export_input = cx.new(|cx| InputState::new(window, cx));
+        let search_input = cx.new(|cx| InputState::new(window, cx));
         receive_runtime_events(event_rx, window, cx);
         Self {
             draft,
@@ -718,6 +728,8 @@ impl ShellWindow {
             main_view: MainView::Chat,
             git: None,
             files: None,
+            search: Default::default(),
+            search_input,
             dock,
             terminal_height: TerminalPane::panel_height(),
             settings_auto_open: std::env::var_os("OPENBITFUN_GPUI_SETTINGS_AUTOOPEN").is_some(),
@@ -1100,6 +1112,26 @@ impl ShellWindow {
                 tracing::warn!("Scheduled-jobs action failed: {message}");
                 self.tasks.error = Some(message);
             }
+            RuntimeEvent::SearchContent { hits, truncated } => {
+                self.search.running = false;
+                self.search.content =
+                    crate::search::flatten_content_hits(&hits, crate::search::SEARCH_LIMIT);
+                self.search.truncated = truncated;
+            }
+            RuntimeEvent::SearchSessions { hits, truncated } => {
+                self.search.running = false;
+                self.search.sessions = hits;
+                self.search.truncated = truncated;
+            }
+            RuntimeEvent::SearchUnavailable(detail) => {
+                self.search.running = false;
+                self.search.unavailable = Some(detail);
+            }
+            RuntimeEvent::SearchFailed(message) => {
+                tracing::warn!("Search action failed: {message}");
+                self.search.running = false;
+                self.search.error = Some(i18n::search_failed(&message, cx));
+            }
             RuntimeEvent::QuestionsChanged(questions) => {
                 self.apply_questions_changed(questions, window, cx);
             }
@@ -1290,6 +1322,8 @@ impl ShellWindow {
         self.git = None;
         // The files page binds the abandoned workspace's root and tabs.
         self.files = None;
+        // Search results belong to the abandoned workspace and its sessions.
+        self.search = Default::default();
         self.main_view = MainView::Chat;
         // Staged images belong to the abandoned workspace's draft.
         self.pending_attachments.clear();
@@ -1451,6 +1485,54 @@ impl ShellWindow {
             self.files
                 .get_or_insert_with(|| cx.new(crate::files::FilesPage::new));
         }
+        cx.notify();
+    }
+
+    /// Global search page toggle (M16); state rides the window, so nothing
+    /// is fetched on open.
+    fn toggle_search_view(&mut self, cx: &mut Context<Self>) {
+        if self.main_view == MainView::Search {
+            self.main_view = MainView::Chat;
+        } else {
+            self.main_view = MainView::Search;
+        }
+        cx.notify();
+    }
+
+    /// Runs the search for the active tab (M16). Empty queries and in-flight
+    /// runs are no-ops so the panel never floods or double-fires.
+    pub(crate) fn run_search(
+        &mut self,
+        tx: &mpsc::UnboundedSender<RuntimeEvent>,
+        cx: &mut Context<Self>,
+    ) {
+        let query = self.search_input.read(cx).value().trim().to_string();
+        if query.is_empty() || self.search.running {
+            return;
+        }
+        let Some(handle) = runtime::runtime_handle() else {
+            self.search.error = Some("runtime not ready".to_string());
+            cx.notify();
+            return;
+        };
+        self.search.running = true;
+        self.search.error = None;
+        self.search.unavailable = None;
+        self.search.query = query.clone();
+        match self.search.tab {
+            crate::search::SearchTab::Files => handle.search_workspace_content(query, tx.clone()),
+            crate::search::SearchTab::Sessions => handle.search_sessions(query, tx.clone()),
+        }
+        cx.notify();
+    }
+
+    /// Jumps from a search hit to the files viewer with the file open.
+    pub(crate) fn open_file_in_files_view(&mut self, path: String, cx: &mut Context<Self>) {
+        self.main_view = MainView::Files;
+        let page = self
+            .files
+            .get_or_insert_with(|| cx.new(crate::files::FilesPage::new));
+        page.update(cx, |page, cx| page.open_path(path, cx));
         cx.notify();
     }
 
@@ -1649,6 +1731,14 @@ impl ShellWindow {
                     .with_variant(active_variant(self.main_view == MainView::Files))
                     .tooltip(text.files_title.clone())
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_files_view(cx))),
+            )
+            .child(
+                Button::new("footer-search")
+                    .icon(IconName::Search)
+                    .small()
+                    .with_variant(active_variant(self.main_view == MainView::Search))
+                    .tooltip(text.search_title.clone())
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_search_view(cx))),
             )
             .child(
                 Button::new("footer-terminal")
@@ -3145,6 +3235,21 @@ impl Render for ShellWindow {
                     .into_any_element(),
                 None => div().into_any_element(),
             },
+            MainView::Search => div()
+                .id("search-page")
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .overflow_y_scroll()
+                .child(crate::search::render_page(
+                    cx.entity().downgrade(),
+                    &self.search,
+                    &self.search_input,
+                    &self.event_tx,
+                    &text,
+                    cx,
+                ))
+                .into_any_element(),
             MainView::Chat => self.render_chat_column(&text, cx),
         };
 
@@ -4653,6 +4758,85 @@ mod tests {
                 assert_eq!(shell.main_view, MainView::Files);
             });
         });
+    }
+
+    /// Search page state machine: toggle, tab switch, and the pump
+    /// projections for both tabs plus the unavailable gate.
+    #[gpui_kit::test]
+    fn search_view_toggles_and_projects_results(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.toggle_search_view(cx);
+                assert_eq!(shell.main_view, MainView::Search);
+
+                shell.apply_runtime_event(
+                    RuntimeEvent::SearchContent {
+                        hits: vec![sample_workspace_hit()],
+                        truncated: true,
+                    },
+                    window,
+                    cx,
+                );
+                assert_eq!(shell.search.content.len(), 1);
+                assert_eq!(shell.search.content[0].path, "/w/a.rs");
+                assert!(shell.search.truncated);
+
+                shell.search.tab = crate::search::SearchTab::Sessions;
+                shell.apply_runtime_event(
+                    RuntimeEvent::SearchSessions {
+                        hits: vec![sample_session_hit()],
+                        truncated: false,
+                    },
+                    window,
+                    cx,
+                );
+                assert_eq!(shell.search.sessions.len(), 1);
+                assert_eq!(shell.search.sessions[0].session_id, "s-9");
+
+                shell.apply_runtime_event(RuntimeEvent::SearchUnavailable(None), window, cx);
+                assert!(matches!(shell.search.unavailable, Some(None)));
+
+                shell.toggle_search_view(cx);
+                assert_eq!(shell.main_view, MainView::Chat);
+            });
+        });
+    }
+
+    /// Search page state machine fixtures: one grouped content hit and one
+    /// session hit, shaped like the wire DTOs.
+    fn sample_workspace_hit() -> openbitfun_core::service::search::WorkspaceSearchHit {
+        openbitfun_core::service::search::WorkspaceSearchHit {
+            path: "/w/a.rs".to_string(),
+            matches: vec![openbitfun_core::service::search::WorkspaceSearchMatch {
+                location: openbitfun_core::service::search::WorkspaceSearchMatchLocation {
+                    line: 3,
+                    column: 0,
+                },
+                snippet: "let x = query;".to_string(),
+                matched_text: "query".to_string(),
+            }],
+            lines: Vec::new(),
+        }
+    }
+
+    fn sample_session_hit() -> openbitfun_runtime_ports::SessionSearchHit {
+        openbitfun_runtime_ports::SessionSearchHit {
+            kind: openbitfun_runtime_ports::SessionSearchHitKind::Session,
+            matched_field: openbitfun_runtime_ports::SessionSearchMatchField::Title,
+            session_id: "s-9".to_string(),
+            session_title: "Indexed session".to_string(),
+            turn_id: None,
+            turn_index: None,
+            snippet: "answer text".to_string(),
+            archived: false,
+            updated_at_ms: 0,
+            score: 1.0,
+        }
     }
 
     /// Approvals gate a parked tool call, so they take the single dialog slot

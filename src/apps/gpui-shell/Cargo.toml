@@ -14,6 +14,7 @@ openbitfun-core = { path = "../../crates/assembly/core", features = [
     # owners. Do not replace with `product-full`.
     "agent-runtime",
     "product-search",
+    "workspace-search",
     "document-read",
     "subscription-auth",
     "remote-connect",

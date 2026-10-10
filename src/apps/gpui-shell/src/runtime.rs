@@ -50,7 +50,8 @@ use openbitfun_core::service::workspace::{
 use openbitfun_events::{AgenticEvent, ToolEventData};
 use openbitfun_runtime_ports::{
     AgentInputAttachment, AgentSessionListRequest, AgentSessionSummary, AgentSubmissionSource,
-    DialogSubmissionPolicy, GitPort, TranscriptContent, TranscriptMessage,
+    DialogSubmissionPolicy, GitPort, SessionContentSearchRequest, SessionContentSearchResponse,
+    SessionSearchHit, TranscriptContent, TranscriptMessage,
 };
 use openbitfun_services_core::session::SessionStatus;
 use tokio::sync::mpsc;
@@ -162,6 +163,22 @@ pub(crate) enum RuntimeEvent {
     CronJobs(Vec<CronJob>),
     /// A scheduled-jobs action failed; the page shows the reason inline.
     CronFailed(String),
+    /// Files-tab results for the global search page (M16).
+    SearchContent {
+        hits: Vec<openbitfun_core::service::search::WorkspaceSearchHit>,
+        truncated: bool,
+    },
+    /// Sessions-tab results for the global search page (M16).
+    SearchSessions {
+        hits: Vec<SessionSearchHit>,
+        truncated: bool,
+    },
+    /// Files search cannot run in this host: the payload is the managed
+    /// daemon's install hint when that is the gate that failed, `None` for
+    /// the config gate.
+    SearchUnavailable(Option<String>),
+    /// A search action failed; the page shows the reason inline.
+    SearchFailed(String),
     /// A session was deleted; the chat pane must close when it shows it.
     SessionDeleted { session_id: String },
     /// A session action (rename / archive / delete / model change) failed;
@@ -913,6 +930,98 @@ impl RuntimeHandle {
         });
     }
 
+    /// Files-content search for the global search page (M16). The core gate
+    /// (config feature + managed daemon) is checked per run and reported as
+    /// [`RuntimeEvent::SearchUnavailable`] instead of failing silently.
+    pub(crate) fn search_workspace_content(
+        &self,
+        query: String,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+    ) {
+        let workspace = self.workspace();
+        self.tokio.spawn(async move {
+            if !openbitfun_core::service::search::workspace_search_runtime_available().await {
+                let detail = if !openbitfun_core::service::search::workspace_search_feature_enabled(
+                )
+                .await
+                {
+                    None
+                } else if !openbitfun_core::service::search::workspace_search_daemon_available() {
+                    Some(openbitfun_core::service::search::workspace_search_daemon_missing_hint())
+                } else {
+                    None
+                };
+                let _ = tx.send(RuntimeEvent::SearchUnavailable(detail));
+                return;
+            }
+            let Some(service) =
+                openbitfun_core::service::search::get_global_workspace_search_service()
+            else {
+                tracing::error!("Workspace search unavailable: service is not initialized");
+                let _ = tx.send(RuntimeEvent::SearchFailed(
+                    "search: service is not initialized".to_string(),
+                ));
+                return;
+            };
+            let request = openbitfun_core::service::search::ContentSearchRequest {
+                repo_root: workspace.root_path.clone(),
+                search_path: None,
+                pattern: query,
+                output_mode: openbitfun_core::service::search::ContentSearchOutputMode::Content,
+                case_sensitive: false,
+                use_regex: false,
+                whole_word: false,
+                multiline: false,
+                max_results: Some(crate::search::SEARCH_LIMIT),
+                globs: Vec::new(),
+                file_types: Vec::new(),
+                exclude_file_types: Vec::new(),
+            };
+            match service.search_content(request).await {
+                Ok(result) => {
+                    let _ = tx.send(RuntimeEvent::SearchContent {
+                        hits: result.hits,
+                        truncated: result.outcome.truncated,
+                    });
+                }
+                Err(error) => {
+                    tracing::error!("Workspace content search failed: {error}");
+                    let _ = tx.send(RuntimeEvent::SearchFailed(format!("search: {error}")));
+                }
+            }
+        });
+    }
+
+    /// Session-content search for the global search page (M16), through the
+    /// `ProductSearchPort` the compatibility owner implements.
+    pub(crate) fn search_sessions(&self, query: String, tx: mpsc::UnboundedSender<RuntimeEvent>) {
+        let workspace = self.workspace();
+        let compat = self.compat.clone();
+        self.tokio.spawn(async move {
+            let request = SessionContentSearchRequest {
+                workspace_id: Some(workspace.id.clone()),
+                workspace_path: workspace.root_path.to_string_lossy().to_string(),
+                remote_connection_id: None,
+                remote_ssh_host: None,
+                query,
+                limit: crate::search::SEARCH_LIMIT,
+                include_archived: false,
+            };
+            match search_session_content_via(&compat, request).await {
+                Ok(response) => {
+                    let _ = tx.send(RuntimeEvent::SearchSessions {
+                        hits: response.hits,
+                        truncated: response.truncated,
+                    });
+                }
+                Err(error) => {
+                    tracing::error!("Session search failed: {error}");
+                    let _ = tx.send(RuntimeEvent::SearchFailed(format!("sessions: {error}")));
+                }
+            }
+        });
+    }
+
     /// Updates one session's model selector (model only; the reasoning preset
     /// stays whatever the session already recorded, matching the desktop's
     /// model-only path).
@@ -999,6 +1108,19 @@ struct RuntimeHandleLite {
     /// switch reads the workspace that is active when it runs.
     workspace: Arc<RwLock<WorkspaceInfo>>,
     tokio: tokio::runtime::Handle,
+}
+
+/// Session-content search through the compatibility owner's port impl,
+/// factored out so callers only map the error shape.
+async fn search_session_content_via(
+    compat: &CoreAgentRuntimeCompatibility,
+    request: SessionContentSearchRequest,
+) -> Result<SessionContentSearchResponse, String> {
+    use openbitfun_runtime_ports::ProductSearchPort as _;
+    compat
+        .search_session_content(request)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 impl RuntimeHandleLite {
@@ -2151,6 +2273,14 @@ async fn bootstrap(tx: mpsc::UnboundedSender<RuntimeEvent>) -> Result<()> {
     openbitfun_core::service::cron::set_global_cron_service(cron_service.clone());
     cron_service.start();
     tracing::info!("Cron service initialized and started");
+
+    // M16: the shell hosts the workspace search service the desktop hosts —
+    // the managed daemon lifecycle (with ripgrep/scan fallbacks) behind the
+    // same config gate; availability is checked per search, not here.
+    openbitfun_core::service::search::set_global_workspace_search_service(Arc::new(
+        openbitfun_core::service::search::WorkspaceSearchService::new(),
+    ));
+    tracing::info!("Workspace search service initialized");
 
     let handle = RuntimeHandle {
         agent_runtime,
