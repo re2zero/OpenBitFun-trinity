@@ -259,6 +259,10 @@ pub(crate) struct ShellText {
     pub manage_agent_error_empty_description: String,
     pub manage_agent_error_empty_prompt: String,
     pub manage_agent_error_mode_project: String,
+    pub manage_agent_edit_title: String,
+    pub manage_agent_delete: String,
+    pub manage_agent_delete_title: String,
+    pub agent_card_edit: String,
     pub mode_skills_open: String,
     pub mode_skills_title: String,
     pub mode_skills_loading: String,
@@ -491,6 +495,15 @@ pub(crate) fn mode_skills_covered(source: &str, cx: &App) -> String {
     resolve_with(
         "gpui-shell-mode-skills-status-covered",
         TranslationArgs::new().with_string("source", source),
+        cx,
+    )
+}
+
+/// T2-12: the custom-agent delete confirmation naming the target.
+pub(crate) fn manage_agent_delete_warning(name: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-manage-agent-delete-warning",
+        TranslationArgs::new().with_string("name", name),
         cx,
     )
 }
@@ -914,6 +927,13 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         manage_agent_error_empty_description: "A description is required.".to_string(),
         manage_agent_error_empty_prompt: "A prompt is required.".to_string(),
         manage_agent_error_mode_project: "Custom modes are user-level only.".to_string(),
+        manage_agent_edit_title: "Edit custom agent".to_string(),
+        manage_agent_delete: "Delete".to_string(),
+        manage_agent_delete_title: "Delete custom agent".to_string(),
+        // "Edit" is a shared term; the dedicated key would trip the
+        // shared-term duplicate ratchet (same alias the terminal profile
+        // uses).
+        agent_card_edit: "Edit".to_string(),
         mode_skills_open: "Skills".to_string(),
         mode_skills_title: "Skill selection".to_string(),
         mode_skills_loading: "Loading skills…".to_string(),
@@ -1401,6 +1421,12 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         manage_agent_error_mode_project: service
             .t("gpui-shell-manage-agent-error-mode-project")
             .await,
+        manage_agent_edit_title: service.t("gpui-shell-manage-agent-edit-title").await,
+        manage_agent_delete: service.t("gpui-shell-manage-agent-delete").await,
+        manage_agent_delete_title: service.t("gpui-shell-manage-agent-delete-title").await,
+        // "Edit" is a shared term; a dedicated key would trip the shared-term
+        // duplicate ratchet (same alias the terminal profile uses).
+        agent_card_edit: service.t("shared.tools.edit").await,
         mode_skills_open: service.t("gpui-shell-mode-skills-open").await,
         mode_skills_title: service.t("gpui-shell-mode-skills-title").await,
         mode_skills_loading: service.t("gpui-shell-mode-skills-loading").await,

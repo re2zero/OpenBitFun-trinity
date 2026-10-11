@@ -659,6 +659,58 @@ impl AgentDraftError {
     }
 }
 
+/// T2-12: one custom-agent edit request from the dialog. The id, kind, and
+/// level are fixed once created (web edit form keeps them read-only); tools,
+/// model, review, and the context policy pass `None` through the core update
+/// so the existing definition is preserved.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AgentEditDraft {
+    pub(crate) agent_id: String,
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) prompt: String,
+}
+
+/// Shell projection of the core `CustomAgentDetail` for the edit dialog
+/// prefill (the shell only edits name/description/prompt).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AgentDetailRow {
+    pub(crate) agent_id: String,
+    pub(crate) mode_kind: bool,
+    pub(crate) project_level: bool,
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) prompt: String,
+}
+
+/// Projects the core detail strings into the dialog's boolean shape
+/// (`kind` = "mode"/"subagent", `level` = "user"/"project").
+pub(crate) fn project_agent_detail(
+    detail: &openbitfun_core::agentic::agents::CustomAgentDetail,
+) -> AgentDetailRow {
+    AgentDetailRow {
+        agent_id: detail.agent_id.clone(),
+        mode_kind: detail.kind == "mode",
+        project_level: detail.level == "project",
+        name: detail.name.clone(),
+        description: detail.description.clone(),
+        prompt: detail.prompt.clone(),
+    }
+}
+
+/// T2-12: edit/delete are card actions for custom agents only — the web
+/// `canManageCustomAgent` guard (`source` neither builtin nor external).
+pub(crate) fn agent_card_manageable(source: AgentSourceKind) -> bool {
+    matches!(source, AgentSourceKind::User | AgentSourceKind::Project)
+}
+
+/// Delete-confirmation scratch: the card target (id + display name).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AgentPendingDelete {
+    pub(crate) agent_id: String,
+    pub(crate) agent_name: String,
+}
+
 /// Validates and writes the draft, then reloads the registry so the new
 /// definition is visible to sessions immediately. Mirrors the desktop
 /// `create_custom_agent` flow: same directory layout, same defaults (kind
@@ -1023,6 +1075,37 @@ fn agent_cards(
                             skills_view.clone(),
                             mode_id.clone(),
                             mode_name.clone(),
+                            window,
+                            cx,
+                        );
+                    }),
+            );
+        }
+        if agent_card_manageable(card.source) {
+            let edit_view = view.clone();
+            let edit_id = card.id.clone();
+            badges = badges.child(
+                Button::new(SharedString::from(format!("agent-edit-{}", card.id)))
+                    .label(text.agent_card_edit.clone())
+                    .small()
+                    .with_variant(ButtonVariant::Ghost)
+                    .on_click(move |_, window, cx| {
+                        open_agent_edit_dialog(edit_view.clone(), edit_id.clone(), window, cx);
+                    }),
+            );
+            let delete_view = view.clone();
+            let delete_id = card.id.clone();
+            let delete_name = card.name.clone();
+            badges = badges.child(
+                Button::new(SharedString::from(format!("agent-delete-{}", card.id)))
+                    .label(text.manage_agent_delete.clone())
+                    .small()
+                    .with_variant(ButtonVariant::Ghost)
+                    .on_click(move |_, window, cx| {
+                        open_agent_delete_confirm(
+                            delete_view.clone(),
+                            delete_id.clone(),
+                            delete_name.clone(),
                             window,
                             cx,
                         );
@@ -1410,7 +1493,9 @@ fn agent_level_button(
 
 /// Opens the custom-agent creation dialog. The input states live on the
 /// window (a dialog builder runs every frame); the submission goes through
-/// the runtime and the dialog closes when the catalog event lands.
+/// the runtime and the dialog closes when the catalog event lands. The same
+/// dialog serves editing (`open_agent_edit_dialog` sets `agent_edit_target`,
+/// the detail event prefills the fields, and id/kind/level render fixed).
 pub(crate) fn open_agent_create_dialog(
     view: WeakEntity<ShellWindow>,
     window: &mut Window,
@@ -1443,6 +1528,8 @@ pub(crate) fn open_agent_create_dialog(
         shell.agent_create_project_level = false;
         shell.agent_create_error = None;
         shell.agent_create_active = true;
+        shell.agent_edit_target = None;
+        shell.agent_edit_loading = false;
         cx.notify();
     });
 
@@ -1452,11 +1539,12 @@ pub(crate) fn open_agent_create_dialog(
         let Some(shell) = confirm_view.upgrade() else {
             return;
         };
-        let (kind_mode, project_level) = {
+        let (kind_mode, project_level, edit_target) = {
             let shell = shell.read(cx);
             (
                 shell.agent_create_kind_mode,
                 shell.agent_create_project_level,
+                shell.agent_edit_target.clone(),
             )
         };
         let read_input = |input: &gpui_kit::Entity<InputState>, cx: &App| {
@@ -1483,10 +1571,22 @@ pub(crate) fn open_agent_create_dialog(
             shell.agent_create_error = None;
             cx.notify();
         });
-        if let Some(handle) = crate::runtime::runtime_handle() {
-            handle.create_custom_agent(draft);
+        let Some(handle) = crate::runtime::runtime_handle() else {
+            tracing::error!("Runtime unavailable while saving a custom agent");
+            return;
+        };
+        if let Some(agent_id) = edit_target {
+            // The id/kind/level are fixed in edit mode; tools, model,
+            // review, and the context policy pass None and keep the
+            // existing definition (desktop update_custom_agent parity).
+            handle.update_custom_agent(crate::manage::AgentEditDraft {
+                agent_id,
+                name: draft.name,
+                description: draft.description,
+                prompt: draft.prompt,
+            });
         } else {
-            tracing::error!("Runtime unavailable while creating a custom agent");
+            handle.create_custom_agent(draft);
         }
     };
     let cancel = move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
@@ -1494,6 +1594,8 @@ pub(crate) fn open_agent_create_dialog(
             shell.update(cx, |shell, cx| {
                 shell.agent_create_active = false;
                 shell.agent_create_error = None;
+                shell.agent_edit_target = None;
+                shell.agent_edit_loading = false;
                 cx.notify();
             });
         }
@@ -1505,63 +1607,66 @@ pub(crate) fn open_agent_create_dialog(
         let Some(shell) = view.upgrade() else {
             return dialog;
         };
-        let (kind_mode, project_level, error, label_color) = {
+        let (kind_mode, project_level, error, label_color, editing, loading) = {
             let shell = shell.read(cx);
             (
                 shell.agent_create_kind_mode,
                 shell.agent_create_project_level,
                 shell.agent_create_error.clone(),
                 cx.theme().muted_foreground,
+                shell.agent_edit_target.clone(),
+                shell.agent_edit_loading,
             )
         };
-        let mut content = div()
-            .w(px(460.))
-            .v_flex()
-            .gap_2()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(agent_kind_button(
-                        view.clone(),
-                        text.manage_agent_kind_mode.clone(),
-                        kind_mode,
-                        true,
-                    ))
-                    .child(agent_kind_button(
-                        view.clone(),
-                        text.manage_agent_kind_subagent.clone(),
-                        !kind_mode,
-                        false,
-                    )),
-            )
-            // Custom modes are user-level only, so the level selector only
-            // exists for subagents.
-            .when(!kind_mode, |row| {
-                row.child(
+        let mut content = div().w(px(460.)).v_flex().gap_2();
+        if editing.is_none() {
+            content = content
+                .child(
                     div()
                         .flex()
                         .items_center()
                         .gap_2()
-                        .child(agent_level_button(
+                        .child(agent_kind_button(
                             view.clone(),
-                            text.manage_agent_level_user.clone(),
-                            !project_level,
-                            false,
-                        ))
-                        .child(agent_level_button(
-                            view.clone(),
-                            text.manage_agent_level_project.clone(),
-                            project_level,
+                            text.manage_agent_kind_mode.clone(),
+                            kind_mode,
                             true,
+                        ))
+                        .child(agent_kind_button(
+                            view.clone(),
+                            text.manage_agent_kind_subagent.clone(),
+                            !kind_mode,
+                            false,
                         )),
                 )
-            })
+                // Custom modes are user-level only, so the level selector only
+                // exists for subagents.
+                .when(!kind_mode, |row| {
+                    row.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(agent_level_button(
+                                view.clone(),
+                                text.manage_agent_level_user.clone(),
+                                !project_level,
+                                false,
+                            ))
+                            .child(agent_level_button(
+                                view.clone(),
+                                text.manage_agent_level_project.clone(),
+                                project_level,
+                                true,
+                            )),
+                    )
+                });
+        }
+        content = content
             .child(dialog_field(
                 &text.manage_agent_id,
                 label_color,
-                Input::new(&id_input),
+                Input::new(&id_input).disabled(editing.is_some()),
             ))
             .child(dialog_field(
                 &text.manage_agent_name,
@@ -1578,13 +1683,146 @@ pub(crate) fn open_agent_create_dialog(
                 label_color,
                 Textarea::new(&prompt_input),
             ));
+        if loading {
+            content = content.child(
+                div()
+                    .text_xs()
+                    .text_color(label_color)
+                    .child(text.manage_agents_loading.clone()),
+            );
+        }
         if let Some(error) = error {
             content = content.child(div().text_xs().text_color(cx.theme().danger).child(error));
         }
 
+        let title = if editing.is_some() {
+            text.manage_agent_edit_title.clone()
+        } else {
+            text.manage_agent_create_title.clone()
+        };
+        dialog.title(div().child(title)).child(content).footer(
+            div()
+                .flex()
+                .flex_row()
+                .justify_end()
+                .gap_2()
+                .child(
+                    Button::new("agent-create-cancel")
+                        .label(text.session_action_cancel.clone())
+                        .with_variant(ButtonVariant::Ghost)
+                        .on_click(cancel.clone()),
+                )
+                .child(
+                    Button::new("agent-create-confirm")
+                        .label(text.session_action_confirm.clone())
+                        .with_variant(ButtonVariant::Primary)
+                        .on_click(confirm.clone()),
+                ),
+        )
+    });
+}
+
+/// Opens the same dialog in edit mode: the create dialog resets and opens
+/// first, then the edit target is set and the detail fetch prefills the
+/// fields (id/kind/level render fixed) while the confirm path goes through
+/// the core update instead of file creation.
+pub(crate) fn open_agent_edit_dialog(
+    view: WeakEntity<ShellWindow>,
+    agent_id: String,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    open_agent_create_dialog(view.clone(), window, cx);
+    let Some(shell) = view.upgrade() else {
+        return;
+    };
+    shell.update(cx, |shell, cx| {
+        shell.agent_edit_target = Some(agent_id.clone());
+        shell.agent_edit_loading = true;
+        cx.notify();
+    });
+    if let Some(handle) = crate::runtime::runtime_handle() {
+        handle.load_custom_agent_detail(agent_id);
+    } else {
+        tracing::error!("Runtime unavailable while loading a custom agent detail");
+    }
+}
+
+/// T2-12: delete confirmation for one custom agent (web confirmDanger
+/// wording); the confirm path goes through the desktop `delete_custom_agent`
+/// pipeline and the catalog event proves it landed.
+pub(crate) fn open_agent_delete_confirm(
+    view: WeakEntity<ShellWindow>,
+    agent_id: String,
+    agent_name: String,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(shell) = view.upgrade() else {
+        return;
+    };
+    shell.update(cx, |shell, cx| {
+        shell.agent_pending_delete = Some(crate::manage::AgentPendingDelete {
+            agent_id: agent_id.clone(),
+            agent_name,
+        });
+        cx.notify();
+    });
+
+    let confirm_view = view.clone();
+    let cancel_view = view.clone();
+    let confirm = move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
+        let Some(shell) = confirm_view.upgrade() else {
+            return;
+        };
+        let pending = shell.read(cx).agent_pending_delete.clone();
+        shell.update(cx, |shell, cx| {
+            shell.agent_pending_delete = None;
+            cx.notify();
+        });
+        if let Some(pending) = pending {
+            if let Some(handle) = crate::runtime::runtime_handle() {
+                handle.delete_custom_agent(pending.agent_id);
+            } else {
+                tracing::error!(
+                    "Runtime unavailable while deleting custom agent {}",
+                    pending.agent_id
+                );
+            }
+        }
+        window.close_dialog(cx);
+    };
+    let cancel = move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
+        if let Some(shell) = cancel_view.upgrade() {
+            shell.update(cx, |shell, cx| {
+                shell.agent_pending_delete = None;
+                cx.notify();
+            });
+        }
+        window.close_dialog(cx);
+    };
+
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let text = i18n::current(cx);
+        let pending = view
+            .upgrade()
+            .and_then(|shell| shell.read(cx).agent_pending_delete.clone());
+        let warning = i18n::manage_agent_delete_warning(
+            pending
+                .as_ref()
+                .map(|p| p.agent_name.as_str())
+                .unwrap_or(""),
+            cx,
+        );
         dialog
-            .title(div().child(text.manage_agent_create_title.clone()))
-            .child(content)
+            .title(div().child(text.manage_agent_delete_title.clone()))
+            .child(
+                div()
+                    .w(px(380.))
+                    .text_sm()
+                    .text_color(cx.theme().foreground)
+                    .child(warning),
+            )
             .footer(
                 div()
                     .flex()
@@ -1592,14 +1830,14 @@ pub(crate) fn open_agent_create_dialog(
                     .justify_end()
                     .gap_2()
                     .child(
-                        Button::new("agent-create-cancel")
+                        Button::new("agent-delete-cancel")
                             .label(text.session_action_cancel.clone())
                             .with_variant(ButtonVariant::Ghost)
                             .on_click(cancel.clone()),
                     )
                     .child(
-                        Button::new("agent-create-confirm")
-                            .label(text.session_action_confirm.clone())
+                        Button::new("agent-delete-confirm")
+                            .label(text.manage_agent_delete.clone())
                             .with_variant(ButtonVariant::Primary)
                             .on_click(confirm.clone()),
                     ),
@@ -2881,6 +3119,38 @@ mod tests {
         assert_eq!(map["Cowork"].as_str(), "Cowork");
         // A mode without a profile persists under itself.
         assert_eq!(map["Custom"].as_str(), "Custom");
+    }
+
+    #[test]
+    fn agent_card_manageable_follows_the_web_source_guard() {
+        // Web canManageCustomAgent: source neither builtin nor external.
+        assert!(agent_card_manageable(AgentSourceKind::User));
+        assert!(agent_card_manageable(AgentSourceKind::Project));
+        assert!(!agent_card_manageable(AgentSourceKind::Builtin));
+        assert!(!agent_card_manageable(AgentSourceKind::External));
+    }
+
+    #[test]
+    fn project_agent_detail_projects_kind_and_level_strings() {
+        let detail = openbitfun_core::agentic::agents::CustomAgentDetail {
+            agent_id: "helper".to_string(),
+            kind: "subagent".to_string(),
+            name: "Helper".to_string(),
+            description: "d".to_string(),
+            prompt: "p".to_string(),
+            tools: vec![],
+            readonly: true,
+            review: false,
+            model: String::new(),
+            path: "/tmp/helper.md".to_string(),
+            user_context_policy: vec![],
+            level: "project".to_string(),
+        };
+        let row = project_agent_detail(&detail);
+        assert!(!row.mode_kind);
+        assert!(row.project_level);
+        assert_eq!(row.agent_id, "helper");
+        assert_eq!(row.name, "Helper");
     }
 
     #[test]

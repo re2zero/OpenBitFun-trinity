@@ -284,6 +284,8 @@ pub(crate) enum RuntimeEvent {
         mode_id: String,
         rows: Vec<crate::manage::ModeSkillRow>,
     },
+    /// T2-12: the custom-agent definition for the edit dialog prefill.
+    AgentDetail(Result<crate::manage::AgentDetailRow, String>),
     /// Resources/prompts snapshot for one MCP server (browse dialog).
     McpServerCatalog(Box<crate::manage::McpServerCatalogView>),
     /// An MCP server asked for an interactive decision (elicitation or
@@ -1503,6 +1505,112 @@ impl RuntimeHandle {
             }
             let rows = fetch_mode_skill_rows(&workspace, &mode_id).await;
             publish(RuntimeEvent::ModeSkillInfos { mode_id, rows });
+        });
+    }
+
+    /// T2-12: the file-backed custom agent definition for the edit dialog
+    /// prefill (the shell only edits name/description/prompt).
+    pub(crate) fn load_custom_agent_detail(&self, agent_id: String) {
+        let workspace = self.workspace();
+        self.tokio.spawn(async move {
+            let registry = openbitfun_core::agentic::agents::get_agent_registry();
+            let result = match registry
+                .get_custom_agent_detail(&agent_id, Some(&workspace.id))
+                .await
+            {
+                Ok(detail) => Ok(crate::manage::project_agent_detail(&detail)),
+                Err(error) => Err(error.to_string()),
+            };
+            publish(RuntimeEvent::AgentDetail(result));
+        });
+    }
+
+    /// T2-12: updates the editable fields of one custom agent. Tools, model,
+    /// review, and the context policy pass `None` so the core update keeps
+    /// the existing definition; the catalog refetch closes the dialog and
+    /// proves the write landed (the same echo the create flow uses).
+    pub(crate) fn update_custom_agent(&self, draft: crate::manage::AgentEditDraft) {
+        let workspace = self.workspace();
+        self.tokio.spawn(async move {
+            let registry = openbitfun_core::agentic::agents::get_agent_registry();
+            let result = registry
+                .update_custom_agent_definition(
+                    &draft.agent_id,
+                    Some(&workspace.id),
+                    draft.name.trim().to_string(),
+                    draft.description.trim().to_string(),
+                    draft.prompt.trim().to_string(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await;
+            if let Err(error) = result {
+                tracing::error!("Failed to update custom agent {}: {error}", draft.agent_id);
+                publish(RuntimeEvent::ManageFailed(error.to_string()));
+                return;
+            }
+            tracing::info!("Updated custom agent {}", draft.agent_id);
+            let catalog = fetch_agent_catalog(Some(&workspace.id)).await;
+            publish(RuntimeEvent::AgentCatalog(catalog));
+        });
+    }
+
+    /// T2-12: the desktop `delete_custom_agent` pipeline — remove the
+    /// registry entry and its file, clean the agent profile and flow-chat
+    /// mode references from the shared config, reload the global config,
+    /// then refetch the catalog (the delete confirm closes immediately;
+    /// failures surface as the banner).
+    pub(crate) fn delete_custom_agent(&self, agent_id: String) {
+        let workspace = self.workspace();
+        self.tokio.spawn(async move {
+            let registry = openbitfun_core::agentic::agents::get_agent_registry();
+            let removed = match registry.remove_custom_agent(&agent_id) {
+                Ok(path) => path,
+                Err(error) => {
+                    tracing::error!("Failed to remove custom agent {agent_id}: {error}");
+                    publish(RuntimeEvent::ManageFailed(error.to_string()));
+                    return;
+                }
+            };
+            if let Some(path) = removed {
+                if let Err(error) = std::fs::remove_file(&path) {
+                    tracing::warn!(
+                        "Failed to delete custom agent file: path={path}, error={error}"
+                    );
+                }
+            }
+            match openbitfun_core::service::config::get_global_config_service().await {
+                Ok(service) => {
+                    if let Err(error) = service
+                        .update_config(
+                            "",
+                            |config: &mut openbitfun_core::service::config::GlobalConfig| {
+                                config.ai.agent_profiles.remove(&agent_id);
+                                config.app.flow_chat.remove_mode_reference(&agent_id);
+                                Ok(())
+                            },
+                        )
+                        .await
+                    {
+                        tracing::warn!(
+                            "Failed to clean up config after custom agent deletion: agent_id={agent_id}, error={error}"
+                        );
+                    }
+                }
+                Err(error) => tracing::warn!(
+                    "Config service unavailable after custom agent deletion: {error}"
+                ),
+            }
+            if let Err(error) = openbitfun_core::service::config::reload_global_config().await {
+                tracing::warn!(
+                    "Failed to reload global config after custom agent deletion: agent_id={agent_id}, error={error}"
+                );
+            }
+            let catalog = fetch_agent_catalog(Some(&workspace.id)).await;
+            publish(RuntimeEvent::AgentCatalog(catalog));
         });
     }
 

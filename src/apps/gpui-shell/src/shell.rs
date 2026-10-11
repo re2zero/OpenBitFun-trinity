@@ -1079,6 +1079,13 @@ pub(crate) struct ShellWindow {
     pub(crate) agent_create_kind_mode: bool,
     pub(crate) agent_create_project_level: bool,
     pub(crate) agent_create_error: Option<String>,
+    /// T2-12 edit mode: `Some(agent_id)` while the shared create dialog is
+    /// editing an existing custom agent (id/kind/level render fixed); the
+    /// detail event prefills the inputs.
+    pub(crate) agent_edit_target: Option<String>,
+    pub(crate) agent_edit_loading: bool,
+    /// T2-12 delete confirmation scratch (id + display name).
+    pub(crate) agent_pending_delete: Option<crate::manage::AgentPendingDelete>,
     pub(crate) mcp_pending_delete: Option<String>,
     pub(crate) mcp_browse: Option<crate::manage::McpServerCatalogView>,
     pub(crate) mcp_browse_loading: Option<(String, String)>,
@@ -1216,6 +1223,9 @@ impl ShellWindow {
             agent_create_kind_mode: false,
             agent_create_project_level: false,
             agent_create_error: None,
+            agent_edit_target: None,
+            agent_edit_loading: false,
+            agent_pending_delete: None,
             mcp_pending_delete: None,
             mcp_browse: None,
             mcp_browse_loading: None,
@@ -1702,10 +1712,43 @@ impl ShellWindow {
             RuntimeEvent::AgentCatalog(catalog) => {
                 cx.set_global(catalog);
                 if self.agent_create_active {
-                    // The submission landed; the create dialog closes on the
-                    // catalog event that proves it.
+                    // The submission landed; the create/edit dialog closes on
+                    // the catalog event that proves it.
                     self.agent_create_active = false;
+                    self.agent_edit_target = None;
+                    self.agent_edit_loading = false;
                     window.close_dialog(cx);
+                }
+                cx.refresh_windows();
+            }
+            RuntimeEvent::AgentDetail(result) => {
+                match result {
+                    Ok(row) => {
+                        // Prefill the shared dialog inputs and fix the
+                        // kind/level selectors so validation matches the
+                        // existing definition.
+                        self.agent_id_input.update(cx, |state, cx| {
+                            state.set_value(row.agent_id.clone(), window, cx)
+                        });
+                        self.agent_name_input.update(cx, |state, cx| {
+                            state.set_value(row.name.clone(), window, cx)
+                        });
+                        self.agent_description_input.update(cx, |state, cx| {
+                            state.set_value(row.description.clone(), window, cx)
+                        });
+                        self.agent_prompt_input.update(cx, |state, cx| {
+                            state.set_value(row.prompt.clone(), window, cx)
+                        });
+                        self.agent_create_kind_mode = row.mode_kind;
+                        self.agent_create_project_level = row.project_level;
+                        self.agent_edit_loading = false;
+                        self.agent_create_error = None;
+                    }
+                    Err(message) => {
+                        tracing::warn!("Custom agent detail load failed: {message}");
+                        self.agent_edit_loading = false;
+                        self.agent_create_error = Some(i18n::failed_status(&message, cx));
+                    }
                 }
                 cx.refresh_windows();
             }
