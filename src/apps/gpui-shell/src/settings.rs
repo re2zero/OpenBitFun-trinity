@@ -170,6 +170,9 @@ pub(crate) struct ShellConfig {
     pub(crate) git_commit_coauthor: bool,
     /// `ai.web_search.provider`, kept verbatim; unknown ids render as-is.
     pub(crate) web_search_provider: String,
+    /// `app.ai_experience.quick_actions`: the chat header quick-actions menu
+    /// reads this snapshot; editing lives on the web/desktop automation page.
+    pub(crate) quick_actions: Vec<openbitfun_core::service::config::types::AiExperienceQuickAction>,
     /// `ai.web_search.providers.openbitfun_search_http.endpoint`.
     pub(crate) web_search_http_endpoint: String,
     /// `ai.web_search.providers.openbitfun_search_http.auth.mode`, kept
@@ -202,6 +205,7 @@ impl ShellConfig {
             project_hooks_enabled: config.app.hooks.project_hooks_enabled,
             git_commit_coauthor: config.app.ai_experience.enable_git_commit_coauthor,
             web_search_provider: config.ai.web_search.provider.clone(),
+            quick_actions: config.app.ai_experience.quick_actions.clone(),
             web_search_http_endpoint: config
                 .ai
                 .web_search
@@ -258,6 +262,8 @@ impl ShellConfig {
             project_hooks_enabled: false,
             git_commit_coauthor: true,
             web_search_provider: "exa_mcp_free".to_string(),
+            quick_actions: openbitfun_core::service::config::types::AIExperienceConfig::default()
+                .quick_actions,
             web_search_http_endpoint: String::new(),
             web_search_http_auth_mode: "none".to_string(),
             web_search_http_header_name: String::new(),
@@ -2969,6 +2975,14 @@ mod tests {
         config.app.hooks.enabled = false;
         config.app.hooks.project_hooks_enabled = true;
         config.app.ai_experience.enable_git_commit_coauthor = false;
+        config.app.ai_experience.quick_actions = vec![
+            openbitfun_core::service::config::types::AiExperienceQuickAction {
+                id: "commit".to_string(),
+                label: "Commit".to_string(),
+                prompt: "Commit all current code changes".to_string(),
+                enabled: false,
+            },
+        ];
         config.ai.web_search.provider = "tavily".to_string();
         config
             .ai
@@ -3019,6 +3033,9 @@ mod tests {
         assert_eq!(snapshot.web_search_http_auth_mode, "header");
         assert_eq!(snapshot.web_search_http_header_name, "X-Search-Key");
         assert_eq!(snapshot.logging_level, "debug");
+        assert_eq!(snapshot.quick_actions.len(), 1);
+        assert_eq!(snapshot.quick_actions[0].id, "commit");
+        assert!(!snapshot.quick_actions[0].enabled);
     }
 
     #[test]

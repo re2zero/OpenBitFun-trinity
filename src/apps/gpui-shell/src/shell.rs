@@ -3490,6 +3490,60 @@ fn btw_question(input: &str) -> Option<&str> {
     }
 }
 
+/// Stored label/prompt of the built-in quick actions in the shared config
+/// defaults (English; `config-contracts` writes the same values). The
+/// localized copy replaces them only while the stored text still equals
+/// these defaults — a customized action keeps its stored text verbatim.
+const QUICK_ACTION_COMMIT_DEFAULTS: (&str, &str) = ("Commit", "Commit all current code changes");
+const QUICK_ACTION_CREATE_PR_DEFAULTS: (&str, &str) =
+    ("Create PR", "Create a Pull Request for the current branch");
+
+/// One stored-vs-default text of a built-in quick action (web
+/// `resolveQuickActionText` resolves label and prompt independently).
+fn builtin_quick_action_text(stored: &str, default: &str, localized: &str) -> String {
+    if stored == default {
+        localized.to_string()
+    } else {
+        stored.to_string()
+    }
+}
+
+/// Resolves a quick action's display label and the prompt a click sends
+/// (web `resolveQuickActionText` port): built-in `commit`/`create_pr`
+/// localize the shared English defaults, everything else stays verbatim.
+fn resolve_quick_action_text(
+    action: &openbitfun_core::service::config::types::AiExperienceQuickAction,
+    text: &ShellText,
+) -> (String, String) {
+    match action.id.as_str() {
+        "commit" => (
+            builtin_quick_action_text(
+                &action.label,
+                QUICK_ACTION_COMMIT_DEFAULTS.0,
+                &text.quick_action_commit_label,
+            ),
+            builtin_quick_action_text(
+                &action.prompt,
+                QUICK_ACTION_COMMIT_DEFAULTS.1,
+                &text.quick_action_commit_prompt,
+            ),
+        ),
+        "create_pr" => (
+            builtin_quick_action_text(
+                &action.label,
+                QUICK_ACTION_CREATE_PR_DEFAULTS.0,
+                &text.quick_action_create_pr_label,
+            ),
+            builtin_quick_action_text(
+                &action.prompt,
+                QUICK_ACTION_CREATE_PR_DEFAULTS.1,
+                &text.quick_action_create_pr_prompt,
+            ),
+        ),
+        _ => (action.label.clone(), action.prompt.clone()),
+    }
+}
+
 fn submit_question(tool_id: String, answers: serde_json::Value) {
     if let Some(handle) = runtime::runtime_handle() {
         handle.respond_user_question(tool_id, answers);
@@ -4733,6 +4787,7 @@ impl ShellWindow {
                                     })),
                             )
                         })
+                        .child(self.render_quick_actions_menu(text, cx))
                         .child(self.render_usage_button(cx))
                         .child(self.render_model_picker(text, cx))
                         .child({
@@ -4750,6 +4805,73 @@ impl ShellWindow {
                 ),
             None => div(),
         }
+    }
+
+    /// Header quick-actions menu (T2-10, the web SessionFilesBadge actions
+    /// section): one entry per enabled `app.ai_experience.quick_actions`
+    /// item. Clicking sends the action's prompt as a normal message (web
+    /// sends through FlowChatManager.sendMessage with the same gating:
+    /// nothing while the session is processing). Hidden when no action is
+    /// enabled or no session is open.
+    fn render_quick_actions_menu(
+        &self,
+        text: &ShellText,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        let Some(chat) = self.chat.as_ref() else {
+            return div().into_any_element();
+        };
+        let enabled: Vec<(String, String, IconName)> = settings::ShellConfig::try_current(cx)
+            .map(|config| config.quick_actions)
+            .unwrap_or_default()
+            .iter()
+            .filter(|action| action.enabled)
+            .map(|action| {
+                let (label, prompt) = resolve_quick_action_text(action, text);
+                let icon = match action.id.as_str() {
+                    "commit" => IconName::GitCommitHorizontal,
+                    "create_pr" => IconName::GitPullRequest,
+                    _ => IconName::Zap,
+                };
+                (label, prompt, icon)
+            })
+            .collect();
+        if enabled.is_empty() {
+            return div().into_any_element();
+        }
+        let busy = chat.busy || chat.submitting;
+        let session_id = chat.session_id.clone();
+        let tx = self.event_tx.clone();
+        Button::new("chat-quick-actions")
+            .icon(IconName::Zap)
+            .small()
+            .with_variant(ButtonVariant::Ghost)
+            .tooltip(text.quick_action_title.clone())
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _window, _cx| {
+                let mut menu = menu;
+                for (label, prompt, icon) in &enabled {
+                    let prompt = prompt.clone();
+                    let session_id = session_id.clone();
+                    let tx = tx.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(label.clone())
+                            .icon(icon.clone())
+                            .disabled(busy)
+                            .on_click(move |_, _, _| {
+                                if let Some(handle) = runtime::runtime_handle() {
+                                    handle.send_message(
+                                        session_id.clone(),
+                                        prompt.clone(),
+                                        Vec::new(),
+                                        tx.clone(),
+                                    );
+                                }
+                            }),
+                    );
+                }
+                menu
+            })
+            .into_any_element()
     }
 
     /// Header usage button: asks the runtime for the session usage report;
@@ -5064,6 +5186,53 @@ mod tests {
         // "/btwfoo" is a plain message, not the command.
         assert_eq!(btw_question("/btwfoo"), None);
         assert_eq!(btw_question("plain question"), None);
+    }
+
+    #[test]
+    fn quick_action_text_resolves_builtins_and_keeps_customizations() {
+        let text = crate::i18n::fallback_text(LocaleId::EnUS);
+        let action = |id: &str, label: &str, prompt: &str| {
+            openbitfun_core::service::config::types::AiExperienceQuickAction {
+                id: id.to_string(),
+                label: label.to_string(),
+                prompt: prompt.to_string(),
+                enabled: true,
+            }
+        };
+
+        // Built-in text still equal to the shared English defaults resolves
+        // to the localized copy (with the English fallback both are equal).
+        let (label, prompt) = resolve_quick_action_text(
+            &action("commit", "Commit", "Commit all current code changes"),
+            &text,
+        );
+        assert_eq!(label, text.quick_action_commit_label);
+        assert_eq!(prompt, text.quick_action_commit_prompt);
+        let (label, prompt) = resolve_quick_action_text(
+            &action(
+                "create_pr",
+                "Create PR",
+                "Create a Pull Request for the current branch",
+            ),
+            &text,
+        );
+        assert_eq!(label, text.quick_action_create_pr_label);
+        assert_eq!(prompt, text.quick_action_create_pr_prompt);
+
+        // Customized stored text stays verbatim (label and prompt resolve
+        // independently, like the web helper).
+        let (label, prompt) = resolve_quick_action_text(
+            &action("commit", "Ship it", "Commit all current code changes"),
+            &text,
+        );
+        assert_eq!(label, "Ship it");
+        assert_eq!(prompt, text.quick_action_commit_prompt);
+
+        // Unknown ids are custom actions: always verbatim.
+        let (label, prompt) =
+            resolve_quick_action_text(&action("deploy", "Deploy", "Ship to staging"), &text);
+        assert_eq!(label, "Deploy");
+        assert_eq!(prompt, "Ship to staging");
     }
 
     /// The M20 child-view loop projects onto the shell: a linked subagent

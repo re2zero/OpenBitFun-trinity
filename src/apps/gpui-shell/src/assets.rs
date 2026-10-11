@@ -16,7 +16,9 @@ gpui_kit::assets::icon_assets!(
     // Sparkles is outside the component default bundle (the skills page and
     // the M23 chat/nav entries use it); House/Webhook/ChartColumn/Activity
     // (settings nav) and Plug (manage pages) likewise. Without these the SVG
-    // resolves missing at render time.
+    // resolves missing at render time. GitCommitHorizontal/GitPullRequest/Zap
+    // are the quick-actions menu glyphs (T2-10); Lucide renamed `commit` to
+    // `git-commit-horizontal`.
     [
         Activity,
         Archive,
@@ -25,6 +27,8 @@ gpui_kit::assets::icon_assets!(
         Circle,
         CircleDot,
         GitBranch,
+        GitCommitHorizontal,
+        GitPullRequest,
         House,
         Languages,
         Plug,
@@ -33,7 +37,8 @@ gpui_kit::assets::icon_assets!(
         Square,
         TextWrap,
         Webhook,
-        X
+        X,
+        Zap
     ]
 );
 
