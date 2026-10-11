@@ -291,6 +291,7 @@ gpui-shell-terminal-title = Terminal
 gpui-shell-terminal-close = Close terminal
 gpui-shell-terminal-exited = process exited
 gpui-shell-settings-open = Open settings
+gpui-shell-tab-close = Close tab
 gpui-shell-settings-appearance = Appearance
 gpui-shell-settings-permissions = Permissions
 gpui-shell-settings-language-desc = Interface language, shared with the desktop app.

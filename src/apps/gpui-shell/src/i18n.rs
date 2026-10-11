@@ -146,6 +146,11 @@ pub(crate) struct ShellText {
     pub terminal_close: String,
     pub terminal_exited: String,
     pub settings_open: String,
+    /// Settings tab title (R1a), resolved from the shared `features.settings`
+    /// term (the D75 shared-term channel).
+    pub settings_title: String,
+    /// Top tab bar (R1a): close button tooltip.
+    pub tab_close: String,
     pub settings_appearance: String,
     pub settings_permissions: String,
     pub settings_language_description: String,
@@ -863,6 +868,8 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         terminal_close: "Close terminal".to_string(),
         terminal_exited: "process exited".to_string(),
         settings_open: "Open settings".to_string(),
+        settings_title: "Settings".to_string(),
+        tab_close: "Close tab".to_string(),
         settings_appearance: "Appearance".to_string(),
         settings_permissions: "Permissions".to_string(),
         settings_language_description: "Interface language for the shell and desktop app."
@@ -1418,6 +1425,8 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         terminal_close: service.t("gpui-shell-terminal-close").await,
         terminal_exited: service.t("gpui-shell-terminal-exited").await,
         settings_open: service.t("gpui-shell-settings-open").await,
+        settings_title: service.t("shared.features.settings").await,
+        tab_close: service.t("gpui-shell-tab-close").await,
         settings_appearance: service.t("gpui-shell-settings-appearance").await,
         settings_permissions: service.t("gpui-shell-settings-permissions").await,
         settings_language_description: service.t("gpui-shell-settings-language-desc").await,

@@ -267,6 +267,7 @@ gpui-shell-terminal-title = 終端
 gpui-shell-terminal-close = 關閉終端
 gpui-shell-terminal-exited = 處理程序已結束
 gpui-shell-settings-open = 開啟設定
+gpui-shell-tab-close = 關閉標籤頁
 gpui-shell-settings-appearance = 外觀
 gpui-shell-settings-permissions = 權限
 gpui-shell-settings-language-desc = 介面語言，與桌面端共用。

@@ -53,25 +53,10 @@ const COMPOSER_HEIGHT: f32 = 88.;
 const MIN_TERMINAL_HEIGHT: f32 = 120.;
 const MAX_TERMINAL_HEIGHT: f32 = 900.;
 
-/// Which surface the main content area shows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MainView {
-    Chat,
-    /// The settings page (component-library `Settings` container).
-    Settings,
-    /// Workspace changes (git status + self-drawn diff).
-    Git,
-    /// Usage insights over recent sessions (M14).
-    Insights,
-    /// Scheduled jobs management (M14).
-    Tasks,
-    /// Workspace file tree + viewer (M15).
-    Files,
-    /// Global search: file content + sessions (M16).
-    Search,
-    /// Trinity cognitive console (T2-15): daemon RPC client view.
-    Trinity,
-}
+/// Which surface the main content area shows. The shell's main area is a tab
+/// bar of session tabs and scene tabs (R1a, mirroring the web-ui desktop
+/// `SceneBar`); the tab model lives in [`crate::tabs`].
+use crate::tabs::{SceneId, TabKind, TabsState};
 
 /// One terminal panel tab (M17): a pane owning its PTY plus the fallback
 /// tab label (a profile's name, or the localized default-shell label; the
@@ -102,7 +87,7 @@ pub(crate) struct SessionRow {
     pub(crate) archived: bool,
 }
 
-/// One open session in the chat pane.
+/// One open session in the chat pane; one per session tab (R1a multi-tab).
 struct ChatView {
     session_id: String,
     name: String,
@@ -110,6 +95,10 @@ struct ChatView {
     /// The session's current model selector; `None` means the runtime default.
     model_id: Option<String>,
     entries: Vec<ChatEntry>,
+    /// Virtualized transcript state for this tab (the scroller moved here from
+    /// the window when sessions became tabs: each tab follows its own scroll
+    /// position, and background sessions skip live syncs while hidden).
+    scroller: Entity<MessageScrollerState>,
     /// A turn is executing (streaming or tool calls in flight).
     busy: bool,
     /// A submission is in flight; the optimistic user entry awaits
@@ -369,6 +358,28 @@ fn next_modal_target(pending_permissions: usize, pending_questions: usize) -> Op
 }
 
 impl ChatView {
+    fn new(
+        session_id: String,
+        name: String,
+        agent_type: String,
+        model_id: Option<String>,
+        entries: Vec<ChatEntry>,
+        cx: &mut Context<ShellWindow>,
+    ) -> Self {
+        let scroller = cx.new(|cx| MessageScrollerState::new(entries.len(), cx));
+        Self {
+            session_id,
+            name,
+            agent_type,
+            model_id,
+            entries,
+            scroller,
+            busy: false,
+            submitting: false,
+            child_context: None,
+        }
+    }
+
     fn matches(&self, session_id: &str) -> bool {
         self.session_id == session_id
     }
@@ -445,16 +456,20 @@ impl NavAction {
         }
     }
 
-    /// Whether the row is the active surface.
-    fn is_active(self, view: MainView) -> bool {
+    /// Whether the row is the active surface. Sessions resolve through the
+    /// tab bar (any open session tab makes Chat the active nav row); a scene
+    /// row is active while its scene tab is the active tab.
+    fn is_active(self, tabs: &TabsState) -> bool {
         match self {
-            NavAction::Chat => view == MainView::Chat,
-            NavAction::Git => view == MainView::Git,
-            NavAction::Insights => view == MainView::Insights,
-            NavAction::Tasks => view == MainView::Tasks,
-            NavAction::Files => view == MainView::Files,
-            NavAction::Search => view == MainView::Search,
-            NavAction::Trinity => view == MainView::Trinity,
+            NavAction::Chat => tabs
+                .active_kind()
+                .is_none_or(|kind| matches!(kind, TabKind::Session(_))),
+            NavAction::Git => tabs.active_kind() == Some(&TabKind::Scene(SceneId::Git)),
+            NavAction::Insights => tabs.active_kind() == Some(&TabKind::Scene(SceneId::Insights)),
+            NavAction::Tasks => tabs.active_kind() == Some(&TabKind::Scene(SceneId::Tasks)),
+            NavAction::Files => tabs.active_kind() == Some(&TabKind::Scene(SceneId::Files)),
+            NavAction::Search => tabs.active_kind() == Some(&TabKind::Scene(SceneId::Search)),
+            NavAction::Trinity => tabs.active_kind() == Some(&TabKind::Scene(SceneId::Trinity)),
         }
     }
 }
@@ -959,13 +974,14 @@ pub(crate) struct ShellWindow {
     phase: RuntimePhase,
     pub(crate) sessions: Vec<SessionRow>,
     list_error: Option<String>,
-    chat: Option<ChatView>,
+    /// One chat per session tab (R1a): the vec order follows the tab bar.
+    /// Session tabs own their transcript even while hidden — background turns
+    /// keep appending, and reopening a closed tab refetches the transcript.
+    chats: Vec<ChatView>,
     chat_error: Option<String>,
-    /// Virtualized transcript state owned by the component library's
-    /// `MessageScroller`; item counts are kept in sync with `chat.entries`
-    /// through the `list_sync_*` helpers and tail-following keeps the newest
-    /// content in view until the user scrolls up.
-    chat_scroller: Entity<MessageScrollerState>,
+    /// Main-area tab bar (R1a): session tabs and singleton scene tabs share
+    /// it; the active tab decides what the main area renders.
+    tabs: TabsState,
     pub(crate) event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     /// Approvals waiting for a user decision, oldest first. Every ask in this
     /// process surfaces here regardless of which session is open — an
@@ -992,9 +1008,6 @@ pub(crate) struct ShellWindow {
     /// the panel once the runtime is ready, so a screenshot run can inspect
     /// the pane without synthesizing input events.
     terminal_auto_open: bool,
-    /// Main content surface; sidebar interactions and the title-bar buttons
-    /// switch it.
-    main_view: MainView,
     /// Workspace changes panel (M8): created when the view opens, dropped when
     /// it closes so the snapshot is refetched on the next open.
     git: Option<Entity<GitPanel>>,
@@ -1152,7 +1165,6 @@ impl ShellWindow {
         let draft = cx.new(|cx| {
             TextareaState::new(window, cx).placeholder(text.chat_input_placeholder.clone())
         });
-        let chat_scroller = cx.new(|cx| MessageScrollerState::new(0, cx));
         let dock = cx.new(|_| ResizableState::default());
         let rename_input = cx.new(|cx| InputState::new(window, cx));
         let workspace_input = cx.new(|cx| InputState::new(window, cx));
@@ -1198,9 +1210,9 @@ impl ShellWindow {
             phase: RuntimePhase::Starting,
             sessions: Vec::new(),
             list_error: None,
-            chat: None,
+            chats: Vec::new(),
             chat_error: None,
-            chat_scroller,
+            tabs: TabsState::default(),
             event_tx,
             pending_permissions: Vec::new(),
             pending_questions: Vec::new(),
@@ -1209,7 +1221,6 @@ impl ShellWindow {
             terminals: Vec::new(),
             active_terminal: 0,
             terminal_auto_open: std::env::var_os("OPENBITFUN_GPUI_TERMINAL_AUTOOPEN").is_some(),
-            main_view: MainView::Chat,
             git: None,
             files: None,
             search: Default::default(),
@@ -1379,19 +1390,32 @@ impl ShellWindow {
 
     /// Entry count grew by one: register the new item and keep the newest
     /// content in view (the scroller's tail-follow mode tracks appends while
-    /// the reader sits at the live edge).
-    fn list_sync_append(&mut self, cx: &mut Context<Self>) {
-        self.chat_scroller.update(cx, |scroller, cx| {
+    /// the reader sits at the live edge). Hidden tabs skip the live sync —
+    /// their scroller re-syncs from the entry count when the tab activates.
+    fn list_sync_append(&mut self, session_id: &str, cx: &mut Context<Self>) {
+        if !self.tabs.is_active_session(session_id) {
+            return;
+        }
+        let Some(chat) = self.chat_for(session_id) else {
+            return;
+        };
+        chat.scroller.update(cx, |scroller, cx| {
             scroller.append(1, cx);
         });
     }
 
     /// The tail entry changed in place (streaming chunk or tool-card update);
     /// its cached height is stale until the list re-measures it.
-    fn list_sync_tail_changed(&mut self, cx: &mut Context<Self>) {
-        let count = self.entry_count();
+    fn list_sync_tail_changed(&mut self, session_id: &str, cx: &mut Context<Self>) {
+        if !self.tabs.is_active_session(session_id) {
+            return;
+        }
+        let Some(chat) = self.chat_for(session_id) else {
+            return;
+        };
+        let count = chat.entries.len();
         if count > 0 {
-            self.chat_scroller.update(cx, |scroller, cx| {
+            chat.scroller.update(cx, |scroller, cx| {
                 scroller.remeasure_items(tail_changed_range(count), cx);
             });
         }
@@ -1399,8 +1423,14 @@ impl ShellWindow {
 
     /// An entry below the tail changed in place (tool lifecycle upserts land
     /// on cards created earlier in the turn).
-    fn list_sync_item_changed(&mut self, index: usize, cx: &mut Context<Self>) {
-        self.chat_scroller.update(cx, |scroller, cx| {
+    fn list_sync_item_changed(&mut self, session_id: &str, index: usize, cx: &mut Context<Self>) {
+        if !self.tabs.is_active_session(session_id) {
+            return;
+        }
+        let Some(chat) = self.chat_for(session_id) else {
+            return;
+        };
+        chat.scroller.update(cx, |scroller, cx| {
             scroller.remeasure_items(index..index + 1, cx);
         });
     }
@@ -1409,16 +1439,30 @@ impl ShellWindow {
     /// resetting also drops the follow anchor, which pins the view to the
     /// newest content.
     fn list_sync_reset(&mut self, cx: &mut Context<Self>) {
-        self.chat_scroller.update(cx, |scroller, cx| {
-            scroller.reset(self.entry_count(), cx);
+        let Some(session_id) = self.tabs.active_session_id().map(str::to_string) else {
+            return;
+        };
+        let Some(chat) = self.chat_for(&session_id) else {
+            return;
+        };
+        let count = chat.entries.len();
+        chat.scroller.update(cx, |scroller, cx| {
+            scroller.reset(count, cx);
         });
     }
 
-    fn entry_count(&self) -> usize {
-        self.chat
-            .as_ref()
-            .map(|chat| chat.entries.len())
-            .unwrap_or(0)
+    fn chat_for(&self, session_id: &str) -> Option<&ChatView> {
+        self.chats.iter().find(|chat| chat.matches(session_id))
+    }
+
+    fn chat_mut_for(&mut self, session_id: &str) -> Option<&mut ChatView> {
+        self.chats.iter_mut().find(|chat| chat.matches(session_id))
+    }
+
+    /// The active tab's chat, when it is a session tab.
+    fn active_chat(&self) -> Option<&ChatView> {
+        let id = self.tabs.active_session_id()?;
+        self.chat_for(id)
     }
 
     fn apply_runtime_event(
@@ -1462,9 +1506,8 @@ impl ShellWindow {
             }
             RuntimeEvent::SessionOpened(opened) => {
                 self.chat_error = None;
-                // Opening a session is a chat action: leave the settings or
-                // changes surface and show the transcript.
-                self.main_view = MainView::Chat;
+                // Opening a session is a chat action: the session tab the
+                // transcript lands on activates below (tabs.open).
                 // Opening the session is "reading it" (T2-16): its unread
                 // turns drop out of the tray badge.
                 self.clear_unread_session(&opened.session_id);
@@ -1478,34 +1521,38 @@ impl ShellWindow {
                         settled_child = Some(pending.context);
                     }
                 }
-                match self.chat.as_mut() {
-                    // Transcript reload for the open session keeps the pane
-                    // title and its child context (a reloaded child stays a
-                    // child view).
-                    Some(chat) if chat.matches(&opened.session_id) => {
-                        chat.entries = opened.entries;
-                        chat.busy = opened.busy;
-                        chat.submitting = false;
-                        if settled_child.is_some() {
-                            chat.child_context = settled_child;
-                        }
+                if let Some(chat) = self.chat_mut_for(&opened.session_id) {
+                    // Transcript reload for an open tab keeps its child
+                    // context (a reloaded child stays a child view).
+                    chat.entries = opened.entries;
+                    chat.busy = opened.busy;
+                    chat.submitting = false;
+                    chat.name = opened.name;
+                    chat.model_id = opened.model_id;
+                    if settled_child.is_some() {
+                        chat.child_context = settled_child;
                     }
-                    _ => {
-                        self.chat = Some(ChatView {
-                            session_id: opened.session_id,
-                            name: opened.name,
-                            agent_type: opened.agent_type,
-                            model_id: opened.model_id,
-                            entries: opened.entries,
-                            busy: opened.busy,
-                            submitting: false,
-                            child_context: settled_child,
-                        });
+                } else {
+                    let mut chat = ChatView::new(
+                        opened.session_id.clone(),
+                        opened.name,
+                        opened.agent_type,
+                        opened.model_id,
+                        opened.entries,
+                        cx,
+                    );
+                    chat.busy = opened.busy;
+                    if settled_child.is_some() {
+                        chat.child_context = settled_child;
                     }
+                    self.chats.push(chat);
                 }
+                // A transcript (re)load always lands on a tab the user just
+                // addressed; opening activates it and re-syncs the scroller.
+                self.tabs.open(TabKind::Session(opened.session_id));
                 self.apply_subagent_links();
                 self.list_sync_reset(cx);
-                tracing::info!("Session transcript ready in chat pane");
+                tracing::info!("Session transcript ready in a session tab");
             }
             RuntimeEvent::SessionOpenFailed(error) => {
                 self.chat_error = Some(i18n::failed_status(&error, cx));
@@ -1555,33 +1602,29 @@ impl ShellWindow {
                 turn_id,
                 message,
             } => {
-                if let Some(chat) = self.chat.as_mut() {
-                    if chat.matches(&session_id) {
-                        chat.submitting = false;
-                        chat.busy = true;
-                        chat.entries.push(ChatEntry::User {
-                            text: message,
-                            turn_id: Some(turn_id),
-                        });
-                        // The turn carries the staged images now; a failed
-                        // submission never reaches this echo, so the chips
-                        // survive for a retry.
-                        self.pending_attachments.clear();
-                        self.list_sync_append(cx);
-                    }
+                if let Some(chat) = self.chat_mut_for(&session_id) {
+                    chat.submitting = false;
+                    chat.busy = true;
+                    chat.entries.push(ChatEntry::User {
+                        text: message,
+                        turn_id: Some(turn_id),
+                    });
+                    // The turn carries the staged images now; a failed
+                    // submission never reaches this echo, so the chips
+                    // survive for a retry.
+                    self.pending_attachments.clear();
+                    self.list_sync_append(&session_id, cx);
                 }
             }
             RuntimeEvent::SendFailed { session_id, error } => {
-                if let Some(chat) = self.chat.as_mut() {
-                    if chat.matches(&session_id) {
-                        chat.submitting = false;
-                        // The user entry is appended on TurnAccepted, so a
-                        // failed submission only surfaces the error notice.
-                        chat.entries.push(ChatEntry::Notice {
-                            text: i18n::failed_status(&error, cx),
-                        });
-                        self.list_sync_append(cx);
-                    }
+                if let Some(chat) = self.chat_mut_for(&session_id) {
+                    chat.submitting = false;
+                    // The user entry is appended on TurnAccepted, so a
+                    // failed submission only surfaces the error notice.
+                    chat.entries.push(ChatEntry::Notice {
+                        text: i18n::failed_status(&error, cx),
+                    });
+                    self.list_sync_append(&session_id, cx);
                 }
             }
             RuntimeEvent::TurnStarted { session_id, .. } => {
@@ -1589,11 +1632,9 @@ impl ShellWindow {
                 // every session's turns, and background subagent activity is
                 // derived from exactly that.
                 self.live_sessions.insert(session_id.clone());
-                if let Some(chat) = self.chat.as_mut() {
-                    if chat.matches(&session_id) {
-                        chat.submitting = false;
-                        chat.busy = true;
-                    }
+                if let Some(chat) = self.chat_mut_for(&session_id) {
+                    chat.submitting = false;
+                    chat.busy = true;
                 }
             }
             RuntimeEvent::TextChunk {
@@ -1602,13 +1643,11 @@ impl ShellWindow {
                 round_id,
                 text,
             } => {
-                if let Some(chat) = self.chat.as_mut() {
-                    if chat.matches(&session_id) {
-                        if chat.append_chunk(&round_id, &text) {
-                            self.list_sync_append(cx);
-                        } else {
-                            self.list_sync_tail_changed(cx);
-                        }
+                if let Some(chat) = self.chat_mut_for(&session_id) {
+                    if chat.append_chunk(&round_id, &text) {
+                        self.list_sync_append(&session_id, cx);
+                    } else {
+                        self.list_sync_tail_changed(&session_id, cx);
                     }
                 }
             }
@@ -1619,28 +1658,24 @@ impl ShellWindow {
                 if card.background {
                     self.background_task_tools.insert(card.key.clone());
                 }
-                if let Some(chat) = self.chat.as_mut() {
-                    if chat.matches(&session_id) {
-                        match chat.upsert_tool(card) {
-                            None => self.list_sync_append(cx),
-                            Some(index) => self.list_sync_item_changed(index, cx),
-                        }
+                if let Some(chat) = self.chat_mut_for(&session_id) {
+                    match chat.upsert_tool(card) {
+                        None => self.list_sync_append(&session_id, cx),
+                        Some(index) => self.list_sync_item_changed(&session_id, index, cx),
                     }
                 }
             }
             RuntimeEvent::TurnFinished { session_id, error } => {
                 self.live_sessions.remove(&session_id);
                 let failure = error.clone();
-                if let Some(chat) = self.chat.as_mut() {
-                    if chat.matches(&session_id) {
-                        chat.busy = false;
-                        chat.submitting = false;
-                        if let Some(error) = error {
-                            chat.entries.push(ChatEntry::Notice {
-                                text: i18n::failed_status(&error, cx),
-                            });
-                            self.list_sync_append(cx);
-                        }
+                if let Some(chat) = self.chat_mut_for(&session_id) {
+                    chat.busy = false;
+                    chat.submitting = false;
+                    if let Some(error) = error {
+                        chat.entries.push(ChatEntry::Notice {
+                            text: i18n::failed_status(&error, cx),
+                        });
+                        self.list_sync_append(&session_id, cx);
                     }
                 }
                 // Session names/metadata change as turns settle.
@@ -1651,11 +1686,7 @@ impl ShellWindow {
                 self.record_unread_turn(&session_id, failure.is_some(), window, cx);
             }
             RuntimeEvent::HistoryChanged { session_id } => {
-                if self
-                    .chat
-                    .as_ref()
-                    .is_some_and(|chat| chat.matches(&session_id))
-                {
+                if self.chat_for(&session_id).is_some() {
                     if let Some(handle) = runtime::runtime_handle() {
                         handle.reload_transcript(session_id, self.event_tx.clone());
                     }
@@ -1934,8 +1965,8 @@ impl ShellWindow {
             RuntimeEvent::TrayShowWindow => {
                 window.activate_window();
                 cx.activate(true);
-                // The user lands on the open chat; that session is read.
-                if let Some(session_id) = self.chat.as_ref().map(|chat| chat.session_id.clone()) {
+                // The user lands on the active session tab; that session is read.
+                if let Some(session_id) = self.tabs.active_session_id().map(str::to_string) {
                     self.clear_unread_session(&session_id);
                 }
             }
@@ -2042,10 +2073,8 @@ impl ShellWindow {
                 if let Some(row) = self.sessions.iter_mut().find(|row| row.id == session_id) {
                     row.name = name.clone();
                 }
-                if let Some(chat) = self.chat.as_mut() {
-                    if chat.matches(&session_id) {
-                        chat.name = name;
-                    }
+                if let Some(chat) = self.chat_mut_for(&session_id) {
+                    chat.name = name;
                 }
             }
             RuntimeEvent::SessionForked { .. } => {
@@ -2054,25 +2083,21 @@ impl ShellWindow {
                 // session list refresh rides the same batch.
             }
             RuntimeEvent::CompactionStarted { session_id } => {
-                if let Some(chat) = self.chat.as_mut() {
-                    if chat.matches(&session_id) {
-                        chat.busy = true;
-                        chat.entries.push(ChatEntry::Info {
-                            text: i18n::current(cx).compaction_started.clone(),
-                        });
-                        self.list_sync_append(cx);
-                    }
+                if let Some(chat) = self.chat_mut_for(&session_id) {
+                    chat.busy = true;
+                    chat.entries.push(ChatEntry::Info {
+                        text: i18n::current(cx).compaction_started.clone(),
+                    });
+                    self.list_sync_append(&session_id, cx);
                 }
             }
             RuntimeEvent::ExportFinished { session_id, path } => {
-                if let Some(chat) = self.chat.as_mut() {
-                    if chat.matches(&session_id) {
-                        let text = i18n::current(cx);
-                        chat.entries.push(ChatEntry::Info {
-                            text: format!("{} {path}", text.export_done_prefix),
-                        });
-                        self.list_sync_append(cx);
-                    }
+                if let Some(chat) = self.chat_mut_for(&session_id) {
+                    let text = i18n::current(cx);
+                    chat.entries.push(ChatEntry::Info {
+                        text: format!("{} {path}", text.export_done_prefix),
+                    });
+                    self.list_sync_append(&session_id, cx);
                 }
             }
             RuntimeEvent::SessionUsage(summary) => {
@@ -2114,21 +2139,25 @@ impl ShellWindow {
             }
             RuntimeEvent::SessionDeleted { session_id } => {
                 // A deleted session cannot stay on screen: the transcript is
-                // gone from storage, so every further action would fail.
-                if self
-                    .chat
-                    .as_ref()
-                    .is_some_and(|chat| chat.matches(&session_id))
-                {
-                    self.chat = None;
-                    self.list_sync_reset(cx);
+                // gone from storage, so its tab closes (and the chat state
+                // drops with it). Reopening is impossible — the row is gone.
+                if let Some(index) = self.chats.iter().position(|chat| chat.matches(&session_id)) {
+                    self.chats.remove(index);
+                    if let Some(removed) = self.tabs.index_of(&TabKind::Session(session_id.clone()))
+                    {
+                        let was_active = self.tabs.active_index() == Some(removed);
+                        self.tabs.close(removed);
+                        if was_active {
+                            self.list_sync_reset(cx);
+                        }
+                    }
                 }
                 self.sessions.retain(|row| row.id != session_id);
             }
             RuntimeEvent::SessionActionFailed { message } => {
                 let line = i18n::failed_status(&message, cx);
                 tracing::warn!("Session action failed: {message}");
-                if self.chat.is_some() {
+                if self.tabs.active_session_id().is_some() {
                     self.chat_error = Some(line);
                 } else {
                     self.list_error = Some(line);
@@ -2138,10 +2167,8 @@ impl ShellWindow {
                 session_id,
                 model_id,
             } => {
-                if let Some(chat) = self.chat.as_mut() {
-                    if chat.matches(&session_id) {
-                        chat.model_id = Some(model_id);
-                    }
+                if let Some(chat) = self.chat_mut_for(&session_id) {
+                    chat.model_id = Some(model_id);
                 }
             }
             RuntimeEvent::ModelCatalog(models) => {
@@ -2298,7 +2325,7 @@ impl ShellWindow {
     /// root), the changes snapshot, and the session list all belong to the
     /// previous workspace.
     fn apply_workspace_reset(&mut self, cx: &mut Context<Self>) {
-        self.chat = None;
+        self.chats.clear();
         self.chat_error = None;
         self.sessions.clear();
         self.list_error = None;
@@ -2312,7 +2339,7 @@ impl ShellWindow {
         self.files = None;
         // Search results belong to the abandoned workspace and its sessions.
         self.search = Default::default();
-        self.main_view = MainView::Chat;
+        self.tabs = TabsState::default();
         // Staged images belong to the abandoned workspace's draft.
         self.pending_attachments.clear();
         cx.notify();
@@ -2370,7 +2397,7 @@ impl ShellWindow {
         window: &Window,
         cx: &Context<Self>,
     ) {
-        if window.is_window_active() || self.chat.is_none() {
+        if window.is_window_active() || !self.chats.iter().any(|chat| chat.matches(session_id)) {
             return;
         }
         // The shared dialog-completion switch (`app.notifications`
@@ -2462,23 +2489,23 @@ impl ShellWindow {
             })
     }
 
-    /// Re-annotates the open transcript's tool cards from the subagent link
+    /// Re-annotates every open transcript's tool cards from the subagent link
     /// map (M20). Called on every transcript load and on each new link, so
-    /// reloads never lose the "view run" entry points.
+    /// reloads never lose the "view run" entry points; session tabs all show
+    /// links of their parent, so each open chat re-derives its own.
     fn apply_subagent_links(&mut self) {
-        let Some(chat) = self.chat.as_mut() else {
-            return;
-        };
-        for link in self
-            .subagent_links
-            .iter()
-            .filter(|link| link.parent_session_id == chat.session_id)
-        {
-            let tool_key = format!("tool-{}", link.tool_call_id);
-            for entry in &mut chat.entries {
-                if let ChatEntry::Tool(card) = entry {
-                    if card.key.as_ref() == tool_key {
-                        card.subagent_session = Some(link.subagent_session_id.clone());
+        for chat in &mut self.chats {
+            for link in self
+                .subagent_links
+                .iter()
+                .filter(|link| link.parent_session_id == chat.session_id)
+            {
+                let tool_key = format!("tool-{}", link.tool_call_id);
+                for entry in &mut chat.entries {
+                    if let ChatEntry::Tool(card) = entry {
+                        if card.key.as_ref() == tool_key {
+                            card.subagent_session = Some(link.subagent_session_id.clone());
+                        }
                     }
                 }
             }
@@ -2550,7 +2577,7 @@ impl ShellWindow {
 
     /// Returns from a child view (subagent run / /btw) to its parent session.
     fn return_from_child(&mut self, cx: &mut Context<Self>) {
-        let Some(chat) = self.chat.as_ref() else {
+        let Some(chat) = self.active_chat() else {
             return;
         };
         let Some(child) = chat.child_context.as_ref() else {
@@ -2568,7 +2595,7 @@ impl ShellWindow {
     /// usage stats, web-search credential status) loads here so a page render
     /// never triggers fetches.
     fn open_settings_view(&mut self, cx: &mut Context<Self>) {
-        self.main_view = MainView::Settings;
+        self.tabs.open(TabKind::Scene(SceneId::Settings));
         if self.usage_stats.is_none() && !self.usage_loading {
             self.usage_loading = true;
             if let Some(handle) = runtime::runtime_handle() {
@@ -2649,26 +2676,56 @@ impl ShellWindow {
     /// diff snapshot) or returns to the chat when it is already showing.
     /// The chat's open session rides along: the worktree view's session
     /// isolation toggle addresses it (M19).
+    /// Opens the changes view as a scene tab (creating the panel, which
+    /// fetches the workspace diff snapshot). Idempotent: an open tab just
+    /// activates. Closing the tab drops the panel so the next open refetches.
+    /// The chat's active session rides along: the worktree view's session
+    /// isolation toggle addresses it (M19).
     fn toggle_git_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.main_view == MainView::Git {
-            self.main_view = MainView::Chat;
-            // Drop the panel with the view so the next open refetches.
-            self.git = None;
-        } else {
-            self.main_view = MainView::Git;
-            let active_session = self.chat.as_ref().map(|chat| chat.session_id.clone());
+        if self.git.is_none() {
+            let active_session = self.active_chat().map(|chat| chat.session_id.clone());
             self.git = Some(cx.new(|cx| GitPanel::new(active_session, window, cx)));
         }
+        self.tabs.open(TabKind::Scene(SceneId::Git));
         cx.notify();
     }
 
-    /// Sidebar nav row activation (M23): every destination routes through the
-    /// same toggle the footer actions used, so an active row toggles back to
-    /// chat. Chat itself never toggles (it is the resting surface).
+    /// Closes the top tab at `index`. A closing scene tab drops its page
+    /// state where the old toggle did (the git panel refetches on reopen);
+    /// a closing session tab drops that chat's transcript state.
+    fn close_top_tab(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(kind) = self.tabs.kinds().get(index).cloned() else {
+            return;
+        };
+        self.tabs.close(index);
+        match kind {
+            TabKind::Scene(SceneId::Git) => {
+                // Drop the panel with the tab so the next open refetches.
+                self.git = None;
+            }
+            TabKind::Session(session_id) => {
+                self.chats.retain(|chat| !chat.matches(&session_id));
+            }
+            TabKind::Scene(_) => {}
+        }
+        self.list_sync_reset(cx);
+        cx.notify();
+    }
+
+    /// Sidebar nav row activation (M23 nav rows, R1a tab semantics): scene
+    /// rows open (and thereby activate) their scene tab — clicking an active
+    /// row keeps it active instead of toggling back, matching the desktop.
+    /// Chat activates the most recent session tab; with none open it rests on
+    /// the empty state.
     fn apply_nav(&mut self, action: NavAction, window: &mut Window, cx: &mut Context<Self>) {
         match action {
             NavAction::Chat => {
-                self.main_view = MainView::Chat;
+                if let Some(chat) = self.chats.last() {
+                    let session_id = chat.session_id.clone();
+                    self.tabs.open(TabKind::Session(session_id));
+                } else {
+                    self.tabs = TabsState::default();
+                }
                 cx.notify();
             }
             NavAction::Git => self.toggle_git_view(window, cx),
@@ -2680,73 +2737,53 @@ impl ShellWindow {
         }
     }
 
-    /// Insights page toggle; the first open fetches the latest report list.
+    /// Insights page tab; the first open fetches the latest report list.
     fn toggle_insights_view(&mut self, cx: &mut Context<Self>) {
-        if self.main_view == MainView::Insights {
-            self.main_view = MainView::Chat;
-        } else {
-            self.main_view = MainView::Insights;
-            if !self.insights.loaded {
-                if let Some(handle) = runtime::runtime_handle() {
-                    handle.reload_insights(self.event_tx.clone());
-                }
+        if !self.insights.loaded {
+            if let Some(handle) = runtime::runtime_handle() {
+                handle.reload_insights(self.event_tx.clone());
             }
         }
+        self.tabs.open(TabKind::Scene(SceneId::Insights));
         cx.notify();
     }
 
-    /// Trinity console toggle; the first open pulls status + timeline.
+    /// Trinity console tab; the first open pulls status + timeline.
     fn toggle_trinity_view(&mut self, cx: &mut Context<Self>) {
-        if self.main_view == MainView::Trinity {
-            self.main_view = MainView::Chat;
-        } else {
-            self.main_view = MainView::Trinity;
-            if !self.trinity.loaded {
-                if let Some(handle) = runtime::runtime_handle() {
-                    handle.trinity_refresh(self.event_tx.clone());
-                    handle.trinity_load_memories(self.event_tx.clone(), None);
-                }
+        if !self.trinity.loaded {
+            if let Some(handle) = runtime::runtime_handle() {
+                handle.trinity_refresh(self.event_tx.clone());
+                handle.trinity_load_memories(self.event_tx.clone(), None);
             }
         }
+        self.tabs.open(TabKind::Scene(SceneId::Trinity));
         cx.notify();
     }
 
-    /// Scheduled-jobs page toggle; the first open fetches the job snapshot.
+    /// Scheduled-jobs page tab; the first open fetches the job snapshot.
     fn toggle_tasks_view(&mut self, cx: &mut Context<Self>) {
-        if self.main_view == MainView::Tasks {
-            self.main_view = MainView::Chat;
-        } else {
-            self.main_view = MainView::Tasks;
-            if !self.tasks.loaded {
-                if let Some(handle) = runtime::runtime_handle() {
-                    handle.reload_cron_jobs(self.event_tx.clone());
-                }
+        if !self.tasks.loaded {
+            if let Some(handle) = runtime::runtime_handle() {
+                handle.reload_cron_jobs(self.event_tx.clone());
             }
         }
+        self.tabs.open(TabKind::Scene(SceneId::Tasks));
         cx.notify();
     }
 
-    /// Files page toggle; the page is created on first open (which starts the
-    /// root listing) and kept so open tabs survive switching back to chat.
+    /// Files page tab; the page is created on first open (which starts the
+    /// root listing) and kept so its tabs survive closing the scene tab.
     fn toggle_files_view(&mut self, cx: &mut Context<Self>) {
-        if self.main_view == MainView::Files {
-            self.main_view = MainView::Chat;
-        } else {
-            self.main_view = MainView::Files;
-            self.files
-                .get_or_insert_with(|| cx.new(crate::files::FilesPage::new));
-        }
+        self.files
+            .get_or_insert_with(|| cx.new(crate::files::FilesPage::new));
+        self.tabs.open(TabKind::Scene(SceneId::Files));
         cx.notify();
     }
 
-    /// Global search page toggle (M16); state rides the window, so nothing
+    /// Global search page tab (M16); state rides the window, so nothing
     /// is fetched on open.
     fn toggle_search_view(&mut self, cx: &mut Context<Self>) {
-        if self.main_view == MainView::Search {
-            self.main_view = MainView::Chat;
-        } else {
-            self.main_view = MainView::Search;
-        }
+        self.tabs.open(TabKind::Scene(SceneId::Search));
         cx.notify();
     }
 
@@ -2779,11 +2816,11 @@ impl ShellWindow {
 
     /// Jumps from a search hit to the files viewer with the file open.
     pub(crate) fn open_file_in_files_view(&mut self, path: String, cx: &mut Context<Self>) {
-        self.main_view = MainView::Files;
         let page = self
             .files
             .get_or_insert_with(|| cx.new(crate::files::FilesPage::new));
         page.update(cx, |page, cx| page.open_path(path, cx));
+        self.tabs.open(TabKind::Scene(SceneId::Files));
         cx.notify();
     }
 
@@ -2835,7 +2872,7 @@ impl ShellWindow {
         for row in visible {
             entries.push(SidebarEntry::Session {
                 row: row.clone(),
-                open: self.chat.as_ref().is_some_and(|chat| chat.matches(&row.id)),
+                open: self.chats.iter().any(|chat| chat.matches(&row.id)),
                 tx: self.event_tx.clone(),
                 view: view.clone(),
             });
@@ -2907,7 +2944,7 @@ impl ShellWindow {
             .map(|action| SidebarEntry::Nav {
                 action,
                 label: SharedString::from(nav_label(action, text)),
-                active: action.is_active(self.main_view),
+                active: action.is_active(&self.tabs),
                 view: cx.entity().downgrade(),
             })
             .collect();
@@ -2982,15 +3019,15 @@ impl ShellWindow {
         Button::new("sidebar-settings")
             .icon(IconName::Settings)
             .small()
-            .with_variant(active_variant_settings(self.main_view))
+            .with_variant(active_variant_settings(&self.tabs))
             .tooltip(text.settings_open.clone())
             .on_click(cx.listener(|this, _, _, cx| this.open_settings_view(cx)))
     }
 }
 
 /// The settings button keeps a raised variant while its page is showing.
-fn active_variant_settings(view: MainView) -> ButtonVariant {
-    if view == MainView::Settings {
+fn active_variant_settings(tabs: &TabsState) -> ButtonVariant {
+    if tabs.active_kind() == Some(&TabKind::Scene(SceneId::Settings)) {
         ButtonVariant::Secondary
     } else {
         ButtonVariant::Ghost
@@ -3248,42 +3285,44 @@ impl ShellWindow {
     /// overdraw, so a 1k-message transcript neither re-parses off-screen
     /// markdown nor re-renders it per frame. Bottom alignment pins the view to
     /// the newest content until the user scrolls up.
-    fn render_chat_area(&self, text: &ShellText, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
-        if self.chat.is_none() {
+    fn render_chat_area(
+        &self,
+        session_id: &str,
+        text: &ShellText,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        let Some(chat) = self.chat_for(session_id) else {
             return brand_empty(IconName::Sparkles, &text.chat_empty_title, &text.chat_empty);
-        }
+        };
+        let scroller = chat.scroller.clone();
+        let session_id = session_id.to_string();
         let this = cx.entity();
         let jump_label = text.chat_jump_latest.clone();
         let text = text.clone();
-        MessageScroller::new(
-            "transcript",
-            self.chat_scroller.clone(),
-            move |index, _window, cx| {
-                let snapshot = this.read(cx);
-                let entry = snapshot
-                    .chat
-                    .as_ref()
-                    .and_then(|chat| chat.entries.get(index))
-                    .cloned();
-                let fork = snapshot.chat.as_ref().map(|chat| ChatForkContext {
-                    session_id: chat.session_id.clone(),
-                    tx: snapshot.event_tx.clone(),
-                    view: this.downgrade(),
-                });
-                match entry {
-                    Some(entry) => div()
-                        .w_full()
-                        .max_w(px(READING_COLUMN_WIDTH))
-                        .mx_auto()
-                        .child(render_chat_item(&entry, &text, fork.as_ref(), cx))
-                        .into_any_element(),
-                    // Scroller item counts are synced on the same mutation
-                    // that grows `entries`, so an out-of-range index cannot
-                    // persist.
-                    None => div().into_any_element(),
-                }
-            },
-        )
+        MessageScroller::new("transcript", scroller, move |index, _window, cx| {
+            let snapshot = this.read(cx);
+            let entry = snapshot
+                .chat_for(&session_id)
+                .and_then(|chat| chat.entries.get(index))
+                .cloned();
+            let fork = snapshot.chat_for(&session_id).map(|chat| ChatForkContext {
+                session_id: chat.session_id.clone(),
+                tx: snapshot.event_tx.clone(),
+                view: this.downgrade(),
+            });
+            match entry {
+                Some(entry) => div()
+                    .w_full()
+                    .max_w(px(READING_COLUMN_WIDTH))
+                    .mx_auto()
+                    .child(render_chat_item(&entry, &text, fork.as_ref(), cx))
+                    .into_any_element(),
+                // Scroller item counts are synced on the same mutation
+                // that grows `entries`, so an out-of-range index cannot
+                // persist.
+                None => div().into_any_element(),
+            }
+        })
         .with_jump_button_label(jump_label)
         .with_bottom_fade(cx.theme().background)
         .flex_1()
@@ -3294,7 +3333,7 @@ impl ShellWindow {
     /// Streaming indicator rendered as a fixed row between the transcript and
     /// the composer (list items are reserved for transcript entries).
     fn busy_label(&self, text: &ShellText) -> Option<String> {
-        let chat = self.chat.as_ref()?;
+        let chat = self.active_chat()?;
         if chat.submitting {
             Some(text.chat_submitting.clone())
         } else if chat.busy {
@@ -3373,7 +3412,7 @@ impl ShellWindow {
     }
 
     fn render_composer(&self, text: &ShellText, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
-        let Some(chat) = self.chat.as_ref() else {
+        let Some(chat) = self.active_chat() else {
             return div().into_any_element();
         };
         let busy = chat.busy;
@@ -4548,9 +4587,7 @@ impl Render for ShellWindow {
             }
             if self.git_auto_open {
                 self.git_auto_open = false;
-                if self.main_view != MainView::Git {
-                    self.toggle_git_view(window, cx);
-                }
+                self.toggle_git_view(window, cx);
             }
         }
 
@@ -4569,9 +4606,11 @@ impl Render for ShellWindow {
             }
         }
 
-        let main_area = match self.main_view {
-            MainView::Settings => settings::render_page(&text, cx.entity().downgrade(), cx),
-            MainView::Git => match self.git.clone() {
+        let main_area = match self.tabs.active_kind().cloned() {
+            Some(TabKind::Scene(SceneId::Settings)) => {
+                settings::render_page(&text, cx.entity().downgrade(), cx)
+            }
+            Some(TabKind::Scene(SceneId::Git)) => match self.git.clone() {
                 Some(panel) => div()
                     .flex_1()
                     .min_h_0()
@@ -4580,7 +4619,7 @@ impl Render for ShellWindow {
                     .into_any_element(),
                 None => div().into_any_element(),
             },
-            MainView::Insights => div()
+            Some(TabKind::Scene(SceneId::Insights)) => div()
                 .id("insights-page")
                 .flex_1()
                 .min_h_0()
@@ -4593,7 +4632,7 @@ impl Render for ShellWindow {
                     cx,
                 ))
                 .into_any_element(),
-            MainView::Tasks => div()
+            Some(TabKind::Scene(SceneId::Tasks)) => div()
                 .id("tasks-page")
                 .flex_1()
                 .min_h_0()
@@ -4606,7 +4645,7 @@ impl Render for ShellWindow {
                     cx,
                 ))
                 .into_any_element(),
-            MainView::Files => match self.files.clone() {
+            Some(TabKind::Scene(SceneId::Files)) => match self.files.clone() {
                 Some(page) => div()
                     .flex_1()
                     .min_h_0()
@@ -4615,7 +4654,7 @@ impl Render for ShellWindow {
                     .into_any_element(),
                 None => div().into_any_element(),
             },
-            MainView::Search => div()
+            Some(TabKind::Scene(SceneId::Search)) => div()
                 .id("search-page")
                 .flex_1()
                 .min_h_0()
@@ -4630,7 +4669,7 @@ impl Render for ShellWindow {
                     cx,
                 ))
                 .into_any_element(),
-            MainView::Trinity => div()
+            Some(TabKind::Scene(SceneId::Trinity)) => div()
                 .id("trinity-page")
                 .flex_1()
                 .min_h_0()
@@ -4647,7 +4686,17 @@ impl Render for ShellWindow {
                     cx,
                 ))
                 .into_any_element(),
-            MainView::Chat => self.render_chat_column(&text, cx),
+            Some(TabKind::Session(session_id)) => self.render_chat_column(&session_id, &text, cx),
+            None => div()
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .child(brand_empty(
+                    IconName::Sparkles,
+                    &text.chat_empty_title,
+                    &text.chat_empty,
+                ))
+                .into_any_element(),
         };
 
         // No root background: the glass sidebar paints a 90% chrome tint over
@@ -4680,6 +4729,14 @@ impl Render for ShellWindow {
                         ),
                 ),
             )
+            // The top tab bar sits below the title bar and above the body —
+            // deliberately NOT inside the `TitleBar` children: the component's
+            // right-click window-menu overlay swallows clicks on anything
+            // placed there (gpui-kit 0.7.1, M8 reproduction), and tabs must
+            // stay clickable. Empty bar = no tab row at all.
+            .when(!self.tabs.kinds().is_empty(), |this| {
+                this.child(self.render_top_tab_bar(&text, cx))
+            })
             // The body and the docked terminal are one vertical split: the
             // divider above the terminal drags its height, and the body keeps
             // the rest. Closed, the terminal panel is simply absent, so the
@@ -4739,6 +4796,97 @@ impl Render for ShellWindow {
 }
 
 impl ShellWindow {
+    /// The top tab bar (R1a): one chip per open tab — session tabs show the
+    /// session name, scene tabs their registry title (resolved through the
+    /// [`crate::tabs`] scene table, the same seam plugin scenes will use).
+    /// Click activates; the inner × closes. Placed below the title bar: the
+    /// component `TitleBar`'s overlay swallows clicks (M8 reproduction).
+    fn render_top_tab_bar(&self, text: &ShellText, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut bar = div()
+            .id("shell-top-tabs")
+            .debug_selector(|| "shell-top-tabs".to_string())
+            .flex()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .py_1()
+            .border_b_1()
+            .border_color(cx.theme().title_bar_border)
+            .bg(cx.theme().background)
+            .overflow_x_scroll();
+        for (index, kind) in self.tabs.kinds().iter().enumerate() {
+            let active = self.tabs.active_index() == Some(index);
+            let (icon, label, tab_id) = match kind {
+                TabKind::Session(session_id) => (
+                    IconName::Sparkles,
+                    self.chat_for(session_id)
+                        .map(|chat| chat.name.clone())
+                        .unwrap_or_else(|| session_id.clone()),
+                    format!("top-tab-session-{index}"),
+                ),
+                TabKind::Scene(scene) => {
+                    let def = crate::tabs::builtin_scenes()
+                        .into_iter()
+                        .find(|row| row.id == *scene);
+                    (
+                        def.map(|row| row.icon).unwrap_or(IconName::Square),
+                        crate::tabs::scene_title(*scene, text).to_string(),
+                        format!(
+                            "top-tab-scene-{}-{index}",
+                            format!("{scene:?}").to_lowercase()
+                        ),
+                    )
+                }
+            };
+            let close_label = text.tab_close.clone();
+            bar = bar.child(
+                div()
+                    .id(tab_id)
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .pl_2()
+                    .pr_1()
+                    .h_7()
+                    .rounded_md()
+                    .text_sm()
+                    .flex_shrink_0()
+                    .when(active, |chip| {
+                        chip.bg(cx.theme().secondary)
+                            .text_color(cx.theme().secondary_foreground)
+                    })
+                    .when(!active, |chip| {
+                        chip.text_color(cx.theme().muted_foreground)
+                            .hover(|style| style.bg(cx.theme().muted))
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.tabs.activate(index);
+                        this.list_sync_reset(cx);
+                        cx.notify();
+                    }))
+                    .child(icon)
+                    .child(
+                        div()
+                            .min_w_0()
+                            .line_clamp(1)
+                            .child(SharedString::from(label)),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("top-tab-close-{index}")))
+                            .icon(IconName::X)
+                            .small()
+                            .with_variant(ButtonVariant::Ghost)
+                            .tooltip(close_label)
+                            .disabled(!active)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.close_top_tab(index, cx);
+                            })),
+                    ),
+            );
+        }
+        bar
+    }
+
     /// The docked terminal panel: header (new-tab menu, one chip per tab,
     /// close) above the active pane. Each pane owns focus, keyboard, wheel
     /// scrollback, and reflows to whatever size the panel gives it.
@@ -4910,8 +5058,14 @@ impl ShellWindow {
     }
 
     /// The chat surface: session header, transcript, busy marker, composer.
-    fn render_chat_column(&self, text: &ShellText, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
-        let chat_area = self.render_chat_area(text, cx);
+    /// One per session tab; the session id comes from the active tab.
+    fn render_chat_column(
+        &self,
+        session_id: &str,
+        text: &ShellText,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        let chat_area = self.render_chat_area(session_id, text, cx);
         div()
             .flex_1()
             .min_h_0()
@@ -4955,7 +5109,7 @@ impl ShellWindow {
     }
 
     fn render_chat_header(&self, text: &ShellText, cx: &mut Context<Self>) -> gpui_kit::Div {
-        match self.chat.as_ref() {
+        match self.active_chat() {
             Some(chat) => div()
                 .flex()
                 .flex_row()
@@ -5062,7 +5216,7 @@ impl ShellWindow {
         text: &ShellText,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
-        let Some(chat) = self.chat.as_ref() else {
+        let Some(chat) = self.active_chat() else {
             return div().into_any_element();
         };
         let enabled: Vec<(String, String, IconName)> = settings::ShellConfig::try_current(cx)
@@ -5121,7 +5275,7 @@ impl ShellWindow {
     /// Header usage button: asks the runtime for the session usage report;
     /// the dialog opens when [`RuntimeEvent::SessionUsage`] arrives.
     fn render_usage_button(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
-        let Some(chat) = self.chat.as_ref() else {
+        let Some(chat) = self.active_chat() else {
             return div().into_any_element();
         };
         let session_id = chat.session_id.clone();
@@ -5151,7 +5305,7 @@ impl ShellWindow {
         text: &ShellText,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
-        let Some(chat) = self.chat.as_ref() else {
+        let Some(chat) = self.active_chat() else {
             return div().into_any_element();
         };
         let session_id = chat.session_id.clone();
@@ -5403,34 +5557,39 @@ pub fn launch_main_window(tokio_handle: tokio::runtime::Handle) {
 mod tests {
     use super::*;
     use crate::runtime::ToolStatus;
+    use crate::tabs;
     use openbitfun_core::service::i18n::LocaleId;
     use std::cell::Cell;
     use std::rc::Rc;
 
-    fn chat_with(entries: Vec<ChatEntry>) -> ChatView {
+    fn chat_with(entries: Vec<ChatEntry>, cx: &mut gpui_kit::TestAppContext) -> ChatView {
+        let scroller = cx.new(|cx| MessageScrollerState::new(entries.len(), cx));
         ChatView {
             session_id: "session".into(),
             name: "name".into(),
             agent_type: "Standard".into(),
             model_id: None,
             entries,
+            scroller,
             busy: false,
             submitting: false,
             child_context: None,
         }
     }
 
-    #[test]
-    fn append_chunk_reports_tail_growth_vs_new_entry() {
-        let mut chat = chat_with(Vec::new());
+    #[gpui_kit::test]
+    fn append_chunk_reports_tail_growth_vs_new_entry(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| gpui_kit::init(cx));
+        let mut chat = chat_with(Vec::new(), cx);
         assert!(chat.append_chunk("round-1", "hello "));
         assert!(!chat.append_chunk("round-1", "world"));
         assert!(chat.append_chunk("round-2", "next round"));
         assert_eq!(chat.entries.len(), 2);
     }
 
-    #[test]
-    fn upsert_tool_reports_changed_index_or_append() {
+    #[gpui_kit::test]
+    fn upsert_tool_reports_changed_index_or_append(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| gpui_kit::init(cx));
         let card = |key: &'static str| ToolCard {
             key: SharedString::from(key),
             tool_name: "read_file".into(),
@@ -5439,7 +5598,7 @@ mod tests {
             subagent_session: None,
             background: false,
         };
-        let mut chat = chat_with(Vec::new());
+        let mut chat = chat_with(Vec::new(), cx);
         assert!(chat.upsert_tool(card("tool-1")).is_none());
         assert!(chat.upsert_tool(card("tool-2")).is_none());
         assert_eq!(chat.upsert_tool(card("tool-1")), Some(0));
@@ -5555,7 +5714,7 @@ mod tests {
         window.update(|_, cx| {
             let shell = shell.read(cx);
             assert_eq!(shell.subagent_links.len(), 1);
-            let chat = shell.chat.as_ref().unwrap();
+            let chat = shell.active_chat().unwrap();
             match &chat.entries[0] {
                 ChatEntry::Tool(card) => {
                     assert_eq!(card.subagent_session.as_deref(), Some("child-1"))
@@ -5577,7 +5736,7 @@ mod tests {
             });
         });
         window.update(|_, cx| {
-            let chat = shell.read(cx).chat.as_ref().unwrap();
+            let chat = shell.read(cx).active_chat().unwrap();
             assert_eq!(chat.session_id, "child-1");
             let child = chat.child_context.as_ref().expect("child context set");
             assert_eq!(child.kind, ChildKind::Subagent);
@@ -5594,7 +5753,7 @@ mod tests {
             });
         });
         window.update(|_, cx| {
-            let chat = shell.read(cx).chat.as_ref().unwrap();
+            let chat = shell.read(cx).active_chat().unwrap();
             assert_eq!(chat.session_id, "parent");
             assert!(chat.child_context.is_none());
             match &chat.entries[0] {
@@ -5622,7 +5781,7 @@ mod tests {
             });
         });
         window.update(|_, cx| {
-            let chat = shell.read(cx).chat.as_ref().unwrap();
+            let chat = shell.read(cx).active_chat().unwrap();
             assert_eq!(chat.session_id, "btw-1");
             let child = chat.child_context.as_ref().expect("btw child context");
             assert_eq!(child.kind, ChildKind::Btw);
@@ -6355,8 +6514,8 @@ mod tests {
             let shell = shell.read(cx);
             (
                 shell.sessions.clone(),
-                shell.chat.as_ref().map(|chat| chat.name.clone()),
-                shell.chat.as_ref().and_then(|chat| chat.model_id.clone()),
+                shell.active_chat().map(|chat| chat.name.clone()),
+                shell.active_chat().and_then(|chat| chat.model_id.clone()),
             )
         });
         assert_eq!(rows.len(), 2);
@@ -6400,8 +6559,8 @@ mod tests {
                     .iter()
                     .find(|row| row.id == "s-1")
                     .map(|row| row.name.clone()),
-                shell.chat.as_ref().map(|chat| chat.name.clone()),
-                shell.chat.as_ref().and_then(|chat| chat.model_id.clone()),
+                shell.active_chat().map(|chat| chat.name.clone()),
+                shell.active_chat().and_then(|chat| chat.model_id.clone()),
                 shell.chat_error.clone(),
             )
         });
@@ -6424,7 +6583,7 @@ mod tests {
         });
         let (rows, chat_open) = window.update(|_, cx| {
             let shell = shell.read(cx);
-            (shell.sessions.len(), shell.chat.is_some())
+            (shell.sessions.len(), !shell.chats.is_empty())
         });
         assert_eq!(rows, 1);
         assert!(!chat_open);
@@ -6482,7 +6641,7 @@ mod tests {
 
         window.update(|_, cx| {
             let shell = shell.read(cx);
-            let chat = shell.chat.as_ref().expect("chat opened");
+            let chat = shell.active_chat().expect("chat opened");
             assert!(chat.busy, "compaction marks the session busy");
             let mut entries = chat.entries.iter();
             match entries.next_back() {
@@ -6545,7 +6704,7 @@ mod tests {
             let shell = shell.read(cx);
             assert!(shell.tasks.loaded);
             assert_eq!(shell.tasks.error.as_deref(), Some("cron: boom"));
-            assert!(shell.chat.is_none(), "page events never touch the chat");
+            assert!(shell.chats.is_empty(), "page events never touch the chat");
         });
     }
 
@@ -7069,7 +7228,7 @@ mod tests {
         });
         window.update(|_, cx| {
             let shell = shell.read(cx);
-            assert!(shell.chat.is_some());
+            assert!(!shell.chats.is_empty());
             assert_eq!(shell.sessions.len(), 1);
         });
 
@@ -7089,8 +7248,8 @@ mod tests {
         window.update(|_, cx| {
             let shell = shell.read(cx);
             assert!(
-                shell.chat.is_none(),
-                "transcript belongs to the old workspace"
+                shell.chats.is_empty() && shell.tabs.active_kind().is_none(),
+                "transcript tabs belong to the old workspace"
             );
             assert!(
                 shell.sessions.is_empty(),
@@ -7105,7 +7264,7 @@ mod tests {
             assert!(!shell.terminal_open);
             assert!(shell.git.is_none());
             assert!(shell.files.is_none(), "files page binds the old workspace");
-            assert_eq!(shell.main_view, MainView::Chat);
+            assert_eq!(shell.tabs.active_kind(), None);
             assert!(shell.workspace_error.is_none());
         });
 
@@ -7140,7 +7299,10 @@ mod tests {
         window.update(|_, cx| {
             shell.update(cx, |shell, cx| {
                 shell.toggle_files_view(cx);
-                assert_eq!(shell.main_view, MainView::Files);
+                assert_eq!(
+                    shell.tabs.active_kind(),
+                    Some(&TabKind::Scene(tabs::SceneId::Files))
+                );
                 assert!(shell.files.is_some());
             });
         });
@@ -7150,12 +7312,29 @@ mod tests {
                 assert!(page.error().is_some(), "no runtime here: degrade loudly");
             });
             shell.update(cx, |shell, cx| {
+                // Tab semantics (R1a): the nav row activates idempotently;
+                // the tab close drops the scene tab, the page entity stays.
                 shell.toggle_files_view(cx);
-                assert_eq!(shell.main_view, MainView::Chat);
-                assert!(shell.files.is_some(), "tabs survive the view switch");
+                assert_eq!(
+                    shell.tabs.active_kind(),
+                    Some(&TabKind::Scene(tabs::SceneId::Files))
+                );
+                assert!(shell.files.is_some(), "tabs survive the scene close");
+
+                shell.close_top_tab(
+                    shell
+                        .tabs
+                        .index_of(&TabKind::Scene(tabs::SceneId::Files))
+                        .unwrap(),
+                    cx,
+                );
+                assert_eq!(shell.tabs.active_kind(), None);
 
                 shell.toggle_files_view(cx);
-                assert_eq!(shell.main_view, MainView::Files);
+                assert_eq!(
+                    shell.tabs.active_kind(),
+                    Some(&TabKind::Scene(tabs::SceneId::Files))
+                );
             });
         });
     }
@@ -7304,7 +7483,10 @@ mod tests {
         window.update(|window, cx| {
             shell.update(cx, |shell, cx| {
                 shell.toggle_search_view(cx);
-                assert_eq!(shell.main_view, MainView::Search);
+                assert_eq!(
+                    shell.tabs.active_kind(),
+                    Some(&TabKind::Scene(tabs::SceneId::Search))
+                );
 
                 shell.apply_runtime_event(
                     RuntimeEvent::SearchContent {
@@ -7333,8 +7515,15 @@ mod tests {
                 shell.apply_runtime_event(RuntimeEvent::SearchUnavailable(None), window, cx);
                 assert!(matches!(shell.search.unavailable, Some(None)));
 
-                shell.toggle_search_view(cx);
-                assert_eq!(shell.main_view, MainView::Chat);
+                // Search state rides the window; closing the scene tab keeps it.
+                shell.close_top_tab(
+                    shell
+                        .tabs
+                        .index_of(&TabKind::Scene(tabs::SceneId::Search))
+                        .unwrap(),
+                    cx,
+                );
+                assert_eq!(shell.tabs.active_kind(), None);
             });
         });
     }
@@ -7415,11 +7604,12 @@ mod tests {
         );
     }
 
-    /// M23 sidebar nav: the row set is fixed and exactly one row lights up
-    /// per surface (Settings activates none — its own footer button keeps the
-    /// raised variant).
+    /// M23 sidebar nav over the R1a tab model: the row set is fixed and
+    /// exactly one row lights up per active tab (Settings activates none —
+    /// its own footer button keeps the raised variant). A session tab lights
+    /// the Chat row; no tabs light it too (the resting empty state).
     #[test]
-    fn nav_rows_map_active_state_to_main_views() {
+    fn nav_rows_map_active_state_to_tabs() {
         let actions = nav_actions();
         assert_eq!(
             actions,
@@ -7433,25 +7623,33 @@ mod tests {
                 NavAction::Trinity,
             ]
         );
-        for view in [
-            MainView::Chat,
-            MainView::Files,
-            MainView::Git,
-            MainView::Search,
-            MainView::Insights,
-            MainView::Tasks,
-            MainView::Trinity,
-            MainView::Settings,
+        let mut tabs = TabsState::default();
+        for kind in [
+            TabKind::Session("s-1".to_string()),
+            TabKind::Scene(tabs::SceneId::Files),
+            TabKind::Scene(tabs::SceneId::Git),
+            TabKind::Scene(tabs::SceneId::Search),
+            TabKind::Scene(tabs::SceneId::Insights),
+            TabKind::Scene(tabs::SceneId::Tasks),
+            TabKind::Scene(tabs::SceneId::Trinity),
         ] {
+            let kind_label = format!("{kind:?}");
+            tabs.open(kind.clone());
             let active = actions
                 .iter()
-                .filter(|candidate| candidate.is_active(view))
+                .filter(|candidate| candidate.is_active(&tabs))
                 .count();
-            assert_eq!(
-                active,
-                if view == MainView::Settings { 0 } else { 1 },
-                "view {view:?} must light exactly one nav row"
-            );
+            assert_eq!(active, 1, "tab {kind_label} must light exactly one nav row");
         }
+        // Settings keeps its footer-button variant, no nav row.
+        tabs.open(TabKind::Scene(tabs::SceneId::Settings));
+        let active = actions
+            .iter()
+            .filter(|candidate| candidate.is_active(&tabs))
+            .count();
+        assert_eq!(active, 0, "the settings tab lights no nav row");
+        // The resting empty state is chat.
+        let mut empty = TabsState::default();
+        assert!(NavAction::Chat.is_active(&empty));
     }
 }
