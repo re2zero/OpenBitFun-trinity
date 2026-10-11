@@ -69,6 +69,8 @@ enum MainView {
     Files,
     /// Global search: file content + sessions (M16).
     Search,
+    /// Trinity cognitive console (T2-15): daemon RPC client view.
+    Trinity,
 }
 
 /// One terminal panel tab (M17): a pane owning its PTY plus the fallback
@@ -427,6 +429,7 @@ enum NavAction {
     Tasks,
     Files,
     Search,
+    Trinity,
 }
 
 impl NavAction {
@@ -438,6 +441,7 @@ impl NavAction {
             NavAction::Tasks => IconName::Calendar,
             NavAction::Files => IconName::FolderOpen,
             NavAction::Search => IconName::Search,
+            NavAction::Trinity => IconName::BrainCircuit,
         }
     }
 
@@ -450,6 +454,7 @@ impl NavAction {
             NavAction::Tasks => view == MainView::Tasks,
             NavAction::Files => view == MainView::Files,
             NavAction::Search => view == MainView::Search,
+            NavAction::Trinity => view == MainView::Trinity,
         }
     }
 }
@@ -483,6 +488,7 @@ fn nav_actions() -> Vec<NavAction> {
         NavAction::Search,
         NavAction::Insights,
         NavAction::Tasks,
+        NavAction::Trinity,
     ]
 }
 
@@ -495,6 +501,7 @@ fn nav_label<'a>(action: NavAction, text: &'a ShellText) -> &'a str {
         NavAction::Tasks => &text.tasks_title,
         NavAction::Files => &text.files_title,
         NavAction::Search => &text.search_title,
+        NavAction::Trinity => &text.trinity_title,
     }
 }
 
@@ -1037,6 +1044,11 @@ pub(crate) struct ShellWindow {
     pub(crate) profile_edit_id: Option<String>,
     /// Latest session usage report, shown in the usage dialog.
     usage_report: Option<Box<runtime::SessionUsageSummary>>,
+    /// T2-15 Trinity console page state (event-driven) + its form inputs.
+    pub(crate) trinity: crate::trinity::TrinityPageState,
+    pub(crate) trinity_recall_input: Entity<InputState>,
+    pub(crate) trinity_add_content: Entity<TextareaState>,
+    pub(crate) trinity_add_project: Entity<InputState>,
     /// Insights page state (M14): latest reports + the open report.
     insights: crate::insights::InsightsPageState,
     /// Scheduled-jobs page state (M14).
@@ -1143,6 +1155,15 @@ impl ShellWindow {
         let workspace_input = cx.new(|cx| InputState::new(window, cx));
         let export_input = cx.new(|cx| InputState::new(window, cx));
         let search_input = cx.new(|cx| InputState::new(window, cx));
+        let trinity_recall_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(text.trinity_memory_search_placeholder.clone())
+        });
+        let trinity_add_content = cx.new(|cx| {
+            TextareaState::new(window, cx).placeholder(text.trinity_memory_add_placeholder.clone())
+        });
+        let trinity_add_project = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(text.trinity_memory_add_project.clone())
+        });
         let profile_name_input = cx.new(|cx| InputState::new(window, cx));
         let profile_dir_input = cx.new(|cx| InputState::new(window, cx));
         let profile_command_input = cx.new(|cx| InputState::new(window, cx));
@@ -1190,6 +1211,10 @@ impl ShellWindow {
             files: None,
             search: Default::default(),
             search_input,
+            trinity: Default::default(),
+            trinity_recall_input,
+            trinity_add_content,
+            trinity_add_project,
             dock,
             terminal_height: TerminalPane::panel_height(),
             settings_auto_open: std::env::var_os("OPENBITFUN_GPUI_SETTINGS_AUTOOPEN").is_some(),
@@ -1672,6 +1697,66 @@ impl ShellWindow {
                 tracing::warn!("Insights action failed: {message}");
                 self.insights.generating = false;
                 self.insights.error = Some(message);
+            }
+            RuntimeEvent::TrinityStatusReady {
+                psi,
+                status,
+                history,
+            } => {
+                self.trinity.status = Some((psi, status));
+                self.trinity.history = history;
+                self.trinity.status_error = None;
+                self.trinity.loaded = true;
+            }
+            RuntimeEvent::TrinityStatusFailed(message) => {
+                tracing::info!("Trinity console offline: {message}");
+                self.trinity.status = None;
+                self.trinity.status_error = Some(message);
+                self.trinity.loaded = true;
+            }
+            RuntimeEvent::TrinityMemoriesReady {
+                items,
+                exhausted,
+                append,
+            } => {
+                if append {
+                    // A `before_ts` continuation merges into the loaded list,
+                    // deduped by id (the daemon may re-serve boundary rows).
+                    let seen: std::collections::HashSet<String> = self
+                        .trinity
+                        .memories
+                        .iter()
+                        .filter_map(|m| m.id.clone())
+                        .collect();
+                    for item in items {
+                        let dup = item.id.as_ref().is_some_and(|id| seen.contains(id));
+                        if !dup {
+                            self.trinity.memories.push(item);
+                        }
+                    }
+                    self.trinity.memories_exhausted = exhausted;
+                } else {
+                    self.trinity.memories = items;
+                    self.trinity.memories_exhausted = exhausted;
+                    self.trinity.memories_loaded = true;
+                }
+                self.trinity.memories_loading = false;
+                self.trinity.forget_armed = None;
+            }
+            RuntimeEvent::TrinityMemoriesFailed(message) => {
+                tracing::warn!("Trinity memory timeline failed: {message}");
+                self.trinity.memories_loading = false;
+                self.trinity.memories_loaded = true;
+                self.trinity.action_error = Some(message);
+            }
+            RuntimeEvent::TrinityRecallReady(items) => {
+                self.trinity.recall = Some(items);
+                self.trinity.recall_busy = false;
+            }
+            RuntimeEvent::TrinityActionFailed(message) => {
+                tracing::warn!("Trinity action failed: {message}");
+                self.trinity.recall_busy = false;
+                self.trinity.action_error = Some(message);
             }
             RuntimeEvent::CronJobs(jobs) => {
                 self.tasks.jobs = jobs;
@@ -2533,6 +2618,7 @@ impl ShellWindow {
             NavAction::Tasks => self.toggle_tasks_view(cx),
             NavAction::Files => self.toggle_files_view(cx),
             NavAction::Search => self.toggle_search_view(cx),
+            NavAction::Trinity => self.toggle_trinity_view(cx),
         }
     }
 
@@ -2545,6 +2631,22 @@ impl ShellWindow {
             if !self.insights.loaded {
                 if let Some(handle) = runtime::runtime_handle() {
                     handle.reload_insights(self.event_tx.clone());
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// Trinity console toggle; the first open pulls status + timeline.
+    fn toggle_trinity_view(&mut self, cx: &mut Context<Self>) {
+        if self.main_view == MainView::Trinity {
+            self.main_view = MainView::Chat;
+        } else {
+            self.main_view = MainView::Trinity;
+            if !self.trinity.loaded {
+                if let Some(handle) = runtime::runtime_handle() {
+                    handle.trinity_refresh(self.event_tx.clone());
+                    handle.trinity_load_memories(self.event_tx.clone(), None);
                 }
             }
         }
@@ -4465,6 +4567,23 @@ impl Render for ShellWindow {
                     cx.entity().downgrade(),
                     &self.search,
                     &self.search_input,
+                    &self.event_tx,
+                    &text,
+                    cx,
+                ))
+                .into_any_element(),
+            MainView::Trinity => div()
+                .id("trinity-page")
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .overflow_y_scroll()
+                .child(crate::trinity::render_page(
+                    &self.trinity,
+                    cx.entity().downgrade(),
+                    &self.trinity_recall_input,
+                    &self.trinity_add_content,
+                    &self.trinity_add_project,
                     &self.event_tx,
                     &text,
                     cx,
@@ -7253,6 +7372,7 @@ mod tests {
                 NavAction::Search,
                 NavAction::Insights,
                 NavAction::Tasks,
+                NavAction::Trinity,
             ]
         );
         for view in [
@@ -7262,6 +7382,7 @@ mod tests {
             MainView::Search,
             MainView::Insights,
             MainView::Tasks,
+            MainView::Trinity,
             MainView::Settings,
         ] {
             let active = actions

@@ -336,6 +336,30 @@ pub(crate) enum RuntimeEvent {
     UsageActivityReady(Result<Box<openbitfun_services_core::token_usage::UsageStatistics>, String>),
     /// Web-search credential state for one provider (`provider`, `configured`).
     WebSearchStatus(Result<(String, bool), String>),
+    /// T2-15 Trinity console: identity + live PSI state + the cognition
+    /// trend, fetched together so the page flips atomically.
+    TrinityStatusReady {
+        psi: Box<crate::trinity::PsiState>,
+        status: Box<crate::trinity::StatusInfo>,
+        history: Vec<f64>,
+    },
+    /// The daemon is unreachable (or the call failed); the console shows the
+    /// offline state with the reason.
+    TrinityStatusFailed(String),
+    /// One memory-timeline page; `append` marks a `before_ts` continuation
+    /// of the existing list (a first page or a post-mutation reload replaces).
+    TrinityMemoriesReady {
+        items: Vec<crate::trinity::MemoryEntry>,
+        exhausted: bool,
+        append: bool,
+    },
+    /// The timeline load failed; the page keeps the previous list.
+    TrinityMemoriesFailed(String),
+    /// Recall results for the current search query.
+    TrinityRecallReady(Vec<crate::trinity::MemoryEntry>),
+    /// A memory mutation (memorize / forget / reinforce) or the recall
+    /// failed; surfaced as the page's inline action error.
+    TrinityActionFailed(String),
 }
 
 /// One session list row: the runtime summary plus its persisted archive state.
@@ -1827,6 +1851,191 @@ impl RuntimeHandle {
             }
             publish(RuntimeEvent::UsageActivityReady(result));
         });
+    }
+
+    /// T2-15 Trinity console: pulls identity/PSI/history in one pass so the
+    /// page flips atomically. The daemon is never spawned here — an absent
+    /// daemon surfaces as the console's offline state.
+    pub(crate) fn trinity_refresh(&self, tx: mpsc::UnboundedSender<RuntimeEvent>) {
+        self.tokio.spawn(async move {
+            let client = crate::trinity::client();
+            let (status, psi, history) = tokio::join!(
+                client.call("get_status", serde_json::json!({})),
+                client.call("get_cognitive_state", serde_json::json!({})),
+                client.call("cognition_history", serde_json::json!({ "limit": 120 })),
+            );
+            // A successful get_status RPC is the definition of "connected".
+            let status = match status {
+                Ok(value) => crate::trinity::parse_status(&value),
+                Err(error) => {
+                    tracing::info!("Trinity daemon unreachable: {error}");
+                    let _ = tx.send(RuntimeEvent::TrinityStatusFailed(error));
+                    return;
+                }
+            };
+            // PSI/history failures degrade to defaults while the identity
+            // still renders — the daemon answered, so it is connected.
+            let psi = match psi {
+                Ok(value) => crate::trinity::parse_psi(&value),
+                Err(error) => {
+                    tracing::warn!("Trinity get_cognitive_state failed: {error}");
+                    Default::default()
+                }
+            };
+            let history = match history {
+                Ok(value) => crate::trinity::parse_history(&value),
+                Err(error) => {
+                    tracing::warn!("Trinity cognition_history failed: {error}");
+                    Vec::new()
+                }
+            };
+            let _ = tx.send(RuntimeEvent::TrinityStatusReady {
+                psi: Box::new(psi),
+                status: Box::new(status),
+                history,
+            });
+        });
+    }
+
+    /// One timeline page; `before_ts` continues an existing list (web
+    /// load-earlier semantics), `None` restarts it. A short page marks the
+    /// timeline exhausted.
+    pub(crate) fn trinity_load_memories(
+        &self,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+        before_ts: Option<i64>,
+    ) {
+        self.tokio.spawn(async move {
+            let mut params =
+                serde_json::json!({ "limit": crate::trinity::TIMELINE_LIMIT, "full": true });
+            if let Some(before) = before_ts {
+                params["before_ts"] = serde_json::json!(before);
+            }
+            match crate::trinity::client()
+                .call("memory.timeline", params)
+                .await
+            {
+                Ok(value) => {
+                    let items = crate::trinity::parse_memory_items(&value);
+                    let exhausted = (items.len() as i64) < crate::trinity::TIMELINE_LIMIT;
+                    let _ = tx.send(RuntimeEvent::TrinityMemoriesReady {
+                        items,
+                        exhausted,
+                        append: before_ts.is_some(),
+                    });
+                }
+                Err(error) => {
+                    tracing::warn!("Trinity memory.timeline failed: {error}");
+                    let _ = tx.send(RuntimeEvent::TrinityMemoriesFailed(error));
+                }
+            }
+        });
+    }
+
+    /// Recall memories matching `query` (web `recallMemory({query, limit:20})`).
+    pub(crate) fn trinity_recall(&self, tx: mpsc::UnboundedSender<RuntimeEvent>, query: String) {
+        self.tokio.spawn(async move {
+            match crate::trinity::client()
+                .call(
+                    "recall_memory",
+                    serde_json::json!({ "query": query, "limit": 20 }),
+                )
+                .await
+            {
+                Ok(value) => {
+                    let _ = tx.send(RuntimeEvent::TrinityRecallReady(
+                        crate::trinity::parse_recall_items(&value),
+                    ));
+                }
+                Err(error) => {
+                    tracing::warn!("Trinity recall_memory failed: {error}");
+                    let _ = tx.send(RuntimeEvent::TrinityActionFailed(error));
+                }
+            }
+        });
+    }
+
+    /// Store a memory (`kind: "note"` like the web add form). On success the
+    /// timeline reloads so the new entry shows up immediately.
+    pub(crate) fn trinity_memorize(
+        &self,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+        content: String,
+        project: Option<String>,
+        target_id: Option<String>,
+    ) {
+        self.tokio.spawn(async move {
+            let mut params = serde_json::json!({ "content": content, "kind": "note" });
+            if let Some(project) = project {
+                params["project"] = serde_json::json!(project);
+            }
+            if let Some(target_id) = target_id {
+                params["target_id"] = serde_json::json!(target_id);
+            }
+            match crate::trinity::client().call("memorize", params).await {
+                Ok(_) => Self::load_memories_for(tx).await,
+                Err(error) => {
+                    tracing::warn!("Trinity memorize failed: {error}");
+                    let _ = tx.send(RuntimeEvent::TrinityActionFailed(error));
+                }
+            }
+        });
+    }
+
+    /// Forget one memory by id, then reload the timeline.
+    pub(crate) fn trinity_forget(&self, tx: mpsc::UnboundedSender<RuntimeEvent>, id: String) {
+        self.tokio.spawn(async move {
+            match crate::trinity::client()
+                .call("forget_memory", serde_json::json!({ "id": id }))
+                .await
+            {
+                Ok(_) => Self::load_memories_for(tx).await,
+                Err(error) => {
+                    tracing::warn!("Trinity forget_memory failed: {error}");
+                    let _ = tx.send(RuntimeEvent::TrinityActionFailed(error));
+                }
+            }
+        });
+    }
+
+    /// Reinforce one memory by id, then reload the timeline.
+    pub(crate) fn trinity_reinforce(&self, tx: mpsc::UnboundedSender<RuntimeEvent>, id: String) {
+        self.tokio.spawn(async move {
+            match crate::trinity::client()
+                .call("reinforce_memory", serde_json::json!({ "id": id }))
+                .await
+            {
+                Ok(_) => Self::load_memories_for(tx).await,
+                Err(error) => {
+                    tracing::warn!("Trinity reinforce_memory failed: {error}");
+                    let _ = tx.send(RuntimeEvent::TrinityActionFailed(error));
+                }
+            }
+        });
+    }
+
+    /// Reloads the first timeline page (shared tail of the mutation calls).
+    async fn load_memories_for(tx: mpsc::UnboundedSender<RuntimeEvent>) {
+        match crate::trinity::client()
+            .call(
+                "memory.timeline",
+                serde_json::json!({ "limit": crate::trinity::TIMELINE_LIMIT, "full": true }),
+            )
+            .await
+        {
+            Ok(value) => {
+                let items = crate::trinity::parse_memory_items(&value);
+                let exhausted = (items.len() as i64) < crate::trinity::TIMELINE_LIMIT;
+                let _ = tx.send(RuntimeEvent::TrinityMemoriesReady {
+                    items,
+                    exhausted,
+                    append: false,
+                });
+            }
+            Err(error) => {
+                let _ = tx.send(RuntimeEvent::TrinityMemoriesFailed(error));
+            }
+        }
     }
 
     /// M22: saves (or clears, with an empty secret refused by core) the

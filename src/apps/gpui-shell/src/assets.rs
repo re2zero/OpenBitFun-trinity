@@ -22,6 +22,7 @@ gpui_kit::assets::icon_assets!(
     [
         Activity,
         Archive,
+        BrainCircuit,
         ChartColumn,
         Check,
         Circle,

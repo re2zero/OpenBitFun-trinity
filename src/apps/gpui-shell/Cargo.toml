@@ -87,6 +87,10 @@ unicode-width = { workspace = true }
 syntect = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+# Trinity console (T2-15): the daemon endpoint comes from the shared
+# `~/.config/trinity/trinity.toml`, parsed with the same toml crate desktop uses.
+toml = { workspace = true }
+dirs = { workspace = true }
 # Diagnostics bundle export packs session logs into the same deflate zip the
 # desktop support bundles use.
 zip = { workspace = true }
