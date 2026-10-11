@@ -340,17 +340,26 @@ pub(crate) struct ShellText {
     pub settings_websearch: String,
     pub settings_websearch_provider: String,
     pub settings_websearch_provider_description: String,
+    pub settings_websearch_http: String,
+    pub settings_websearch_http_description: String,
     pub websearch_provider_free: String,
     pub websearch_provider_exa: String,
     pub websearch_provider_tavily: String,
     pub websearch_provider_http: String,
+    pub websearch_http_endpoint: String,
+    pub websearch_http_endpoint_description: String,
+    pub websearch_http_auth_mode: String,
+    pub websearch_auth_none: String,
+    pub websearch_auth_bearer: String,
+    pub websearch_auth_header: String,
+    pub websearch_http_header_name: String,
+    pub websearch_http_header_name_description: String,
     pub websearch_credential: String,
     pub websearch_credential_description: String,
     pub websearch_configured: String,
     pub websearch_not_configured: String,
     pub websearch_save: String,
     pub websearch_no_credential: String,
-    pub websearch_desktop_only: String,
     pub settings_usage: String,
     pub settings_usage_range: String,
     pub settings_usage_today: String,
@@ -978,10 +987,30 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_websearch_provider_description: {
             "The search provider the agent's web search tool uses.".to_string()
         },
+        settings_websearch_http: "Custom search service".to_string(),
+        settings_websearch_http_description: {
+            "The service must implement OpenBitFun Search HTTP Protocol v1".to_string()
+        },
         websearch_provider_free: "Exa (free, MCP)".to_string(),
         websearch_provider_exa: "Exa Search API".to_string(),
         websearch_provider_tavily: "Tavily".to_string(),
         websearch_provider_http: "OpenBitFun Search HTTP".to_string(),
+        websearch_http_endpoint: "Service URL".to_string(),
+        websearch_http_endpoint_description: {
+            "HTTPS is required. Plain HTTP is accepted only for localhost or a \
+             loopback IP."
+                .to_string()
+        },
+        websearch_http_auth_mode: "Authentication".to_string(),
+        websearch_auth_none: "No authentication".to_string(),
+        websearch_auth_bearer: "Bearer credential".to_string(),
+        websearch_auth_header: "Restricted header credential".to_string(),
+        websearch_http_header_name: "Credential header name".to_string(),
+        websearch_http_header_name_description: {
+            "Enter a custom header such as X-API-Key; choose Bearer credentials \
+             for Authorization"
+                .to_string()
+        },
         websearch_credential: "API credential".to_string(),
         websearch_credential_description: {
             "Stored in the local encrypted vault; the key never lands in the settings \
@@ -992,9 +1021,6 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         websearch_not_configured: "No credential configured".to_string(),
         websearch_save: "Save credential".to_string(),
         websearch_no_credential: "This provider needs no credential.".to_string(),
-        websearch_desktop_only: {
-            "Configure this provider in the desktop or web app.".to_string()
-        },
         settings_usage: "Usage statistics".to_string(),
         settings_usage_range: "Time range".to_string(),
         settings_usage_today: "Today".to_string(),
@@ -1425,10 +1451,26 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         settings_websearch_provider_description: service
             .t("gpui-shell-settings-websearch-provider-description")
             .await,
+        settings_websearch_http: service.t("gpui-shell-settings-websearch-http").await,
+        settings_websearch_http_description: service
+            .t("gpui-shell-settings-websearch-http-description")
+            .await,
         websearch_provider_free: service.t("gpui-shell-websearch-provider-free").await,
         websearch_provider_exa: service.t("gpui-shell-websearch-provider-exa").await,
         websearch_provider_tavily: service.t("gpui-shell-websearch-provider-tavily").await,
         websearch_provider_http: service.t("gpui-shell-websearch-provider-http").await,
+        websearch_http_endpoint: service.t("gpui-shell-websearch-http-endpoint").await,
+        websearch_http_endpoint_description: service
+            .t("gpui-shell-websearch-http-endpoint-description")
+            .await,
+        websearch_http_auth_mode: service.t("gpui-shell-websearch-http-auth-mode").await,
+        websearch_auth_none: service.t("gpui-shell-websearch-auth-none").await,
+        websearch_auth_bearer: service.t("gpui-shell-websearch-auth-bearer").await,
+        websearch_auth_header: service.t("gpui-shell-websearch-auth-header").await,
+        websearch_http_header_name: service.t("gpui-shell-websearch-http-header-name").await,
+        websearch_http_header_name_description: service
+            .t("gpui-shell-websearch-http-header-name-description")
+            .await,
         websearch_credential: service.t("gpui-shell-websearch-credential").await,
         websearch_credential_description: service
             .t("gpui-shell-websearch-credential-description")
@@ -1437,7 +1479,6 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         websearch_not_configured: service.t("gpui-shell-websearch-not-configured").await,
         websearch_save: service.t("gpui-shell-websearch-save").await,
         websearch_no_credential: service.t("gpui-shell-websearch-no-credential").await,
-        websearch_desktop_only: service.t("gpui-shell-websearch-desktop-only").await,
         settings_usage: service.t("gpui-shell-settings-usage").await,
         settings_usage_range: service.t("gpui-shell-settings-usage-range").await,
         settings_usage_today: service.t("gpui-shell-settings-usage-today").await,

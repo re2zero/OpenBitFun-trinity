@@ -2371,10 +2371,13 @@ impl ShellWindow {
                 handle.fetch_usage_activity();
             }
         }
-        let provider = settings::ShellConfig::try_current(cx)
-            .map(|config| config.web_search_provider)
+        let (provider, http_auth_mode) = settings::ShellConfig::try_current(cx)
+            .map(|config| (config.web_search_provider, config.web_search_http_auth_mode))
             .unwrap_or_default();
-        if matches!(provider.as_str(), "exa_search_api" | "tavily") {
+        if matches!(provider.as_str(), "exa_search_api" | "tavily")
+            || (provider == "openbitfun_search_http"
+                && settings::websearch_http_credential_required(&http_auth_mode))
+        {
             if let Some(handle) = runtime::runtime_handle() {
                 handle.load_web_search_credential_status(provider);
             }

@@ -67,6 +67,18 @@ pub(crate) const HOOKS_PROJECT_PATH: &str = "app.hooks.project_hooks_enabled";
 pub(crate) const GIT_COAUTHOR_PATH: &str = "app.ai_experience.enable_git_commit_coauthor";
 /// Active web-search provider (`ai.web_search.provider`).
 pub(crate) const WEB_SEARCH_PROVIDER_PATH: &str = "ai.web_search.provider";
+/// Custom HTTP search service endpoint
+/// (`ai.web_search.providers.openbitfun_search_http.endpoint`).
+pub(crate) const WEB_SEARCH_HTTP_ENDPOINT_PATH: &str =
+    "ai.web_search.providers.openbitfun_search_http.endpoint";
+/// Custom HTTP search service auth mode
+/// (`ai.web_search.providers.openbitfun_search_http.auth.mode`).
+pub(crate) const WEB_SEARCH_HTTP_AUTH_MODE_PATH: &str =
+    "ai.web_search.providers.openbitfun_search_http.auth.mode";
+/// Custom HTTP search service credential header name
+/// (`ai.web_search.providers.openbitfun_search_http.auth.headerName`).
+pub(crate) const WEB_SEARCH_HTTP_HEADER_NAME_PATH: &str =
+    "ai.web_search.providers.openbitfun_search_http.auth.headerName";
 /// Runtime log level (`app.logging.level`), applied live through the tracing
 /// reload handle.
 pub(crate) const LOGGING_LEVEL_PATH: &str = "app.logging.level";
@@ -158,6 +170,15 @@ pub(crate) struct ShellConfig {
     pub(crate) git_commit_coauthor: bool,
     /// `ai.web_search.provider`, kept verbatim; unknown ids render as-is.
     pub(crate) web_search_provider: String,
+    /// `ai.web_search.providers.openbitfun_search_http.endpoint`.
+    pub(crate) web_search_http_endpoint: String,
+    /// `ai.web_search.providers.openbitfun_search_http.auth.mode`, kept
+    /// verbatim; the empty string and unknown ids follow the shared contract
+    /// (`""` behaves like `none`, unknown modes need a credential and fail at
+    /// search time).
+    pub(crate) web_search_http_auth_mode: String,
+    /// `ai.web_search.providers.openbitfun_search_http.auth.headerName`.
+    pub(crate) web_search_http_header_name: String,
     /// `app.logging.level`, one of the tracing level names.
     pub(crate) logging_level: String,
 }
@@ -181,6 +202,29 @@ impl ShellConfig {
             project_hooks_enabled: config.app.hooks.project_hooks_enabled,
             git_commit_coauthor: config.app.ai_experience.enable_git_commit_coauthor,
             web_search_provider: config.ai.web_search.provider.clone(),
+            web_search_http_endpoint: config
+                .ai
+                .web_search
+                .providers
+                .openbitfun_search_http
+                .endpoint
+                .clone(),
+            web_search_http_auth_mode: config
+                .ai
+                .web_search
+                .providers
+                .openbitfun_search_http
+                .auth
+                .mode
+                .clone(),
+            web_search_http_header_name: config
+                .ai
+                .web_search
+                .providers
+                .openbitfun_search_http
+                .auth
+                .header_name
+                .clone(),
             logging_level: config.app.logging.level.clone(),
         }
     }
@@ -214,6 +258,9 @@ impl ShellConfig {
             project_hooks_enabled: false,
             git_commit_coauthor: true,
             web_search_provider: "exa_mcp_free".to_string(),
+            web_search_http_endpoint: String::new(),
+            web_search_http_auth_mode: "none".to_string(),
+            web_search_http_header_name: String::new(),
             logging_level: "info".to_string(),
         }
     }
@@ -457,7 +504,7 @@ pub(crate) fn render_page(
             terminal_page(text, view.clone()),
             permissions_page(text, cx),
             automation_page(text),
-            websearch_page(text, view.clone()),
+            websearch_page(text, view.clone(), cx),
             crate::manage::skills_page(text),
             crate::manage::agents_page(text, view.clone()),
             crate::manage::mcp_page(text, view.clone()),
@@ -1337,12 +1384,33 @@ fn automation_page(text: &ShellText) -> SettingPage {
         ]))
 }
 
+/// Whether the custom HTTP search service auth mode needs a device
+/// credential. `""` and `none` are the shared escape hatch (web
+/// `credentialRequired`, core `credential_id_for_provider`); every other
+/// mode — including unknown future ids — needs one and fails at search time.
+pub(crate) fn websearch_http_credential_required(mode: &str) -> bool {
+    !matches!(mode.trim(), "" | "none")
+}
+
+/// Dropdown-facing auth mode: the empty string behaves like `none` (the
+/// shared config default), anything else stays verbatim so an unknown mode
+/// shows what is actually persisted.
+fn websearch_http_auth_mode_display(mode: &str) -> SharedString {
+    let trimmed = mode.trim();
+    SharedString::from(if trimmed.is_empty() { "none" } else { trimmed })
+}
+
 /// Web search page (M22): the active provider plus credential management for
 /// the key-based providers. The credential itself goes into the shared
 /// encrypted vault through the same core service the server and CLI use.
+/// T2-9: while the custom HTTP service is selected, its endpoint/auth group
+/// is inserted between the provider and credential groups (web
+/// `sections.http`); the page is rebuilt per frame, so the group follows the
+/// provider and header-mode switches without extra state.
 fn websearch_page(
     text: &ShellText,
     view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    cx: &mut App,
 ) -> SettingPage {
     let provider_field = SettingField::dropdown(
         vec![
@@ -1366,7 +1434,11 @@ fn websearch_page(
                 serde_json::Value::String(value.clone()),
             );
             refresh_web_search_runtime();
-            if matches!(value.as_str(), "exa_search_api" | "tavily") {
+            let http_requires_credential = value == "openbitfun_search_http"
+                && websearch_http_credential_required(
+                    &ShellConfig::current(cx).web_search_http_auth_mode,
+                );
+            if matches!(value.as_str(), "exa_search_api" | "tavily") || http_requires_credential {
                 if let Some(handle) = crate::runtime::runtime_handle() {
                     handle.load_web_search_credential_status(value);
                 }
@@ -1376,11 +1448,13 @@ fn websearch_page(
     );
 
     let owned_text = text.clone();
+    let credential_view = view.clone();
     let credential_field = SettingField::render(move |_options, _window, cx| {
-        websearch_credential_field(view.clone(), &owned_text, cx)
+        websearch_credential_field(credential_view.clone(), &owned_text, cx)
     });
 
-    SettingPage::new(text.settings_websearch.clone())
+    let snapshot = ShellConfig::current(cx);
+    let mut page = SettingPage::new(text.settings_websearch.clone())
         .icon(IconName::Globe)
         .resettable(false)
         .group(SettingGroup::new().items(vec![
@@ -1388,7 +1462,111 @@ fn websearch_page(
                 .description(text.settings_websearch_provider_description.clone()),
             SettingItem::new(text.websearch_credential.clone(), credential_field)
                 .description(text.websearch_credential_description.clone()),
-        ]))
+        ]));
+    if snapshot.web_search_provider == "openbitfun_search_http" {
+        page = page.group(websearch_http_group(text, view, &snapshot));
+    }
+    page
+}
+
+/// The endpoint/auth group for the custom HTTP search service: URL, auth
+/// mode, and — for the header mode — the credential header name. Every field
+/// persists immediately, so a credential saved afterwards always validates
+/// against the mode that is already on disk (web saves its draft first for
+/// the same reason).
+fn websearch_http_group(
+    text: &ShellText,
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    snapshot: &ShellConfig,
+) -> SettingGroup {
+    let endpoint_field = SettingField::input(
+        |cx: &App| SharedString::from(ShellConfig::current(cx).web_search_http_endpoint.clone()),
+        |value: SharedString, cx: &mut App| {
+            let value = value.to_string();
+            cx.global_mut::<ShellConfig>().web_search_http_endpoint = value.clone();
+            persist(
+                WEB_SEARCH_HTTP_ENDPOINT_PATH,
+                serde_json::Value::String(value),
+            );
+            refresh_web_search_runtime();
+            cx.refresh_windows();
+        },
+    );
+
+    let status_view = view.clone();
+    let auth_mode_field = SettingField::dropdown(
+        vec![
+            ("none", text.websearch_auth_none.clone()),
+            ("bearer", text.websearch_auth_bearer.clone()),
+            ("header", text.websearch_auth_header.clone()),
+        ]
+        .into_iter()
+        .map(|(id, label)| (SharedString::from(id), SharedString::from(label)))
+        .collect::<Vec<(SharedString, SharedString)>>(),
+        |cx: &App| {
+            websearch_http_auth_mode_display(&ShellConfig::current(cx).web_search_http_auth_mode)
+        },
+        move |value: SharedString, cx: &mut App| {
+            let value = value.to_string();
+            let previously_required = websearch_http_credential_required(
+                &ShellConfig::current(cx).web_search_http_auth_mode,
+            );
+            cx.global_mut::<ShellConfig>().web_search_http_auth_mode = value.clone();
+            persist(
+                WEB_SEARCH_HTTP_AUTH_MODE_PATH,
+                serde_json::Value::String(value.clone()),
+            );
+            refresh_web_search_runtime();
+            if websearch_http_credential_required(&value) {
+                if !previously_required {
+                    if let Some(handle) = crate::runtime::runtime_handle() {
+                        handle.load_web_search_credential_status(
+                            "openbitfun_search_http".to_string(),
+                        );
+                    }
+                }
+            } else {
+                // No credential applies anymore; drop a stale status so the
+                // credential row cannot claim a configured secret.
+                if let Some(shell) = status_view.upgrade() {
+                    shell.update(cx, |shell, _| shell.websearch_status = None);
+                }
+            }
+            cx.refresh_windows();
+        },
+    );
+
+    let mut items = vec![
+        SettingItem::new(text.websearch_http_endpoint.clone(), endpoint_field)
+            .description(text.websearch_http_endpoint_description.clone()),
+        SettingItem::new(text.websearch_http_auth_mode.clone(), auth_mode_field),
+    ];
+    if snapshot.web_search_http_auth_mode.trim() == "header" {
+        let header_name_field = SettingField::input(
+            |cx: &App| {
+                SharedString::from(ShellConfig::current(cx).web_search_http_header_name.clone())
+            },
+            |value: SharedString, cx: &mut App| {
+                let value = value.to_string();
+                cx.global_mut::<ShellConfig>().web_search_http_header_name = value.clone();
+                persist(
+                    WEB_SEARCH_HTTP_HEADER_NAME_PATH,
+                    serde_json::Value::String(value),
+                );
+                refresh_web_search_runtime();
+                cx.refresh_windows();
+            },
+        );
+        items.push(
+            SettingItem::new(text.websearch_http_header_name.clone(), header_name_field)
+                .description(text.websearch_http_header_name_description.clone()),
+        );
+    }
+
+    SettingGroup::new()
+        .title(text.settings_websearch_http.clone())
+        .description(text.settings_websearch_http_description.clone())
+        .items(items)
 }
 
 /// Re-reads the shared config and pushes the web-search section into the
@@ -1421,72 +1599,72 @@ fn websearch_credential_field(
         return div().into_any_element();
     };
     let provider = ShellConfig::current(cx).web_search_provider;
+    // T2-9: the custom HTTP service shows the credential row only when its
+    // auth mode needs one; without a credential it behaves like the free
+    // provider.
+    let needs_credential_ui = match provider.as_str() {
+        "exa_search_api" | "tavily" => true,
+        "openbitfun_search_http" => {
+            websearch_http_credential_required(&ShellConfig::current(cx).web_search_http_auth_mode)
+        }
+        _ => false,
+    };
     let input = shell.read(cx).websearch_credential_input.clone();
     let status = shell.read(cx).websearch_status.clone();
 
     let mut column = div().v_flex().gap_2().w_full();
-    match provider.as_str() {
-        "exa_search_api" | "tavily" => {
-            let configured = matches!(&status, Some((p, true)) if p == &provider);
-            column = column.child(
-                div()
-                    .text_sm()
-                    .text_color(if configured {
-                        cx.theme().muted_foreground
-                    } else {
-                        cx.theme().danger
-                    })
-                    .child(if configured {
-                        text.websearch_configured.clone()
-                    } else {
-                        text.websearch_not_configured.clone()
-                    }),
-            );
-            let save_view = view.clone();
-            column = column.child(Input::new(&input)).child(
-                Button::new("websearch-save-credential")
-                    .label(text.websearch_save.clone())
-                    .small()
-                    .with_variant(ButtonVariant::Secondary)
-                    .on_click(move |_, _window, cx| {
-                        let Some(shell) = save_view.upgrade() else {
-                            return;
-                        };
-                        let secret = shell
-                            .read(cx)
-                            .websearch_credential_input
-                            .read(cx)
-                            .value()
-                            .trim()
-                            .to_string();
-                        if secret.is_empty() {
-                            tracing::warn!("Ignoring an empty WebSearch credential");
-                            return;
-                        }
-                        let provider = ShellConfig::current(cx).web_search_provider.clone();
-                        if let Some(handle) = crate::runtime::runtime_handle() {
-                            handle.save_web_search_credential(provider, secret);
-                        }
-                    }),
-            );
-        }
-        "openbitfun_search_http" => {
-            column = column.child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(text.websearch_desktop_only.clone()),
-            );
-        }
-        _ => {
-            // exa_mcp_free and anything unrecognized needs no credential.
-            column = column.child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(text.websearch_no_credential.clone()),
-            );
-        }
+    if needs_credential_ui {
+        let configured = matches!(&status, Some((p, true)) if p == &provider);
+        column = column.child(
+            div()
+                .text_sm()
+                .text_color(if configured {
+                    cx.theme().muted_foreground
+                } else {
+                    cx.theme().danger
+                })
+                .child(if configured {
+                    text.websearch_configured.clone()
+                } else {
+                    text.websearch_not_configured.clone()
+                }),
+        );
+        let save_view = view.clone();
+        column = column.child(Input::new(&input)).child(
+            Button::new("websearch-save-credential")
+                .label(text.websearch_save.clone())
+                .small()
+                .with_variant(ButtonVariant::Secondary)
+                .on_click(move |_, _window, cx| {
+                    let Some(shell) = save_view.upgrade() else {
+                        return;
+                    };
+                    let secret = shell
+                        .read(cx)
+                        .websearch_credential_input
+                        .read(cx)
+                        .value()
+                        .trim()
+                        .to_string();
+                    if secret.is_empty() {
+                        tracing::warn!("Ignoring an empty WebSearch credential");
+                        return;
+                    }
+                    let provider = ShellConfig::current(cx).web_search_provider.clone();
+                    if let Some(handle) = crate::runtime::runtime_handle() {
+                        handle.save_web_search_credential(provider, secret);
+                    }
+                }),
+        );
+    } else {
+        // exa_mcp_free, credential-less HTTP auth modes and anything
+        // unrecognized need no credential.
+        column = column.child(
+            div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(text.websearch_no_credential.clone()),
+        );
     }
     column.into_any_element()
 }
@@ -2792,6 +2970,26 @@ mod tests {
         config.app.hooks.project_hooks_enabled = true;
         config.app.ai_experience.enable_git_commit_coauthor = false;
         config.ai.web_search.provider = "tavily".to_string();
+        config
+            .ai
+            .web_search
+            .providers
+            .openbitfun_search_http
+            .endpoint = "https://search.example.com/search".to_string();
+        config
+            .ai
+            .web_search
+            .providers
+            .openbitfun_search_http
+            .auth
+            .mode = "header".to_string();
+        config
+            .ai
+            .web_search
+            .providers
+            .openbitfun_search_http
+            .auth
+            .header_name = "X-Search-Key".to_string();
         config.app.logging.level = "debug".to_string();
 
         let snapshot = ShellConfig::from_global(&config);
@@ -2814,7 +3012,28 @@ mod tests {
         assert!(snapshot.project_hooks_enabled);
         assert!(!snapshot.git_commit_coauthor);
         assert_eq!(snapshot.web_search_provider, "tavily");
+        assert_eq!(
+            snapshot.web_search_http_endpoint,
+            "https://search.example.com/search"
+        );
+        assert_eq!(snapshot.web_search_http_auth_mode, "header");
+        assert_eq!(snapshot.web_search_http_header_name, "X-Search-Key");
         assert_eq!(snapshot.logging_level, "debug");
+    }
+
+    #[test]
+    fn http_credential_requirement_follows_the_shared_mode_contract() {
+        // `""` and `none` are the shared no-credential modes; every other
+        // mode string — bearer, header, or an unknown future id — needs one.
+        assert!(!websearch_http_credential_required(""));
+        assert!(!websearch_http_credential_required("none"));
+        assert!(websearch_http_credential_required("bearer"));
+        assert!(websearch_http_credential_required("header"));
+        assert!(websearch_http_credential_required("future_mode"));
+        // Display normalizes only the empty string; unknown ids stay verbatim.
+        assert_eq!(websearch_http_auth_mode_display(""), "none");
+        assert_eq!(websearch_http_auth_mode_display(" none "), "none");
+        assert_eq!(websearch_http_auth_mode_display("header"), "header");
     }
 
     #[test]
