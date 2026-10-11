@@ -1083,8 +1083,17 @@ pub(crate) struct ShellWindow {
     pub(crate) mcp_browse: Option<crate::manage::McpServerCatalogView>,
     pub(crate) mcp_browse_loading: Option<(String, String)>,
     pub(crate) mcp_interactions: crate::manage::McpInteractionQueue,
-    pub(crate) mcp_interaction_result_input: Entity<InputState>,
+    pub(crate) mcp_interaction_result_input: Entity<TextareaState>,
     pub(crate) mcp_interaction_error: Option<String>,
+    /// T2-7 raw JSON config editor: the multi-line field lives on the window
+    /// (recreated never, reset on every open) plus the loaded snapshot's
+    /// fingerprint and dialog status.
+    pub(crate) mcp_json_state: Entity<TextareaState>,
+    pub(crate) mcp_json_fingerprint: Option<String>,
+    pub(crate) mcp_json_loading: bool,
+    pub(crate) mcp_json_error: Option<String>,
+    /// T2-7 pending or finished resource read in the browse dialog.
+    pub(crate) mcp_resource_view: Option<crate::manage::McpResourceView>,
     /// M22 self-update state machine; the general settings page projects it.
     pub(crate) update_state: crate::update::UpdateUiState,
     /// M22 archived-sessions delete confirmation target (dialog input lives
@@ -1124,7 +1133,8 @@ impl ShellWindow {
         let agent_name_input = cx.new(|cx| InputState::new(window, cx));
         let agent_description_input = cx.new(|cx| InputState::new(window, cx));
         let agent_prompt_input = cx.new(|cx| TextareaState::new(window, cx));
-        let mcp_interaction_result_input = cx.new(|cx| InputState::new(window, cx));
+        let mcp_interaction_result_input = cx.new(|cx| TextareaState::new(window, cx));
+        let mcp_json_state = cx.new(|cx| TextareaState::new(window, cx));
         let websearch_credential_input = cx.new(|cx| InputState::new(window, cx));
         receive_runtime_events(event_rx, window, cx);
 
@@ -1202,6 +1212,11 @@ impl ShellWindow {
             mcp_interactions: Default::default(),
             mcp_interaction_result_input,
             mcp_interaction_error: None,
+            mcp_json_state,
+            mcp_json_fingerprint: None,
+            mcp_json_loading: false,
+            mcp_json_error: None,
+            mcp_resource_view: None,
             update_state: Default::default(),
             archived_delete_target: None,
             usage_stats: None,
@@ -1696,6 +1711,48 @@ impl ShellWindow {
                 self.mcp_interactions.push_back(request);
                 if queue_was_empty {
                     crate::manage::open_interaction_dialog(cx.entity().downgrade(), window, cx);
+                }
+                cx.refresh_windows();
+            }
+            RuntimeEvent::McpJsonConfig(result) => {
+                self.mcp_json_loading = false;
+                match result {
+                    Ok(snapshot) => {
+                        self.mcp_json_fingerprint = Some(snapshot.fingerprint);
+                        self.mcp_json_state.update(cx, |state, cx| {
+                            state.set_value(snapshot.json_config, window, cx)
+                        });
+                    }
+                    Err(message) => {
+                        tracing::warn!("Failed to load MCP JSON config: {message}");
+                        self.mcp_json_error = Some(message);
+                    }
+                }
+                cx.refresh_windows();
+            }
+            RuntimeEvent::McpJsonSaved(result) => {
+                match result {
+                    Ok(()) => {
+                        let saved = i18n::current(cx).manage_mcp_json_saved;
+                        self.mcp_json_fingerprint = None;
+                        self.mcp_json_error = None;
+                        window.close_dialog(cx);
+                        crate::manage::ManageNotice::set(Some(saved), cx);
+                    }
+                    Err(message) => {
+                        tracing::warn!("Failed to save MCP JSON config: {message}");
+                        self.mcp_json_error = Some(message);
+                    }
+                }
+                cx.refresh_windows();
+            }
+            RuntimeEvent::McpResourceRead(outcome) => {
+                let outcome = *outcome;
+                if let Some(view) = &mut self.mcp_resource_view {
+                    if view.uri == outcome.uri {
+                        view.loading = false;
+                        view.result = Some(outcome.result);
+                    }
                 }
                 cx.refresh_windows();
             }
@@ -5311,6 +5368,67 @@ mod tests {
             );
 
             assert!(crate::manage::ManageNotice::current(cx).is_some());
+        });
+    }
+
+    #[gpui_kit::test]
+    fn mcp_json_and_resource_events_land_in_window_state(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                // A failed save keeps the editor open with the inline error.
+                shell.apply_runtime_event(
+                    RuntimeEvent::McpJsonSaved(Err("JSON parsing failed".into())),
+                    window,
+                    cx,
+                );
+                // A resource reply lands on the matching pending read.
+                shell.mcp_resource_view = Some(crate::manage::McpResourceView {
+                    uri: "file:///a.txt".into(),
+                    loading: true,
+                    result: None,
+                });
+                shell.apply_runtime_event(
+                    RuntimeEvent::McpResourceRead(Box::new(
+                        crate::manage::McpResourceReadOutcome {
+                            uri: "file:///a.txt".into(),
+                            result: Ok(
+                                openbitfun_core::service::mcp::protocol::ResourcesReadResult {
+                                    contents: vec![openbitfun_core::service::mcp::protocol::MCPResourceContent {
+                                        uri: "file:///a.txt".into(),
+                                        content: Some("hello".into()),
+                                        blob: None,
+                                        mime_type: Some("text/plain".into()),
+                                        annotations: None,
+                                        meta: None,
+                                    }],
+                                },
+                            ),
+                        },
+                    )),
+                    window,
+                    cx,
+                );
+            });
+        });
+        window.update(|_, cx| {
+            shell.update(cx, |shell, _cx| {
+                assert!(shell.mcp_json_error.is_some());
+                let view = shell.mcp_resource_view.as_ref().expect("resource view");
+                assert!(!view.loading);
+                let result = view.result.as_ref().expect("resource result");
+                assert_eq!(
+                    crate::manage::render_resource_content(
+                        result.as_ref().expect("read ok"),
+                        &sample_shell_text()
+                    ),
+                    "[text/plain]\n\nhello"
+                );
+            });
         });
     }
 

@@ -246,6 +246,100 @@ pub(crate) struct McpInteractionRequest {
 /// Queued interaction requests on the shell window.
 pub(crate) type McpInteractionQueue = std::collections::VecDeque<McpInteractionRequest>;
 
+/// The prefilled response JSON for one interaction method, mirroring the web
+/// dialog: sampling expects a message skeleton, everything else (elicitation)
+/// an accept action.
+pub(crate) fn default_interaction_result(method: &str) -> String {
+    if method == "sampling/createMessage" {
+        r#"{
+  "role": "assistant",
+  "content": [
+    {
+      "type": "text",
+      "text": ""
+    }
+  ]
+}"#
+        .to_string()
+    } else {
+        "{\n  \"action\": \"accept\"\n}".to_string()
+    }
+}
+
+/// Raw JSON config snapshot the editor dialog edits (the Cursor-format
+/// `app.json` the desktop and CLI hosts read and write).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct McpJsonSnapshot {
+    pub(crate) json_config: String,
+    pub(crate) fingerprint: String,
+}
+
+/// One pending or finished resource read in the browse dialog; the uri keys
+/// the window state so a late reply cannot land on a newer selection.
+#[derive(Debug, Clone)]
+pub(crate) struct McpResourceView {
+    pub(crate) uri: String,
+    pub(crate) loading: bool,
+    pub(crate) result:
+        Option<Result<openbitfun_core::service::mcp::protocol::ResourcesReadResult, String>>,
+}
+
+/// The outcome of one resources/read call, routed back to the browse dialog.
+#[derive(Debug)]
+pub(crate) struct McpResourceReadOutcome {
+    pub(crate) uri: String,
+    pub(crate) result: Result<openbitfun_core::service::mcp::protocol::ResourcesReadResult, String>,
+}
+
+/// Flattens a resources/read result into display text, following the web
+/// resource browser: one block per content entry separated by `---`, with
+/// explicit notes for binary and empty payloads.
+pub(crate) fn render_resource_content(
+    result: &openbitfun_core::service::mcp::protocol::ResourcesReadResult,
+    text: &ShellText,
+) -> String {
+    if result.contents.is_empty() {
+        return text.manage_mcp_resource_empty.clone();
+    }
+    let blocks: Vec<String> = result
+        .contents
+        .iter()
+        .enumerate()
+        .map(|(index, content)| {
+            let header = if result.contents.len() > 1 {
+                let mut header = format!("#{} {}", index + 1, content.uri);
+                if let Some(mime) = &content.mime_type {
+                    header.push_str(&format!(" ({mime})"));
+                }
+                header
+            } else {
+                content
+                    .mime_type
+                    .as_ref()
+                    .map(|mime| format!("[{mime}]"))
+                    .unwrap_or_default()
+            };
+            let body = if content
+                .content
+                .as_ref()
+                .is_some_and(|body| !body.is_empty())
+            {
+                content.content.clone().unwrap_or_default()
+            } else if content.blob.is_some() {
+                text.manage_mcp_resource_binary.clone()
+            } else {
+                text.manage_mcp_resource_failed.clone()
+            };
+            if header.is_empty() {
+                body
+            } else {
+                format!("{header}\n\n{body}")
+            }
+        })
+        .collect();
+    blocks.join("\n\n---\n\n")
+}
+
 /// Pretty-printed `params` for the dialog, truncated the way tool-card
 /// previews are (full values stay in the runtime).
 pub(crate) fn interaction_params_preview(params: &serde_json::Value) -> String {
@@ -723,22 +817,36 @@ fn agent_cards(kind: AgentListKind, text: &ShellText, cx: &mut App) -> gpui_kit:
 }
 
 /// The MCP page: one row per configured server with lifecycle, enablement,
-/// browse, and delete actions.
+/// browse, and delete actions, plus the raw JSON config editor.
 pub(crate) fn mcp_page(text: &ShellText, view: WeakEntity<ShellWindow>) -> SettingPage {
-    let list_view = view;
+    let list_view = view.clone();
     let list_text = text.clone();
     let servers_field = SettingField::render(move |_options, _window, cx| {
         mcp_server_list(&list_text, list_view.clone(), cx)
+    });
+    let json_view = view;
+    let json_text = text.clone();
+    let json_field = SettingField::render(move |_options, _window, _cx| {
+        Button::new("mcp-json-edit")
+            .label(json_text.manage_mcp_json_edit.clone())
+            .small()
+            .with_variant(ButtonVariant::Secondary)
+            .on_click({
+                let view = json_view.clone();
+                move |_, window, cx| open_json_editor_dialog(view.clone(), window, cx)
+            })
+            .into_any_element()
     });
 
     SettingPage::new(text.manage_mcp_title.clone())
         .icon(IconName::Plug)
         .resettable(false)
-        .group(SettingGroup::new().items(vec![SettingItem::new(
-            text.manage_mcp_servers.clone(),
-            servers_field,
-        )
-        .description(text.manage_mcp_description.clone())]))
+        .group(SettingGroup::new().items(vec![
+            SettingItem::new(text.manage_mcp_servers.clone(), servers_field)
+                .description(text.manage_mcp_description.clone()),
+            SettingItem::new(text.manage_mcp_json_item.clone(), json_field)
+                .description(text.manage_mcp_json_description.clone()),
+        ]))
 }
 
 fn mcp_server_list(
@@ -1235,9 +1343,125 @@ pub(crate) fn open_agent_create_dialog(
     });
 }
 
+/// Opens the raw JSON config editor: loads the user `app.json` snapshot with
+/// its fingerprint, edits it in a multi-line field, and saves through the
+/// same pipeline the desktop uses (validate, fingerprint check, then runtime
+/// reconcile). The dialog stays open on a failed save so the error can be
+/// fixed in place.
+pub(crate) fn open_json_editor_dialog(
+    view: WeakEntity<ShellWindow>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(shell) = view.upgrade() else {
+        return;
+    };
+    let state = {
+        let shell = shell.read(cx);
+        shell.mcp_json_state.clone()
+    };
+    shell.update(cx, |shell, cx| {
+        shell.mcp_json_fingerprint = None;
+        shell.mcp_json_loading = true;
+        shell.mcp_json_error = None;
+        cx.notify();
+    });
+    state.update(cx, |state, cx| state.set_value("", window, cx));
+    if let Some(handle) = crate::runtime::runtime_handle() {
+        handle.load_mcp_json_config();
+    }
+
+    let reload_view = view.clone();
+    let save_view = view.clone();
+    let reload = move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
+        let Some(shell) = reload_view.upgrade() else {
+            return;
+        };
+        shell.update(cx, |shell, cx| {
+            shell.mcp_json_loading = true;
+            shell.mcp_json_error = None;
+            cx.notify();
+        });
+        if let Some(handle) = crate::runtime::runtime_handle() {
+            handle.load_mcp_json_config();
+        }
+        let _ = window;
+    };
+    let save = move |_: &gpui_kit::ClickEvent, _window: &mut Window, cx: &mut App| {
+        let Some(shell) = save_view.upgrade() else {
+            return;
+        };
+        let (fingerprint, loading) = {
+            let shell = shell.read(cx);
+            (shell.mcp_json_fingerprint.clone(), shell.mcp_json_loading)
+        };
+        // Saving before the snapshot landed has no fingerprint to check
+        // against; the loading line in the dialog explains the wait.
+        let (Some(fingerprint), false) = (fingerprint, loading) else {
+            return;
+        };
+        let raw = shell.read(cx).mcp_json_state.read(cx).value().to_string();
+        if let Some(handle) = crate::runtime::runtime_handle() {
+            handle.save_mcp_json_config(raw, fingerprint);
+        }
+    };
+
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let text = i18n::current(cx);
+        let Some(shell) = view.upgrade() else {
+            return dialog;
+        };
+        let (state, loading, error) = {
+            let shell = shell.read(cx);
+            (
+                shell.mcp_json_state.clone(),
+                shell.mcp_json_loading,
+                shell.mcp_json_error.clone(),
+            )
+        };
+        let mut content = div().w(px(560.)).v_flex().gap_2();
+        if loading {
+            content = content.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(text.manage_mcp_json_loading.clone()),
+            );
+        }
+        content = content.child(Textarea::new(&state).h(px(320.)));
+        if let Some(error) = error {
+            content = content.child(div().text_xs().text_color(cx.theme().danger).child(error));
+        }
+
+        dialog
+            .title(div().child(text.manage_mcp_json_item.clone()))
+            .child(content)
+            .footer(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("mcp-json-reload")
+                            .label(text.manage_mcp_refresh.clone())
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(reload.clone()),
+                    )
+                    .child(
+                        Button::new("mcp-json-save")
+                            .label(text.manage_mcp_json_save.clone())
+                            .with_variant(ButtonVariant::Primary)
+                            .on_click(save.clone()),
+                    ),
+            )
+    });
+}
+
 /// Opens the resources/prompts browse dialog for one server and kicks off the
 /// first catalog load. The dialog body renders from the window's latest
-/// snapshot, so the refresh button just re-publishes a load.
+/// snapshot, so the refresh button just re-publishes a load. Resource rows
+/// read on click; the rendered content shows in a panel above the list.
 pub(crate) fn open_browse_dialog(
     view: WeakEntity<ShellWindow>,
     server_id: String,
@@ -1251,6 +1475,7 @@ pub(crate) fn open_browse_dialog(
     shell.update(cx, |shell, cx| {
         shell.mcp_browse = None;
         shell.mcp_browse_loading = Some((server_id.clone(), server_name));
+        shell.mcp_resource_view = None;
         cx.notify();
     });
     if let Some(handle) = crate::runtime::runtime_handle() {
@@ -1262,9 +1487,13 @@ pub(crate) fn open_browse_dialog(
         let Some(shell) = refresh_view.upgrade() else {
             return dialog;
         };
-        let (loading, snapshot) = {
+        let (loading, snapshot, resource_view) = {
             let shell = shell.read(cx);
-            (shell.mcp_browse_loading.clone(), shell.mcp_browse.clone())
+            (
+                shell.mcp_browse_loading.clone(),
+                shell.mcp_browse.clone(),
+                shell.mcp_resource_view.clone(),
+            )
         };
         let mut content = div().w(px(520.)).v_flex().gap_2();
         if let Some(view) = snapshot {
@@ -1276,6 +1505,12 @@ pub(crate) fn open_browse_dialog(
             };
             let mut entries = div().v_flex().gap_2();
             entries = entries.child(section_label(text.manage_mcp_resources.clone()));
+            entries = entries.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(text.manage_mcp_resource_hint.clone()),
+            );
             if view.resources.is_empty() {
                 entries = entries.child(
                     div()
@@ -1284,14 +1519,40 @@ pub(crate) fn open_browse_dialog(
                         .child(text.manage_mcp_empty.clone()),
                 );
             }
-            for resource in &view.resources {
+            for (index, resource) in view.resources.iter().enumerate() {
                 let mut label = resource.name.clone();
                 if resource.name != resource.uri {
                     label.push_str(" · ");
                     label.push_str(&resource.uri);
                 }
+                let read_view = refresh_view.clone();
+                let read_uri = resource.uri.clone();
+                let read_server_id = view.server_id.clone();
                 entries = entries.child(
                     div()
+                        .id(SharedString::from(format!(
+                            "mcp-resource-{index}-{}",
+                            view.server_id
+                        )))
+                        .on_click(move |_, _window, cx| {
+                            if let Some(shell) = read_view.upgrade() {
+                                shell.update(cx, |shell, cx| {
+                                    shell.mcp_resource_view =
+                                        Some(crate::manage::McpResourceView {
+                                            uri: read_uri.clone(),
+                                            loading: true,
+                                            result: None,
+                                        });
+                                    cx.notify();
+                                });
+                                if let Some(handle) = crate::runtime::runtime_handle() {
+                                    handle.read_mcp_resource(
+                                        read_server_id.clone(),
+                                        read_uri.clone(),
+                                    );
+                                }
+                            }
+                        })
                         .v_flex()
                         .child(
                             div()
@@ -1355,6 +1616,66 @@ pub(crate) fn open_browse_dialog(
                         ),
                 );
             }
+            let mut resource_panel = div().v_flex().gap_1();
+            if let Some(read) = &resource_view {
+                let close_view = refresh_view.clone();
+                resource_panel = resource_panel.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .truncate()
+                                .child(read.uri.clone()),
+                        )
+                        .child(
+                            Button::new("mcp-resource-close")
+                                .icon(IconName::Close)
+                                .small()
+                                .with_variant(ButtonVariant::Ghost)
+                                .on_click(move |_, _window, cx| {
+                                    if let Some(shell) = close_view.upgrade() {
+                                        shell.update(cx, |shell, cx| {
+                                            shell.mcp_resource_view = None;
+                                            cx.notify();
+                                        });
+                                    }
+                                }),
+                        ),
+                );
+                if read.loading {
+                    resource_panel = resource_panel.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(text.manage_mcp_resource_loading.clone()),
+                    );
+                } else if let Some(result) = &read.result {
+                    resource_panel = resource_panel.child(match result {
+                        Ok(content) => div()
+                            .id("mcp-resource-content")
+                            .h(px(220.))
+                            .overflow_y_scroll()
+                            .rounded_sm()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .p_2()
+                            .text_xs()
+                            .child(render_resource_content(content, &text))
+                            .into_any_element(),
+                        Err(_) => div()
+                            .text_xs()
+                            .text_color(cx.theme().danger)
+                            .child(text.manage_mcp_resource_failed.clone())
+                            .into_any_element(),
+                    });
+                }
+            }
+            content = content.child(resource_panel);
             content = content.child(entries);
             content = content.child(
                 Button::new("mcp-browse-refresh")
@@ -1476,11 +1797,16 @@ pub(crate) fn open_interaction_dialog(
     let Some(shell) = view.upgrade() else {
         return;
     };
-    let result_input = {
+    let (result_input, default_result) = {
         let shell = shell.read(cx);
-        shell.mcp_interaction_result_input.clone()
+        let default_result = shell
+            .mcp_interactions
+            .front()
+            .map(|request| default_interaction_result(&request.method))
+            .unwrap_or_default();
+        (shell.mcp_interaction_result_input.clone(), default_result)
     };
-    result_input.update(cx, |state, cx| state.set_value(String::new(), window, cx));
+    result_input.update(cx, |state, cx| state.set_value(default_result, window, cx));
     shell.update(cx, |shell, cx| {
         shell.mcp_interaction_error = None;
         cx.notify();
@@ -1535,7 +1861,7 @@ pub(crate) fn open_interaction_dialog(
             .child(dialog_field(
                 &text.manage_interaction_result_hint,
                 label_color,
-                Input::new(&result_input),
+                Textarea::new(&result_input).h(px(160.)),
             ));
         if let Some(error) = error {
             content = content.child(div().text_xs().text_color(cx.theme().danger).child(error));
@@ -1618,6 +1944,19 @@ fn answer_interaction(
         shell.mcp_interactions.pop_front();
         cx.notify();
     });
+    // The dialog stays open for the next ask: prefill its default response so
+    // a stale result never rides into the following request.
+    let next_default = {
+        let shell = shell.read(cx);
+        shell
+            .mcp_interactions
+            .front()
+            .map(|request| default_interaction_result(&request.method))
+    };
+    if let Some(default) = next_default {
+        let result_input = shell.read(cx).mcp_interaction_result_input.clone();
+        result_input.update(cx, |state, cx| state.set_value(default, window, cx));
+    }
     if let Some(handle) = crate::runtime::runtime_handle() {
         handle.submit_mcp_interaction(request.interaction_id.clone(), approve, result);
     } else {
@@ -1770,5 +2109,88 @@ mod tests {
             Some(serde_json::json!({ "ok": true }))
         );
         assert!(parse_interaction_result("{nope").is_err());
+    }
+
+    #[test]
+    fn interaction_defaults_follow_the_method() {
+        let sampling = default_interaction_result("sampling/createMessage");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&sampling).expect("sampling default parses");
+        assert_eq!(parsed["role"], "assistant");
+        assert_eq!(parsed["content"][0]["type"], "text");
+
+        let elicitation = default_interaction_result("elicitation/create");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&elicitation).expect("elicitation default parses");
+        assert_eq!(parsed["action"], "accept");
+    }
+
+    #[test]
+    fn resource_content_rendering_mirrors_the_web_browser() {
+        use openbitfun_core::service::mcp::protocol::{MCPResourceContent, ResourcesReadResult};
+        let text = crate::i18n::fallback_text(openbitfun_core::service::i18n::LocaleId::EnUS);
+        let content = |uri: &str,
+                       mime: Option<&str>,
+                       body: Option<&str>,
+                       blob: Option<&str>|
+         -> MCPResourceContent {
+            MCPResourceContent {
+                uri: uri.to_string(),
+                content: body.map(str::to_string),
+                blob: blob.map(str::to_string),
+                mime_type: mime.map(str::to_string),
+                annotations: None,
+                meta: None,
+            }
+        };
+
+        // A single entry renders with its mime header when present and as
+        // plain text without one (web resource-browser semantics).
+        let single = ResourcesReadResult {
+            contents: vec![content(
+                "file:///a.txt",
+                Some("text/plain"),
+                Some("hello"),
+                None,
+            )],
+        };
+        assert_eq!(
+            render_resource_content(&single, &text),
+            "[text/plain]\n\nhello"
+        );
+        let bare = ResourcesReadResult {
+            contents: vec![content("file:///a.txt", None, Some("hello"), None)],
+        };
+        assert_eq!(render_resource_content(&bare, &text), "hello");
+
+        // Binary payloads render the localized binary note.
+        let binary = ResourcesReadResult {
+            contents: vec![content(
+                "file:///img.png",
+                Some("image/png"),
+                None,
+                Some("aGk="),
+            )],
+        };
+        assert!(render_resource_content(&binary, &text).contains("Binary content"));
+
+        // Multiple entries get numbered headers and `---` separators.
+        let multi = ResourcesReadResult {
+            contents: vec![
+                content("file:///one.txt", Some("text/plain"), Some("one"), None),
+                content("file:///two.txt", None, Some("two"), None),
+            ],
+        };
+        let rendered = render_resource_content(&multi, &text);
+        assert!(rendered.contains("#1 file:///one.txt (text/plain)"));
+        assert!(rendered.contains("two"));
+        assert!(rendered.contains("---"));
+
+        // Empty contents render the empty note.
+        let empty = ResourcesReadResult { contents: vec![] };
+        assert_eq!(
+            render_resource_content(&empty, &text),
+            text.manage_mcp_resource_empty
+        );
     }
 }

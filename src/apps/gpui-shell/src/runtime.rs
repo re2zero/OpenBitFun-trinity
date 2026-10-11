@@ -284,6 +284,14 @@ pub(crate) enum RuntimeEvent {
     /// sampling); the turn parks until the shell answers through
     /// [`RuntimeHandle::submit_mcp_interaction`].
     McpInteractionAsked(Box<crate::manage::McpInteractionRequest>),
+    /// T2-7: the user JSON config snapshot (Cursor format) for the editor
+    /// dialog; the fingerprint guards concurrent edits.
+    McpJsonConfig(Result<crate::manage::McpJsonSnapshot, String>),
+    /// T2-7: a JSON config save finished; `Ok` means the file landed and the
+    /// running servers were reconciled.
+    McpJsonSaved(Result<(), String>),
+    /// T2-7: one resources/read call finished for the browse dialog.
+    McpResourceRead(Box<crate::manage::McpResourceReadOutcome>),
     /// A management action (agent creation, MCP lifecycle) failed; the
     /// settings pages surface it as a dismissible banner.
     ManageFailed(String),
@@ -1513,6 +1521,73 @@ impl RuntimeHandle {
         });
     }
 
+    /// T2-7: the user JSON config snapshot (Cursor format) for the editor
+    /// dialog. Same core read the desktop `load_mcp_json_config` command
+    /// serves.
+    pub(crate) fn load_mcp_json_config(&self) {
+        self.tokio.spawn(async move {
+            let result = match openbitfun_core::service::mcp::get_global_mcp_service() {
+                Some(service) => service
+                    .config_service()
+                    .load_mcp_json_config()
+                    .await
+                    .map(|snapshot| crate::manage::McpJsonSnapshot {
+                        json_config: snapshot.json_config,
+                        fingerprint: snapshot.fingerprint,
+                    })
+                    .map_err(|error| error.to_string()),
+                None => Err("MCP service is not initialized".to_string()),
+            };
+            publish(RuntimeEvent::McpJsonConfig(result));
+        });
+    }
+
+    /// T2-7: saves the edited JSON config through the desktop pipeline —
+    /// parse + validate + fingerprint check, then reconcile the running
+    /// servers with the previous/current config sets. The catalog refreshes
+    /// either way so statuses follow the file.
+    pub(crate) fn save_mcp_json_config(&self, json_config: String, expected_fingerprint: String) {
+        self.tokio.spawn(async move {
+            let result = save_mcp_json_config(&json_config, &expected_fingerprint).await;
+            if let Err(message) = &result {
+                tracing::warn!("Failed to save MCP JSON config: {message}");
+            }
+            publish(RuntimeEvent::McpJsonSaved(result));
+            publish(RuntimeEvent::McpCatalog(fetch_mcp_catalog().await));
+        });
+    }
+
+    /// T2-7: reads one resource through the server connection and routes the
+    /// outcome back to the browse dialog. Mirrors the desktop
+    /// `read_mcp_resource` command, including the surface-availability gate.
+    pub(crate) fn read_mcp_resource(&self, server_id: String, uri: String) {
+        self.tokio.spawn(async move {
+            let result = match openbitfun_core::service::mcp::get_global_mcp_service() {
+                Some(service) => {
+                    let manager = service.server_manager();
+                    if manager
+                        .server_available_for_context(&server_id, None, false)
+                        .await
+                    {
+                        match manager.get_connection(&server_id).await {
+                            Some(connection) => connection
+                                .read_resource(&uri)
+                                .await
+                                .map_err(|error| error.to_string()),
+                            None => Err(format!("MCP server not connected: {server_id}")),
+                        }
+                    } else {
+                        Err("MCP server is unavailable in this product surface".to_string())
+                    }
+                }
+                None => Err("MCP service is not initialized".to_string()),
+            };
+            publish(RuntimeEvent::McpResourceRead(Box::new(
+                crate::manage::McpResourceReadOutcome { uri, result },
+            )));
+        });
+    }
+
     /// M22: fetches global token-usage statistics for the settings usage
     /// page. Same core service the desktop dashboard reads; the result rides
     /// the pump as [`RuntimeEvent::UsageReady`].
@@ -1862,6 +1937,35 @@ async fn fetch_mcp_server_catalog(
             })
             .collect(),
     })
+}
+
+/// T2-7: the desktop `save_mcp_json_config` pipeline — parse/validate +
+/// fingerprint-checked replace, then reconcile the running servers between
+/// the previous and current config sets.
+async fn save_mcp_json_config(json_config: &str, expected_fingerprint: &str) -> Result<(), String> {
+    let Some(service) = openbitfun_core::service::mcp::get_global_mcp_service() else {
+        return Err("MCP service is not initialized".to_string());
+    };
+    let config_service = service.config_service();
+    let previous_configs = config_service
+        .load_all_configs()
+        .await
+        .map_err(|error| error.to_string())?;
+    config_service
+        .save_mcp_json_config(json_config, expected_fingerprint)
+        .await
+        .map_err(|error| error.to_string())?;
+    let current_configs = config_service
+        .load_all_configs()
+        .await
+        .map_err(|error| error.to_string())?;
+    service
+        .server_manager()
+        .reconcile_persisted_configs(previous_configs, current_configs)
+        .await
+        .map_err(|error| {
+            format!("MCP config was saved, but runtime reconciliation failed: {error}")
+        })
 }
 
 /// Installs the shell's backend-bus emitter: MCP interactive requests
