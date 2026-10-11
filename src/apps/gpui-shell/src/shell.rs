@@ -1046,6 +1046,9 @@ pub(crate) struct ShellWindow {
     usage_report: Option<Box<runtime::SessionUsageSummary>>,
     /// T2-15 Trinity console page state (event-driven) + its form inputs.
     pub(crate) trinity: crate::trinity::TrinityPageState,
+    /// T2-16 unread turns per session: turns that finished while the window
+    /// was inactive. Cleared per session on open, all via the tray action.
+    unread_turns: std::collections::BTreeMap<String, (u32, bool)>,
     pub(crate) trinity_recall_input: Entity<InputState>,
     pub(crate) trinity_add_content: Entity<TextareaState>,
     pub(crate) trinity_add_project: Entity<InputState>,
@@ -1212,6 +1215,7 @@ impl ShellWindow {
             search: Default::default(),
             search_input,
             trinity: Default::default(),
+            unread_turns: Default::default(),
             trinity_recall_input,
             trinity_add_content,
             trinity_add_project,
@@ -1461,6 +1465,9 @@ impl ShellWindow {
                 // Opening a session is a chat action: leave the settings or
                 // changes surface and show the transcript.
                 self.main_view = MainView::Chat;
+                // Opening the session is "reading it" (T2-16): its unread
+                // turns drop out of the tray badge.
+                self.clear_unread_session(&opened.session_id);
                 // A requested child view (subagent run / /btw) settles here:
                 // when the opened session is the awaited child its context
                 // attaches to the chat; a different session drops the wait
@@ -1641,6 +1648,7 @@ impl ShellWindow {
                     handle.reload_sessions(self.event_tx.clone());
                 }
                 self.notify_turn_finished(&session_id, failure.as_deref(), window, cx);
+                self.record_unread_turn(&session_id, failure.is_some(), window, cx);
             }
             RuntimeEvent::HistoryChanged { session_id } => {
                 if self
@@ -1926,6 +1934,15 @@ impl ShellWindow {
             RuntimeEvent::TrayShowWindow => {
                 window.activate_window();
                 cx.activate(true);
+                // The user lands on the open chat; that session is read.
+                if let Some(session_id) = self.chat.as_ref().map(|chat| chat.session_id.clone()) {
+                    self.clear_unread_session(&session_id);
+                }
+            }
+            RuntimeEvent::TrayMarkAllRead => {
+                self.unread_turns.clear();
+                self.sync_tray_unread();
+                cx.refresh_windows();
             }
             RuntimeEvent::QuitRequested => {
                 // Terminal PTYs die with the window; close them properly so
@@ -2305,6 +2322,47 @@ impl ShellWindow {
     /// active one (the D36 ⑤ trigger surface: any finished turn — success or
     /// failure — in a session with an open chat). Platforms without a
     /// notification daemon no-op silently.
+    /// Records one finished turn as unread when it landed while the window
+    /// was inactive, and pushes the folded snapshot to the tray.
+    fn record_unread_turn(
+        &mut self,
+        session_id: &str,
+        failed: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) {
+        if window.is_window_active() {
+            return;
+        }
+        let entry = self
+            .unread_turns
+            .entry(session_id.to_string())
+            .or_insert((0, false));
+        entry.0 += 1;
+        entry.1 |= failed;
+        self.sync_tray_unread();
+        cx.notify();
+    }
+
+    /// Clears one session's unread count (opening the session) and re-syncs
+    /// the tray.
+    fn clear_unread_session(&mut self, session_id: &str) {
+        if self.unread_turns.remove(session_id).is_some() {
+            self.sync_tray_unread();
+        }
+    }
+
+    /// Folds the per-session map into the tray snapshot (total + any-failed).
+    fn sync_tray_unread(&self) {
+        let count = self
+            .unread_turns
+            .values()
+            .map(|(count, _)| *count)
+            .sum::<u32>();
+        let any_failed = self.unread_turns.values().any(|(_, failed)| *failed);
+        crate::tray::update_unread(crate::tray::TrayUnread { count, any_failed });
+    }
+
     fn notify_turn_finished(
         &self,
         session_id: &str,

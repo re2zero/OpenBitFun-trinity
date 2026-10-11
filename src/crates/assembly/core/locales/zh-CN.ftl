@@ -469,6 +469,7 @@ gpui-shell-tray-show = 显示 OpenBitFun
 gpui-shell-tray-check-updates = 检查更新
 gpui-shell-tray-quit = 退出 OpenBitFun
 gpui-shell-tray-tooltip = OpenBitFun 正在运行
+gpui-shell-tray-mark-all-read = 标记全部已读
 gpui-shell-value-unsupported = 不受支持
 gpui-shell-settings-general = 通用
 gpui-shell-settings-version = 版本

@@ -38,6 +38,7 @@ struct TrayLabels {
     check_updates: String,
     quit: String,
     tooltip: String,
+    mark_all_read: String,
 }
 
 impl TrayLabels {
@@ -54,6 +55,7 @@ impl TrayLabels {
             check_updates: service.t("gpui-shell-tray-check-updates").await,
             quit: service.t("gpui-shell-tray-quit").await,
             tooltip: service.t("gpui-shell-tray-tooltip").await,
+            mark_all_read: service.t("gpui-shell-tray-mark-all-read").await,
         }
     }
 
@@ -63,13 +65,24 @@ impl TrayLabels {
             check_updates: "Check for updates".to_string(),
             quit: "Quit OpenBitFun".to_string(),
             tooltip: "OpenBitFun".to_string(),
+            mark_all_read: "Mark all read".to_string(),
         }
     }
+}
+
+/// Unread snapshot the shell pushes after every change (T2-16): turns that
+/// finished while the window was inactive, per-session counts folded into a
+/// total plus the any-failure flag that picks the badge color.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct TrayUnread {
+    pub count: u32,
+    pub any_failed: bool,
 }
 
 struct ShellTray {
     event_tx: tokio::sync::mpsc::UnboundedSender<RuntimeEvent>,
     labels: TrayLabels,
+    unread: TrayUnread,
 }
 
 impl ShellTray {
@@ -89,15 +102,21 @@ impl Tray for ShellTray {
     }
 
     fn tool_tip(&self) -> ToolTip {
+        // Unread turns surface in the tooltip; zero keeps the plain copy.
+        let description = if self.unread.count > 0 {
+            format!("{} ({})", self.labels.tooltip, self.unread.count)
+        } else {
+            self.labels.tooltip.clone()
+        };
         ToolTip {
             title: "OpenBitFun".to_string(),
-            description: self.labels.tooltip.clone(),
+            description,
             ..ToolTip::default()
         }
     }
 
     fn icon_pixmap(&self) -> Vec<Icon> {
-        tray_icon().into_iter().collect()
+        tray_icon(badge_dot(self.unread)).into_iter().collect()
     }
 
     /// Left click: show (and focus) the main window. There is no per-window
@@ -108,13 +127,25 @@ impl Tray for ShellTray {
     }
 
     fn menu(&self) -> Vec<MenuItem<Self>> {
-        vec![
-            StandardItem {
-                label: self.labels.show_window.clone(),
-                activate: Box::new(|tray: &mut Self| tray.send(RuntimeEvent::TrayShowWindow)),
-                ..StandardItem::default()
-            }
-            .into(),
+        let mut items: Vec<MenuItem<Self>> = vec![StandardItem {
+            label: self.labels.show_window.clone(),
+            activate: Box::new(|tray: &mut Self| tray.send(RuntimeEvent::TrayShowWindow)),
+            ..StandardItem::default()
+        }
+        .into()];
+        if self.unread.count > 0 {
+            items.push(
+                StandardItem {
+                    label: format!("{} ({})", self.labels.mark_all_read, self.unread.count),
+                    activate: Box::new(|tray: &mut Self| {
+                        tray.send(RuntimeEvent::TrayMarkAllRead);
+                    }),
+                    ..StandardItem::default()
+                }
+                .into(),
+            );
+        }
+        items.push(
             StandardItem {
                 label: self.labels.check_updates.clone(),
                 activate: Box::new(|tray: &mut Self| {
@@ -123,21 +154,38 @@ impl Tray for ShellTray {
                 ..StandardItem::default()
             }
             .into(),
-            MenuItem::Separator,
+        );
+        items.push(MenuItem::Separator);
+        items.push(
             StandardItem {
                 label: self.labels.quit.clone(),
                 activate: Box::new(|tray: &mut Self| tray.send(RuntimeEvent::QuitRequested)),
                 ..StandardItem::default()
             }
             .into(),
-        ]
+        );
+        items
     }
+}
+
+/// The badge dot overlaid on the brand icon: red when any unread turn
+/// failed, teal otherwise; `None` (zero unread) leaves the icon untouched.
+fn badge_dot(unread: TrayUnread) -> Option<(i32, i32, i32, [u8; 3])> {
+    if unread.count == 0 {
+        return None;
+    }
+    let color = if unread.any_failed {
+        [220, 38, 38]
+    } else {
+        [13, 148, 136]
+    };
+    Some((22, 22, 9, color))
 }
 
 /// Decodes the embedded brand PNG into the ARGB32 (network byte order)
 /// pixmap the SNI spec carries. Decoded once; a decode failure leaves the
 /// tray iconless rather than failing the shell.
-fn tray_icon() -> Option<Icon> {
+fn tray_icon(dot: Option<(i32, i32, i32, [u8; 3])>) -> Option<Icon> {
     static ARGB: OnceLock<Option<Vec<u8>>> = OnceLock::new();
     let data = ARGB.get_or_init(|| {
         let image::DynamicImage::ImageRgba8(rgba) =
@@ -152,11 +200,44 @@ fn tray_icon() -> Option<Icon> {
         Some(argb)
     });
     let data = data.as_ref()?;
+    let mut data = data.clone();
+    if let Some((cx, cy, radius, color)) = dot {
+        overlay_dot(&mut data, 32, 32, cx, cy, radius, color);
+    }
     Some(Icon {
         width: 32,
         height: 32,
-        data: data.clone(),
+        data,
     })
+}
+
+/// Paints an opaque filled circle into an ARGB32 pixmap (A,R,G,B byte order).
+fn overlay_dot(
+    data: &mut [u8],
+    width: i32,
+    height: i32,
+    cx: i32,
+    cy: i32,
+    radius: i32,
+    color: [u8; 3],
+) {
+    for y in (cy - radius)..=(cy + radius) {
+        for x in (cx - radius)..=(cx + radius) {
+            if x < 0 || y < 0 || x >= width || y >= height {
+                continue;
+            }
+            let dx = (x - cx) as f32;
+            let dy = (y - cy) as f32;
+            if dx * dx + dy * dy > (radius as f32) * (radius as f32) {
+                continue;
+            }
+            let offset = ((y * width + x) * 4) as usize;
+            data[offset] = 255;
+            data[offset + 1] = color[0];
+            data[offset + 2] = color[1];
+            data[offset + 3] = color[2];
+        }
+    }
 }
 
 /// Spawns the tray service. Called once from the runtime bootstrap after the
@@ -169,7 +250,11 @@ pub(crate) async fn spawn(
 ) {
     let labels = TrayLabels::resolve(locale).await;
     std::thread::spawn(move || {
-        let tray = ShellTray { event_tx, labels };
+        let tray = ShellTray {
+            event_tx,
+            labels,
+            unread: TrayUnread::default(),
+        };
         match tray.spawn() {
             Ok(handle) => {
                 let _ = TRAY.set(handle);
@@ -192,6 +277,16 @@ pub(crate) fn apply_locale(locale: LocaleId, cx: &App) {
         .foreground_executor()
         .block_on(TrayLabels::resolve(locale));
     handle.update(|tray| tray.labels = labels);
+}
+
+/// Pushes a new unread snapshot onto the tray (icon badge, tooltip suffix,
+/// and the mark-all-read menu item re-render). A tray that never came up is
+/// a no-op.
+pub(crate) fn update_unread(unread: TrayUnread) {
+    let Some(handle) = TRAY.get() else {
+        return;
+    };
+    handle.update(|tray| tray.unread = unread);
 }
 
 /// Launch-at-login: the same user-level autostart entry the desktop manages
@@ -242,6 +337,7 @@ mod tests {
         ShellTray {
             event_tx: tx,
             labels: TrayLabels::english(),
+            unread: TrayUnread::default(),
         }
     }
 
@@ -258,11 +354,27 @@ mod tests {
     }
 
     #[test]
+    fn unread_turns_add_the_mark_all_read_menu_item() {
+        let mut tray = tray();
+        assert_eq!(tray.menu().len(), 4, "no mark-all-read item at zero unread");
+        tray.unread = TrayUnread {
+            count: 2,
+            any_failed: false,
+        };
+        assert_eq!(
+            tray.menu().len(),
+            5,
+            "show, mark all read, check, sep, quit"
+        );
+    }
+
+    #[test]
     fn tray_activation_publishes_window_events() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tray = ShellTray {
             event_tx: tx,
             labels: TrayLabels::english(),
+            unread: TrayUnread::default(),
         };
         // Left click shows the window.
         Tray::activate(&mut tray, 0, 0);
@@ -280,10 +392,37 @@ mod tests {
 
     #[test]
     fn tray_icon_decodes_the_embedded_brand_png() {
-        let icon = tray_icon().expect("the embedded 32x32 hicolor icon decodes");
+        let icon = tray_icon(None).expect("the embedded 32x32 hicolor icon decodes");
         assert_eq!(icon.width, 32);
         assert_eq!(icon.height, 32);
         assert_eq!(icon.data.len(), 32 * 32 * 4, "ARGB32, four bytes per pixel");
+    }
+
+    #[test]
+    fn badge_dot_paints_only_the_unread_states() {
+        assert_eq!(
+            badge_dot(TrayUnread::default()),
+            None,
+            "zero unread: no dot"
+        );
+        let clean = badge_dot(TrayUnread {
+            count: 1,
+            any_failed: false,
+        });
+        assert_eq!(clean, Some((22, 22, 9, [13, 148, 136])));
+        let failed = badge_dot(TrayUnread {
+            count: 3,
+            any_failed: true,
+        });
+        assert_eq!(failed, Some((22, 22, 9, [220, 38, 38])));
+
+        // The overlay replaces pixels inside the circle, leaves the rest.
+        let mut data = vec![0u8; 32 * 32 * 4];
+        overlay_dot(&mut data, 32, 32, 22, 22, 9, [220, 38, 38]);
+        let center = (22 * 32 + 22) * 4;
+        assert_eq!(&data[center..center + 4], &[255, 220, 38, 38]);
+        let corner = 0;
+        assert_eq!(&data[corner..corner + 4], &[0, 0, 0, 0]);
     }
 
     #[test]

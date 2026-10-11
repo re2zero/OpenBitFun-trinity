@@ -336,6 +336,8 @@ pub(crate) enum RuntimeEvent {
     UsageActivityReady(Result<Box<openbitfun_services_core::token_usage::UsageStatistics>, String>),
     /// Web-search credential state for one provider (`provider`, `configured`).
     WebSearchStatus(Result<(String, bool), String>),
+    /// T2-16 tray mark-all-read: clears every session's unread turn count.
+    TrayMarkAllRead,
     /// T2-15 Trinity console: identity + live PSI state + the cognition
     /// trend, fetched together so the page flips atomically.
     TrinityStatusReady {
