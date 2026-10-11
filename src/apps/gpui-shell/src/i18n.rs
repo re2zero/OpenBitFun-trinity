@@ -416,6 +416,14 @@ pub(crate) struct ShellText {
     pub settings_logs_dir: String,
     pub settings_logs_open: String,
     pub settings_diagnostics_note: String,
+    pub settings_diagnostics_export: String,
+    pub settings_diagnostics_export_description: String,
+    pub settings_diagnostics_export_action: String,
+    pub settings_diagnostics_export_title: String,
+    pub settings_diagnostics_export_warning: String,
+    pub settings_diagnostics_export_confirm: String,
+    pub settings_diagnostics_export_success: String,
+    pub settings_diagnostics_export_failed: String,
 }
 
 impl Global for ShellText {}
@@ -1135,10 +1143,27 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_logs_dir: "Log directory".to_string(),
         settings_logs_open: "Open".to_string(),
         settings_diagnostics_note: {
-            "This shell logs to stdout; the desktop app's log bundle export is a \
-             desktop capability."
+            "Logs are written per session under the logs root; the bundle \
+             keeps the five most recent sessions."
                 .to_string()
         },
+        settings_diagnostics_export: "Diagnostics Bundle".to_string(),
+        settings_diagnostics_export_description: {
+            "Export recent logs, crash reports, and runtime information as a \
+             ZIP file; nothing is uploaded automatically."
+                .to_string()
+        },
+        settings_diagnostics_export_action: "Export Diagnostics".to_string(),
+        settings_diagnostics_export_title: "Export diagnostics bundle?".to_string(),
+        settings_diagnostics_export_warning: {
+            "The bundle may contain local paths, runtime details, and error \
+             information. Save it only to a trusted location and review it \
+             before sharing."
+                .to_string()
+        },
+        settings_diagnostics_export_confirm: "Export".to_string(),
+        settings_diagnostics_export_success: "Diagnostics bundle exported".to_string(),
+        settings_diagnostics_export_failed: "Failed to export diagnostics bundle".to_string(),
     }
 }
 
@@ -1613,6 +1638,28 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         settings_logs_dir: service.t("gpui-shell-settings-logs-dir").await,
         settings_logs_open: service.t("gpui-shell-settings-logs-open").await,
         settings_diagnostics_note: service.t("gpui-shell-settings-diagnostics-note").await,
+        settings_diagnostics_export: service.t("gpui-shell-settings-diagnostics-export").await,
+        settings_diagnostics_export_description: service
+            .t("gpui-shell-settings-diagnostics-export-description")
+            .await,
+        settings_diagnostics_export_action: service
+            .t("gpui-shell-settings-diagnostics-export-action")
+            .await,
+        settings_diagnostics_export_title: service
+            .t("gpui-shell-settings-diagnostics-export-title")
+            .await,
+        settings_diagnostics_export_warning: service
+            .t("gpui-shell-settings-diagnostics-export-warning")
+            .await,
+        settings_diagnostics_export_confirm: service
+            .t("gpui-shell-settings-diagnostics-export-confirm")
+            .await,
+        settings_diagnostics_export_success: service
+            .t("gpui-shell-settings-diagnostics-export-success")
+            .await,
+        settings_diagnostics_export_failed: service
+            .t("gpui-shell-settings-diagnostics-export-failed")
+            .await,
     }
 }
 

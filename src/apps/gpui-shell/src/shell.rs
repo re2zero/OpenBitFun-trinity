@@ -1846,10 +1846,12 @@ impl ShellWindow {
                 // Terminal PTYs die with the window; close them properly so
                 // no child is orphaned by the exit.
                 self.close_all_terminal_tabs(cx);
+                crate::diagnostics::mark_clean_shutdown("quit_requested");
                 cx.quit();
             }
             RuntimeEvent::RestartRequested => {
                 self.close_all_terminal_tabs(cx);
+                crate::diagnostics::mark_clean_shutdown("restart_requested");
                 match crate::update::spawn_detached_restart() {
                     Ok(()) => tracing::info!("Restart watcher spawned"),
                     Err(error) => tracing::error!("Restart failed: {error:#}"),
@@ -5067,17 +5069,41 @@ fn receive_runtime_events(
 /// Installs the tracing subscriber honoring `RUST_LOG`. Called once from the
 /// binary entry before any logging happens. The filter is installed behind a
 /// reload handle so `app.logging.level` applies live (M22 diagnostics page).
+/// Besides stdout the run logs into its session directory under the logs
+/// root, which is what the diagnostics bundle export later aggregates.
 pub fn init_tracing() {
     let filter = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
+    crate::diagnostics::set_effective_level(&filter);
     let (filter_layer, handle) =
         tracing_subscriber::reload::Layer::new(tracing_subscriber::EnvFilter::new(filter));
     let _ = LOG_FILTER.set(handle);
     use tracing_subscriber::layer::SubscriberExt as _;
     use tracing_subscriber::util::SubscriberInitExt as _;
-    let _ = tracing_subscriber::registry()
+
+    let session_log_dir = crate::diagnostics::create_session_log_dir();
+    let startup_trace_id = format!(
+        "{}-{}",
+        chrono::Local::now().format("%Y%m%dT%H%M%S"),
+        std::process::id()
+    );
+    crate::diagnostics::initialize_run_state(session_log_dir.clone(), &startup_trace_id);
+
+    let registry = tracing_subscriber::registry()
         .with(filter_layer)
-        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stdout))
-        .try_init();
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stdout));
+    // An absent file just drops the layer; `Option<Layer>` is a layer too.
+    let file_layer = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(session_log_dir.join(crate::diagnostics::SHELL_LOG_FILE))
+        .ok()
+        .map(|file| {
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(std::sync::Mutex::new(file))
+        });
+    let _ = registry.with(file_layer).try_init();
+    crate::diagnostics::install_panic_hook();
 }
 
 /// Live handle onto the log filter; `L` is the inner filter type and `S` the
@@ -5089,6 +5115,7 @@ static LOG_FILTER: std::sync::OnceLock<LogFilterHandle> = std::sync::OnceLock::n
 /// Applies one `app.logging.level` value to the live filter. Before the
 /// subscriber exists this is a no-op.
 pub(crate) fn apply_log_level(level: &str) {
+    crate::diagnostics::set_effective_level(level);
     if let Some(handle) = LOG_FILTER.get() {
         let _ = handle.reload(tracing_subscriber::EnvFilter::new(level.to_string()));
         tracing::info!("Log level applied: {level}");

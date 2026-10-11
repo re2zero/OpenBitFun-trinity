@@ -83,6 +83,22 @@ pub(crate) const WEB_SEARCH_HTTP_HEADER_NAME_PATH: &str =
 /// reload handle.
 pub(crate) const LOGGING_LEVEL_PATH: &str = "app.logging.level";
 
+/// Inline export status for the diagnostics page as `(succeeded, message)`.
+/// A global because the page is rebuilt every frame from `cx` alone.
+pub(crate) struct DiagnosticsNotice(pub Option<(bool, String)>);
+
+impl Global for DiagnosticsNotice {}
+
+impl DiagnosticsNotice {
+    pub(crate) fn current(cx: &App) -> Option<(bool, String)> {
+        cx.try_global::<Self>().and_then(|notice| notice.0.clone())
+    }
+
+    pub(crate) fn set(message: Option<(bool, String)>, cx: &mut App) {
+        cx.set_global(Self(message));
+    }
+}
+
 /// Serialized close-button values the shell offers.
 pub(crate) const CLOSE_QUIT: &str = "quit";
 pub(crate) const CLOSE_MINIMIZE: &str = "minimize_to_tray";
@@ -2728,6 +2744,35 @@ fn diagnostics_page(
     // Keep the weak handle alive for future window-bound diagnostics state.
     let _ = view;
 
+    let owned_text = text.clone();
+    let export_field = SettingField::render(move |_options, _window, cx| {
+        let mut column = div().flex().flex_col().gap_2().w_full();
+        if let Some((succeeded, message)) = DiagnosticsNotice::current(cx) {
+            column = column.child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_sm()
+                    .text_color(if succeeded {
+                        cx.theme().foreground
+                    } else {
+                        cx.theme().danger
+                    })
+                    .child(message),
+            );
+        }
+        column = column.child(
+            Button::new("diagnostics-export")
+                .label(owned_text.settings_diagnostics_export_action.clone())
+                .small()
+                .with_variant(ButtonVariant::Secondary)
+                .on_click(|_, window, cx| {
+                    open_export_confirm(window, cx);
+                }),
+        );
+        column.into_any_element()
+    });
+
     SettingPage::new(text.settings_diagnostics.clone())
         .icon(IconName::Activity)
         .resettable(false)
@@ -2736,7 +2781,76 @@ fn diagnostics_page(
                 .description(text.settings_logging_level_description.clone()),
             SettingItem::new(text.settings_logs_dir.clone(), logs_field)
                 .description(text.settings_diagnostics_note.clone()),
+            SettingItem::new(text.settings_diagnostics_export.clone(), export_field)
+                .description(text.settings_diagnostics_export_description.clone()),
         ]))
+}
+
+/// Opens the export confirmation; the bundle is written on confirm only, so
+/// the "reads recent logs" step never fires from the row directly.
+fn open_export_confirm(window: &mut Window, cx: &mut App) {
+    let confirm = move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
+        let text = i18n::current(cx);
+        match crate::diagnostics::export_diagnostics_bundle() {
+            Ok(info) => {
+                tracing::info!("Diagnostics bundle exported: {}", info.bundle_path);
+                if let Some(parent) = std::path::Path::new(&info.bundle_path).parent() {
+                    open_path_in_file_manager(parent);
+                }
+                DiagnosticsNotice::set(
+                    Some((true, text.settings_diagnostics_export_success.clone())),
+                    cx,
+                );
+            }
+            Err(error) => {
+                tracing::error!("Failed to export diagnostics bundle: {error}");
+                DiagnosticsNotice::set(
+                    Some((
+                        false,
+                        format!("{} ({error})", text.settings_diagnostics_export_failed),
+                    )),
+                    cx,
+                );
+            }
+        }
+        window.close_dialog(cx);
+        cx.refresh_windows();
+    };
+    let cancel = move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
+        window.close_dialog(cx);
+    };
+
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let text = i18n::current(cx);
+        dialog
+            .title(div().child(text.settings_diagnostics_export_title.clone()))
+            .child(
+                div()
+                    .w(px(420.))
+                    .text_sm()
+                    .text_color(cx.theme().foreground)
+                    .child(text.settings_diagnostics_export_warning.clone()),
+            )
+            .footer(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("diagnostics-export-cancel")
+                            .label(text.session_action_cancel.clone())
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(cancel.clone()),
+                    )
+                    .child(
+                        Button::new("diagnostics-export-confirm")
+                            .label(text.settings_diagnostics_export_confirm.clone())
+                            .with_variant(ButtonVariant::Primary)
+                            .on_click(confirm.clone()),
+                    ),
+            )
+    });
 }
 
 /// Opens the shared log directory in the platform file manager. Failures are
@@ -2745,15 +2859,20 @@ fn open_logs_directory() {
     let Ok(manager) = openbitfun_core::infrastructure::try_get_path_manager_arc() else {
         return;
     };
-    let dir = manager.logs_dir();
+    open_path_in_file_manager(&manager.logs_dir());
+}
+
+/// Opens a directory in the platform file manager. Failures are logged;
+/// there is nothing to show in the window for them.
+fn open_path_in_file_manager(dir: &std::path::Path) {
     match openbitfun_services_core::process_manager::create_command("xdg-open")
-        .arg(&dir)
+        .arg(dir)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
     {
-        Ok(_) => tracing::info!("Opened log directory {}", dir.display()),
+        Ok(_) => tracing::info!("Opened directory {}", dir.display()),
         Err(error) => tracing::warn!("Failed to open {}: {error}", dir.display()),
     }
 }
