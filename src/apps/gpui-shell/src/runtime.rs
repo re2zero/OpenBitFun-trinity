@@ -323,6 +323,9 @@ pub(crate) enum RuntimeEvent {
     AutostartState(bool),
     /// Global token-usage statistics for the settings usage page.
     UsageReady(Result<Box<openbitfun_services_core::token_usage::UsageStatistics>, String>),
+    /// T2-8 activity heatmap snapshot: the fixed six-month custom-range
+    /// window at day granularity, same service as [`RuntimeEvent::UsageReady`].
+    UsageActivityReady(Result<Box<openbitfun_services_core::token_usage::UsageStatistics>, String>),
     /// Web-search credential state for one provider (`provider`, `configured`).
     WebSearchStatus(Result<(String, bool), String>),
 }
@@ -1618,6 +1621,42 @@ impl RuntimeHandle {
                 tracing::warn!("Usage statistics for {time_range} failed: {message}");
             }
             publish(RuntimeEvent::UsageReady(result));
+        });
+    }
+
+    /// T2-8: fetches the activity heatmap window — a fixed six-month
+    /// custom-range request at day granularity (web
+    /// `usageActivityRequestRange` semantics, UTC-anchored). The result rides
+    /// the pump as [`RuntimeEvent::UsageActivityReady`].
+    pub(crate) fn fetch_usage_activity(&self) {
+        self.tokio.spawn(async move {
+            let end = chrono::Utc::now();
+            let start = crate::settings::activity_window_start(end);
+            let result =
+                match openbitfun_core::service::token_usage::get_global_token_usage_service() {
+                    Some(service) => {
+                        let request =
+                            openbitfun_services_core::token_usage::TokenUsageStatisticsRequest {
+                                time_range: "custom".to_string(),
+                                granularity: "day".to_string(),
+                                start: Some(start),
+                                end: Some(end),
+                                time_zone: None,
+                                include_subagent: true,
+                                filter_kind: Default::default(),
+                                filter_query: None,
+                            };
+                        match service.get_statistics_for_request(request).await {
+                            Ok(stats) => Ok(Box::new(stats)),
+                            Err(error) => Err(format!("{error:#}")),
+                        }
+                    }
+                    None => Err("token usage service is not available".to_string()),
+                };
+            if let Err(message) = &result {
+                tracing::warn!("Usage activity statistics failed: {message}");
+            }
+            publish(RuntimeEvent::UsageActivityReady(result));
         });
     }
 

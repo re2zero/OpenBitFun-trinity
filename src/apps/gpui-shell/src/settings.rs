@@ -1500,8 +1500,14 @@ fn usage_page(
     view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
 ) -> SettingPage {
     let owned_text = text.clone();
+    let stats_view = view.clone();
     let range_field = SettingField::render(move |_options, _window, cx| {
-        usage_stats_field(view.clone(), &owned_text, cx)
+        usage_stats_field(stats_view.clone(), &owned_text, cx)
+    });
+    let activity_view = view;
+    let activity_text = text.clone();
+    let activity_field = SettingField::render(move |_options, _window, cx| {
+        usage_activity_field(activity_view.clone(), &activity_text, cx)
     });
 
     SettingPage::new(text.settings_usage.clone())
@@ -1511,6 +1517,11 @@ fn usage_page(
             text.settings_usage_range.clone(),
             range_field,
         )]))
+        .group(SettingGroup::new().items(vec![SettingItem::new(
+            text.usage_activity_title.clone(),
+            activity_field,
+        )
+        .description(text.usage_activity_description.clone())]))
 }
 
 /// One selectable time range of the usage page; the values are the shared
@@ -1531,6 +1542,467 @@ fn usage_range_label(value: &str, text: &ShellText) -> String {
         "all" => text.settings_usage_all.clone(),
         other => other.to_string(),
     }
+}
+
+/// Compact token count for chart axis labels: `960`, `12.3k`, `3.4M`, `1.2B`.
+fn format_token_compact(value: f64) -> String {
+    let (divisor, suffix) = if value >= 1_000_000_000. {
+        (1_000_000_000., "B")
+    } else if value >= 1_000_000. {
+        (1_000_000., "M")
+    } else if value >= 1_000. {
+        (1_000., "k")
+    } else {
+        return format!("{}", value.round() as u64);
+    };
+    let scaled = value / divisor;
+    if scaled >= 100. {
+        format!("{scaled:.0}{suffix}")
+    } else {
+        format!("{scaled:.1}{suffix}")
+    }
+}
+
+/// Smallest "nice" axis ceiling >= value (the web dashboard's `niceMax`):
+/// the leading digit rounds up to 1 / 2 / 2.5 / 5 / 10 times a power of ten.
+fn nice_max(value: f64) -> f64 {
+    if value <= 0. {
+        return 1.;
+    }
+    let magnitude = 10f64.powf(value.log10().floor());
+    let normalized = value / magnitude;
+    let step = if normalized <= 1. {
+        1.
+    } else if normalized <= 2. {
+        2.
+    } else if normalized <= 2.5 {
+        2.5
+    } else if normalized <= 5. {
+        5.
+    } else {
+        10.
+    };
+    step * magnitude
+}
+
+/// One trend bar label: `MM-DD`, or `MM-DD HH:00` for hourly buckets.
+fn trend_bucket_label(bucket: chrono::DateTime<chrono::Utc>, hourly: bool) -> String {
+    if hourly {
+        bucket.format("%m-%d %H:00").to_string()
+    } else {
+        bucket.format("%m-%d").to_string()
+    }
+}
+
+/// UTC window for the activity heatmap: the day after the same day-of-month
+/// six months back, through today's midnight (web `calendarWindow` port,
+/// UTC-anchored — the shell requests no IANA zone, matching the service's
+/// default bucketing).
+pub(crate) fn activity_window_start(
+    today: chrono::DateTime<chrono::Utc>,
+) -> chrono::DateTime<chrono::Utc> {
+    use chrono::{Datelike, TimeZone};
+    let end_day = today.date_naive();
+    let first_of_month = end_day.with_day(1).expect("first day exists");
+    let start_month = first_of_month
+        .checked_sub_months(chrono::Months::new(6))
+        .unwrap_or(first_of_month);
+    let next_month = if start_month.month() == 12 {
+        chrono::NaiveDate::from_ymd_opt(start_month.year() + 1, 1, 1)
+    } else {
+        chrono::NaiveDate::from_ymd_opt(start_month.year(), start_month.month() + 1, 1)
+    }
+    .expect("valid first day");
+    let last_day = next_month.pred_opt().expect("date exists");
+    let day = end_day.day().min(last_day.day()) + 1;
+    // A day past the month's end rolls over, exactly like the web's
+    // `setUTCDate` overflow (e.g. Oct 31 -> May 1).
+    let start_day = start_month.with_day(day).unwrap_or(next_month);
+    start_day
+        .and_hms_opt(0, 0, 0)
+        .map(|naive| chrono::Utc.from_utc_datetime(&naive))
+        .unwrap_or(today)
+}
+
+/// One day cell of the activity heatmap.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ActivityCell {
+    pub(crate) tokens: u64,
+    pub(crate) level: u8,
+}
+
+/// GitHub-style activity grid: Monday-first weeks, `week_count` columns of
+/// seven day rows. Cells outside the window stay `None` (padding).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ActivityGrid {
+    /// Column-major: index = week * 7 + weekday (row 0 = Monday).
+    pub(crate) cells: Vec<Option<ActivityCell>>,
+    pub(crate) week_count: usize,
+    pub(crate) total_tokens: u64,
+}
+
+/// Aggregates trend points into the activity grid (web `buildUsageActivity`
+/// port): daily input+output totals (cache reads/writes already ride inside
+/// the input figure), levels 0-4 scaled against the peak day.
+pub(crate) fn build_activity_grid(
+    points: &[openbitfun_services_core::token_usage::UsageTrendPoint],
+    today: chrono::DateTime<chrono::Utc>,
+) -> ActivityGrid {
+    use chrono::{Datelike, Duration};
+    let start = activity_window_start(today);
+    let end_day = today.date_naive();
+    let start_day = start.date_naive();
+    let mut totals: std::collections::HashMap<chrono::NaiveDate, u64> =
+        std::collections::HashMap::new();
+    for point in points {
+        let tokens = point.input_tokens + point.output_tokens;
+        totals
+            .entry(point.bucket.date_naive())
+            .and_modify(|total| *total += tokens)
+            .or_insert(tokens);
+    }
+    let offset = start.weekday().num_days_from_monday() as i64;
+    let grid_start = start_day - Duration::days(offset);
+    let day_count = (end_day - start_day).num_days() + 1;
+    let week_count = ((day_count + offset) as usize).div_ceil(7);
+    let mut cells = Vec::with_capacity(week_count * 7);
+    let mut total_tokens = 0u64;
+    for index in 0..week_count * 7 {
+        let day = grid_start + Duration::days(index as i64);
+        if day < start_day || day > end_day {
+            cells.push(None);
+            continue;
+        }
+        let tokens = totals.get(&day).copied().unwrap_or(0);
+        total_tokens += tokens;
+        cells.push(Some(ActivityCell { tokens, level: 0 }));
+    }
+    let peak = cells
+        .iter()
+        .flatten()
+        .map(|cell| cell.tokens)
+        .max()
+        .unwrap_or(0);
+    for cell in cells.iter_mut().flatten() {
+        cell.level = if cell.tokens > 0 {
+            let scaled = (cell.tokens as f64 / peak as f64 * 4.).ceil();
+            (scaled as u8).min(4)
+        } else {
+            0
+        };
+    }
+    ActivityGrid {
+        cells,
+        week_count,
+        total_tokens,
+    }
+}
+
+/// Heatmap cell color: the web heatmap ramps `status-info-emphasis` over the
+/// border color at levels 1-4 (40/60/80/100%).
+fn activity_level_color(level: u8, cx: &App) -> gpui_kit::Hsla {
+    match level {
+        0 => cx.theme().border,
+        1 => cx.theme().info.opacity(0.4),
+        2 => cx.theme().info.opacity(0.6),
+        3 => cx.theme().info.opacity(0.8),
+        _ => cx.theme().info,
+    }
+}
+
+/// The trend chart: stacked input/output bars over the last (up to) 90
+/// buckets, mirroring the web dashboard's TrendChart — same visible-bucket
+/// cap, nice-max axis, range line, and legend. Self-drawn with plain divs.
+fn render_usage_trend(
+    stats: &openbitfun_services_core::token_usage::UsageStatistics,
+    text: &ShellText,
+    cx: &mut App,
+) -> gpui_kit::AnyElement {
+    use openbitfun_services_core::token_usage::UsageGranularity;
+    const MAX_BARS: usize = 90;
+    const PLOT_HEIGHT: f32 = 120.;
+    let visible: Vec<_> = stats.trend.iter().rev().take(MAX_BARS).rev().collect();
+    if visible.is_empty() {
+        return div().into_any_element();
+    }
+    let max_tokens = nice_max(
+        visible
+            .iter()
+            .map(|point| (point.input_tokens + point.output_tokens) as f64)
+            .fold(0., f64::max),
+    ) as f32;
+    let visible_total: u64 = visible
+        .iter()
+        .map(|point| point.input_tokens + point.output_tokens)
+        .sum();
+    let partial = visible.len() < stats.trend.len() || visible_total < stats.total_tokens;
+    let hourly = stats.granularity == UsageGranularity::Hour;
+    let first = trend_bucket_label(visible[0].bucket, hourly);
+    let last = trend_bucket_label(visible[visible.len() - 1].bucket, hourly);
+    let mut range_line = i18n::usage_trend_range(&first, &last, cx);
+    if partial {
+        range_line.push_str(" · ");
+        range_line.push_str(&text.usage_trend_partial);
+    }
+
+    let mut plot = div().relative().flex_1().h(px(PLOT_HEIGHT));
+    for fraction in [1.0f32, 0.5, 0.0] {
+        plot = plot.child(
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .top(px((1. - fraction) * PLOT_HEIGHT))
+                .h(px(1.))
+                .bg(cx.theme().border),
+        );
+    }
+    let mut bars = div().absolute().inset_0().flex().items_end();
+    for point in &visible {
+        let input_height = if point.input_tokens > 0 {
+            (point.input_tokens as f32 / max_tokens * PLOT_HEIGHT).max(1.)
+        } else {
+            0.
+        };
+        let output_height = if point.output_tokens > 0 {
+            (point.output_tokens as f32 / max_tokens * PLOT_HEIGHT).max(1.)
+        } else {
+            0.
+        };
+        bars = bars.child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .flex()
+                .items_end()
+                .justify_center()
+                .child(
+                    div()
+                        .v_flex()
+                        .justify_end()
+                        .w(px(14.))
+                        .max_w_full()
+                        .when(output_height > 0., |bar| {
+                            bar.child(div().w_full().h(px(output_height)).bg(cx.theme().chart_2))
+                        })
+                        .when(input_height > 0., |bar| {
+                            bar.child(div().w_full().h(px(input_height)).bg(cx.theme().info))
+                        }),
+                ),
+        );
+    }
+    plot = plot.child(bars);
+    let axis_label = |value: f64| {
+        div()
+            .text_xs()
+            .text_color(cx.theme().muted_foreground)
+            .child(format_token_compact(value))
+    };
+    let gutter = div()
+        .relative()
+        .w(px(44.))
+        .h(px(PLOT_HEIGHT))
+        .flex_shrink_0()
+        .child(
+            axis_label(max_tokens as f64)
+                .absolute()
+                .top(px(0.))
+                .left_0(),
+        )
+        .child(
+            axis_label(max_tokens as f64 * 0.5)
+                .absolute()
+                .top(px(PLOT_HEIGHT * 0.5 - 7.))
+                .left_0(),
+        )
+        .child(axis_label(0.).absolute().bottom(px(0.)).left_0());
+
+    let mid = visible.len() / 2;
+    let mut column = div().v_flex().gap_1().w_full();
+    column = column.child(
+        div()
+            .text_xs()
+            .text_color(cx.theme().muted_foreground)
+            .child(text.usage_trend_title.clone()),
+    );
+    column = column.child(
+        div()
+            .text_xs()
+            .text_color(cx.theme().muted_foreground)
+            .child(range_line),
+    );
+    column = column.child(
+        div()
+            .flex()
+            .items_stretch()
+            .gap_2()
+            .child(gutter)
+            .child(plot),
+    );
+    column = column.child(
+        div()
+            .flex()
+            .justify_between()
+            .text_xs()
+            .text_color(cx.theme().muted_foreground)
+            .child(div().child(first))
+            .child(div().child(trend_bucket_label(visible[mid].bucket, hourly)))
+            .child(div().child(last)),
+    );
+    column = column.child(
+        div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(div().w(px(8.)).h(px(8.)).rounded_sm().bg(cx.theme().info))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(text.usage_trend_input.clone()),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        div()
+                            .w(px(8.))
+                            .h(px(8.))
+                            .rounded_sm()
+                            .bg(cx.theme().chart_2),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(text.usage_trend_output.clone()),
+                    ),
+            ),
+    );
+    column.into_any_element()
+}
+
+/// The activity heatmap field: renders the six-month snapshot from the window
+/// state; the fetch is kicked off when the settings view opens (same path as
+/// the range statistics), the refresh button re-fetches both.
+pub(crate) fn usage_activity_field(
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    text: &ShellText,
+    cx: &mut App,
+) -> gpui_kit::AnyElement {
+    let Some(shell) = view.upgrade() else {
+        return div().into_any_element();
+    };
+    let activity = shell.read(cx).usage_activity.clone();
+    let Some(activity) = activity else {
+        return div()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .child(text.settings_usage_loading.clone())
+            .into_any_element();
+    };
+    match activity {
+        Ok(stats) => render_usage_activity(&stats, text, cx),
+        Err(message) => {
+            tracing::warn!("Usage activity snapshot unavailable: {message}");
+            div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(text.settings_usage_empty.clone())
+                .into_any_element()
+        }
+    }
+}
+
+/// The activity heatmap: GitHub-style day grid (Monday-first weeks, 11px
+/// round cells, levels 0-4), weekday labels, and the less-to-more legend with
+/// the window total. Month labels and per-day tooltips stay web-only.
+fn render_usage_activity(
+    stats: &openbitfun_services_core::token_usage::UsageStatistics,
+    text: &ShellText,
+    cx: &mut App,
+) -> gpui_kit::AnyElement {
+    const CELL: f32 = 11.;
+    const GAP: f32 = 3.;
+    let grid = build_activity_grid(&stats.trend, chrono::Utc::now());
+    let muted = cx.theme().muted_foreground;
+    let label = |value: String| div().text_xs().text_color(muted).child(value);
+
+    let mut weekday_column = div().v_flex().gap(px(GAP)).flex_shrink_0();
+    for row in 0..7usize {
+        let name = match row {
+            0 => Some(text.usage_activity_mon.clone()),
+            2 => Some(text.usage_activity_wed.clone()),
+            4 => Some(text.usage_activity_fri.clone()),
+            6 => Some(text.usage_activity_sun.clone()),
+            _ => None,
+        };
+        weekday_column = weekday_column.child(
+            div()
+                .w(px(20.))
+                .h(px(CELL))
+                .flex()
+                .items_center()
+                .when_some(name, |row, name| row.child(label(name))),
+        );
+    }
+    let mut grid_element = div().flex().gap(px(GAP)).min_w_0();
+    for week in 0..grid.week_count {
+        let mut week_column = div().v_flex().gap(px(GAP));
+        for row in 0..7usize {
+            week_column = week_column.child(match &grid.cells[week * 7 + row] {
+                Some(cell) => div()
+                    .w(px(CELL))
+                    .h(px(CELL))
+                    .flex_shrink_0()
+                    .rounded_full()
+                    .bg(activity_level_color(cell.level, cx)),
+                None => div().w(px(CELL)).h(px(CELL)).flex_shrink_0(),
+            });
+        }
+        grid_element = grid_element.child(week_column);
+    }
+
+    let mut legend = div().flex().items_center().gap_1();
+    legend = legend.child(label(text.usage_activity_less.clone()));
+    for level in 0..=4u8 {
+        legend = legend.child(
+            div()
+                .w(px(CELL))
+                .h(px(CELL))
+                .rounded_full()
+                .bg(activity_level_color(level, cx)),
+        );
+    }
+    legend = legend.child(label(text.usage_activity_more.clone()));
+
+    let mut column = div().v_flex().gap_2().w_full();
+    column = column.child(
+        div()
+            .flex()
+            .items_start()
+            .gap(px(2.))
+            .child(weekday_column)
+            .child(grid_element),
+    );
+    column = column.child(
+        div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .child(label(i18n::usage_activity_total(grid.total_tokens, cx)))
+            .child(legend),
+    );
+    column.into_any_element()
 }
 
 fn usage_stats_field(
@@ -1600,10 +2072,14 @@ fn usage_stats_field(
                 let Some(target) = refresh_view.upgrade() else {
                     return;
                 };
-                target.update(cx, |this, _| this.usage_loading = true);
+                target.update(cx, |this, _| {
+                    this.usage_loading = true;
+                    this.usage_activity_loading = true;
+                });
                 let range = target.read(cx).usage_range.clone();
                 if let Some(handle) = crate::runtime::runtime_handle() {
                     handle.fetch_usage_stats(range);
+                    handle.fetch_usage_activity();
                 }
             }),
     );
@@ -1672,6 +2148,7 @@ fn usage_stats_field(
         ));
     }
     column = column.child(totals);
+    column = column.child(render_usage_trend(&stats, text, cx));
 
     if !stats.by_model.is_empty() {
         column = column.child(
@@ -2194,6 +2671,7 @@ fn preset_from_value(value: &str) -> Option<PermissionPolicyPreset> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone as _;
     use openbitfun_core::service::i18n::LocaleId;
 
     fn sample_text() -> ShellText {
@@ -2408,5 +2886,110 @@ mod tests {
             );
             assert_eq!(active_preset(cx), theme_openbitfun::LIGHT_PRESET_ID);
         });
+    }
+
+    fn trend_point(
+        bucket: chrono::DateTime<chrono::Utc>,
+        input: u64,
+        output: u64,
+    ) -> openbitfun_services_core::token_usage::UsageTrendPoint {
+        openbitfun_services_core::token_usage::UsageTrendPoint {
+            bucket,
+            input_tokens: input,
+            output_tokens: output,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            cache_hit_rate: None,
+        }
+    }
+
+    #[test]
+    fn nice_max_follows_the_web_axis_steps() {
+        assert_eq!(nice_max(0.), 1.);
+        assert_eq!(nice_max(4.), 5.);
+        assert_eq!(nice_max(2.2), 2.5);
+        assert_eq!(nice_max(260.), 500.);
+        assert_eq!(nice_max(7_500.), 10_000.);
+    }
+
+    #[test]
+    fn compact_token_labels_abbreviate_large_counts() {
+        assert_eq!(format_token_compact(999.), "999");
+        assert_eq!(format_token_compact(1_000.), "1.0k");
+        assert_eq!(format_token_compact(12_340.), "12.3k");
+        assert_eq!(format_token_compact(150_000.), "150k");
+        assert_eq!(format_token_compact(3_400_000.), "3.4M");
+        assert_eq!(format_token_compact(1_200_000_000.), "1.2B");
+    }
+
+    #[test]
+    fn trend_labels_show_times_only_for_hourly_buckets() {
+        let bucket = chrono::Utc
+            .with_ymd_and_hms(2026, 10, 11, 9, 30, 0)
+            .unwrap();
+        assert_eq!(trend_bucket_label(bucket, false), "10-11");
+        assert_eq!(trend_bucket_label(bucket, true), "10-11 09:00");
+    }
+
+    #[test]
+    fn activity_window_starts_a_day_after_six_months_back() {
+        // Apr 12 2026 is the day after "Oct 11 minus six months" (Apr 11).
+        let today = chrono::Utc
+            .with_ymd_and_hms(2026, 10, 11, 15, 0, 0)
+            .unwrap();
+        let start = activity_window_start(today);
+        assert_eq!(start.to_rfc3339(), "2026-04-12T00:00:00+00:00");
+        // A day past the shorter start month rolls over like setUTCDate:
+        // Mar 31 -> Sep 11 last day is 30 -> day 31 rolls to Oct 1.
+        let today = chrono::Utc.with_ymd_and_hms(2026, 3, 31, 8, 0, 0).unwrap();
+        let start = activity_window_start(today);
+        assert_eq!(start.to_rfc3339(), "2025-10-01T00:00:00+00:00");
+    }
+
+    #[test]
+    fn activity_grid_buckets_days_monday_first_with_levels() {
+        let today = chrono::Utc
+            .with_ymd_and_hms(2026, 10, 11, 23, 0, 0)
+            .unwrap();
+        let day = |month: u32, day: u32| {
+            chrono::Utc
+                .with_ymd_and_hms(2026, month, day, 0, 0, 0)
+                .unwrap()
+        };
+        // Sep 1 carries the peak, Sep 2 a quarter of it (level ceil(0.25*4)=1).
+        let points = vec![
+            trend_point(day(9, 1), 80, 20),
+            trend_point(day(9, 2), 25, 0),
+        ];
+        let grid = build_activity_grid(&points, today);
+
+        // Window Apr 12..Oct 11 2026 (183 days); start is a Sunday, so the
+        // grid opens with six padding cells and Monday Apr 6.
+        assert_eq!(grid.cells.first().cloned().flatten(), None);
+        assert_eq!(
+            grid.cells[6],
+            Some(ActivityCell {
+                tokens: 0,
+                level: 0
+            })
+        );
+        // Sep 1 sits at index 148 (week 21, row 1 = Tuesday).
+        assert_eq!(
+            grid.cells[148],
+            Some(ActivityCell {
+                tokens: 100,
+                level: 4
+            })
+        );
+        assert_eq!(
+            grid.cells[149],
+            Some(ActivityCell {
+                tokens: 25,
+                level: 1
+            })
+        );
+        assert_eq!(grid.total_tokens, 125);
+        assert_eq!(grid.cells.len(), grid.week_count * 7);
+        assert_eq!(grid.week_count, 27);
     }
 }

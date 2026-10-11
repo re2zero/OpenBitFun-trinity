@@ -362,6 +362,18 @@ pub(crate) struct ShellText {
     pub settings_usage_empty: String,
     pub settings_usage_requests: String,
     pub settings_usage_cache_hit: String,
+    pub usage_trend_title: String,
+    pub usage_trend_partial: String,
+    pub usage_trend_input: String,
+    pub usage_trend_output: String,
+    pub usage_activity_title: String,
+    pub usage_activity_description: String,
+    pub usage_activity_less: String,
+    pub usage_activity_more: String,
+    pub usage_activity_mon: String,
+    pub usage_activity_wed: String,
+    pub usage_activity_fri: String,
+    pub usage_activity_sun: String,
     pub settings_archived: String,
     pub settings_archived_list: String,
     pub settings_archived_description: String,
@@ -481,6 +493,26 @@ pub(crate) fn git_failed(error: &str, cx: &App) -> String {
     resolve_with(
         "gpui-shell-git-failed",
         TranslationArgs::new().with_string("error", error),
+        cx,
+    )
+}
+
+/// Resolves the localized trend range line for the usage chart.
+pub(crate) fn usage_trend_range(start: &str, end: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-usage-trend-range",
+        TranslationArgs::new()
+            .with_string("start", start)
+            .with_string("end", end),
+        cx,
+    )
+}
+
+/// Resolves the localized activity-window total line.
+pub(crate) fn usage_activity_total(tokens: u64, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-usage-activity-total",
+        TranslationArgs::new().with_number("tokens", tokens as f64),
         cx,
     )
 }
@@ -974,6 +1006,22 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_usage_empty: "No usage recorded in this range.".to_string(),
         settings_usage_requests: "Requests".to_string(),
         settings_usage_cache_hit: "Cache hit".to_string(),
+        usage_trend_title: "Detailed trend".to_string(),
+        usage_trend_partial: {
+            "Only the most recent trend is shown; totals still cover the full \
+             range."
+                .to_string()
+        },
+        usage_trend_input: "Input".to_string(),
+        usage_trend_output: "Output".to_string(),
+        usage_activity_title: "Daily usage, last six months".to_string(),
+        usage_activity_description: "Fixed last six months (UTC).".to_string(),
+        usage_activity_less: "Less".to_string(),
+        usage_activity_more: "More".to_string(),
+        usage_activity_mon: "Mon".to_string(),
+        usage_activity_wed: "Wed".to_string(),
+        usage_activity_fri: "Fri".to_string(),
+        usage_activity_sun: "Sun".to_string(),
         settings_archived: "Archived sessions".to_string(),
         settings_archived_list: "This workspace".to_string(),
         settings_archived_description: {
@@ -1401,6 +1449,18 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         settings_usage_empty: service.t("gpui-shell-settings-usage-empty").await,
         settings_usage_requests: service.t("gpui-shell-settings-usage-requests").await,
         settings_usage_cache_hit: service.t("gpui-shell-settings-usage-cache-hit").await,
+        usage_trend_title: service.t("gpui-shell-usage-trend-title").await,
+        usage_trend_partial: service.t("gpui-shell-usage-trend-partial").await,
+        usage_trend_input: service.t("gpui-shell-usage-trend-input").await,
+        usage_trend_output: service.t("gpui-shell-usage-trend-output").await,
+        usage_activity_title: service.t("gpui-shell-usage-activity-title").await,
+        usage_activity_description: service.t("gpui-shell-usage-activity-description").await,
+        usage_activity_less: service.t("gpui-shell-usage-activity-less").await,
+        usage_activity_more: service.t("gpui-shell-usage-activity-more").await,
+        usage_activity_mon: service.t("gpui-shell-usage-activity-mon").await,
+        usage_activity_wed: service.t("gpui-shell-usage-activity-wed").await,
+        usage_activity_fri: service.t("gpui-shell-usage-activity-fri").await,
+        usage_activity_sun: service.t("gpui-shell-usage-activity-sun").await,
         settings_archived: service.t("gpui-shell-settings-archived").await,
         settings_archived_list: service.t("gpui-shell-settings-archived-list").await,
         settings_archived_description: service.t("gpui-shell-settings-archived-description").await,

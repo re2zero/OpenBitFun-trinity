@@ -1103,6 +1103,12 @@ pub(crate) struct ShellWindow {
     pub(crate) usage_stats: Option<Box<openbitfun_services_core::token_usage::UsageStatistics>>,
     pub(crate) usage_range: String,
     pub(crate) usage_loading: bool,
+    /// T2-8 activity heatmap snapshot: a fixed six-month custom-range fetch
+    /// (day granularity); `Err` keeps the page on its empty line until the
+    /// refresh button retries.
+    pub(crate) usage_activity:
+        Option<Result<Box<openbitfun_services_core::token_usage::UsageStatistics>, String>>,
+    pub(crate) usage_activity_loading: bool,
     /// M22 web-search credential state for the selected provider
     /// (`provider`, `configured`); fetched when the settings view opens.
     pub(crate) websearch_status: Option<(String, bool)>,
@@ -1222,6 +1228,8 @@ impl ShellWindow {
             usage_stats: None,
             usage_range: "thisMonth".to_string(),
             usage_loading: false,
+            usage_activity: None,
+            usage_activity_loading: false,
             websearch_status: None,
             websearch_credential_input,
         }
@@ -1823,6 +1831,17 @@ impl ShellWindow {
                 }
                 cx.refresh_windows();
             }
+            RuntimeEvent::UsageActivityReady(result) => {
+                self.usage_activity_loading = false;
+                match result {
+                    Ok(stats) => self.usage_activity = Some(Ok(stats)),
+                    Err(message) => {
+                        tracing::warn!("Usage activity statistics failed: {message}");
+                        self.usage_activity = Some(Err(message));
+                    }
+                }
+                cx.refresh_windows();
+            }
             RuntimeEvent::WebSearchStatus(result) => {
                 match result {
                     Ok((provider, configured)) => {
@@ -2344,6 +2363,12 @@ impl ShellWindow {
             self.usage_loading = true;
             if let Some(handle) = runtime::runtime_handle() {
                 handle.fetch_usage_stats(self.usage_range.clone());
+            }
+        }
+        if self.usage_activity.is_none() && !self.usage_activity_loading {
+            self.usage_activity_loading = true;
+            if let Some(handle) = runtime::runtime_handle() {
+                handle.fetch_usage_activity();
             }
         }
         let provider = settings::ShellConfig::try_current(cx)

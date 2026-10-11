@@ -283,6 +283,8 @@ fn build_config(
     colors.success_foreground = Some(success_foreground);
     colors.info = Some(info);
     colors.info_foreground = Some(info_foreground);
+    // The usage trend's output series (web `trend-output` uses the same token).
+    colors.chart_2 = Some(resolve("color.accent.secondary")?.into());
     colors.muted = Some(resolve("color.action.neutral.surface")?.into());
     colors.muted_foreground = Some(resolve("color.content.muted")?.into());
     colors.popover = Some(resolve("color.surface.panel")?.into());
