@@ -12,10 +12,11 @@ use std::path::Path;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
+use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputState, Textarea};
 use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
 use gpui_kit::component::switch::Switch;
-use gpui_kit::component::{ActiveTheme, Sizable, StyledExt, WindowExt};
+use gpui_kit::component::{ActiveTheme, Disableable, Sizable, StyledExt, WindowExt};
 use gpui_kit::{div, prelude::*, px, App, Global, SharedString, WeakEntity, Window};
 
 use crate::i18n::{self, ShellText};
@@ -31,8 +32,7 @@ const INTERACTION_PARAMS_LIMIT: usize = 4_000;
 // ---------------------------------------------------------------------------
 
 /// One skill row on the skills page: the scanned skill plus its global
-/// enablement. Per-mode skill selection is a deliberate deferred slice
-/// (PLAN M21 后置清单).
+/// enablement. Per-mode selection lives in the agents page's skills dialog.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SkillRow {
     pub(crate) key: String,
@@ -91,7 +91,9 @@ pub(crate) enum AgentSourceKind {
 }
 
 /// One card row for a mode or a subagent. `enabled` is `Some` for subagents
-/// only (their effective enablement state).
+/// only (their effective enablement state). `skills_mode_id` is the id the
+/// per-mode skill overrides persist under (profile representative for modes,
+/// own id for subagents — the web `representativeModeId` fallback chain).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct AgentCardRow {
     pub(crate) id: String,
@@ -102,6 +104,8 @@ pub(crate) struct AgentCardRow {
     pub(crate) review: bool,
     pub(crate) source: AgentSourceKind,
     pub(crate) enabled: Option<bool>,
+    pub(crate) skills_manageable: bool,
+    pub(crate) skills_mode_id: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -117,6 +121,223 @@ impl AgentCatalog {
     pub(crate) fn try_current(cx: &App) -> Option<Self> {
         cx.try_global::<Self>().cloned()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Per-mode skill selection (T2-11)
+// ---------------------------------------------------------------------------
+
+/// One skill row inside the per-mode skills dialog — the shell projection of
+/// the web `ModeSkillInfo`.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ModeSkillRow {
+    pub(crate) key: String,
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) project_level: bool,
+    pub(crate) builtin: bool,
+    pub(crate) shadowed: bool,
+    /// Label of the discovery source (winner reporting for shadowed rows).
+    pub(crate) source_label: String,
+    pub(crate) shadowed_by_key: Option<String>,
+    /// Enabled after all overrides are applied — the checked-set baseline.
+    pub(crate) effective_enabled: bool,
+    /// Actually selected at runtime after disable + priority resolution.
+    pub(crate) selected_for_runtime: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ModeSkillStatus {
+    Selected,
+    Covered,
+    Enabled,
+    Disabled,
+}
+
+impl ModeSkillRow {
+    /// Web `getModeSkillRuntimeStatus`: disabled wins, then runtime selection,
+    /// then shadowing; plain effective enablement is the remainder.
+    pub(crate) fn status(&self) -> ModeSkillStatus {
+        if !self.effective_enabled {
+            ModeSkillStatus::Disabled
+        } else if self.selected_for_runtime {
+            ModeSkillStatus::Selected
+        } else if self.shadowed {
+            ModeSkillStatus::Covered
+        } else {
+            ModeSkillStatus::Enabled
+        }
+    }
+
+    /// Source label of the skill that shadows this row, if any.
+    pub(crate) fn covered_by<'a>(&self, rows: &'a [ModeSkillRow]) -> Option<&'a str> {
+        let winner_key = self.shadowed_by_key.as_deref()?;
+        rows.iter()
+            .find(|row| row.key == winner_key)
+            .map(|row| row.source_label.as_str())
+            .filter(|label| !label.is_empty())
+    }
+}
+
+/// Render phase of the per-mode skills dialog. `Loading` covers the initial
+/// fetch; save/reset land back in `View` with refreshed rows the way the web
+/// detail dialog leaves edit mode after a successful write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ModeSkillsPhase {
+    Loading,
+    View,
+    Edit,
+}
+
+/// Dialog scratch for one agent's skill selection. `mode_id` is the id the
+/// overrides persist under; `pending` holds the edited selection while in
+/// `Edit` phase.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ModeSkillsDialogState {
+    pub(crate) mode_id: String,
+    pub(crate) mode_name: String,
+    pub(crate) phase: ModeSkillsPhase,
+    pub(crate) rows: Vec<ModeSkillRow>,
+    pub(crate) pending: Option<Vec<String>>,
+    pub(crate) submitting: bool,
+    pub(crate) error: Option<String>,
+}
+
+impl ModeSkillsDialogState {
+    /// Web `getConfiguredEnabledSkillKeys`: the selection is the effective
+    /// enablement, with `pending` overriding once the user edits a row.
+    pub(crate) fn is_selected(&self, key: &str) -> bool {
+        match &self.pending {
+            Some(keys) => keys.iter().any(|entry| entry == key),
+            None => self
+                .rows
+                .iter()
+                .any(|row| row.key == key && row.effective_enabled),
+        }
+    }
+
+    pub(crate) fn selection_count(&self) -> usize {
+        self.rows
+            .iter()
+            .filter(|row| self.is_selected(&row.key))
+            .count()
+    }
+
+    /// Flips one skill in the pending selection, seeding `pending` from the
+    /// effective enablement on the first edit.
+    pub(crate) fn toggle(&mut self, key: &str) {
+        let keys = self.pending.get_or_insert_with(|| {
+            self.rows
+                .iter()
+                .filter(|row| row.effective_enabled)
+                .map(|row| row.key.clone())
+                .collect()
+        });
+        if let Some(position) = keys.iter().position(|entry| entry == key) {
+            keys.remove(position);
+        } else {
+            keys.push(key.to_string());
+        }
+    }
+}
+
+/// First-mode-wins representative per config profile (web `buildProfileMap`):
+/// modes sharing a profile persist their overrides under the first mode in
+/// list order; modes without a profile map to themselves.
+pub(crate) fn representative_mode_ids(
+    modes: &[(String, Option<String>)],
+) -> std::collections::HashMap<String, String> {
+    let mut first_by_profile: std::collections::HashMap<String, String> = Default::default();
+    for (id, profile) in modes {
+        let profile_id = profile.clone().unwrap_or_else(|| id.clone());
+        first_by_profile
+            .entry(profile_id)
+            .or_insert_with(|| id.clone());
+    }
+    modes
+        .iter()
+        .map(|(id, profile)| {
+            let profile_id = profile.clone().unwrap_or_else(|| id.clone());
+            let representative = first_by_profile
+                .get(&profile_id)
+                .cloned()
+                .unwrap_or_else(|| id.clone());
+            (id.clone(), representative)
+        })
+        .collect()
+}
+
+/// Trims, drops empties, and deduplicates while preserving order (desktop
+/// `normalize_skill_key_list`).
+pub(crate) fn normalize_skill_key_list(keys: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut normalized = Vec::new();
+    for key in keys {
+        let trimmed = key.trim().to_string();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if seen.insert(trimmed.clone()) {
+            normalized.push(trimmed);
+        }
+    }
+    normalized
+}
+
+/// Selection keys unknown to the scan (desktop `replace_mode_skill_selection`
+/// rejects the whole batch when any key is unknown).
+pub(crate) fn unknown_skill_keys(
+    skills: &[openbitfun_core::agentic::tools::implementations::skills::SkillInfo],
+    enabled_keys: &[String],
+) -> Vec<String> {
+    let known: std::collections::HashSet<&String> = skills.iter().map(|skill| &skill.key).collect();
+    enabled_keys
+        .iter()
+        .filter(|key| !known.contains(*key))
+        .cloned()
+        .collect()
+}
+
+/// Desktop `persist_user_mode_skill_selection` diff: user skills whose
+/// default-enabled state disagrees with the selection become the persisted
+/// override sets (disable the defaults that are off, enable the rest).
+pub(crate) fn user_mode_skill_override_diff(
+    skills: &[openbitfun_core::agentic::tools::implementations::skills::SkillInfo],
+    mode_id: &str,
+    enabled_keys: &std::collections::HashSet<String>,
+) -> (Vec<String>, Vec<String>) {
+    use openbitfun_core::agentic::tools::implementations::skills::resolver::resolve_skill_default_enabled_for_mode;
+    let mut disabled_user_skills = Vec::new();
+    let mut enabled_user_skills = Vec::new();
+    for skill in skills.iter().filter(|skill| {
+        skill.level == openbitfun_core::agentic::tools::implementations::skills::SkillLocation::User
+    }) {
+        let should_enable = enabled_keys.contains(&skill.key);
+        let default_enabled = resolve_skill_default_enabled_for_mode(skill, mode_id);
+        if default_enabled && !should_enable {
+            disabled_user_skills.push(skill.key.clone());
+        } else if !default_enabled && should_enable {
+            enabled_user_skills.push(skill.key.clone());
+        }
+    }
+    (disabled_user_skills, enabled_user_skills)
+}
+
+/// Project skills left out of the selection become the mode's project disable
+/// set (desktop `build_disabled_project_skill_keys`).
+pub(crate) fn disabled_project_skill_keys(
+    skills: &[openbitfun_core::agentic::tools::implementations::skills::SkillInfo],
+    enabled_keys: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    skills
+        .iter()
+        .filter(|skill| {
+            skill.level
+                == openbitfun_core::agentic::tools::implementations::skills::SkillLocation::Project
+        })
+        .filter(|skill| !enabled_keys.contains(&skill.key))
+        .map(|skill| skill.key.clone())
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -683,12 +904,19 @@ fn set_skill_disabled(key: String, user_level: bool, disabled: bool) {
 /// The agents page: mode cards, subagent cards, and the create dialog entry.
 pub(crate) fn agents_page(text: &ShellText, view: WeakEntity<ShellWindow>) -> SettingPage {
     let modes_text = text.clone();
+    let modes_view = view.clone();
     let modes_field = SettingField::render(move |_options, _window, cx| {
-        agent_cards(AgentListKind::Modes, &modes_text, cx)
+        agent_cards(AgentListKind::Modes, &modes_text, modes_view.clone(), cx)
     });
     let subagents_text = text.clone();
+    let subagents_view = view.clone();
     let subagents_field = SettingField::render(move |_options, _window, cx| {
-        agent_cards(AgentListKind::Subagents, &subagents_text, cx)
+        agent_cards(
+            AgentListKind::Subagents,
+            &subagents_text,
+            subagents_view.clone(),
+            cx,
+        )
     });
     let create_view = view;
     let create_text = text.clone();
@@ -719,7 +947,12 @@ enum AgentListKind {
     Subagents,
 }
 
-fn agent_cards(kind: AgentListKind, text: &ShellText, cx: &mut App) -> gpui_kit::AnyElement {
+fn agent_cards(
+    kind: AgentListKind,
+    text: &ShellText,
+    view: WeakEntity<ShellWindow>,
+    cx: &mut App,
+) -> gpui_kit::AnyElement {
     if let Some(message) = ManageNotice::current(cx) {
         return notice_banner(text, &message, cx);
     }
@@ -776,13 +1009,41 @@ fn agent_cards(kind: AgentListKind, text: &ShellText, cx: &mut App) -> gpui_kit:
                     .child(text.manage_agent_review.clone()),
             );
         }
+        if card.skills_manageable {
+            let mode_id = card.skills_mode_id.clone();
+            let mode_name = card.name.clone();
+            let skills_view = view.clone();
+            badges = badges.child(
+                Button::new(SharedString::from(format!("agent-skills-{}", card.id)))
+                    .label(text.mode_skills_open.clone())
+                    .small()
+                    .with_variant(ButtonVariant::Secondary)
+                    .on_click(move |_, window, cx| {
+                        open_mode_skills_dialog(
+                            skills_view.clone(),
+                            mode_id.clone(),
+                            mode_name.clone(),
+                            window,
+                            cx,
+                        );
+                    }),
+            );
+        }
         column = column.child(
             div()
                 .flex()
+                .w_full()
+                .min_w_0()
                 .items_start()
                 .justify_between()
                 .gap_2()
                 .child(
+                    // line_clamp over truncate: a nowrap text's intrinsic
+                    // min-content keeps the settings field container at full
+                    // text width (it pokes past the pane and pushes the badges
+                    // column out of the clip); a wrappable line keeps the
+                    // min-content small so the flex shrink chain actually
+                    // constrains the row.
                     div()
                         .v_flex()
                         .min_w_0()
@@ -790,7 +1051,8 @@ fn agent_cards(kind: AgentListKind, text: &ShellText, cx: &mut App) -> gpui_kit:
                             div()
                                 .text_sm()
                                 .text_color(cx.theme().foreground)
-                                .truncate()
+                                .min_w_0()
+                                .line_clamp(1)
                                 .child(card.name.clone()),
                         )
                         .when(!card.description.is_empty(), |row| {
@@ -798,7 +1060,8 @@ fn agent_cards(kind: AgentListKind, text: &ShellText, cx: &mut App) -> gpui_kit:
                                 div()
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
-                                    .truncate()
+                                    .min_w_0()
+                                    .line_clamp(1)
                                     .child(card.description.clone()),
                             )
                         })
@@ -806,7 +1069,8 @@ fn agent_cards(kind: AgentListKind, text: &ShellText, cx: &mut App) -> gpui_kit:
                             div()
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
-                                .truncate()
+                                .min_w_0()
+                                .line_clamp(1)
                                 .child(facts),
                         ),
                 )
@@ -1341,6 +1605,362 @@ pub(crate) fn open_agent_create_dialog(
                     ),
             )
     });
+}
+
+/// Opens the per-mode skill selection dialog (T2-11, the web agents detail
+/// skills tab): loads the mode's `ModeSkillInfo` projection, renders a
+/// read-only status list, and edits the selection through the desktop
+/// `replace_mode_skill_selection` pipeline. The dialog lands back in the view
+/// phase when a save/reset refetch event arrives.
+pub(crate) fn open_mode_skills_dialog(
+    view: WeakEntity<ShellWindow>,
+    mode_id: String,
+    mode_name: String,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(shell) = view.upgrade() else {
+        return;
+    };
+    shell.update(cx, |shell, cx| {
+        shell.mode_skills = Some(ModeSkillsDialogState {
+            mode_id: mode_id.clone(),
+            mode_name,
+            phase: ModeSkillsPhase::Loading,
+            rows: Vec::new(),
+            pending: None,
+            submitting: false,
+            error: None,
+        });
+        cx.notify();
+    });
+    if let Some(handle) = crate::runtime::runtime_handle() {
+        handle.reload_mode_skill_infos(mode_id);
+    } else {
+        tracing::error!("Runtime unavailable while loading mode skills {mode_id}");
+    }
+
+    let builder_view = view.clone();
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let text = i18n::current(cx);
+        let Some(shell) = builder_view.upgrade() else {
+            return dialog;
+        };
+        let Some(state) = shell.read(cx).mode_skills.clone() else {
+            return dialog;
+        };
+        let muted = cx.theme().muted_foreground;
+
+        let mut content = div().w(px(560.)).v_flex().gap_2();
+        match state.phase {
+            ModeSkillsPhase::Loading => {
+                content = content.child(
+                    div()
+                        .text_sm()
+                        .text_color(muted)
+                        .child(text.mode_skills_loading.clone()),
+                );
+            }
+            ModeSkillsPhase::View | ModeSkillsPhase::Edit => {
+                if let Some(error) = &state.error {
+                    content = content.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().danger)
+                            .child(error.clone()),
+                    );
+                }
+                if state.rows.is_empty() {
+                    content = content.child(
+                        div()
+                            .text_sm()
+                            .text_color(muted)
+                            .child(text.mode_skills_empty.clone()),
+                    );
+                } else {
+                    if state.phase == ModeSkillsPhase::Edit {
+                        let count = i18n::mode_skills_selected_count(state.selection_count(), cx);
+                        content = content.child(
+                            div()
+                                .text_xs()
+                                .text_color(muted)
+                                .child(format!("{} · {}", count, text.mode_skills_save_hint)),
+                        );
+                    }
+                    for row in &state.rows {
+                        content = content.child(mode_skill_row(
+                            builder_view.clone(),
+                            &text,
+                            &state,
+                            row,
+                            cx,
+                        ));
+                    }
+                }
+            }
+        }
+
+        let edit_view = builder_view.clone();
+        let close_view = builder_view.clone();
+        let reset_view = builder_view.clone();
+        let save_view = builder_view.clone();
+        let cancel_view = builder_view.clone();
+        let footer = match state.phase {
+            ModeSkillsPhase::Loading => div().flex().flex_row().justify_end().child(
+                Button::new("mode-skills-close")
+                    .label(text.session_action_cancel.clone())
+                    .with_variant(ButtonVariant::Ghost)
+                    .on_click(move |_, window, cx| {
+                        close_mode_skills_dialog(close_view.clone(), window, cx);
+                    }),
+            ),
+            ModeSkillsPhase::View => div()
+                .flex()
+                .flex_row()
+                .justify_end()
+                .gap_2()
+                .child(
+                    Button::new("mode-skills-close")
+                        .label(text.session_action_cancel.clone())
+                        .with_variant(ButtonVariant::Ghost)
+                        .on_click(move |_, window, cx| {
+                            close_mode_skills_dialog(close_view.clone(), window, cx);
+                        }),
+                )
+                .child(
+                    Button::new("mode-skills-edit")
+                        .label(text.mode_skills_edit.clone())
+                        .small()
+                        .with_variant(ButtonVariant::Primary)
+                        .disabled(state.rows.is_empty())
+                        .on_click(move |_, _window, cx| {
+                            if let Some(shell) = edit_view.upgrade() {
+                                shell.update(cx, |shell, cx| {
+                                    if let Some(state) = shell.mode_skills.as_mut() {
+                                        state.phase = ModeSkillsPhase::Edit;
+                                        state.error = None;
+                                        cx.notify();
+                                    }
+                                });
+                            }
+                        }),
+                ),
+            ModeSkillsPhase::Edit => div()
+                .flex()
+                .flex_row()
+                .justify_end()
+                .gap_2()
+                .child(
+                    Button::new("mode-skills-reset")
+                        .label(text.mode_skills_reset.clone())
+                        .small()
+                        .with_variant(ButtonVariant::Ghost)
+                        .disabled(state.submitting)
+                        .on_click(move |_, _window, cx| {
+                            let Some(shell) = reset_view.upgrade() else {
+                                return;
+                            };
+                            let Some(handle) = crate::runtime::runtime_handle() else {
+                                tracing::error!(
+                                    "Runtime unavailable while resetting mode skill selection"
+                                );
+                                return;
+                            };
+                            let mode_id = shell.update(cx, |shell, cx| {
+                                let mode_id = shell
+                                    .mode_skills
+                                    .as_ref()
+                                    .map(|state| state.mode_id.clone());
+                                if mode_id.is_some() {
+                                    if let Some(state) = shell.mode_skills.as_mut() {
+                                        state.submitting = true;
+                                        state.error = None;
+                                    }
+                                    cx.notify();
+                                }
+                                mode_id
+                            });
+                            let Some(mode_id) = mode_id else {
+                                return;
+                            };
+                            handle.reset_mode_skill_selection(mode_id);
+                        }),
+                )
+                .child(
+                    Button::new("mode-skills-cancel")
+                        .label(text.session_action_cancel.clone())
+                        .small()
+                        .with_variant(ButtonVariant::Ghost)
+                        .disabled(state.submitting)
+                        .on_click(move |_, _window, cx| {
+                            if let Some(shell) = cancel_view.upgrade() {
+                                shell.update(cx, |shell, cx| {
+                                    if let Some(state) = shell.mode_skills.as_mut() {
+                                        state.phase = ModeSkillsPhase::View;
+                                        state.pending = None;
+                                        state.error = None;
+                                        cx.notify();
+                                    }
+                                });
+                            }
+                        }),
+                )
+                .child(
+                    Button::new("mode-skills-save")
+                        .label(text.session_action_confirm.clone())
+                        .small()
+                        .with_variant(ButtonVariant::Primary)
+                        .disabled(state.submitting)
+                        .on_click(move |_, _window, cx| {
+                            save_mode_skills_selection(save_view.clone(), cx);
+                        }),
+                ),
+        };
+
+        dialog
+            .title(div().child(format!("{} · {}", text.mode_skills_title, state.mode_name)))
+            .child(content)
+            .footer(footer)
+    });
+}
+
+/// One skill row in the dialog: checkbox + level in edit phase, name/status
+/// summary in view phase. Status labels follow the web runtime-status rules
+/// (disabled rows show no label at all).
+fn mode_skill_row(
+    view: WeakEntity<ShellWindow>,
+    text: &ShellText,
+    state: &ModeSkillsDialogState,
+    row: &ModeSkillRow,
+    cx: &App,
+) -> gpui_kit::AnyElement {
+    let muted = cx.theme().muted_foreground;
+    let level_label = if row.builtin {
+        text.manage_skill_builtin.clone()
+    } else if row.project_level {
+        text.manage_skill_project.clone()
+    } else {
+        text.manage_skill_user.clone()
+    };
+    let status_label = match row.status() {
+        ModeSkillStatus::Selected => Some(text.mode_skills_status_selected.clone()),
+        ModeSkillStatus::Covered => {
+            let source = row
+                .covered_by(&state.rows)
+                .unwrap_or(text.mode_skills_source_other.as_str());
+            Some(i18n::mode_skills_covered(source, cx))
+        }
+        ModeSkillStatus::Enabled => Some(text.mode_skills_status_enabled.clone()),
+        ModeSkillStatus::Disabled => None,
+    };
+    let mut head = div().flex().items_center().gap_2().min_w_0();
+    match state.phase {
+        ModeSkillsPhase::Edit => {
+            let key = row.key.clone();
+            let toggle_view = view.clone();
+            head = head.child(
+                Checkbox::new(SharedString::from(format!("mode-skill-{}", row.key)))
+                    .label(row.name.clone())
+                    .checked(state.is_selected(&row.key))
+                    .on_click(move |_: &bool, _window, cx| {
+                        if let Some(shell) = toggle_view.upgrade() {
+                            shell.update(cx, |shell, cx| {
+                                if let Some(state) = shell.mode_skills.as_mut() {
+                                    state.toggle(&key);
+                                    cx.notify();
+                                }
+                            });
+                        }
+                    }),
+            );
+        }
+        _ => {
+            head = head.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().foreground)
+                    .min_w_0()
+                    .line_clamp(1)
+                    .child(row.name.clone()),
+            );
+        }
+    }
+    head = head.child(
+        div()
+            .text_xs()
+            .text_color(muted)
+            .flex_shrink_0()
+            .child(level_label),
+    );
+    if let Some(status) = status_label {
+        head = head.child(
+            div()
+                .text_xs()
+                .text_color(muted)
+                .flex_shrink_0()
+                .child(status),
+        );
+    }
+    let mut column = div().v_flex().gap_0p5().min_w_0().child(head);
+    if !row.description.is_empty() {
+        column = column.child(
+            div()
+                .text_xs()
+                .text_color(muted)
+                .min_w_0()
+                .line_clamp(1)
+                .child(row.description.clone()),
+        );
+    }
+    column.into_any_element()
+}
+
+/// Leaves the edit phase without a write (web cancel path).
+fn close_mode_skills_dialog(view: WeakEntity<ShellWindow>, window: &mut Window, cx: &mut App) {
+    if let Some(shell) = view.upgrade() {
+        shell.update(cx, |shell, cx| {
+            shell.mode_skills = None;
+            cx.notify();
+        });
+    }
+    window.close_dialog(cx);
+}
+
+/// Submits the edited selection through the desktop replace pipeline. A
+/// no-op edit (nothing touched) just leaves the edit phase, the same way the
+/// web save path skips the call when `pendingSkills` is null.
+fn save_mode_skills_selection(view: WeakEntity<ShellWindow>, cx: &mut App) {
+    let Some(shell) = view.upgrade() else {
+        return;
+    };
+    let request = shell.read(cx).mode_skills.as_ref().and_then(|state| {
+        if state.phase != ModeSkillsPhase::Edit {
+            return None;
+        }
+        let pending = state.pending.clone()?;
+        Some((state.mode_id.clone(), pending))
+    });
+    let Some((mode_id, keys)) = request else {
+        shell.update(cx, |shell, cx| {
+            if let Some(state) = shell.mode_skills.as_mut() {
+                state.phase = ModeSkillsPhase::View;
+                cx.notify();
+            }
+        });
+        return;
+    };
+    if let Some(handle) = crate::runtime::runtime_handle() {
+        shell.update(cx, |shell, cx| {
+            if let Some(state) = shell.mode_skills.as_mut() {
+                state.submitting = true;
+                state.error = None;
+                cx.notify();
+            }
+        });
+        handle.replace_mode_skill_selection(mode_id, keys);
+    } else {
+        tracing::error!("Runtime unavailable while saving mode skill selection {mode_id}");
+    }
 }
 
 /// Opens the raw JSON config editor: loads the user `app.json` snapshot with
@@ -1976,6 +2596,59 @@ fn answer_interaction(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use openbitfun_core::agentic::tools::implementations::skills::SkillLocation;
+    use std::collections::HashSet;
+
+    fn sample_skill(
+        key: &str,
+        level: SkillLocation,
+        builtin: bool,
+        dir_name: &str,
+    ) -> openbitfun_core::agentic::tools::implementations::skills::SkillInfo {
+        openbitfun_core::agentic::tools::implementations::skills::SkillInfo {
+            key: key.to_string(),
+            name: key.to_string(),
+            description: String::new(),
+            path: format!("/skills/{key}"),
+            entry_file: None,
+            level,
+            source_slot: "openbitfun".to_string(),
+            source_id: "openbitfun".to_string(),
+            source_label: "OpenBitFun".to_string(),
+            installation_source: None,
+            import_origin: None,
+            dir_name: dir_name.to_string(),
+            is_builtin: builtin,
+            group_key: None,
+            is_shadowed: false,
+            shadowed_by_key: None,
+            allow_implicit_invocation: true,
+            allow_user_invocation: true,
+            argument_hint: None,
+        }
+    }
+
+    fn mode_skill_row(
+        key: &str,
+        effective_enabled: bool,
+        selected_for_runtime: bool,
+        shadowed: bool,
+        shadowed_by_key: Option<String>,
+        source_label: &str,
+    ) -> ModeSkillRow {
+        ModeSkillRow {
+            key: key.to_string(),
+            name: key.to_string(),
+            description: String::new(),
+            project_level: false,
+            builtin: false,
+            shadowed,
+            source_label: source_label.to_string(),
+            shadowed_by_key,
+            effective_enabled,
+            selected_for_runtime,
+        }
+    }
 
     #[test]
     fn skill_disabled_membership_follows_level_sets() {
@@ -2191,6 +2864,134 @@ mod tests {
         assert_eq!(
             render_resource_content(&empty, &text),
             text.manage_mcp_resource_empty
+        );
+    }
+    #[test]
+    fn representative_mode_ids_follow_the_first_mode_per_profile() {
+        let modes = vec![
+            ("Standard".to_string(), Some("Standard".to_string())),
+            ("Cowork".to_string(), Some("Cowork".to_string())),
+            ("coding_shared".to_string(), Some("Standard".to_string())),
+            ("Custom".to_string(), None),
+        ];
+        let map = representative_mode_ids(&modes);
+        // The first mode in list order owns the profile's overrides.
+        assert_eq!(map["Standard"].as_str(), "Standard");
+        assert_eq!(map["coding_shared"].as_str(), "Standard");
+        assert_eq!(map["Cowork"].as_str(), "Cowork");
+        // A mode without a profile persists under itself.
+        assert_eq!(map["Custom"].as_str(), "Custom");
+    }
+
+    #[test]
+    fn mode_skill_status_and_covered_by_follow_the_web_rules() {
+        let rows = vec![
+            mode_skill_row("user::a", true, true, false, None, "OpenBitFun"),
+            mode_skill_row("user::b", true, false, false, None, "OpenBitFun"),
+            mode_skill_row(
+                "user::c",
+                true,
+                false,
+                true,
+                Some("user::d".into()),
+                "Claude Code",
+            ),
+            mode_skill_row("user::d", true, true, false, None, "Claude Code"),
+            mode_skill_row("user::e", false, false, false, None, "OpenBitFun"),
+        ];
+        assert_eq!(rows[0].status(), ModeSkillStatus::Selected);
+        assert_eq!(rows[1].status(), ModeSkillStatus::Enabled);
+        // Shadowing only matters for enabled rows the runtime did not pick.
+        assert_eq!(rows[2].status(), ModeSkillStatus::Covered);
+        assert_eq!(rows[2].covered_by(&rows), Some("Claude Code"));
+        assert_eq!(rows[4].status(), ModeSkillStatus::Disabled);
+        // A winner key without a row (or with an empty label) leaves the
+        // source unnamed; the render falls back to the generic source label.
+        let orphan = mode_skill_row("user::f", true, false, true, Some("user::gone".into()), "x");
+        assert_eq!(orphan.covered_by(&rows), None);
+        let blank_winner = vec![
+            mode_skill_row("user::d", true, true, false, None, ""),
+            mode_skill_row("user::g", true, false, true, Some("user::d".into()), "x"),
+        ];
+        assert_eq!(blank_winner[1].covered_by(&blank_winner), None);
+    }
+
+    #[test]
+    fn mode_skills_dialog_selection_seeds_from_effective_and_toggles() {
+        let mut state = ModeSkillsDialogState {
+            mode_id: "Standard".to_string(),
+            mode_name: "Standard".to_string(),
+            phase: ModeSkillsPhase::Edit,
+            rows: vec![
+                mode_skill_row("user::on", true, true, false, None, "OpenBitFun"),
+                mode_skill_row("user::off", false, false, false, None, "OpenBitFun"),
+            ],
+            pending: None,
+            submitting: false,
+            error: None,
+        };
+        // The selection starts at the effective enablement.
+        assert!(state.is_selected("user::on"));
+        assert!(!state.is_selected("user::off"));
+        assert_eq!(state.selection_count(), 1);
+        // The first toggle seeds pending from the effective set.
+        state.toggle("user::off");
+        assert_eq!(state.selection_count(), 2);
+        state.toggle("user::on");
+        assert_eq!(state.selection_count(), 1);
+        assert_eq!(state.pending, Some(vec!["user::off".to_string()]));
+    }
+
+    #[test]
+    fn user_mode_skill_override_diff_mirrors_the_desktop_rules() {
+        let skills = vec![
+            sample_skill("user::custom", SkillLocation::User, false, "custom"),
+            // Real builtin default-off for the Standard profile.
+            sample_skill(
+                "user::agent-browser",
+                SkillLocation::User,
+                true,
+                "agent-browser",
+            ),
+        ];
+        let enabled: HashSet<String> = ["user::agent-browser".to_string()].into();
+        let (disabled, enabled_user) = user_mode_skill_override_diff(&skills, "Standard", &enabled);
+        // A default-on skill left out lands in the disable set; a default-off
+        // builtin picked by the user lands in the enable set.
+        assert_eq!(disabled, vec!["user::custom".to_string()]);
+        assert_eq!(enabled_user, vec!["user::agent-browser".to_string()]);
+
+        // Everything at its default produces an empty diff.
+        let enabled: HashSet<String> = ["user::custom".to_string()].into();
+        let (disabled, enabled_user) = user_mode_skill_override_diff(&skills, "Standard", &enabled);
+        assert!(disabled.is_empty());
+        assert!(enabled_user.is_empty());
+    }
+
+    #[test]
+    fn selection_key_helpers_trim_dedupe_and_split_levels() {
+        let normalized = normalize_skill_key_list(vec![
+            "  user::a  ".to_string(),
+            String::new(),
+            "user::a".to_string(),
+            "user::b".to_string(),
+        ]);
+        assert_eq!(normalized, vec!["user::a", "user::b"]);
+
+        let skills = vec![
+            sample_skill("user::a", SkillLocation::User, false, "a"),
+            sample_skill("project::b", SkillLocation::Project, false, "b"),
+        ];
+        let enabled: HashSet<String> = ["user::a".to_string()].into();
+        assert!(unknown_skill_keys(&skills, &["user::a".to_string()]).is_empty());
+        assert_eq!(
+            unknown_skill_keys(&skills, &["user::x".to_string()]),
+            vec!["user::x".to_string()]
+        );
+        // Project skills left out of the selection form the disable set.
+        assert_eq!(
+            disabled_project_skill_keys(&skills, &enabled),
+            vec!["project::b".to_string()]
         );
     }
 }

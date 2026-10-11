@@ -259,6 +259,16 @@ pub(crate) struct ShellText {
     pub manage_agent_error_empty_description: String,
     pub manage_agent_error_empty_prompt: String,
     pub manage_agent_error_mode_project: String,
+    pub mode_skills_open: String,
+    pub mode_skills_title: String,
+    pub mode_skills_loading: String,
+    pub mode_skills_empty: String,
+    pub mode_skills_edit: String,
+    pub mode_skills_save_hint: String,
+    pub mode_skills_status_selected: String,
+    pub mode_skills_status_enabled: String,
+    pub mode_skills_reset: String,
+    pub mode_skills_source_other: String,
     pub manage_mcp_title: String,
     pub manage_mcp_servers: String,
     pub manage_mcp_description: String,
@@ -463,6 +473,24 @@ pub(crate) fn failed_status(error: &str, cx: &App) -> String {
     resolve_with(
         "gpui-shell-status-failed",
         TranslationArgs::new().with_string("error", error),
+        cx,
+    )
+}
+
+/// T2-11: the selected-count line in the per-mode skills dialog.
+pub(crate) fn mode_skills_selected_count(count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-mode-skills-selected-count",
+        TranslationArgs::new().with_number("count", count as f64),
+        cx,
+    )
+}
+
+/// T2-11: the covered-by status label naming the shadowing source.
+pub(crate) fn mode_skills_covered(source: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-mode-skills-status-covered",
+        TranslationArgs::new().with_string("source", source),
         cx,
     )
 }
@@ -886,6 +914,16 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         manage_agent_error_empty_description: "A description is required.".to_string(),
         manage_agent_error_empty_prompt: "A prompt is required.".to_string(),
         manage_agent_error_mode_project: "Custom modes are user-level only.".to_string(),
+        mode_skills_open: "Skills".to_string(),
+        mode_skills_title: "Skill selection".to_string(),
+        mode_skills_loading: "Loading skills…".to_string(),
+        mode_skills_empty: "No skills available for this agent.".to_string(),
+        mode_skills_edit: "Edit".to_string(),
+        mode_skills_save_hint: "Applies after saving".to_string(),
+        mode_skills_status_selected: "Selected for runtime".to_string(),
+        mode_skills_status_enabled: "Enabled, not selected".to_string(),
+        mode_skills_reset: "Reset".to_string(),
+        mode_skills_source_other: "Other source".to_string(),
         manage_mcp_title: "MCP servers".to_string(),
         manage_mcp_servers: "Configured servers".to_string(),
         manage_mcp_description: "Lifecycle, enablement, and the resources and prompts catalog of this machine's MCP servers.".to_string(),
@@ -1363,6 +1401,18 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         manage_agent_error_mode_project: service
             .t("gpui-shell-manage-agent-error-mode-project")
             .await,
+        mode_skills_open: service.t("gpui-shell-mode-skills-open").await,
+        mode_skills_title: service.t("gpui-shell-mode-skills-title").await,
+        mode_skills_loading: service.t("gpui-shell-mode-skills-loading").await,
+        mode_skills_empty: service.t("gpui-shell-mode-skills-empty").await,
+        // "Edit" is a shared term; a dedicated key would trip the shared-term
+        // duplicate ratchet (same alias the terminal profile uses).
+        mode_skills_edit: service.t("shared.tools.edit").await,
+        mode_skills_save_hint: service.t("gpui-shell-mode-skills-save-hint").await,
+        mode_skills_status_selected: service.t("gpui-shell-mode-skills-status-selected").await,
+        mode_skills_status_enabled: service.t("gpui-shell-mode-skills-status-enabled").await,
+        mode_skills_reset: service.t("gpui-shell-mode-skills-reset").await,
+        mode_skills_source_other: service.t("gpui-shell-mode-skills-source-other").await,
         manage_mcp_title: service.t("gpui-shell-manage-mcp-title").await,
         manage_mcp_servers: service.t("gpui-shell-manage-mcp-servers").await,
         manage_mcp_description: service.t("gpui-shell-manage-mcp-description").await,

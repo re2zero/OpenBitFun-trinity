@@ -278,6 +278,12 @@ pub(crate) enum RuntimeEvent {
     SkillCatalog(crate::manage::SkillCatalog),
     AgentCatalog(crate::manage::AgentCatalog),
     McpCatalog(crate::manage::McpCatalog),
+    /// T2-11: the skill selection projection for one agent (mode profile
+    /// representative or subagent id); the dialog renders it per phase.
+    ModeSkillInfos {
+        mode_id: String,
+        rows: Vec<crate::manage::ModeSkillRow>,
+    },
     /// Resources/prompts snapshot for one MCP server (browse dialog).
     McpServerCatalog(Box<crate::manage::McpServerCatalogView>),
     /// An MCP server asked for an interactive decision (elicitation or
@@ -1445,6 +1451,61 @@ impl RuntimeHandle {
         });
     }
 
+    /// T2-11: the skill selection projection for one agent id (mode profile
+    /// representative or subagent id), for the agents page skills dialog.
+    pub(crate) fn reload_mode_skill_infos(&self, mode_id: String) {
+        let workspace = self.workspace();
+        self.tokio.spawn(async move {
+            let rows = fetch_mode_skill_rows(&workspace, &mode_id).await;
+            publish(RuntimeEvent::ModeSkillInfos { mode_id, rows });
+        });
+    }
+
+    /// T2-11: replaces one agent's skill selection through the desktop
+    /// `replace_mode_skill_selection` pipeline (validate, persist the user
+    /// override diff, persist the project disable set), reloads the global
+    /// config, and refetches. A successful refetch lands the dialog back in
+    /// the view phase; a failure surfaces as the dialog's inline error.
+    pub(crate) fn replace_mode_skill_selection(&self, mode_id: String, enabled_keys: Vec<String>) {
+        let workspace = self.workspace();
+        self.tokio.spawn(async move {
+            if let Err(message) =
+                persist_mode_skill_selection(&workspace, &mode_id, &enabled_keys).await
+            {
+                tracing::error!("Failed to replace skill selection for {mode_id}: {message}");
+                publish(RuntimeEvent::ManageFailed(format!("skills: {message}")));
+                return;
+            }
+            if let Err(error) = openbitfun_core::service::config::reload_global_config().await {
+                tracing::warn!(
+                    "Failed to reload global config after skill selection update: {error}"
+                );
+            }
+            let rows = fetch_mode_skill_rows(&workspace, &mode_id).await;
+            publish(RuntimeEvent::ModeSkillInfos { mode_id, rows });
+        });
+    }
+
+    /// T2-11: clears one agent's user overrides and project disable set (the
+    /// desktop `reset_mode_skill_selection` semantics), then refetches.
+    pub(crate) fn reset_mode_skill_selection(&self, mode_id: String) {
+        let workspace = self.workspace();
+        self.tokio.spawn(async move {
+            if let Err(message) = clear_mode_skill_selection(&workspace, &mode_id).await {
+                tracing::error!("Failed to reset skill selection for {mode_id}: {message}");
+                publish(RuntimeEvent::ManageFailed(format!("skills: {message}")));
+                return;
+            }
+            if let Err(error) = openbitfun_core::service::config::reload_global_config().await {
+                tracing::warn!(
+                    "Failed to reload global config after resetting skill selection: {error}"
+                );
+            }
+            let rows = fetch_mode_skill_rows(&workspace, &mode_id).await;
+            publish(RuntimeEvent::ModeSkillInfos { mode_id, rows });
+        });
+    }
+
     /// M21: one MCP server lifecycle action; the catalog reloads either way.
     pub(crate) fn mcp_server_action(&self, action: crate::manage::McpAction, server_id: String) {
         self.tokio.spawn(async move {
@@ -1767,6 +1828,128 @@ async fn fetch_skill_catalog(root: &Path, workspace_id: &str) -> crate::manage::
     }
 }
 
+/// T2-11: the per-agent skill selection projection (web `ModeSkillInfo[]`).
+async fn fetch_mode_skill_rows(
+    workspace: &openbitfun_core::service::workspace::WorkspaceInfo,
+    mode_id: &str,
+) -> Vec<crate::manage::ModeSkillRow> {
+    use openbitfun_agent_runtime::skills::SkillLocation;
+    use openbitfun_core::agentic::tools::implementations::skills::{
+        mode_overrides::SkillPolicyWorkspace, SkillRegistry,
+    };
+
+    let registry = SkillRegistry::global();
+    let policy = SkillPolicyWorkspace {
+        workspace_id: &workspace.id,
+        root: workspace.root_path.as_path(),
+    };
+    registry
+        .get_mode_skill_infos_for_workspace(Some(policy), mode_id)
+        .await
+        .into_iter()
+        .map(|info| crate::manage::ModeSkillRow {
+            key: info.skill.key,
+            name: info.skill.name,
+            description: info.skill.description,
+            project_level: matches!(info.skill.level, SkillLocation::Project),
+            builtin: info.skill.is_builtin,
+            shadowed: info.skill.is_shadowed,
+            source_label: info.skill.source_label,
+            shadowed_by_key: info.skill.shadowed_by_key,
+            effective_enabled: info.effective_enabled,
+            selected_for_runtime: info.selected_for_runtime,
+        })
+        .collect()
+}
+
+/// T2-11: the desktop `replace_mode_skill_selection` write path — validate
+/// the keys against the scan, persist the minimal user-override diff, then
+/// persist the project disable set for the skills left out.
+async fn persist_mode_skill_selection(
+    workspace: &openbitfun_core::service::workspace::WorkspaceInfo,
+    mode_id: &str,
+    enabled_keys: &[String],
+) -> Result<(), String> {
+    use openbitfun_core::agentic::tools::implementations::skills::{mode_overrides, SkillRegistry};
+
+    let registry = SkillRegistry::global();
+    let all_skills = registry
+        .get_all_skills_for_workspace(Some(workspace.root_path.as_path()))
+        .await;
+    let enabled = crate::manage::normalize_skill_key_list(enabled_keys.to_vec());
+    let unknown = crate::manage::unknown_skill_keys(&all_skills, &enabled);
+    if !unknown.is_empty() {
+        return Err(format!(
+            "Unknown skill keys for mode '{mode_id}': {}",
+            unknown.join(", ")
+        ));
+    }
+    let enabled_set: std::collections::HashSet<String> = enabled.into_iter().collect();
+    let (disabled_user, enabled_user) =
+        crate::manage::user_mode_skill_override_diff(&all_skills, mode_id, &enabled_set);
+    openbitfun_core::service::config::mode_config_canonicalizer::persist_agent_profile_from_value(
+        mode_id,
+        serde_json::json!({
+            "disabled_user_skills": crate::manage::normalize_skill_key_list(disabled_user),
+            "enabled_user_skills": crate::manage::normalize_skill_key_list(enabled_user),
+        }),
+    )
+    .await
+    .map_err(|error| format!("Failed to update user skill overrides: {error}"))?;
+    let disabled_project = crate::manage::disabled_project_skill_keys(&all_skills, &enabled_set);
+    let mut document =
+        mode_overrides::load_project_mode_skills_document_local(&workspace.root_path)
+            .await
+            .map_err(|error| format!("Failed to load project mode skills: {error}"))?;
+    mode_overrides::set_disabled_mode_skills_in_document(&mut document, mode_id, disabled_project)
+        .map_err(|error| format!("Failed to update project skill overrides: {error}"))?;
+    mode_overrides::save_project_mode_skills_document_local(&workspace.root_path, &document)
+        .await
+        .map_err(|error| format!("Failed to save project mode skills: {error}"))?;
+    Ok(())
+}
+
+/// T2-11: the desktop `reset_mode_skill_selection` clear path — drop the
+/// user overrides, then clear the mode's project disable set, removing the
+/// project file when the document is left empty.
+async fn clear_mode_skill_selection(
+    workspace: &openbitfun_core::service::workspace::WorkspaceInfo,
+    mode_id: &str,
+) -> Result<(), String> {
+    use openbitfun_core::agentic::tools::implementations::skills::mode_overrides;
+    use openbitfun_core::infrastructure::get_path_manager_arc;
+
+    mode_overrides::clear_user_mode_skill_overrides(mode_id)
+        .await
+        .map_err(|error| format!("Failed to reset user skill overrides: {error}"))?;
+    let path = get_path_manager_arc().project_agent_profiles_file(&workspace.root_path);
+    let exists = tokio::fs::try_exists(&path)
+        .await
+        .map_err(|error| format!("Failed to check project mode skills file: {error}"))?;
+    if !exists {
+        return Ok(());
+    }
+    let mut document =
+        mode_overrides::load_project_mode_skills_document_local(&workspace.root_path)
+            .await
+            .map_err(|error| format!("Failed to load project mode skills: {error}"))?;
+    mode_overrides::set_disabled_mode_skills_in_document(&mut document, mode_id, Vec::new())
+        .map_err(|error| format!("Failed to clear project skill overrides: {error}"))?;
+    if document.is_empty() {
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(format!(
+                "Failed to remove project mode skills file: {error}"
+            )),
+        }
+    } else {
+        mode_overrides::save_project_mode_skills_document_local(&workspace.root_path, &document)
+            .await
+            .map_err(|error| format!("Failed to save project mode skills: {error}"))
+    }
+}
+
 async fn fetch_agent_catalog(workspace_id: Option<&str>) -> crate::manage::AgentCatalog {
     use openbitfun_core::agentic::agents::{get_agent_registry, AgentSource};
 
@@ -1777,34 +1960,60 @@ async fn fetch_agent_catalog(workspace_id: Option<&str>) -> crate::manage::Agent
         AgentSource::Project => crate::manage::AgentSourceKind::Project,
         AgentSource::External => crate::manage::AgentSourceKind::External,
     };
-    let modes = registry
+    let modes_info = registry
         .get_modes_info_for_workspace(workspace_id, false)
-        .await
+        .await;
+    // T2-11: overrides persist under the profile representative — the first
+    // mode in list order for each config profile (web `buildProfileMap`).
+    let profiles: Vec<(String, Option<String>)> = modes_info
+        .iter()
+        .map(|info| (info.id.clone(), info.config_profile_id.clone()))
+        .collect();
+    let representatives = crate::manage::representative_mode_ids(&profiles);
+    let modes = modes_info
         .into_iter()
-        .map(|info| crate::manage::AgentCardRow {
-            id: info.id,
-            name: info.name,
-            description: info.description,
-            tool_count: info.tool_count,
-            readonly: info.is_readonly,
-            review: info.is_review,
-            source: map_source(&info.source),
-            enabled: None,
+        .map(|info| {
+            let skills_mode_id = representatives
+                .get(&info.id)
+                .cloned()
+                .unwrap_or_else(|| info.id.clone());
+            crate::manage::AgentCardRow {
+                id: info.id,
+                name: info.name,
+                description: info.description,
+                tool_count: info.tool_count,
+                readonly: info.is_readonly,
+                review: info.is_review,
+                source: map_source(&info.source),
+                enabled: None,
+                // The shell has no mode tool-config editor, so the default
+                // tool set is the shell-visible truth (web hasSkillTool).
+                skills_manageable: info.default_tools.iter().any(|tool| tool == "Skill"),
+                skills_mode_id,
+            }
         })
         .collect();
     let subagents = registry
         .get_subagents_info(workspace_id)
         .await
         .into_iter()
-        .map(|info| crate::manage::AgentCardRow {
-            id: info.id,
-            name: info.name,
-            description: info.description,
-            tool_count: info.tool_count,
-            readonly: info.is_readonly,
-            review: info.is_review,
-            source: map_source(&info.source),
-            enabled: Some(info.effective_enabled),
+        .map(|info| {
+            let external = matches!(info.source, AgentSource::External);
+            crate::manage::AgentCardRow {
+                id: info.id.clone(),
+                name: info.name,
+                description: info.description,
+                tool_count: info.tool_count,
+                readonly: info.is_readonly,
+                review: info.is_review,
+                source: map_source(&info.source),
+                enabled: Some(info.effective_enabled),
+                skills_manageable: !external
+                    && info.default_tools.iter().any(|tool| tool == "Skill"),
+                // Subagents persist under their own id (web falls back to
+                // the agent id when no mode profile exists).
+                skills_mode_id: info.id,
+            }
         })
         .collect();
     crate::manage::AgentCatalog {

@@ -1085,6 +1085,10 @@ pub(crate) struct ShellWindow {
     pub(crate) mcp_interactions: crate::manage::McpInteractionQueue,
     pub(crate) mcp_interaction_result_input: Entity<TextareaState>,
     pub(crate) mcp_interaction_error: Option<String>,
+    /// T2-11 per-mode skill selection dialog: one scratch state for the
+    /// dialog builder (which runs every frame), driven by the
+    /// `ModeSkillInfos`/`ManageFailed` runtime events.
+    pub(crate) mode_skills: Option<crate::manage::ModeSkillsDialogState>,
     /// T2-7 raw JSON config editor: the multi-line field lives on the window
     /// (recreated never, reset on every open) plus the loaded snapshot's
     /// fingerprint and dialog status.
@@ -1218,6 +1222,7 @@ impl ShellWindow {
             mcp_interactions: Default::default(),
             mcp_interaction_result_input,
             mcp_interaction_error: None,
+            mode_skills: None,
             mcp_json_state,
             mcp_json_fingerprint: None,
             mcp_json_loading: false,
@@ -1708,6 +1713,20 @@ impl ShellWindow {
                 cx.set_global(catalog);
                 cx.refresh_windows();
             }
+            RuntimeEvent::ModeSkillInfos { mode_id, rows } => {
+                if let Some(state) = self.mode_skills.as_mut() {
+                    if state.mode_id == mode_id {
+                        // Successful fetch/save/reset: land in the view phase
+                        // with fresh rows (the web edit mode exits on write).
+                        state.rows = rows;
+                        state.phase = crate::manage::ModeSkillsPhase::View;
+                        state.pending = None;
+                        state.submitting = false;
+                        state.error = None;
+                    }
+                }
+                cx.refresh_windows();
+            }
             RuntimeEvent::McpServerCatalog(view) => {
                 self.mcp_browse = Some(*view);
                 self.mcp_browse_loading = None;
@@ -1766,7 +1785,10 @@ impl ShellWindow {
             }
             RuntimeEvent::ManageFailed(message) => {
                 tracing::warn!("Management action failed: {message}");
-                if self.agent_create_active {
+                if let Some(state) = self.mode_skills.as_mut() {
+                    state.submitting = false;
+                    state.error = Some(i18n::failed_status(&message, cx));
+                } else if self.agent_create_active {
                     self.agent_create_error = Some(i18n::failed_status(&message, cx));
                 } else {
                     crate::manage::ManageNotice::set(Some(i18n::failed_status(&message, cx)), cx);
