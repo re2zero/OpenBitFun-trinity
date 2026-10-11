@@ -46,26 +46,26 @@
 | # | 能力域 / 场景 | 桌面命令域（命令数） | 状态 | 缺口与备注 |
 |---|---|---|---|---|
 | 1 | 会话对话闭环 | agentic_api(58) 的 turn/session 子集 | 已支持 | 会话级事件流、工具卡、停止、标题齐备 |
-| 2 | 会话管理操作（重命名/删除/归档/导出/fork/压缩） | session_api(19)、agentic_api | 可低成本补 | SDK `AgentRuntime` 已暴露 `rename_session` / `delete_session` / `archive_session` / `set_session_archived` / `fork_session`(`_at_turn`/`_before_turn`) / `start_session_compaction` / `get_session_lineage`；导出 = `read_session_transcript` + 序列化。壳侧 = 会话菜单 + 调用 |
-| 3 | 模型 / Provider 选择 | `get_ai_model_catalog` + config 模型档案 | 可低成本补 | 壳现仅显示 `model_id`（只读）；SDK 已有 `update_session_model(_selection)`、`list_agent_modes` / `update_session_mode`；catalog 接缝 = `openbitfun_core::get_remote_model_catalog()` / `get_local_models_dev_catalogs()` / `get_models_dev_catalog_status()`（desktop `get_ai_model_catalog` 同款；`model-catalog` 已在壳 feature 闭包）。需选择器 UI + 落盘 |
-| 4 | 附件 / 图片上下文（粘贴图片、拖文件、上传） | clipboard_file_api(3)、context_upload_api(1)、file_drop_preview_api(1) | 可低成本补 | turn 请求已带 `attachments: Vec<AgentInputAttachment>`（`remote_image` / `image_context`，dataURL 或路径）；**拖放与剪贴板走 gpui-pre 原生**（`FileDropEvent`：X11 XDND + Wayland wl_data_device；`ClipboardItem::new_image`），arboard 非必需（`file_drop_preview_api` 是 webview 拖拽预览，壳侧不需要）。图片落盘助手 `prepare_image_context_for_storage` 现为 desktop-local（壳内复刻约 30 行或下沉 core）；壳侧 = composer 附件区 + 缩略图 |
-| 5 | 交互式提问（ask_user / user question） | tool_api(8) 的 question 两条 | 可低成本补 | SDK 已备 `start_user_question_interaction` / `submit_user_answers` / `cancel_user_question` + `PendingUserQuestion`（含 `pending_question_snapshot(session_id)`）；**装配已通**——壳用的 `CoreProductAgentRuntime::build_with_event_source` 已把 coordinator 作为 `AgentInteractionResponsePort` 注入。壳侧 = 提问对话框 + FIFO 队列，与权限队列同型（同一死锁铁律） |
-| 6 | 子代理投影 / BTW 侧会话 / 任务详情 | subagent_api(10)、btw_api(2) | 缺 | 壳当前丢弃子代理事件（D14）；需新视图族 |
+| 2 | 会话管理操作（重命名/删除/归档/导出/fork/压缩） | session_api(19)、agentic_api | 已支持 | M13 起全量落地：重命名 / 删除 / 归档+恢复 / fork / 压缩 / 导出转写（`runtime.rs` 直调 SDK 全族；T1-4 归档页批量删除；导出走 `read_session_transcript`） |
+| 3 | 模型 / Provider 选择 | `get_ai_model_catalog` + config 模型档案 | 已支持 | 模型设置页（`settings.rs::models_page`：provider/key/模型选择）+ 会话级 mode/model 切换（`update_session_mode` / `update_session_model`，composer 选择器） |
+| 4 | 附件 / 图片上下文（粘贴图片、拖文件、上传） | clipboard_file_api(3)、context_upload_api(1)、file_drop_preview_api(1) | 已支持 | composer 附件区 + turn 请求 `attachments: Vec<AgentInputAttachment>`；拖放/剪贴板走 gpui-pre 原生（XDND / wl_data_device / `ClipboardItem`） |
+| 5 | 交互式提问（ask_user / user question） | tool_api(8) 的 question 两条 | 已支持 | 提问对话框 + FIFO 队列（与权限队列同型；`PendingUserQuestion` 快照拉取 + `submit_user_answers` 应答） |
+| 6 | 子代理投影 / BTW 侧会话 / 任务详情 | subagent_api(10)、btw_api(2) | 已支持（近似） | 子详情视图 = 全量转写（快照树超集）+ 贴底跟随；后台任务/父 turn 徽章计数、review 族「审核中」标签（T2-6）；BTW 侧会话 + busy 停止（T1-5）。web 内嵌投影的 last-round 截断为渲染量控制，壳无内嵌面（D67） |
 | 7 | 语音输入 / 实时通话 | speech_api(18) | 缺 | ASR 模型管理 + 实时音频，大工程 |
 | 8 | 工作区打开 / 新建 / 最近工作区 | commands.rs(79) 的 workspace 子集 | 缺 | **壳固定 `current_dir()` 为工作区（`runtime.rs`）**；core `WorkspaceService`/`WorkspaceManager` 能力齐（open/quick_open/create/switch/close/get_recent/get_opened/list/search），多工作区运行时由 `WorkspaceRuntimeService::ensure_runtime_for_workspace_binding` 管；但壳的 ownership（`fixed_workspace`）与 local services（`build_local_runtime_services(root)`）都在启动时按 root 固化 → **切工作区 = 运行时重装配**（比纯 UI 重，主要成本在此）。另注意 `current workspace` 指针与 desktop/CLI 共享，多壳并行时需决定 per-process 选择语义 |
-| 9 | 文件树 / 文件查看（code/markdown/image/pdf） | commands.rs、`search_api` | 缺 | core `FileSystemService`（`read_text` / `build_file_tree` / `scan_directory`）现成；viewer 面 + 资源标签是主要成本 |
+| 9 | 文件树 / 文件查看（code/markdown/image/pdf） | commands.rs、`search_api` | 已支持（子集） | 文件树 + 文件查看器（`files.rs`：文本/代码、markdown 渲染、图片解码，均设上限与拒绝注记）；pdf 查看未做 |
 | 10 | 内容标签页 / Canvas / Mission Control / Quick Look | canvas_api(5) + web-ui 工作台 | 缺 | 多标签工作台，大工程 |
-| 11 | 全局搜索（files / sessions / actions / entities） | search_api(3) + web-ui 全局搜索 | 缺 | core `service/search`（`WorkspaceSearchService`：`build_index` / `search_content` / `glob`）+ `product-search`（会话搜索）现成；壳侧搜索面中等 |
+| 11 | 全局搜索（files / sessions / actions / entities） | search_api(3) + web-ui 全局搜索 | 已支持（子集） | files / sessions 两路已落地（`search.rs`）；actions / entities 两路缺 |
 | 12 | 编辑器与 inline AI | editor_ai_api(2) + web-ui 编辑器 | 缺 | 壳内无编辑器定位，明确后置 |
-| 13 | 终端面板 | terminal_api(14) | 已支持（子集） | 单停靠面板；缺多会话标签 / 终端列表 / profile 编辑 |
-| 14 | Git 面板 | git_api(31)、git_agent_api(3)、diff_api(3) | 部分（只读） | 已有：状态 + diff。缺：history / branches / graph / stage / commit / push / 信任提示 |
-| 15 | Worktree 管理 | worktree_api(8) | 缺 | core 独立 `service/worktree` 生命周期模块（`list` / `create` / `remove` / `recreate` / `promote` / `bind_session`…）与 `service/workspace` 的 worktree topology 均在；管理 UI 中等 |
-| 16 | 设置页（21 页 / 5 类） | config_api(21)、i18n_api(5) | 部分（3/21） | 🔶见 §2.1 设置缺口明细 |
-| 17 | 定时任务 / 任务看板 | cron_api(5) | 可低成本补 | core `service/cron` 现成（`CronService` / 变更事件 / 全局服务）；`scheduled-jobs` 已由 `tools-agent-control` 传递启用，在当前壳 feature 闭包内直接可用；看板 UI 中等 |
-| 18 | 洞察 / 用量报告 | insights_api(5)、token_usage_api(1) | 可低成本补 | core `agentic::insights::InsightsService`（`generate` / `has_data` / `load_report` / `load_latest_reports` / `cancel`，desktop insights_api 同款）+ SDK `generate_session_usage`；读报告 + 统计展示 |
-| 19 | 技能管理 / 技能市场 | skill_api(13) | 缺 | 管理 UI 中等；市场下载属网络流程 |
-| 20 | 智能体管理（agents / custom agents / subagents） | custom_agent_api(5)、subagent_api、agentic_api | 缺 | 卡片 + 创建向导，工作量中 |
-| 21 | MCP 管理（servers / resources / prompts / OAuth） | mcp_api(23) | 缺 | core `service/mcp` 的 `McpManager`（lifecycle `start/stop/restart`、catalog 资源/提示、OAuth、interaction 应答）现成（`mcp_catalog` 端口本身是能力标记）；管理面 UI + 运行中交互对话框为主要成本 |
+| 13 | 终端面板 | terminal_api(14) | 已支持 | 多会话标签 + 停靠分栏 + 命名 profile 编辑（M17；共享 `terminal.*` 键与 desktop 同域） |
+| 14 | Git 面板 | git_api(31)、git_agent_api(3)、diff_api(3) | 已支持（子集） | 状态 + diff + 写操作（stage/commit/push 族）+ history + worktree + 快照恢复 + 信任横幅；graph / branches 图形面缺 |
+| 15 | Worktree 管理 | worktree_api(8) | 已支持 | 全生命周期（list/create/remove/recreate/promote/bind）经 git 面板落地 |
+| 16 | 设置页（21 页 / 5 类） | config_api(21)、i18n_api(5) | 部分（13/21） | 🔶见 §2.1 设置缺口明细 |
+| 17 | 定时任务 / 任务看板 | cron_api(5) | 已支持 | 定时任务页 + 看板（`tasks.rs`，core `service/cron` 直调） |
+| 18 | 洞察 / 用量报告 | insights_api(5)、token_usage_api(1) | 已支持 | insights 报告 + usage 数字面 + 趋势图/活动热力图（T2-8；热力格 UTC 锚定为有意简化） |
+| 19 | 技能管理 / 技能市场 | skill_api(13) | 已支持（子集） | 技能管理页（目录扫描 + 全局启停）+ 每 mode 技能选择（T2-11）；市场下载缺 |
+| 20 | 智能体管理（agents / custom agents / subagents） | custom_agent_api(5)、subagent_api、agentic_api | 已支持（子集） | agents 管理页 + 创建/编辑/删除卡片（T2-12，编辑粒度 = 壳创建面六字段）；subagents 编辑器缺 |
+| 21 | MCP 管理（servers / resources / prompts / OAuth） | mcp_api(23) | 已支持（子集） | 管理页 + 增删改 + 运行中交互应答（多行 + 预填）+ JSON 原文编辑 + 资源浏览（T2-7）；OAuth 流程缺 |
 | 22 | 生态兼容（外部来源导入 / ACP 客户端 / external hooks） | external_sources_api(27)、acp_client_api(16)、external_hooks_api(5) | 缺 | 大工程（发现/冲突解决/批导入） |
 | 23 | 插件 / 扩展管理页 | 生态 + 插件运行时 | 缺 | 依赖 22 |
 | 24 | MiniApps（运行时 / 库 / 市场 / 提交） | miniapp_api(39)、miniapp_market_api(13)、miniapp_agent_api(5)、miniapp_export_api(1) | 缺 | 需 JS worker 宿主桥 + 市场；大工程，后置 |
@@ -76,25 +76,30 @@
 | 29 | Peer Device Mode | peer_host_invoke(5) + 命令注册表 deny set | 缺 | 成本高，与产品命令代理基础设施强耦合 |
 | 30 | Detached Dispatch | dispatch_api(18) | 缺 | 同上 |
 | 31 | 内嵌浏览器 / computer-use / 浏览器控制 | browser_api(8)、browser_control_api(6)、computer_use_api(6)、html_preview_api(2) | 缺（明确不做） | Linux 无 webview 方案；computer-use 为 Windows-only |
-| 32 | 托盘 / 通知 / 开机自启 / 单实例 / 系统文件对话框 | system_api(18) | 缺 | 通知已可走 **gpui-pre 原生**（`App::show_system_notification`，Linux = XDG D-Bus/notify-rust，带 tag/action 响应回调）；托盘、单实例、开机自启仍需散件重建（rfd / notify-rust 等，M9 已列台账） |
-| 33 | 应用内更新 UI（检查 / 下载 / 安装提示） | update_api(3) | 部分 | 引擎已就绪（D32）；缺 UI 与 feed 接入（见 §4.4） |
+| 32 | 托盘 / 通知 / 开机自启 / 单实例 / 系统文件对话框 | system_api(18) | 已支持（Linux） | 托盘（ksni SNI）+ 自启 + 单实例锁 + 关闭语义 + OS 通知（`shell.rs::show_system_notification`，turn done/failed + T1-2 通知开关页）；文件对话框走 gpui 原生 pickers |
+| 33 | 应用内更新 UI（检查 / 下载 / 安装提示） | update_api(3) | 已支持 | 引擎（D32）+ UI（检查/下载/安装/重启）+ 每日门控（T1-3）；feed 接入仍按 §4.4 拍板时同批 |
 | 34 | 公告 / 更新提示 | announcement_api(6) | 缺 | 可后置 |
 | 35 | 桌面宠物 / 工具条模式 / 浮动 mini chat | — | 缺（明确后置） | 与壳定位无关 |
-| 36 | Trinity 认知控制台 | trinity_api(26) | 缺 | 薄 RPC 转发；是否承载属产品决策 |
-| 37 | 审查平台 / 深度审查 | review_platform_api(10) + review-team 前端 | 缺 | 后置 |
+| 36 | Trinity 认知控制台 | trinity_api(26) | 缺 | 薄 RPC 转发；已转正为接力清单 T2-15（D77） |
+| 37 | 审查平台 / 深度审查 | review_platform_api(10) + review-team 前端 | 缺（review 族投影已有标签） | 平台本体后置；review 族 agent_type 已有「审核中」标签与子视图（T2-6） |
 | 38 | 账号 / 身份（GitHub 登录、市场） | account_identity_api(3) | 缺 | 服务市场能力时一并 |
-| 39 | 会话快照 / 回滚（turn 文件 accept/reject） | snapshot_service(22) | 缺 | core `service/snapshot`（`SnapshotSystem` + 文件锁/隔离/清理）现成；与 diff 面同族，可随 Git 面板演进 |
+| 39 | 会话快照 / 回滚（turn 文件 accept/reject） | snapshot_service(22) | 已支持 | 快照恢复经 Git 面板落地（`git.rs` snapshot 族） |
 | 40 | 调试 / devtools | debug_api(8) | 不适用 | webview 专属；壳走原生日志 |
 
 ### 2.1 设置页缺口明细（第 16 行展开）
 
+壳设置页现状 13 页（`settings.rs` 页表）：通用、外观、模型、终端、权限、自动化、网页搜索、技能、智能体、MCP 服务器、用量统计、归档会话、诊断。对照 web 21 页的缺口：
+
 | 类别 | 页面 | 状态 |
 |---|---|---|
-| application | general（启动/更新/睡眠/窗口/通知）、appearance（含外观包区块）、pet、voice、shortcuts、terminal、editor | 缺（壳设置页已覆盖 appearance 的语言/主题与 terminal 的 4 个共享键：`font_size` / `font_family` / `scrollback` / `default_shell`；general / pet / voice / shortcuts / editor 缺） |
-| ai | models（providers/keys/proxy/订阅）、memory、trinity engine | 缺（models 属 P0，见 §3） |
-| workspace | 会话/工作区搜索、worktrees | 缺 |
-| tools | execution（壳已有预设 + 自动批准两项；超时/审查容量缺）、automation（hooks / quick actions）、webSearch、mcp、acp、desktop-control | 部分（2/execution） |
-| data | usage statistics、archived sessions、diagnostics/logging | 缺（archived sessions 可低成本） |
+| application | general、appearance、terminal | 已支持（general：启动自启/关闭行为/任务完成通知开关/更新检查每日门控；appearance：语言/主题/appearance id；terminal：4 个共享键） |
+| application | pet、voice、shortcuts、editor | 缺（pet/voice 与壳定位无关；shortcuts / editor 后置） |
+| ai | models | 已支持（provider/key/模型选择页） |
+| ai | memory、trinity engine | 缺（trinity 属 T2-15） |
+| workspace | 会话/工作区搜索、worktrees | 缺（会话搜索已走全局搜索面；worktrees 走 Git 面板） |
+| tools | execution、automation、webSearch、mcp | 已支持（execution：预设 + 自动批准；automation：hooks 总开关/项目级开关/git co-author，quick actions 经聊天头部菜单只读消费 T2-10；webSearch：provider/HTTP 端点表单 T2-9；mcp：管理页 + 交互 + JSON 编辑 T2-7） |
+| tools | acp、desktop-control | 缺 |
+| data | usage statistics、archived sessions、diagnostics/logging | 已支持（usage：数字面 + 趋势图/热力图；archived：列表/恢复/删除/全删 T1-4；diagnostics：日志级别 + 会话日志目录 + 导出诊断包 T2-13。壳日志无敏感数据门控，web 的 include_sensitive_diagnostics 开关不复制——该开关在壳内无对应行为，复制即假开关） |
 
 ### 2.2 底座复用面速查（"可低成本补"的判定依据）
 
@@ -209,3 +214,4 @@
 | 2026-10-09 | **三项拍板（M10 收口，公子亲手选定）**：① P0 立项为里程碑 M11（验收于开工时冻结）；② feed 维持显式 `--update-manifest`，切换拍板时同批接入 + minisign；③ 机制 = M-B（落地为里程碑 M12）。切换动作本身待 P0 闭合后终审 |
 | 2026-10-09 | 整固复核（M10 第 2 会话，仅文档）：①逐条复核 §2「可低成本补」6 行 —— SDK 方法族（第 2/3/5/18 行）、端口、core 服务全部真实存在，无一虚标；②修正证据措辞 4 处：第 4 行改为「拖放/剪贴板走 gpui-pre 原生（XDND / wl_data_device / `ClipboardItem::new_image`）＋图片落盘助手为 desktop-local」、第 5 行补「装配已通」的直接证据（`build_with_event_source` 注入 `AgentInteractionResponsePort`）、第 8 行改为「切工作区 = 运行时重装配」（ownership 与 local services 启动即固化）并标出 `current workspace` 共享指针的跨壳耦合、§2.2 修正「多数端口是能力标记（无方法）」并把文件/工作区能力指向 core 服务；③补证据锚点：第 3 行补 catalog 三个 core 函数、第 17 行补 `scheduled-jobs` 已在闭包、第 18 行补 `InsightsService` 五个方法；④第 32 行补「通知可走 gpui-pre 原生 `show_system_notification`」；⑤§2.1 application 分类修正为 7 页（补 `terminal`，壳已覆盖其 4 个共享键）、去掉不存在的独立「appearance pack」页；⑥抽查「缺」档三行的证据锚点（第 15 行 `service/worktree` 生命周期、第 21 行 `McpManager` 家族、第 39 行 `service/snapshot`），去掉对标记端口的引用；⑦第 9 / 11 行同样把「端口现成」改为指向 core 服务（`FileSystemService` / `WorkspaceSearchService`）；⑧§4.2 / §4.4 补落地锚点：M-B 的 schema/resolver/adapter/校验入口逐文件点名，feed 接入点名 `generate-linux-binaries-manifest.mjs` 的 `gpuiShell` 资产键及其 `asset()` 存在性约束 |
 | 2026-10-10 | M11-M23 落地提示（接力计划侧记录，§2 矩阵尚未逐行刷新）：P0 六项与 P1 大部分已由 M11-M23 交付——会话管理操作、模型页、附件、ask_user、文件树/查看器、全局搜索（files/sessions）、终端多标签 + profile、Git 写操作 + history + 信任横幅、worktree 全生命周期、快照恢复、tasks、insights/usage 数字面、skills/agents/MCP 管理页、子代理投影 / BTW / child views、托盘 + 自启 + 关闭语义、自更新 UI、OS 通知（turn done/failed）。逐行复核记入接力清单（.relay/PLAN.md 后置接力清单 T2-14）；残余差距清单同处（git graph/branch、content 标签、公告、搜索 actions/entities、生态导入等） |
+| 2026-10-11 | **§2 矩阵整轮刷新（T2-14，接力清单项）**：逐行刷到 2026-10-11 真相（M11-M23 + 后置接力 T1-1..5 / T2-6..13 落地后）。已支持/子集：会话管理（2）、模型（3）、附件（4）、ask_user（5）、子代理投影/BTW（6，近似口径 D67）、文件树/查看器（9，pdf 缺）、全局搜索（11，files/sessions）、终端（13）、Git（14，graph/branches 缺）、worktree（15）、定时任务（17）、洞察/用量（18）、技能/智能体/MCP 管理（19/20/21，市场/编辑器/OAuth 缺）、系统集成（32）、更新 UI（33）、快照（39）；设置页 3/21 → 13/21（§2.1 改写，含 T2-13 诊断包导出与 include_sensitive_diagnostics 假开关不复制注记）。§1 基线表未动（M10 交付物口径不变）；残余缺口：git graph/branches、搜索 actions/entities、content 标签、生态导入、Trinity（T2-15）、托盘未读角标（T2-16）等 |
