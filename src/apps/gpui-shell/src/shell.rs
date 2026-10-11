@@ -14,15 +14,16 @@ use gpui_kit::component::{
     message_scroller::{MessageScroller, MessageScrollerState},
     scroll::ScrollableElement,
     shimmer::ShimmerText,
-    sidebar::{Sidebar, SidebarFooter, SidebarGroup, SidebarItem},
+    sidebar::{Sidebar, SidebarFooter, SidebarItem},
     text::TextView,
     ActiveTheme, Collapsible, Disableable, Icon, Sizable, StyledExt, TitleBar, WindowExt,
 };
 use gpui_kit::InteractiveElement as _;
 use gpui_kit::{
     div, img, point, prelude::*, px, size, Anchor, App, Bounds, ClipboardEntry, Context, ElementId,
-    Entity, ExternalPaths, Image, ImageFormat, Pixels, SharedString, SystemNotification,
-    TitlebarOptions, WeakEntity, Window, WindowBackgroundAppearance, WindowBounds, WindowOptions,
+    Entity, ExternalPaths, Image, ImageFormat, KeyBinding, Pixels, SharedString,
+    SystemNotification, TitlebarOptions, WeakEntity, Window, WindowBackgroundAppearance,
+    WindowBounds, WindowOptions,
 };
 use openbitfun_agent_runtime::sdk::{PendingUserQuestion, PermissionReply, PermissionRequest};
 use openbitfun_runtime_ports::AgentInputAttachment;
@@ -57,6 +58,8 @@ const MAX_TERMINAL_HEIGHT: f32 = 900.;
 /// bar of session tabs and scene tabs (R1a, mirroring the web-ui desktop
 /// `SceneBar`); the tab model lives in [`crate::tabs`].
 use crate::tabs::{SceneId, TabKind, TabsState};
+
+gpui_kit::actions!(openbitfun_gpui_shell, [OpenGlobalSearch]);
 
 /// One terminal panel tab (M17): a pane owning its PTY plus the fallback
 /// tab label (a profile's name, or the localized default-shell label; the
@@ -430,29 +433,23 @@ impl ChatView {
     }
 }
 
-/// Sidebar navigation destinations (M23): one row per main surface, mirroring
-/// the web-ui NavPanel order (nav sections first, sessions below).
+/// Sidebar navigation destinations (R1b): the desktop top-scene rows in
+/// NavPanel order. The workbench scenes (files/git/insights) have no nav row
+/// on the desktop either — they open through the global search palette's
+/// quick actions until R2c re-homes them as workbench panels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NavAction {
     Chat,
-    Git,
-    Insights,
-    Tasks,
-    Files,
-    Search,
     Trinity,
+    Tasks,
 }
 
 impl NavAction {
     fn icon(self) -> IconName {
         match self {
             NavAction::Chat => IconName::Sparkles,
-            NavAction::Git => IconName::GitBranch,
-            NavAction::Insights => IconName::ChartPie,
-            NavAction::Tasks => IconName::Calendar,
-            NavAction::Files => IconName::FolderOpen,
-            NavAction::Search => IconName::Search,
             NavAction::Trinity => IconName::BrainCircuit,
+            NavAction::Tasks => IconName::Calendar,
         }
     }
 
@@ -464,12 +461,8 @@ impl NavAction {
             NavAction::Chat => tabs
                 .active_kind()
                 .is_none_or(|kind| matches!(kind, TabKind::Session(_))),
-            NavAction::Git => tabs.active_kind() == Some(&TabKind::Scene(SceneId::Git)),
-            NavAction::Insights => tabs.active_kind() == Some(&TabKind::Scene(SceneId::Insights)),
-            NavAction::Tasks => tabs.active_kind() == Some(&TabKind::Scene(SceneId::Tasks)),
-            NavAction::Files => tabs.active_kind() == Some(&TabKind::Scene(SceneId::Files)),
-            NavAction::Search => tabs.active_kind() == Some(&TabKind::Scene(SceneId::Search)),
             NavAction::Trinity => tabs.active_kind() == Some(&TabKind::Scene(SceneId::Trinity)),
+            NavAction::Tasks => tabs.active_kind() == Some(&TabKind::Scene(SceneId::Tasks)),
         }
     }
 }
@@ -493,30 +486,19 @@ pub(crate) fn brand_empty(icon: IconName, title: &str, description: &str) -> gpu
         .into_any_element()
 }
 
-/// All nav rows in display order; a pure projection so tests can pin the
-/// active-state wiring without a window.
+/// All nav rows in display order (desktop NavPanel top-scene order); a pure
+/// projection so tests can pin the active-state wiring without a window.
 fn nav_actions() -> Vec<NavAction> {
-    vec![
-        NavAction::Chat,
-        NavAction::Files,
-        NavAction::Git,
-        NavAction::Search,
-        NavAction::Insights,
-        NavAction::Tasks,
-        NavAction::Trinity,
-    ]
+    vec![NavAction::Chat, NavAction::Trinity, NavAction::Tasks]
 }
 
-/// Row label for a nav destination; the surface titles double as nav nouns.
+/// Row label for a nav destination: the desktop nav nouns (智能助理/认知体/
+/// 任务看板), not the scene titles the tabs show.
 fn nav_label<'a>(action: NavAction, text: &'a ShellText) -> &'a str {
     match action {
-        NavAction::Chat => &text.chat_title,
-        NavAction::Git => &text.git_title,
-        NavAction::Insights => &text.insights_title,
-        NavAction::Tasks => &text.tasks_title,
-        NavAction::Files => &text.files_title,
-        NavAction::Search => &text.search_title,
+        NavAction::Chat => &text.nav_assistant,
         NavAction::Trinity => &text.trinity_title,
+        NavAction::Tasks => &text.nav_tasks,
     }
 }
 
@@ -673,9 +655,9 @@ impl SidebarItem for SidebarEntry {
                 let id = SharedString::from(format!("nav-{:?}", action));
                 div()
                     .id(id)
-                    .on_click(move |_, window, cx| {
+                    .on_click(move |_, _, cx| {
                         if let Some(view) = view.upgrade() {
-                            view.update(cx, |this, cx| this.apply_nav(action, window, cx));
+                            view.update(cx, |this, cx| this.apply_nav(action, cx));
                         }
                     })
                     .cursor_pointer()
@@ -719,41 +701,37 @@ impl SidebarItem for SidebarEntry {
     }
 }
 
-/// One `Sidebar` section: the shell-local collapsible nav group or a plain
-/// component group. One type because `Sidebar` children share one element
-/// type. The collapsible variant exists because `SidebarGroup`'s header is
-/// click-less and its `collapsed` is a construction-time value; the nav
-/// toggle mirrors the web-ui NavPanel extension group (D77).
+/// One `Sidebar` section: headerless nav rows (the desktop top actions sit
+/// under the search trigger without a title) or a titled section whose header
+/// carries the row actions. One type because `Sidebar` children share one
+/// element type. Neither variant collapses: the desktop nav has no section
+/// toggle, and the component group's construction-time `collapsed` has no
+/// click path anymore.
 #[derive(Clone)]
 enum SidebarSection {
-    Nav {
+    Rows(Vec<SidebarEntry>),
+    Section {
         label: SharedString,
-        collapsed: bool,
+        /// Session-header action state (R1b): the channel the new-session and
+        /// reload buttons fire through, and the archive-filter state the
+        /// toggle flips.
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+        archived_on: bool,
         rows: Vec<SidebarEntry>,
         view: WeakEntity<ShellWindow>,
     },
-    Group(SidebarGroup<SidebarEntry>),
 }
 
 impl Collapsible for SidebarSection {
-    fn collapsed(mut self, collapsed: bool) -> Self {
-        match &mut self {
-            // The sidebar re-applies its own icon-rail state to every group on
-            // each frame (`Sidebar` render calls `.collapsed(layout
-            // .icon_collapsed)`), which would reset the nav toggle right back.
-            // The nav section owns its state from construction; only the plain
-            // group forwards.
-            SidebarSection::Nav { .. } => {}
-            SidebarSection::Group(group) => *group = group.clone().collapsed(collapsed),
-        }
+    fn collapsed(self, _collapsed: bool) -> Self {
+        // The sidebar re-applies its own icon-rail state to every group on
+        // each frame (`Sidebar` render calls `.collapsed(layout
+        // .icon_collapsed)`); both sections are always-rendered.
         self
     }
 
     fn is_collapsed(&self) -> bool {
-        match self {
-            SidebarSection::Nav { collapsed, .. } => *collapsed,
-            SidebarSection::Group(group) => group.is_collapsed(),
-        }
+        false
     }
 }
 
@@ -765,32 +743,38 @@ impl SidebarItem for SidebarSection {
         cx: &mut App,
     ) -> impl IntoElement {
         match self {
-            SidebarSection::Group(group) => group.render(id, window, cx).into_any_element(),
-            SidebarSection::Nav {
+            SidebarSection::Rows(rows) => {
+                let id = id.into();
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .children(rows.into_iter().enumerate().map(|(ix, row)| {
+                        let row_id = SharedString::from(format!("{}-{}", id, ix));
+                        row.render(row_id, window, cx).into_any_element()
+                    }))
+                    .into_any_element()
+            }
+            SidebarSection::Section {
                 label,
-                collapsed,
+                tx,
+                archived_on,
                 rows,
                 view,
             } => {
                 let id = id.into();
-                let toggle_view = view.clone();
-                let header_id = SharedString::from(format!("{}-toggle", id));
+                // Session-header actions (R1b): the three desktop header
+                // verbs the shell has real semantics for — new session,
+                // archive filter, list reload.
+                let new_tx = tx.clone();
+                let reload_tx = tx.clone();
+                let archive_view = view.clone();
                 div()
                     .flex()
                     .flex_col()
-                    .gap_2()
+                    .gap_1()
                     .child(
                         div()
-                            .id(header_id)
-                            .on_click(move |_, _, cx| {
-                                if let Some(view) = toggle_view.upgrade() {
-                                    view.update(cx, |this, cx| {
-                                        this.nav_collapsed = !this.nav_collapsed;
-                                        cx.notify();
-                                    });
-                                }
-                            })
-                            .cursor_pointer()
                             .flex()
                             .flex_row()
                             .items_center()
@@ -798,27 +782,68 @@ impl SidebarItem for SidebarSection {
                             .gap_1()
                             .h_8()
                             .px_2()
-                            .rounded(cx.theme().radius)
-                            .text_xs()
-                            .text_color(cx.theme().sidebar_foreground.opacity(0.7))
-                            .hover(|style| style.bg(cx.theme().sidebar_accent.opacity(0.5)))
-                            .child(label)
                             .child(
-                                Icon::new(if collapsed {
-                                    IconName::ChevronRight
-                                } else {
-                                    IconName::ChevronDown
-                                })
-                                .small(),
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().sidebar_foreground.opacity(0.7))
+                                    .child(label),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_0p5()
+                                    .child(
+                                        Button::new(SharedString::from(format!("{}-new", id)))
+                                            .icon(IconName::Plus)
+                                            .small()
+                                            .with_variant(ButtonVariant::Ghost)
+                                            .tooltip(i18n::current(cx).sessions_new.clone())
+                                            .on_click(move |_, _, _| {
+                                                if let Some(handle) = runtime::runtime_handle() {
+                                                    handle.create_session(new_tx.clone());
+                                                }
+                                            }),
+                                    )
+                                    .child(
+                                        Button::new(SharedString::from(format!("{}-archived", id)))
+                                            .icon(IconName::Archive)
+                                            .small()
+                                            .with_variant(if archived_on {
+                                                ButtonVariant::Secondary
+                                            } else {
+                                                ButtonVariant::Ghost
+                                            })
+                                            .tooltip(
+                                                i18n::current(cx).sessions_show_archived.clone(),
+                                            )
+                                            .on_click(move |_, _, cx| {
+                                                if let Some(view) = archive_view.upgrade() {
+                                                    view.update(cx, |this, cx| {
+                                                        this.show_archived = !this.show_archived;
+                                                        cx.notify();
+                                                    });
+                                                }
+                                            }),
+                                    )
+                                    .child(
+                                        Button::new(SharedString::from(format!("{}-reload", id)))
+                                            .icon(IconName::RefreshCw)
+                                            .small()
+                                            .with_variant(ButtonVariant::Ghost)
+                                            .tooltip(i18n::current(cx).sessions_reload.clone())
+                                            .on_click(move |_, _, _| {
+                                                if let Some(handle) = runtime::runtime_handle() {
+                                                    handle.reload_sessions(reload_tx.clone());
+                                                }
+                                            }),
+                                    ),
                             ),
                     )
-                    .when(!collapsed, |section| {
-                        section.children(rows.into_iter().enumerate().map(|(ix, row)| {
-                            row.collapsed(collapsed)
-                                .render(format!("{}-{}", id, ix), window, cx)
-                                .into_any_element()
-                        }))
-                    })
+                    .children(rows.into_iter().enumerate().map(|(ix, row)| {
+                        row.render(SharedString::from(format!("{}-{}", id, ix)), window, cx)
+                            .into_any_element()
+                    }))
                     .into_any_element()
             }
         }
@@ -1034,9 +1059,15 @@ pub(crate) struct ShellWindow {
     git_auto_open: bool,
     /// Sidebar filter: archived sessions stay hidden until this is on.
     show_archived: bool,
-    /// Sidebar nav group collapse (D77); session-scoped, the component group
-    /// header only takes a construction-time value so the toggle lives here.
-    nav_collapsed: bool,
+    /// Global search palette (R1b): one boolean, because the query state and
+    /// the input entity live on the window already (`search`/`search_input`).
+    search_overlay_open: bool,
+    /// The resting focus target: gpui dispatches keystroke bindings along the
+    /// focus chain, so with nothing focused Ctrl K would be dropped. The root
+    /// takes focus whenever nothing else holds it (fresh window, after the
+    /// palette closes), which keeps the shortcut live — the same behavior the
+    /// desktop gets from its window-level shortcut scope.
+    root_focus: gpui_kit::FocusHandle,
     /// Rename dialog input, reused across opens (the dialog builder re-reads
     /// it every frame, so the entity is created once with the window).
     rename_input: Entity<InputState>,
@@ -1235,7 +1266,8 @@ impl ShellWindow {
             settings_auto_open: std::env::var_os("OPENBITFUN_GPUI_SETTINGS_AUTOOPEN").is_some(),
             git_auto_open: std::env::var_os("OPENBITFUN_GPUI_GIT_AUTOOPEN").is_some(),
             show_archived: false,
-            nav_collapsed: false,
+            search_overlay_open: false,
+            root_focus: cx.focus_handle(),
             rename_input,
             rename_target: None,
             export_input,
@@ -2717,7 +2749,7 @@ impl ShellWindow {
     /// row keeps it active instead of toggling back, matching the desktop.
     /// Chat activates the most recent session tab; with none open it rests on
     /// the empty state.
-    fn apply_nav(&mut self, action: NavAction, window: &mut Window, cx: &mut Context<Self>) {
+    fn apply_nav(&mut self, action: NavAction, cx: &mut Context<Self>) {
         match action {
             NavAction::Chat => {
                 if let Some(chat) = self.chats.last() {
@@ -2728,12 +2760,8 @@ impl ShellWindow {
                 }
                 cx.notify();
             }
-            NavAction::Git => self.toggle_git_view(window, cx),
-            NavAction::Insights => self.toggle_insights_view(cx),
-            NavAction::Tasks => self.toggle_tasks_view(cx),
-            NavAction::Files => self.toggle_files_view(cx),
-            NavAction::Search => self.toggle_search_view(cx),
             NavAction::Trinity => self.toggle_trinity_view(cx),
+            NavAction::Tasks => self.toggle_tasks_view(cx),
         }
     }
 
@@ -2780,15 +2808,37 @@ impl ShellWindow {
         cx.notify();
     }
 
-    /// Global search page tab (M16); state rides the window, so nothing
-    /// is fetched on open.
-    fn toggle_search_view(&mut self, cx: &mut Context<Self>) {
-        self.tabs.open(TabKind::Scene(SceneId::Search));
+    /// Global search overlay (R1b): opens the palette, clears the previous
+    /// query state, and focuses the query input so typing starts immediately.
+    fn open_search_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::Focusable as _;
+        self.search_overlay_open = true;
+        self.search = crate::search::SearchPageState::default();
+        self.search_input.update(cx, |state, cx| {
+            state.set_value("", window, cx);
+        });
+        let focus = self.search_input.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
         cx.notify();
     }
 
-    /// Runs the search for the active tab (M16). Empty queries and in-flight
-    /// runs are no-ops so the panel never floods or double-fires.
+    /// Closes the palette and drops the query state, so a stale result set
+    /// never lingers behind the next open. Focus blurs: the query input is
+    /// about to unmount, and a dangling focus would swallow keystrokes
+    /// (the render pass then parks focus back on the root).
+    pub(crate) fn close_search_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.search_overlay_open {
+            return;
+        }
+        self.search_overlay_open = false;
+        self.search = crate::search::SearchPageState::default();
+        window.blur(cx);
+        cx.notify();
+    }
+
+    /// Runs the palette search (R1b): both paths at once, like the desktop's
+    /// federated global search. Empty queries and in-flight runs are no-ops
+    /// so the palette never floods or double-fires.
     pub(crate) fn run_search(
         &mut self,
         tx: &mpsc::UnboundedSender<RuntimeEvent>,
@@ -2807,11 +2857,34 @@ impl ShellWindow {
         self.search.error = None;
         self.search.unavailable = None;
         self.search.query = query.clone();
-        match self.search.tab {
-            crate::search::SearchTab::Files => handle.search_workspace_content(query, tx.clone()),
-            crate::search::SearchTab::Sessions => handle.search_sessions(query, tx.clone()),
-        }
+        handle.search_workspace_content(query.clone(), tx.clone());
+        handle.search_sessions(query, tx.clone());
         cx.notify();
+    }
+
+    /// Dispatches a palette quick action and closes the overlay. Terminal
+    /// needs the window (dock toggle drags a splitter); the rest are tab
+    /// opens.
+    pub(crate) fn run_search_quick_action(
+        &mut self,
+        action: crate::search::SearchQuickAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::search::SearchQuickAction as Q;
+        self.close_search_overlay(window, cx);
+        match action {
+            Q::NewSession => {
+                if let Some(handle) = runtime::runtime_handle() {
+                    handle.create_session(self.event_tx.clone());
+                }
+            }
+            Q::Terminal => self.toggle_terminal_panel(window, cx),
+            Q::Git => self.toggle_git_view(window, cx),
+            Q::Files => self.toggle_files_view(cx),
+            Q::Insights => self.toggle_insights_view(cx),
+            Q::Settings => self.open_settings_view(cx),
+        }
     }
 
     /// Jumps from a search hit to the files viewer with the file open.
@@ -2880,65 +2953,45 @@ impl ShellWindow {
         entries
     }
 
-    /// The navigation sidebar: session commands in the header, the session
-    /// list as the content, and the runtime status plus the settings menu
-    /// (theme, language) in the footer.
+    /// The navigation sidebar (R1b, desktop NavPanel shape): the "search
+    /// everything" trigger in the header, the three top-scene nav rows, the
+    /// sessions section (titled header with new/archive/reload actions above
+    /// the live list), and the runtime status plus the settings menu (theme,
+    /// language) in the footer.
     fn render_sidebar(&self, text: &ShellText, cx: &mut Context<Self>) -> Sidebar<SidebarSection> {
-        let new_tx = self.event_tx.clone();
-        let reload_tx = self.event_tx.clone();
-        let header = div()
-            .w_full()
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap_1()
-            .child(
-                Button::new("new-session")
-                    .label(text.sessions_new.clone())
-                    .small()
-                    .with_variant(ButtonVariant::Primary)
-                    .on_click(move |_, _, _| {
-                        if let Some(handle) = runtime::runtime_handle() {
-                            handle.create_session(new_tx.clone());
-                        }
-                    }),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .child(
-                        Button::new("toggle-archived")
-                            .icon(IconName::Archive)
-                            .small()
-                            .with_variant(if self.show_archived {
-                                ButtonVariant::Secondary
-                            } else {
-                                ButtonVariant::Ghost
-                            })
-                            .tooltip(text.sessions_show_archived.clone())
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.show_archived = !this.show_archived;
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("reload-sessions")
-                            .icon(IconName::RefreshCw)
-                            .small()
-                            .with_variant(ButtonVariant::Ghost)
-                            .tooltip(text.sessions_reload.clone())
-                            .on_click(move |_, _, _| {
-                                if let Some(handle) = runtime::runtime_handle() {
-                                    handle.reload_sessions(reload_tx.clone());
-                                }
-                            }),
-                    ),
-            );
+        let header = div().w_full().child(
+            div()
+                .id("search-everything")
+                .debug_selector(|| "search-everything".to_string())
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.open_search_overlay(window, cx);
+                }))
+                .cursor_pointer()
+                .flex()
+                .items_center()
+                .gap_x_2()
+                .h_8()
+                .px_2()
+                .rounded(cx.theme().radius)
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .hover(|style| style.bg(cx.theme().sidebar_accent.opacity(0.5)))
+                .child(Icon::new(IconName::Search).small())
+                .child(div().flex_1().truncate().child(text.search_trigger.clone()))
+                .child(
+                    div()
+                        .px_1()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .rounded_sm()
+                        .child("Ctrl K"),
+                ),
+        );
 
-        // Nav rows first (web-ui NavPanel order: navigation sections above the
-        // session list), then the sessions group with the live list.
+        // Nav rows first (web-ui NavPanel order: top scenes above the session
+        // list), then the sessions section with the live list.
         let nav_rows: Vec<SidebarEntry> = nav_actions()
             .into_iter()
             .map(|action| SidebarEntry::Nav {
@@ -2952,16 +3005,14 @@ impl ShellWindow {
         Sidebar::new("shell-sidebar")
             .w(px(SESSION_PANE_WIDTH))
             .header(header)
-            .child(SidebarSection::Nav {
-                label: SharedString::from(text.sidebar_nav_title.clone()),
-                collapsed: self.nav_collapsed,
-                rows: nav_rows,
+            .child(SidebarSection::Rows(nav_rows))
+            .child(SidebarSection::Section {
+                label: SharedString::from(text.sessions_title.clone()),
+                tx: self.event_tx.clone(),
+                archived_on: self.show_archived,
+                rows: self.render_session_entries(text, cx),
                 view: cx.entity().downgrade(),
             })
-            .child(SidebarSection::Group(
-                SidebarGroup::new(text.sessions_title.clone())
-                    .children(self.render_session_entries(text, cx)),
-            ))
             .footer(
                 SidebarFooter::new().child(
                     div()
@@ -4654,21 +4705,6 @@ impl Render for ShellWindow {
                     .into_any_element(),
                 None => div().into_any_element(),
             },
-            Some(TabKind::Scene(SceneId::Search)) => div()
-                .id("search-page")
-                .flex_1()
-                .min_h_0()
-                .min_w_0()
-                .overflow_y_scroll()
-                .child(crate::search::render_page(
-                    cx.entity().downgrade(),
-                    &self.search,
-                    &self.search_input,
-                    &self.event_tx,
-                    &text,
-                    cx,
-                ))
-                .into_any_element(),
             Some(TabKind::Scene(SceneId::Trinity)) => div()
                 .id("trinity-page")
                 .flex_1()
@@ -4699,14 +4735,31 @@ impl Render for ShellWindow {
                 .into_any_element(),
         };
 
+        // Nothing focused (fresh window, or after the palette closed): the
+        // root parks window focus so keystroke bindings like Ctrl K keep a
+        // chain to dispatch through.
+        if window.focused(cx).is_none() {
+            window.focus(&self.root_focus, cx);
+        }
+
         // No root background: the glass sidebar paints a 90% chrome tint over
         // the window surface (compositor blur shows through), so only the
         // main area and the docked terminal lay an opaque canvas below their
         // content. Every other surface paints its own background.
         div()
+            .id("shell-root")
+            .relative()
+            .track_focus(&self.root_focus)
             .size_full()
             .v_flex()
             .text_color(cx.theme().foreground)
+            // Ctrl K opens the global search palette from wherever the focus
+            // sits (the terminal pane and text editors consume keys first —
+            // same as the desktop, where the shortcut is also not global over
+            // inputs that eat it).
+            .on_action(cx.listener(|this, _: &OpenGlobalSearch, window, cx| {
+                this.open_search_overlay(window, cx);
+            }))
             .child(
                 TitleBar::new().child(
                     div()
@@ -4792,6 +4845,18 @@ impl Render for ShellWindow {
                             .children(panels)
                     }),
             )
+            // The global search palette (R1b) paints last so it overlays the
+            // sidebar, main area, and docked terminal alike.
+            .when(self.search_overlay_open, |this| {
+                this.child(crate::search::render_overlay(
+                    cx.entity().downgrade(),
+                    &self.search,
+                    &self.search_input,
+                    &self.event_tx,
+                    &text,
+                    cx,
+                ))
+            })
     }
 }
 
@@ -5479,6 +5544,11 @@ pub fn launch_main_window(tokio_handle: tokio::runtime::Handle) {
         .with_assets(ShellAssets)
         .run(move |cx: &mut App| {
             gpui_kit::init(cx);
+
+            // Global search palette shortcut (R1b), matching the desktop's
+            // Ctrl K. No key context: the binding matches wherever no focused
+            // view consumes the keystroke first.
+            cx.bind_keys([KeyBinding::new("ctrl-k", OpenGlobalSearch, None)]);
 
             let presets = theme::load_presets();
             let active_preset = presets
@@ -7471,10 +7541,10 @@ mod tests {
         });
     }
 
-    /// Search page state machine: toggle, tab switch, and the pump
-    /// projections for both tabs plus the unavailable gate.
+    /// Search overlay state machine (R1b): open resets the query state, the
+    /// pump projections land for both paths, and close drops them.
     #[gpui_kit::test]
-    fn search_view_toggles_and_projects_results(cx: &mut gpui_kit::TestAppContext) {
+    fn search_overlay_opens_projects_and_closes(cx: &mut gpui_kit::TestAppContext) {
         install_shell_globals(cx);
         let (tx, rx) = mpsc::unbounded_channel();
         let window = cx.add_empty_window();
@@ -7482,11 +7552,10 @@ mod tests {
 
         window.update(|window, cx| {
             shell.update(cx, |shell, cx| {
-                shell.toggle_search_view(cx);
-                assert_eq!(
-                    shell.tabs.active_kind(),
-                    Some(&TabKind::Scene(tabs::SceneId::Search))
-                );
+                assert!(!shell.search_overlay_open);
+
+                shell.open_search_overlay(window, cx);
+                assert!(shell.search_overlay_open);
 
                 shell.apply_runtime_event(
                     RuntimeEvent::SearchContent {
@@ -7500,7 +7569,6 @@ mod tests {
                 assert_eq!(shell.search.content[0].path, "/w/a.rs");
                 assert!(shell.search.truncated);
 
-                shell.search.tab = crate::search::SearchTab::Sessions;
                 shell.apply_runtime_event(
                     RuntimeEvent::SearchSessions {
                         hits: vec![sample_session_hit()],
@@ -7515,15 +7583,13 @@ mod tests {
                 shell.apply_runtime_event(RuntimeEvent::SearchUnavailable(None), window, cx);
                 assert!(matches!(shell.search.unavailable, Some(None)));
 
-                // Search state rides the window; closing the scene tab keeps it.
-                shell.close_top_tab(
-                    shell
-                        .tabs
-                        .index_of(&TabKind::Scene(tabs::SceneId::Search))
-                        .unwrap(),
-                    cx,
-                );
-                assert_eq!(shell.tabs.active_kind(), None);
+                // Closing drops the query state so a stale result set never
+                // lingers behind the next open.
+                shell.close_search_overlay(window, cx);
+                assert!(!shell.search_overlay_open);
+                assert!(shell.search.content.is_empty());
+                assert!(shell.search.sessions.is_empty());
+                assert_eq!(shell.search.query, "");
             });
         });
     }
@@ -7604,42 +7670,49 @@ mod tests {
         );
     }
 
-    /// M23 sidebar nav over the R1a tab model: the row set is fixed and
-    /// exactly one row lights up per active tab (Settings activates none —
-    /// its own footer button keeps the raised variant). A session tab lights
-    /// the Chat row; no tabs light it too (the resting empty state).
+    /// R1b sidebar nav over the R1a tab model: the row set is the desktop
+    /// top-scene trio in NavPanel order, and exactly one row lights up per
+    /// active tab (Settings activates none — its own footer button keeps the
+    /// raised variant). Workbench scenes (files/git/insights) light no row;
+    /// they live in the search palette until R2c. A session tab lights the
+    /// Chat row; no tabs light it too (the resting empty state).
     #[test]
     fn nav_rows_map_active_state_to_tabs() {
         let actions = nav_actions();
         assert_eq!(
             actions,
-            vec![
-                NavAction::Chat,
-                NavAction::Files,
-                NavAction::Git,
-                NavAction::Search,
-                NavAction::Insights,
-                NavAction::Tasks,
-                NavAction::Trinity,
-            ]
+            vec![NavAction::Chat, NavAction::Trinity, NavAction::Tasks]
         );
         let mut tabs = TabsState::default();
         for kind in [
             TabKind::Session("s-1".to_string()),
             TabKind::Scene(tabs::SceneId::Files),
             TabKind::Scene(tabs::SceneId::Git),
-            TabKind::Scene(tabs::SceneId::Search),
             TabKind::Scene(tabs::SceneId::Insights),
             TabKind::Scene(tabs::SceneId::Tasks),
             TabKind::Scene(tabs::SceneId::Trinity),
         ] {
             let kind_label = format!("{kind:?}");
             tabs.open(kind.clone());
-            let active = actions
+            let lit: Vec<&NavAction> = actions
                 .iter()
                 .filter(|candidate| candidate.is_active(&tabs))
-                .count();
-            assert_eq!(active, 1, "tab {kind_label} must light exactly one nav row");
+                .collect();
+            match kind {
+                // Workbench scenes have no nav row until R2c re-homes them.
+                TabKind::Scene(tabs::SceneId::Files)
+                | TabKind::Scene(tabs::SceneId::Git)
+                | TabKind::Scene(tabs::SceneId::Insights) => {
+                    assert!(lit.is_empty(), "tab {kind_label} must light no nav row");
+                }
+                _ => {
+                    assert_eq!(
+                        lit.len(),
+                        1,
+                        "tab {kind_label} must light exactly one nav row"
+                    );
+                }
+            }
         }
         // Settings keeps its footer-button variant, no nav row.
         tabs.open(TabKind::Scene(tabs::SceneId::Settings));
@@ -7649,7 +7722,7 @@ mod tests {
             .count();
         assert_eq!(active, 0, "the settings tab lights no nav row");
         // The resting empty state is chat.
-        let mut empty = TabsState::default();
+        let empty = TabsState::default();
         assert!(NavAction::Chat.is_active(&empty));
     }
 }

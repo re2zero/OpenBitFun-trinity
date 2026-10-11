@@ -22,7 +22,6 @@ pub(crate) enum SceneId {
     Insights,
     Tasks,
     Files,
-    Search,
     Trinity,
 }
 
@@ -31,35 +30,35 @@ pub(crate) enum SceneId {
 pub(crate) struct SceneDef {
     pub id: SceneId,
     pub icon: IconName,
-    /// Whether the scene owns a sidebar nav row today (R1b collapses the nav
-    /// to the desktop five-item shape; the table row outlives that change).
+    /// Whether the scene owns a sidebar nav row. R1b converged the nav to the
+    /// desktop top-scene shape (assistant / trinity / task board), so only
+    /// workbench scenes that still lack their R2c home keep rows out — they
+    /// open through the global search overlay's quick actions instead, the
+    /// same programmatic path the desktop uses. The table rows outlive nav
+    /// membership.
     pub in_nav: bool,
 }
 
-/// Built-in scenes, in sidebar order. Settings is reachable from the footer
-/// gear and the scene tab it opens, not from a nav row.
+/// Built-in scenes. Settings is reachable from the footer gear and the scene
+/// tab it opens, not from a nav row; Files/Git/Insights move to their desktop
+/// homes in R2c and until then open via the search overlay's quick actions.
 pub(crate) fn builtin_scenes() -> Vec<SceneDef> {
     use SceneId::*;
     vec![
         SceneDef {
             id: Git,
             icon: IconName::GitBranch,
-            in_nav: true,
+            in_nav: false,
         },
         SceneDef {
             id: Files,
             icon: IconName::FolderOpen,
-            in_nav: true,
-        },
-        SceneDef {
-            id: Search,
-            icon: IconName::Search,
-            in_nav: true,
+            in_nav: false,
         },
         SceneDef {
             id: Insights,
             icon: IconName::ChartPie,
-            in_nav: true,
+            in_nav: false,
         },
         SceneDef {
             id: Tasks,
@@ -174,7 +173,6 @@ pub(crate) fn scene_title(id: SceneId, text: &ShellText) -> &str {
         SceneId::Insights => &text.insights_title,
         SceneId::Tasks => &text.tasks_title,
         SceneId::Files => &text.files_title,
-        SceneId::Search => &text.search_title,
         SceneId::Trinity => &text.trinity_title,
     }
 }
@@ -252,7 +250,6 @@ mod tests {
             SceneId::Insights,
             SceneId::Tasks,
             SceneId::Files,
-            SceneId::Search,
             SceneId::Trinity,
         ];
         for id in expected {
