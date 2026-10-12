@@ -17,7 +17,7 @@ use gpui_kit::component::input::{Input, InputState, Textarea};
 use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, StyledExt, WindowExt};
-use gpui_kit::{div, prelude::*, px, App, Global, SharedString, WeakEntity, Window};
+use gpui_kit::{div, prelude::*, px, App, FontWeight, Global, SharedString, WeakEntity, Window};
 
 use crate::i18n::{self, ShellText};
 use crate::shell::ShellWindow;
@@ -980,12 +980,17 @@ fn facet_row(
     on_click: impl Fn(&mut App) + 'static,
     cx: &App,
 ) -> gpui_kit::AnyElement {
-    // Selected style mirrors the settings sidebar row: solid accent with its
-    // own foreground (a tinted background leaves the accent label unreadable).
-    let (label_color, count_color) = if selected {
-        (cx.theme().accent_foreground, cx.theme().accent_foreground)
+    // Selected style mirrors the settings sidebar row and the web skills
+    // filters: the neutral sidebar selection surface with primary text (R5
+    // parity; the accent solidVariant lost the side-by-side against desktop).
+    let (label_color, count_color, weight) = if selected {
+        (
+            cx.theme().sidebar_accent_foreground,
+            cx.theme().sidebar_accent_foreground,
+            Some(FontWeight::MEDIUM),
+        )
     } else {
-        (cx.theme().foreground, cx.theme().muted_foreground)
+        (cx.theme().foreground, cx.theme().muted_foreground, None)
     };
     div()
         .id(SharedString::from(id))
@@ -997,7 +1002,10 @@ fn facet_row(
         .py_1()
         .rounded(cx.theme().radius)
         .cursor_pointer()
-        .when(selected, |this| this.bg(cx.theme().accent))
+        .when(selected, |this| {
+            this.bg(cx.theme().sidebar_accent)
+                .when_some(weight, |row, w| row.font_weight(w))
+        })
         .hover(|style| style.bg(cx.theme().sidebar_accent))
         .on_click(move |_, _, cx| on_click(cx))
         .child(
@@ -2861,7 +2869,7 @@ pub(crate) fn open_browse_dialog(
                             .id("mcp-resource-content")
                             .h(px(220.))
                             .overflow_y_scroll()
-                            .rounded_sm()
+                            .rounded(cx.theme().radius)
                             .border_1()
                             .border_color(cx.theme().border)
                             .p_2()
@@ -3054,7 +3062,7 @@ pub(crate) fn open_interaction_dialog(
                 div()
                     .h(px(200.))
                     .overflow_hidden()
-                    .rounded_sm()
+                    .rounded(cx.theme().radius)
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .child(interaction_params_preview(&request.params)),

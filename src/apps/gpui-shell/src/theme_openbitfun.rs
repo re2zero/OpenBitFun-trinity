@@ -302,8 +302,12 @@ fn build_config(
     colors.sidebar = Some(glass_sidebar.into());
     colors.sidebar_border = Some(resolve("color.border.subtle")?.into());
     colors.sidebar_foreground = Some(resolve("color.content.primary")?.into());
-    colors.sidebar_accent = Some(resolve("color.accent.surface")?.into());
-    colors.sidebar_accent_foreground = Some(resolve("color.accent.default")?.into());
+    // R5 parity: the web nav item's hover/selection surface is the neutral
+    // `action.quiet.hover` overlay with `content.primary` text (accent is spent
+    // on the accent-tinted *content*, not the row background), so the sidebar
+    // selection tokens map to the same pair instead of the accent surface.
+    colors.sidebar_accent = Some(resolve("color.action.quiet.hover")?.into());
+    colors.sidebar_accent_foreground = Some(resolve("color.content.primary")?.into());
     colors.scrollbar_thumb = Some(resolve("color.scrollbar.thumb")?.into());
     colors.scrollbar_thumb_hover = Some(resolve("color.scrollbar.thumbHover")?.into());
     colors.window_border = Some(resolve("color.border.subtle")?.into());

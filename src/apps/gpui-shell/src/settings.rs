@@ -2267,7 +2267,13 @@ fn render_usage_trend(
                     .flex()
                     .items_center()
                     .gap_1()
-                    .child(div().w(px(8.)).h(px(8.)).rounded_sm().bg(cx.theme().info))
+                    .child(
+                        div()
+                            .w(px(8.))
+                            .h(px(8.))
+                            .rounded(cx.theme().radius_tokens().sm)
+                            .bg(cx.theme().info),
+                    )
                     .child(
                         div()
                             .text_xs()
@@ -2284,7 +2290,7 @@ fn render_usage_trend(
                         div()
                             .w(px(8.))
                             .h(px(8.))
-                            .rounded_sm()
+                            .rounded(cx.theme().radius_tokens().sm)
                             .bg(cx.theme().chart_2),
                     )
                     .child(

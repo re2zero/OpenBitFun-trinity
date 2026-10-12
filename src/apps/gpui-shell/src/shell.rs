@@ -627,7 +627,7 @@ impl SidebarItem for SidebarEntry {
                         this.child(
                             div()
                                 .text_xs()
-                                .text_color(cx.theme().sidebar_accent)
+                                .text_color(cx.theme().accent)
                                 .child(text.sidebar_review_running.clone()),
                         )
                     })
@@ -733,7 +733,7 @@ impl SidebarItem for SidebarEntry {
                             .text_color(cx.theme().sidebar_accent_foreground)
                     })
                     .when(!active, |this| {
-                        this.hover(|style| style.bg(cx.theme().sidebar_accent.opacity(0.8)))
+                        this.hover(|style| style.bg(cx.theme().sidebar_accent))
                     })
                     .child(Icon::new(action.icon()))
                     .child(div().truncate().child(label))
@@ -774,7 +774,7 @@ impl SidebarItem for SidebarEntry {
                     .rounded(cx.theme().radius)
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
-                    .hover(|style| style.bg(cx.theme().sidebar_accent.opacity(0.5)))
+                    .hover(|style| style.bg(cx.theme().sidebar_accent))
                     .child(Icon::new(chevron).small())
                     .child(label)
                     .when(!expanded && remaining > 0, |this| {
@@ -784,7 +784,7 @@ impl SidebarItem for SidebarEntry {
                                 .text_xs()
                                 .border_1()
                                 .border_color(cx.theme().border)
-                                .rounded_sm()
+                                .rounded(cx.theme().radius_tokens().sm)
                                 .child(format!("+{remaining}")),
                         )
                     })
@@ -974,7 +974,7 @@ impl SidebarItem for SidebarSection {
                 .p_2()
                 .rounded(cx.theme().radius)
                 .text_sm()
-                .hover(|style| style.bg(cx.theme().sidebar_accent.opacity(0.5)))
+                .hover(|style| style.bg(cx.theme().sidebar_accent))
                 .child(
                     Icon::new(if collapsed {
                         IconName::ChevronRight
@@ -3421,7 +3421,7 @@ impl ShellWindow {
                 .rounded(cx.theme().radius)
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
-                .hover(|style| style.bg(cx.theme().sidebar_accent.opacity(0.5)))
+                .hover(|style| style.bg(cx.theme().sidebar_accent))
                 .child(Icon::new(IconName::Search).small())
                 .child(div().flex_1().truncate().child(text.search_trigger.clone()))
                 .child(
@@ -3431,7 +3431,7 @@ impl ShellWindow {
                         .text_color(cx.theme().muted_foreground)
                         .border_1()
                         .border_color(cx.theme().border)
-                        .rounded_sm()
+                        .rounded(cx.theme().radius_tokens().sm)
                         .child("Ctrl K"),
                 ),
         );
@@ -3527,7 +3527,7 @@ impl ShellWindow {
                     .gap_1()
                     .h_5()
                     .px_1p5()
-                    .rounded_sm()
+                    .rounded(cx.theme().radius_tokens().sm)
                     .text_xs()
                     .text_color(chip_color)
                     .cursor_pointer()
@@ -4185,14 +4185,14 @@ impl ShellWindow {
             .gap_1()
             .px_1()
             .py_0p5()
-            .rounded(cx.theme().radius_tokens().md)
+            .rounded(cx.theme().radius)
             .bg(cx.theme().background)
             .border_1()
             .border_color(cx.theme().border)
             .child(
                 img(item.preview.clone())
                     .size(px(24.))
-                    .rounded_sm()
+                    .rounded(cx.theme().radius_tokens().sm)
                     .flex_shrink_0(),
             )
             .child(
@@ -5833,7 +5833,7 @@ impl ShellWindow {
                     .pl_2()
                     .pr_1()
                     .h_7()
-                    .rounded_md()
+                    .rounded(cx.theme().radius)
                     .text_sm()
                     .flex_shrink_0()
                     .when(active, |chip| {

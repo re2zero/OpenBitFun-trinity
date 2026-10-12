@@ -188,7 +188,7 @@ fn build_config(id: &'static str, json: &str) -> Result<ThemeConfig, String> {
     // because ThemeConfigColors carries private base-color fields.
     let mut colors = ThemeConfigColors::default();
     colors.background = Some(SharedString::from(background));
-    colors.foreground = Some(foreground);
+    colors.foreground = Some(foreground.clone());
     colors.border = Some(border.clone());
     colors.primary = Some(primary.clone());
     colors.primary_foreground = Some(readable_foreground(&primary));
@@ -204,6 +204,12 @@ fn build_config(id: &'static str, json: &str) -> Result<ThemeConfig, String> {
     colors.info_foreground = Some(readable_foreground(&info));
     colors.muted_foreground = pick("textMuted");
     colors.muted = pick("backgroundElement");
+    // R5 parity: the component falls back to a solid accent for a missing
+    // sidebar selection surface, which is louder than the web nav's neutral
+    // quiet-hover pill. Flat presets spend their own element surface on it,
+    // with the preset text color on top.
+    colors.sidebar_accent = pick("backgroundElement");
+    colors.sidebar_accent_foreground = Some(foreground.clone());
     colors.popover = Some(background_panel.clone());
     colors.title_bar = Some(background_panel);
     colors.ring = Some(border_active);

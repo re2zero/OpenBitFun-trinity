@@ -553,7 +553,7 @@ pub(crate) fn render_page(
                     .flex_col()
                     .gap_1()
                     .p_3()
-                    .rounded_md()
+                    .rounded(cx.theme().radius)
                     .border_1()
                     .border_color(cx.theme().danger)
                     .text_sm()
@@ -604,7 +604,7 @@ fn status_card(status: &StatusInfo, text: &ShellText, cx: &App) -> gpui_kit::Any
         .flex_col()
         .gap_1()
         .p_3()
-        .rounded_md()
+        .rounded(cx.theme().radius)
         .border_1()
         .border_color(cx.theme().border)
         .child(
@@ -651,7 +651,7 @@ fn psi_card(
         .flex_col()
         .gap_2()
         .p_3()
-        .rounded_md()
+        .rounded(cx.theme().radius)
         .border_1()
         .border_color(cx.theme().border);
 
@@ -801,7 +801,13 @@ fn trend_strip(state: &TrinityPageState, text: &ShellText, cx: &App) -> gpui_kit
         } else {
             cx.theme().danger
         };
-        row = row.child(div().w(px(3.)).h(px(height)).rounded_sm().bg(color));
+        row = row.child(
+            div()
+                .w(px(3.))
+                .h(px(height))
+                .rounded(cx.theme().radius_tokens().sm)
+                .bg(color),
+        );
     }
     strip = strip.child(row);
     strip.into_any_element()
@@ -823,7 +829,7 @@ fn memory_section(
         .flex_col()
         .gap_2()
         .p_3()
-        .rounded_md()
+        .rounded(cx.theme().radius)
         .border_1()
         .border_color(cx.theme().border);
 
@@ -923,7 +929,7 @@ fn memory_section(
                 .flex_col()
                 .gap_2()
                 .p_2()
-                .rounded_md()
+                .rounded(cx.theme().radius)
                 .bg(cx.theme().muted)
                 .child(div().child(Textarea::new(&content_entity).small()))
                 .child(div().w(px(280.)).child(Input::new(&project_entity).small()))
@@ -1082,7 +1088,7 @@ fn memory_row(
         .flex_col()
         .gap_0p5()
         .p_2()
-        .rounded_md()
+        .rounded(cx.theme().radius)
         .border_1()
         .border_color(cx.theme().border);
 
