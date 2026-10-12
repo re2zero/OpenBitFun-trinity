@@ -2919,6 +2919,24 @@ impl ShellWindow {
     /// resource the same way `toggle_resource` does but never closes it, then
     /// points the panel at the snapshots view for this workspace's sessions.
     fn open_git_snapshots(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_git_panel(window, cx);
+        self.set_git_view(crate::git::GitView::Snapshots, cx);
+    }
+
+    /// Points the git panel at a view without touching its mount; a no-op
+    /// while the panel is closed (the settings worktrees redirect pairs this
+    /// with [`Self::open_git_panel`], R3).
+    pub(crate) fn set_git_view(&mut self, view: crate::git::GitView, cx: &mut Context<Self>) {
+        if let Some(git) = self.git.clone() {
+            git.update(cx, |panel, cx| panel.set_view(view, cx));
+        }
+    }
+
+    /// Opens the git resource with the resource opening policy minus the
+    /// toggle: docked into the active session tab's right panel, or as a main
+    /// scene tab when no session tab is active. Idempotent — an open tab or
+    /// docked panel just stays, and the panel's current view is kept.
+    pub(crate) fn open_git_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if matches!(self.tabs.active_kind(), Some(TabKind::Session(_))) {
             if self.resource_panel != Some(ResourcePanelKind::Git) {
                 self.ensure_resource_page(ResourcePanelKind::Git, window, cx);
@@ -2929,11 +2947,6 @@ impl ShellWindow {
             self.set_resource_compact(ResourcePanelKind::Git, false, cx);
             self.tabs
                 .open(TabKind::Scene(ResourcePanelKind::Git.scene()));
-        }
-        if let Some(git) = self.git.clone() {
-            git.update(cx, |panel, cx| {
-                panel.set_view(crate::git::GitView::Snapshots, cx)
-            });
         }
         cx.notify();
     }
@@ -3144,7 +3157,7 @@ impl ShellWindow {
 
     /// Global search overlay (R1b): opens the palette, clears the previous
     /// query state, and focuses the query input so typing starts immediately.
-    fn open_search_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn open_search_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         use gpui_kit::Focusable as _;
         self.search_overlay_open = true;
         self.search = crate::search::SearchPageState::default();
@@ -9294,8 +9307,14 @@ mod tests {
     fn test_terminal_tokio() -> tokio::runtime::Handle {
         static RT: std::sync::OnceLock<tokio::runtime::Handle> = std::sync::OnceLock::new();
         RT.get_or_init(|| {
-            let runtime = tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(1)
+            // A current-thread runtime on purpose: panes only fire-and-forget
+            // pumps onto this handle, and a never-driven runtime queues them
+            // without a worker thread. The old multi-thread runtime ran real
+            // PTY tasks concurrently with parallel tests, tripping the gpui
+            // test scheduler's determinism check (~40% of full-suite runs).
+            // Nothing here awaits on the handle, so queued tasks staying
+            // parked is exactly the behavior the tests need.
+            let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .expect("test terminal runtime");

@@ -90,6 +90,15 @@
 
 壳设置页现状 13 页（`settings.rs` 页表）：通用、外观、模型、终端、权限、自动化、网页搜索、技能、智能体、MCP 服务器、用量统计、归档会话、诊断。对照 web 21 页的缺口：
 
+**R3 处置落地（2026-10-12）**：壳内树已重组为 `settingsRegistry` 同构的五组结构
+（应用与界面/AI 与模型/会话与工作区/工具与集成/数据与维护，`SettingsCategory`/`SettingsEntry`
+驱动，页面措辞对齐 web 注册表：执行与权限/调用统计/已归档会话/日志与诊断/MCP）。
+上表缺口的处置：`workspace.session`→跳转卡（打开全局搜索）、`workspace.worktrees`→
+跳转卡（打开 Git 面板并直落 Worktree 视图）；pet/voice/shortcuts/editor/memory/
+trinity/desktop-control/acp 八类**不出树**（无假入口；后续补页时按注册表 id 落位）。
+技能/智能体为壳侧扩展项（web 无对应设置注册页），归入工具与集成组。
+一一对应由 `settings_tree_covers_the_registry_one_to_one` 测试锚定。
+
 | 类别 | 页面 | 状态 |
 |---|---|---|
 | application | general、appearance、terminal | 已支持（general：启动自启/关闭行为/任务完成通知开关/更新检查每日门控；appearance：语言/主题/appearance id；terminal：4 个共享键） |

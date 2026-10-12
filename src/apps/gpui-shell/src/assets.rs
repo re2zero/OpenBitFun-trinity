@@ -21,7 +21,9 @@ gpui_kit::assets::icon_assets!(
     // `git-commit-horizontal`. Laptop/ShieldAlert are the composer strip's
     // local-execution fact and full-access permission ramp (R2a).
     // ListTodo/Upload are the git header's stage-all and push buttons; the
-    // docked changes panel (R2c) was the first smoke to render them.
+    // docked changes panel (R2c) was the first smoke to render them. Trash is
+    // the worktree row's remove button (git.rs) — first rendered by the R3
+    // settings worktrees redirect landing on the Worktree view.
     [
         Activity,
         Archive,
@@ -43,6 +45,7 @@ gpui_kit::assets::icon_assets!(
         Sparkles,
         Square,
         TextWrap,
+        Trash,
         Upload,
         Webhook,
         X,

@@ -14,7 +14,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputState, Textarea};
-use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage};
+use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, StyledExt, WindowExt};
 use gpui_kit::{div, prelude::*, px, App, Global, SharedString, WeakEntity, Window};
@@ -840,18 +840,17 @@ impl ManageNotice {
 // ---------------------------------------------------------------------------
 
 /// The skills page: the scanned catalog with per-skill global enablement.
-pub(crate) fn skills_page(text: &ShellText) -> SettingPage {
+pub(crate) fn skills_group(text: &ShellText) -> SettingGroup {
     let list_text = text.clone();
     let list_field = SettingField::render(move |_options, _window, cx| skills_list(&list_text, cx));
 
-    SettingPage::new(text.manage_skills_title.clone())
-        .icon(IconName::Sparkles)
-        .resettable(false)
-        .group(SettingGroup::new().items(vec![SettingItem::new(
+    SettingGroup::new()
+        .title(text.manage_skills_title.clone())
+        .items(vec![SettingItem::new(
             text.manage_skills_list.clone(),
             list_field,
         )
-        .description(text.manage_skills_description.clone())]))
+        .description(text.manage_skills_description.clone())])
 }
 
 fn skills_list(text: &ShellText, cx: &mut App) -> gpui_kit::AnyElement {
@@ -954,7 +953,7 @@ fn set_skill_disabled(key: String, user_level: bool, disabled: bool) {
 }
 
 /// The agents page: mode cards, subagent cards, and the create dialog entry.
-pub(crate) fn agents_page(text: &ShellText, view: WeakEntity<ShellWindow>) -> SettingPage {
+pub(crate) fn agents_group(text: &ShellText, view: WeakEntity<ShellWindow>) -> SettingGroup {
     let modes_text = text.clone();
     let modes_view = view.clone();
     let modes_field = SettingField::render(move |_options, _window, cx| {
@@ -984,14 +983,13 @@ pub(crate) fn agents_page(text: &ShellText, view: WeakEntity<ShellWindow>) -> Se
             .into_any_element()
     });
 
-    SettingPage::new(text.manage_agents_title.clone())
-        .icon(IconName::Bot)
-        .resettable(false)
-        .group(SettingGroup::new().items(vec![
+    SettingGroup::new()
+        .title(text.manage_agents_title.clone())
+        .items(vec![
             SettingItem::new(text.manage_agents_modes.clone(), modes_field),
             SettingItem::new(text.manage_agents_subagents.clone(), subagents_field),
             SettingItem::new(text.manage_agents_create.clone(), create_field),
-        ]))
+        ])
 }
 
 enum AgentListKind {
@@ -1165,7 +1163,7 @@ fn agent_cards(
 
 /// The MCP page: one row per configured server with lifecycle, enablement,
 /// browse, and delete actions, plus the raw JSON config editor.
-pub(crate) fn mcp_page(text: &ShellText, view: WeakEntity<ShellWindow>) -> SettingPage {
+pub(crate) fn mcp_group(text: &ShellText, view: WeakEntity<ShellWindow>) -> SettingGroup {
     let list_view = view.clone();
     let list_text = text.clone();
     let servers_field = SettingField::render(move |_options, _window, cx| {
@@ -1185,15 +1183,14 @@ pub(crate) fn mcp_page(text: &ShellText, view: WeakEntity<ShellWindow>) -> Setti
             .into_any_element()
     });
 
-    SettingPage::new(text.manage_mcp_title.clone())
-        .icon(IconName::Plug)
-        .resettable(false)
-        .group(SettingGroup::new().items(vec![
+    SettingGroup::new()
+        .title(text.manage_mcp_title.clone())
+        .items(vec![
             SettingItem::new(text.manage_mcp_servers.clone(), servers_field)
                 .description(text.manage_mcp_description.clone()),
             SettingItem::new(text.manage_mcp_json_item.clone(), json_field)
                 .description(text.manage_mcp_json_description.clone()),
-        ]))
+        ])
 }
 
 fn mcp_server_list(

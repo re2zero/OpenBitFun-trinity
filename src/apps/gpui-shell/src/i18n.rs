@@ -384,8 +384,17 @@ pub(crate) struct ShellText {
     pub settings_websearch: String,
     pub settings_websearch_provider: String,
     pub settings_websearch_provider_description: String,
-    pub settings_websearch_http: String,
-    pub settings_websearch_http_description: String,
+    pub settings_category_application: String,
+    pub settings_category_ai: String,
+    pub settings_category_workspace: String,
+    pub settings_category_tools: String,
+    pub settings_category_data: String,
+    pub settings_jump_session_label: String,
+    pub settings_jump_session_description: String,
+    pub settings_jump_session_action: String,
+    pub settings_jump_worktrees_label: String,
+    pub settings_jump_worktrees_description: String,
+    pub settings_jump_worktrees_action: String,
     pub websearch_provider_free: String,
     pub websearch_provider_exa: String,
     pub websearch_provider_tavily: String,
@@ -1159,10 +1168,23 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_websearch_provider_description: {
             "The search provider the agent's web search tool uses.".to_string()
         },
-        settings_websearch_http: "Custom search service".to_string(),
-        settings_websearch_http_description: {
-            "The service must implement OpenBitFun Search HTTP Protocol v1".to_string()
+        settings_category_application: "App & Interface".to_string(),
+        settings_category_ai: "AI & Models".to_string(),
+        settings_category_workspace: "Sessions & Workspace".to_string(),
+        settings_category_tools: "Tools & Integrations".to_string(),
+        settings_category_data: "Data & Maintenance".to_string(),
+        settings_jump_session_label: "Session & Workspace".to_string(),
+        settings_jump_session_description: {
+            "Covered by the global search overlay in this shell: search sessions and workspace content from the command bar."
+                .to_string()
         },
+        settings_jump_session_action: "Open Global Search".to_string(),
+        settings_jump_worktrees_label: "Worktrees".to_string(),
+        settings_jump_worktrees_description: {
+            "Covered by the Git panel in this shell: manage workspace worktrees there."
+                .to_string()
+        },
+        settings_jump_worktrees_action: "Open Git Panel".to_string(),
         websearch_provider_free: "Exa (free, MCP)".to_string(),
         websearch_provider_exa: "Exa Search API".to_string(),
         websearch_provider_tavily: "Tavily".to_string(),
@@ -1734,9 +1756,22 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         settings_websearch_provider_description: service
             .t("gpui-shell-settings-websearch-provider-description")
             .await,
-        settings_websearch_http: service.t("gpui-shell-settings-websearch-http").await,
-        settings_websearch_http_description: service
-            .t("gpui-shell-settings-websearch-http-description")
+        settings_category_application: service.t("gpui-shell-settings-category-application").await,
+        settings_category_ai: service.t("gpui-shell-settings-category-ai").await,
+        settings_category_workspace: service.t("gpui-shell-settings-category-workspace").await,
+        settings_category_tools: service.t("gpui-shell-settings-category-tools").await,
+        settings_category_data: service.t("gpui-shell-settings-category-data").await,
+        settings_jump_session_label: service.t("gpui-shell-settings-jump-session-label").await,
+        settings_jump_session_description: service
+            .t("gpui-shell-settings-jump-session-description")
+            .await,
+        settings_jump_session_action: service.t("gpui-shell-settings-jump-session-action").await,
+        settings_jump_worktrees_label: service.t("gpui-shell-settings-jump-worktrees-label").await,
+        settings_jump_worktrees_description: service
+            .t("gpui-shell-settings-jump-worktrees-description")
+            .await,
+        settings_jump_worktrees_action: service
+            .t("gpui-shell-settings-jump-worktrees-action")
             .await,
         websearch_provider_free: service.t("gpui-shell-websearch-provider-free").await,
         websearch_provider_exa: service.t("gpui-shell-websearch-provider-exa").await,

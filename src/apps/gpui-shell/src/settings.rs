@@ -512,6 +512,128 @@ fn persist_profiles(cx: &App) {
 /// (language, theme), models, tool permissions, terminal preferences, and the
 /// M21/M22 management and data pages. The shell weak handle lets page rows
 /// open dialogs and read window state (D57).
+/// The five registry groups of the settings tree, in the Web UI
+/// `settingsRegistry` order. The tree mirrors the registry instead of
+/// inventing its own taxonomy: every group and entry below stands for one
+/// registry category/page, so the acceptance rule "the tree matches parity
+/// §2.1 one-to-one" is a data property (see the `settings_tree` tests).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SettingsCategory {
+    Application,
+    Ai,
+    Workspace,
+    Tools,
+    Data,
+}
+
+pub(crate) const SETTINGS_CATEGORIES: &[SettingsCategory] = &[
+    SettingsCategory::Application,
+    SettingsCategory::Ai,
+    SettingsCategory::Workspace,
+    SettingsCategory::Tools,
+    SettingsCategory::Data,
+];
+
+/// One tree entry of a group: either a page the shell hosts (rendered as a
+/// titled group of settings) or a redirect to the shell surface that owns
+/// the registry page. Entries without a registry id are shell-side
+/// extensions that the web registry does not track.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SettingsEntry {
+    General,
+    Appearance,
+    Terminal,
+    Models,
+    /// `workspace.session`: covered by the global search overlay.
+    SessionSearch,
+    /// `workspace.worktrees`: covered by the Git panel.
+    WorktreesGit,
+    Permissions,
+    Automation,
+    WebSearch,
+    /// Shell-side extension (no registry page).
+    Skills,
+    /// Shell-side extension (no registry page).
+    Agents,
+    Mcp,
+    Usage,
+    Archived,
+    Diagnostics,
+}
+
+impl SettingsEntry {
+    /// The registry page id this entry stands for; `None` for shell-side
+    /// extensions. Test-only: the production tree consumes the match arms in
+    /// [`category_entries`] directly, the ids exist so the disposition test
+    /// can prove the tree covers the registry one-to-one.
+    #[cfg(test)]
+    pub(crate) fn registry_id(self) -> Option<&'static str> {
+        match self {
+            Self::General => Some("application.general"),
+            Self::Appearance => Some("application.appearance"),
+            Self::Terminal => Some("application.terminal"),
+            Self::Models => Some("ai.models"),
+            Self::SessionSearch => Some("workspace.session"),
+            Self::WorktreesGit => Some("workspace.worktrees"),
+            Self::Permissions => Some("tools.execution"),
+            Self::Automation => Some("tools.automation"),
+            Self::WebSearch => Some("tools.webSearch"),
+            Self::Skills => None,
+            Self::Agents => None,
+            Self::Mcp => Some("tools.mcp"),
+            Self::Usage => Some("data.usage"),
+            Self::Archived => Some("data.archived"),
+            Self::Diagnostics => Some("data.diagnostics"),
+        }
+    }
+}
+
+/// Registry pages with no shell presence of any kind. They stay out of the
+/// tree entirely — no dead-end entry that only says "not here" (the same
+/// no-fake-UI rule that keeps web-only switches out of the shell pages;
+/// parity §2.1). pet/voice have no shell analog, shortcuts/editor are
+/// postponed, memory/trinity and browser/desktop-control and ACP agents
+/// have no shell page. Test-only: hidden-ness is enforced by omission from
+/// [`category_entries`]; this list exists so the disposition test can prove
+/// tree ∪ hidden covers the registry exactly.
+#[cfg(test)]
+pub(crate) const HIDDEN_REGISTRY_PAGES: &[&str] = &[
+    "application.pet",
+    "application.voice",
+    "application.shortcuts",
+    "application.editor",
+    "ai.memory",
+    "ai.trinity",
+    "tools.desktop-control",
+    "tools.acp",
+];
+
+/// Tree entries per group, in display order.
+pub(crate) fn category_entries(category: SettingsCategory) -> &'static [SettingsEntry] {
+    match category {
+        SettingsCategory::Application => &[
+            SettingsEntry::General,
+            SettingsEntry::Appearance,
+            SettingsEntry::Terminal,
+        ],
+        SettingsCategory::Ai => &[SettingsEntry::Models],
+        SettingsCategory::Workspace => &[SettingsEntry::SessionSearch, SettingsEntry::WorktreesGit],
+        SettingsCategory::Tools => &[
+            SettingsEntry::Permissions,
+            SettingsEntry::Automation,
+            SettingsEntry::WebSearch,
+            SettingsEntry::Skills,
+            SettingsEntry::Agents,
+            SettingsEntry::Mcp,
+        ],
+        SettingsCategory::Data => &[
+            SettingsEntry::Usage,
+            SettingsEntry::Archived,
+            SettingsEntry::Diagnostics,
+        ],
+    }
+}
+
 pub(crate) fn render_page(
     text: &ShellText,
     view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
@@ -519,25 +641,127 @@ pub(crate) fn render_page(
 ) -> gpui_kit::AnyElement {
     Settings::new("shell-settings")
         .sidebar_width(gpui_kit::px(180.))
-        .pages(vec![
-            general_page(text, view.clone(), cx),
-            appearance_page(text),
-            models_page(text, cx),
-            terminal_page(text, view.clone()),
-            permissions_page(text, cx),
-            automation_page(text),
-            websearch_page(text, view.clone(), cx),
-            crate::manage::skills_page(text),
-            crate::manage::agents_page(text, view.clone()),
-            crate::manage::mcp_page(text, view.clone()),
-            usage_page(text, view.clone()),
-            archived_page(text, view.clone()),
-            diagnostics_page(text, view),
-        ])
+        .pages(
+            SETTINGS_CATEGORIES
+                .iter()
+                .map(|&category| category_page(text, view.clone(), category, cx))
+                .collect::<Vec<_>>(),
+        )
         .into_any_element()
 }
 
-fn appearance_page(text: &ShellText) -> SettingPage {
+/// One registry group as a settings page — the sidebar parent. Its titled
+/// groups are the tree entries; selecting one scrolls the combined page to
+/// that category (the component's native two-level pattern).
+fn category_page(
+    text: &ShellText,
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    category: SettingsCategory,
+    cx: &mut App,
+) -> SettingPage {
+    let (label, icon) = match category {
+        SettingsCategory::Application => (
+            text.settings_category_application.clone(),
+            IconName::Settings2,
+        ),
+        SettingsCategory::Ai => (text.settings_category_ai.clone(), IconName::Sparkles),
+        SettingsCategory::Workspace => (text.settings_category_workspace.clone(), IconName::Folder),
+        SettingsCategory::Tools => (text.settings_category_tools.clone(), IconName::Webhook),
+        SettingsCategory::Data => (text.settings_category_data.clone(), IconName::HardDrive),
+    };
+    let mut page = SettingPage::new(label)
+        .icon(icon)
+        .default_open(category == SettingsCategory::Application)
+        .resettable(false);
+    for &entry in category_entries(category) {
+        let group = match entry {
+            SettingsEntry::General => general_group(text, view.clone(), cx),
+            SettingsEntry::Appearance => appearance_group(text),
+            SettingsEntry::Terminal => terminal_group(text, view.clone()),
+            SettingsEntry::Models => models_group(text, cx),
+            SettingsEntry::SessionSearch => session_search_group(text, view.clone()),
+            SettingsEntry::WorktreesGit => worktrees_git_group(text, view.clone()),
+            SettingsEntry::Permissions => permissions_group(text, cx),
+            SettingsEntry::Automation => automation_group(text),
+            SettingsEntry::WebSearch => websearch_group(text, view.clone(), cx),
+            SettingsEntry::Skills => crate::manage::skills_group(text),
+            SettingsEntry::Agents => crate::manage::agents_group(text, view.clone()),
+            SettingsEntry::Mcp => crate::manage::mcp_group(text, view.clone()),
+            SettingsEntry::Usage => usage_group(text, view.clone()),
+            SettingsEntry::Archived => archived_group(text, view.clone()),
+            SettingsEntry::Diagnostics => diagnostics_group(text, view.clone()),
+        };
+        page = page.group(group);
+    }
+    page
+}
+
+/// The `workspace.session` entry (parity §2.1): the shell hosts no
+/// session/workspace settings page — the global search overlay is the
+/// surface that reaches sessions and workspace content. The card redirects
+/// there instead of faking the web page's controls.
+fn session_search_group(
+    text: &ShellText,
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+) -> SettingGroup {
+    let owned_text = text.clone();
+    let open_field = SettingField::render(move |_options, _window, _cx| {
+        Button::new("open-session-search")
+            .label(owned_text.settings_jump_session_action.clone())
+            .with_variant(ButtonVariant::Ghost)
+            .on_click({
+                let view = view.clone();
+                move |_: &gpui_kit::ClickEvent, window, cx| {
+                    if let Some(shell) = view.upgrade() {
+                        shell.update(cx, |shell, cx| shell.open_search_overlay(window, cx));
+                    }
+                }
+            })
+            .into_any_element()
+    });
+    SettingGroup::new()
+        .title(text.settings_jump_session_label.clone())
+        .items(vec![SettingItem::new(
+            text.settings_jump_session_description.clone(),
+            open_field,
+        )])
+}
+
+/// The `workspace.worktrees` entry (parity §2.1): worktree management is
+/// the Git panel's job in this shell. The card opens the panel straight onto
+/// its Worktrees view (the resource opening policy, never closes) instead of
+/// faking the web page's controls.
+fn worktrees_git_group(
+    text: &ShellText,
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+) -> SettingGroup {
+    let owned_text = text.clone();
+    let open_field = SettingField::render(move |_options, _window, _cx| {
+        Button::new("open-worktrees-git")
+            .label(owned_text.settings_jump_worktrees_action.clone())
+            .with_variant(ButtonVariant::Ghost)
+            .on_click({
+                let view = view.clone();
+                move |_: &gpui_kit::ClickEvent, window, cx| {
+                    if let Some(shell) = view.upgrade() {
+                        shell.update(cx, |shell, cx| {
+                            shell.open_git_panel(window, cx);
+                            shell.set_git_view(crate::git::GitView::Worktrees, cx);
+                        });
+                    }
+                }
+            })
+            .into_any_element()
+    });
+    SettingGroup::new()
+        .title(text.settings_jump_worktrees_label.clone())
+        .items(vec![SettingItem::new(
+            text.settings_jump_worktrees_description.clone(),
+            open_field,
+        )])
+}
+
+fn appearance_group(text: &ShellText) -> SettingGroup {
     let language_options = vec![
         (SharedString::from("zh-CN"), SharedString::from("简体中文")),
         (SharedString::from("zh-TW"), SharedString::from("繁體中文")),
@@ -565,28 +789,26 @@ fn appearance_page(text: &ShellText) -> SettingPage {
         SettingField::render(move |_options, _window, cx| theme_button(&text, cx))
     };
 
-    SettingPage::new(text.settings_appearance.clone())
-        .icon(IconName::Palette)
-        .resettable(false)
-        .default_open(true)
-        .group(SettingGroup::new().items(vec![
+    SettingGroup::new()
+        .title(text.settings_appearance.clone())
+        .items(vec![
             SettingItem::new(text.language.clone(), language_field)
                 .description(text.settings_language_description.clone()),
             SettingItem::new(text.theme.clone(), theme_field)
                 .description(text.settings_theme_description.clone()),
-        ]))
+        ])
 }
 
-/// General page (M22): launch-at-login, the close-button behavior, and the
+/// General group (M22): launch-at-login, the close-button behavior, and the
 /// self-update flow (auto-update preference plus the manual check / install /
 /// restart actions). The update state lives on the window and arrives through
 /// the event pump; the tray is the other half of this page (menu events land
 /// on the same actions).
-fn general_page(
+fn general_group(
     text: &ShellText,
     view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
     cx: &App,
-) -> SettingPage {
+) -> SettingGroup {
     let version_field = SettingField::render(|_options, _window, cx| {
         div()
             .text_sm()
@@ -668,11 +890,9 @@ fn general_page(
         update_check_field(view.clone(), &owned_text, cx)
     });
 
-    SettingPage::new(text.settings_general.clone())
-        .icon(IconName::House)
-        .resettable(false)
-        .default_open(true)
-        .group(SettingGroup::new().items(vec![
+    SettingGroup::new()
+        .title(text.settings_general.clone())
+        .items(vec![
             SettingItem::new(text.settings_version.clone(), version_field),
             SettingItem::new(text.settings_launch_login.clone(), login_field)
                 .description(text.settings_launch_login_description.clone()),
@@ -686,7 +906,7 @@ fn general_page(
             SettingItem::new(text.settings_auto_update.clone(), auto_update_field)
                 .description(text.settings_auto_update_description.clone()),
             SettingItem::new(text.settings_check_updates.clone(), update_field),
-        ]))
+        ])
 }
 
 /// Flips launch-at-login. The toggle is optimistic; a failed platform write
@@ -821,11 +1041,11 @@ fn update_check_field(
     column.into_any_element()
 }
 
-/// Models page (M11 minimal version): the configured models with their
+/// Models group (M11 minimal version): the configured models with their
 /// provider and enabled state, plus the default model new sessions start on.
 /// The catalog comes from the same core path the desktop models page uses;
 /// the default-model choice persists to `ai.default_models.primary`.
-fn models_page(text: &ShellText, cx: &App) -> SettingPage {
+fn models_group(text: &ShellText, cx: &App) -> SettingGroup {
     let catalog = cx
         .try_global::<crate::runtime::ModelCatalog>()
         .cloned()
@@ -911,24 +1131,23 @@ fn models_page(text: &ShellText, cx: &App) -> SettingPage {
         text.models_default_description.clone()
     };
 
-    SettingPage::new(text.models_title.clone())
-        .icon(IconName::Cpu)
-        .resettable(false)
-        .group(SettingGroup::new().items(vec![
+    SettingGroup::new()
+        .title(text.models_title.clone())
+        .items(vec![
             SettingItem::new(text.models_default.clone(), default_field)
                 .description(default_description),
             SettingItem::new(text.models_configured.clone(), list_field),
-        ]))
+        ])
 }
 
 /// Terminal preferences for the built-in terminal (M7 pane). The values are
 /// the shared `terminal.*` entries, so the desktop terminal and this pane read
 /// the same document; font size and family apply to a running pane, while the
 /// scrollback and shell command are read when a pane starts.
-fn terminal_page(
+fn terminal_group(
     text: &ShellText,
     view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
-) -> SettingPage {
+) -> SettingGroup {
     let font_size_field = SettingField::number_input(
         NumberFieldOptions {
             min: f64::from(MIN_FONT_SIZE),
@@ -990,22 +1209,23 @@ fn terminal_page(
         terminal_profiles_field(view.clone(), &owned_text, window, cx)
     });
 
-    SettingPage::new(text.settings_terminal.clone())
-        .icon(IconName::SquareTerminal)
-        .resettable(false)
-        .default_open(false)
-        .group(SettingGroup::new().items(vec![
+    SettingGroup::new()
+        .title(text.settings_terminal.clone())
+        .items(vec![
             SettingItem::new(text.settings_terminal_font_size.clone(), font_size_field)
                 .description(text.settings_terminal_font_size_description.clone()),
-            SettingItem::new(text.settings_terminal_font_family.clone(), font_family_field)
-                .description(text.settings_terminal_font_family_description.clone()),
+            SettingItem::new(
+                text.settings_terminal_font_family.clone(),
+                font_family_field,
+            )
+            .description(text.settings_terminal_font_family_description.clone()),
             SettingItem::new(text.settings_terminal_scrollback.clone(), scrollback_field)
                 .description(text.settings_terminal_scrollback_description.clone()),
             SettingItem::new(text.settings_terminal_shell.clone(), shell_field)
                 .description(text.settings_terminal_shell_description.clone()),
             SettingItem::new(text.settings_terminal_profiles.clone(), profiles_field)
                 .description(text.settings_terminal_profiles_description.clone()),
-        ]))
+        ])
 }
 
 /// The terminal-profiles list (M17): one row per profile with edit/delete,
@@ -1309,7 +1529,7 @@ fn open_profile_dialog(
     });
 }
 
-fn permissions_page(text: &ShellText, cx: &App) -> SettingPage {
+fn permissions_group(text: &ShellText, cx: &App) -> SettingGroup {
     let preset_options = vec![
         (
             SharedString::from("ask"),
@@ -1351,23 +1571,21 @@ fn permissions_page(text: &ShellText, cx: &App) -> SettingPage {
     let auto_approve_disabled =
         ShellConfig::current(cx).permission_preset == PermissionPolicyPreset::FullAccess;
 
-    SettingPage::new(text.settings_permissions.clone())
-        .icon(IconName::Shield)
-        .resettable(false)
-        .default_open(true)
-        .group(SettingGroup::new().items(vec![
+    SettingGroup::new()
+        .title(text.settings_permissions.clone())
+        .items(vec![
             SettingItem::new(text.settings_policy.clone(), preset_field)
                 .description(text.settings_policy_description.clone()),
             SettingItem::new(text.settings_auto_approve.clone(), auto_approve_field)
                 .description(text.settings_auto_approve_description.clone())
                 .disabled(auto_approve_disabled),
-        ]))
+        ])
 }
 
-/// Automation page (M22): the native-hooks master switches and the commit
+/// Automation group (M22): the native-hooks master switches and the commit
 /// co-author preference. The toggles are the same shared values the desktop
 /// automation page writes; hook declarations themselves stay in hooks.json.
-fn automation_page(text: &ShellText) -> SettingPage {
+fn automation_group(text: &ShellText) -> SettingGroup {
     let hooks_field = SettingField::switch(
         |cx: &App| ShellConfig::current(cx).hooks_enabled,
         |value: bool, cx: &mut App| {
@@ -1393,17 +1611,16 @@ fn automation_page(text: &ShellText) -> SettingPage {
         },
     );
 
-    SettingPage::new(text.settings_automation.clone())
-        .icon(IconName::Webhook)
-        .resettable(false)
-        .group(SettingGroup::new().items(vec![
+    SettingGroup::new()
+        .title(text.settings_automation.clone())
+        .items(vec![
             SettingItem::new(text.settings_hooks.clone(), hooks_field)
                 .description(text.settings_hooks_description.clone()),
             SettingItem::new(text.settings_hooks_project.clone(), project_hooks_field)
                 .description(text.settings_hooks_project_description.clone()),
             SettingItem::new(text.settings_git_coauthor.clone(), coauthor_field)
                 .description(text.settings_git_coauthor_description.clone()),
-        ]))
+        ])
 }
 
 /// Whether the custom HTTP search service auth mode needs a device
@@ -1422,18 +1639,18 @@ fn websearch_http_auth_mode_display(mode: &str) -> SharedString {
     SharedString::from(if trimmed.is_empty() { "none" } else { trimmed })
 }
 
-/// Web search page (M22): the active provider plus credential management for
+/// Web search group (M22): the active provider plus credential management for
 /// the key-based providers. The credential itself goes into the shared
 /// encrypted vault through the same core service the server and CLI use.
-/// T2-9: while the custom HTTP service is selected, its endpoint/auth group
-/// is inserted between the provider and credential groups (web
-/// `sections.http`); the page is rebuilt per frame, so the group follows the
-/// provider and header-mode switches without extra state.
-fn websearch_page(
+/// T2-9: while the custom HTTP service is selected, its endpoint/auth rows
+/// follow in the same group (web `sections.http`); the group is rebuilt per
+/// frame, so the rows follow the provider and header-mode switches without
+/// extra state.
+fn websearch_group(
     text: &ShellText,
     view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
     cx: &mut App,
-) -> SettingPage {
+) -> SettingGroup {
     let provider_field = SettingField::dropdown(
         vec![
             ("exa_mcp_free", text.websearch_provider_free.clone()),
@@ -1476,31 +1693,30 @@ fn websearch_page(
     });
 
     let snapshot = ShellConfig::current(cx);
-    let mut page = SettingPage::new(text.settings_websearch.clone())
-        .icon(IconName::Globe)
-        .resettable(false)
-        .group(SettingGroup::new().items(vec![
-            SettingItem::new(text.settings_websearch_provider.clone(), provider_field)
-                .description(text.settings_websearch_provider_description.clone()),
-            SettingItem::new(text.websearch_credential.clone(), credential_field)
-                .description(text.websearch_credential_description.clone()),
-        ]));
+    let mut items = vec![
+        SettingItem::new(text.settings_websearch_provider.clone(), provider_field)
+            .description(text.settings_websearch_provider_description.clone()),
+        SettingItem::new(text.websearch_credential.clone(), credential_field)
+            .description(text.websearch_credential_description.clone()),
+    ];
     if snapshot.web_search_provider == "openbitfun_search_http" {
-        page = page.group(websearch_http_group(text, view, &snapshot));
+        items.extend(websearch_http_items(text, view, &snapshot));
     }
-    page
+    SettingGroup::new()
+        .title(text.settings_websearch.clone())
+        .items(items)
 }
 
-/// The endpoint/auth group for the custom HTTP search service: URL, auth
+/// The endpoint/auth rows for the custom HTTP search service: URL, auth
 /// mode, and — for the header mode — the credential header name. Every field
 /// persists immediately, so a credential saved afterwards always validates
 /// against the mode that is already on disk (web saves its draft first for
 /// the same reason).
-fn websearch_http_group(
+fn websearch_http_items(
     text: &ShellText,
     view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
     snapshot: &ShellConfig,
-) -> SettingGroup {
+) -> Vec<SettingItem> {
     let endpoint_field = SettingField::input(
         |cx: &App| SharedString::from(ShellConfig::current(cx).web_search_http_endpoint.clone()),
         |value: SharedString, cx: &mut App| {
@@ -1584,11 +1800,7 @@ fn websearch_http_group(
                 .description(text.websearch_http_header_name_description.clone()),
         );
     }
-
-    SettingGroup::new()
-        .title(text.settings_websearch_http.clone())
-        .description(text.settings_websearch_http_description.clone())
-        .items(items)
+    items
 }
 
 /// Re-reads the shared config and pushes the web-search section into the
@@ -1695,10 +1907,10 @@ fn websearch_credential_field(
 /// totals plus per-model rows from the same core service the desktop
 /// dashboard reads. The snapshot lives on the window; the settings-open path
 /// and the refresh button fetch.
-fn usage_page(
+fn usage_group(
     text: &ShellText,
     view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
-) -> SettingPage {
+) -> SettingGroup {
     let owned_text = text.clone();
     let stats_view = view.clone();
     let range_field = SettingField::render(move |_options, _window, cx| {
@@ -1710,18 +1922,13 @@ fn usage_page(
         usage_activity_field(activity_view.clone(), &activity_text, cx)
     });
 
-    SettingPage::new(text.settings_usage.clone())
-        .icon(IconName::ChartColumn)
-        .resettable(false)
-        .group(SettingGroup::new().items(vec![SettingItem::new(
-            text.settings_usage_range.clone(),
-            range_field,
-        )]))
-        .group(SettingGroup::new().items(vec![SettingItem::new(
-            text.usage_activity_title.clone(),
-            activity_field,
-        )
-        .description(text.usage_activity_description.clone())]))
+    SettingGroup::new()
+        .title(text.settings_usage.clone())
+        .items(vec![
+            SettingItem::new(text.settings_usage_range.clone(), range_field),
+            SettingItem::new(text.usage_activity_title.clone(), activity_field)
+                .description(text.usage_activity_description.clone()),
+        ])
 }
 
 /// One selectable time range of the usage page; the values are the shared
@@ -2395,23 +2602,22 @@ fn usage_stats_field(
 /// with restore and delete. The rows reuse the sidebar's session snapshot
 /// (archived rows are already carried for the show-archived toggle), and the
 /// actions are the same SDK calls the sidebar uses.
-fn archived_page(
+fn archived_group(
     text: &ShellText,
     view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
-) -> SettingPage {
+) -> SettingGroup {
     let owned_text = text.clone();
     let list_field = SettingField::render(move |_options, window, cx| {
         archived_sessions_field(view.clone(), &owned_text, window, cx)
     });
 
-    SettingPage::new(text.settings_archived.clone())
-        .icon(IconName::Archive)
-        .resettable(false)
-        .group(SettingGroup::new().items(vec![SettingItem::new(
+    SettingGroup::new()
+        .title(text.settings_archived.clone())
+        .items(vec![SettingItem::new(
             text.settings_archived_list.clone(),
             list_field,
         )
-        .description(text.settings_archived_description.clone())]))
+        .description(text.settings_archived_description.clone())])
 }
 
 /// The archived list body, exposed for the headless render test; the page
@@ -2684,10 +2890,10 @@ fn open_archived_delete_all_dialog(
 /// Diagnostics page (M22): the runtime log level (applied live through the
 /// tracing reload handle) and the shared log directory. The shell logs to
 /// stdout; the desktop's file bundle export is a desktop capability.
-fn diagnostics_page(
+fn diagnostics_group(
     text: &ShellText,
     view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
-) -> SettingPage {
+) -> SettingGroup {
     let level_field = SettingField::dropdown(
         ["trace", "debug", "info", "warn", "error", "off"]
             .into_iter()
@@ -2773,17 +2979,16 @@ fn diagnostics_page(
         column.into_any_element()
     });
 
-    SettingPage::new(text.settings_diagnostics.clone())
-        .icon(IconName::Activity)
-        .resettable(false)
-        .group(SettingGroup::new().items(vec![
+    SettingGroup::new()
+        .title(text.settings_diagnostics.clone())
+        .items(vec![
             SettingItem::new(text.settings_logging_level.clone(), level_field)
                 .description(text.settings_logging_level_description.clone()),
             SettingItem::new(text.settings_logs_dir.clone(), logs_field)
                 .description(text.settings_diagnostics_note.clone()),
             SettingItem::new(text.settings_diagnostics_export.clone(), export_field)
                 .description(text.settings_diagnostics_export_description.clone()),
-        ]))
+        ])
 }
 
 /// Opens the export confirmation; the bundle is written on confirm only, so
@@ -2979,6 +3184,77 @@ mod tests {
 
     fn sample_text() -> ShellText {
         crate::i18n::fallback_text(LocaleId::ZhCN)
+    }
+
+    /// The Web UI `settingsRegistry` page ids, verbatim from
+    /// `src/web-ui/src/app/scenes/settings/settingsRegistry.ts`.
+    const REGISTRY_PAGES: &[&str] = &[
+        "application.general",
+        "application.appearance",
+        "application.pet",
+        "application.voice",
+        "application.shortcuts",
+        "application.terminal",
+        "application.editor",
+        "ai.models",
+        "ai.memory",
+        "ai.trinity",
+        "workspace.session",
+        "workspace.worktrees",
+        "tools.execution",
+        "tools.desktop-control",
+        "tools.automation",
+        "tools.webSearch",
+        "tools.mcp",
+        "tools.acp",
+        "data.usage",
+        "data.archived",
+        "data.diagnostics",
+    ];
+
+    /// The tree covers the registry one-to-one: every registry page is
+    /// either a tree entry (rendered or redirected) or explicitly hidden —
+    /// never dropped silently and never invented.
+    #[test]
+    fn settings_tree_covers_the_registry_one_to_one() {
+        let mut tree_ids: Vec<&str> = SETTINGS_CATEGORIES
+            .iter()
+            .flat_map(|&category| category_entries(category).iter().copied())
+            .filter_map(|entry| entry.registry_id())
+            .collect();
+        let mut hidden = HIDDEN_REGISTRY_PAGES.to_vec();
+        tree_ids.extend(hidden.drain(..));
+        tree_ids.sort_unstable();
+
+        let mut registry = REGISTRY_PAGES.to_vec();
+        registry.sort_unstable();
+        assert_eq!(tree_ids, registry, "tree + hidden must equal the registry");
+
+        let total: usize = SETTINGS_CATEGORIES
+            .iter()
+            .map(|&category| category_entries(category).len())
+            .sum();
+        assert_eq!(total, 15, "13 real pages + 2 redirect cards");
+        assert_eq!(HIDDEN_REGISTRY_PAGES.len(), 8);
+    }
+
+    /// The two redirect entries are exactly the registry pages another shell
+    /// surface owns (parity §2.1); everything else with a registry id is a
+    /// real settings group.
+    #[test]
+    fn redirect_entries_cover_exactly_the_owned_surfaces() {
+        let redirects = SETTINGS_CATEGORIES
+            .iter()
+            .flat_map(|&category| category_entries(category).iter().copied())
+            .filter(|entry| {
+                matches!(
+                    entry,
+                    SettingsEntry::SessionSearch | SettingsEntry::WorktreesGit
+                )
+            })
+            .filter_map(|entry| entry.registry_id())
+            .collect::<Vec<_>>();
+        assert_eq!(redirects, vec!["workspace.session", "workspace.worktrees"]);
     }
 
     #[test]
