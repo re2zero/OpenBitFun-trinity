@@ -333,6 +333,32 @@ pub(crate) fn parse_psi(value: &Value) -> PsiState {
     }
 }
 
+/// The status-bar lamp phase (R1d, the web footer lamp shape): derived from
+/// the daemon snapshot, never stored — an absent snapshot is offline, a
+/// present one answers awake or dormant by its `awakened` flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChipPhase {
+    Offline,
+    Dormant,
+    Awake,
+}
+
+pub(crate) fn chip_phase(awakened: Option<bool>) -> ChipPhase {
+    match awakened {
+        None => ChipPhase::Offline,
+        Some(true) => ChipPhase::Awake,
+        Some(false) => ChipPhase::Dormant,
+    }
+}
+
+/// The awake lamp dot color family for an emotion valence (R1d): positive
+/// feelings read green, negative ones red, everything else stays neutral.
+pub(crate) fn emotion_dot_positive(valence: &Option<String>) -> bool {
+    valence
+        .as_deref()
+        .is_some_and(|v| v.starts_with("positive"))
+}
+
 fn parse_memory_entry(value: &Value) -> MemoryEntry {
     MemoryEntry {
         id: value.get("id").and_then(Value::as_str).map(str::to_owned),
@@ -1299,6 +1325,22 @@ mod tests {
             {"emotion": {"valence": "mystery"}}
         ]}));
         assert_eq!(history, vec![1.0, -0.5]);
+    }
+
+    #[test]
+    fn chip_phase_reads_the_daemon_snapshot() {
+        assert_eq!(chip_phase(None), ChipPhase::Offline);
+        assert_eq!(chip_phase(Some(false)), ChipPhase::Dormant);
+        assert_eq!(chip_phase(Some(true)), ChipPhase::Awake);
+    }
+
+    #[test]
+    fn emotion_dot_splits_on_valence_family() {
+        assert!(emotion_dot_positive(&Some("positive_mild".to_string())));
+        assert!(emotion_dot_positive(&Some("positive_high".to_string())));
+        assert!(!emotion_dot_positive(&Some("negative_high".to_string())));
+        assert!(!emotion_dot_positive(&Some("curious".to_string())));
+        assert!(!emotion_dot_positive(&None));
     }
 
     #[test]

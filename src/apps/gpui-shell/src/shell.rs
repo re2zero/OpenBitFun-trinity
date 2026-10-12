@@ -1231,6 +1231,12 @@ pub(crate) struct ShellWindow {
     usage_report: Option<Box<runtime::SessionUsageSummary>>,
     /// T2-15 Trinity console page state (event-driven) + its form inputs.
     pub(crate) trinity: crate::trinity::TrinityPageState,
+    /// R1d status bar: OS login name backing the user slot while the trinity
+    /// daemon (which knows the user's chosen name) is not connected.
+    os_user: String,
+    /// R1d status bar: the one-shot lamp prefetch fired when the runtime
+    /// first reports ready; the chip shares the console page's snapshot.
+    trinity_status_fetched: bool,
     /// T2-16 unread turns per session: turns that finished while the window
     /// was inactive. Cleared per session on open, all via the tray action.
     unread_turns: std::collections::BTreeMap<String, (u32, bool)>,
@@ -1398,6 +1404,10 @@ impl ShellWindow {
             search: Default::default(),
             search_input,
             trinity: Default::default(),
+            os_user: std::env::var("USER")
+                .or_else(|_| std::env::var("USERNAME"))
+                .unwrap_or_default(),
+            trinity_status_fetched: false,
             unread_turns: Default::default(),
             trinity_recall_input,
             trinity_add_content,
@@ -1668,11 +1678,13 @@ impl ShellWindow {
             }
             RuntimeEvent::Ready => {
                 self.phase = RuntimePhase::Ready;
+                self.fetch_trinity_status_once();
             }
             RuntimeEvent::Sessions(rows) => {
                 self.phase = RuntimePhase::Ready;
                 self.list_error = None;
                 self.sessions = rows.iter().map(|row| self.compose_row(row, cx)).collect();
+                self.fetch_trinity_status_once();
             }
             RuntimeEvent::SessionsFailed(error) => {
                 self.list_error = Some(i18n::failed_status(&error, cx));
@@ -2923,6 +2935,20 @@ impl ShellWindow {
         cx.notify();
     }
 
+    /// R1d status bar: one lamp prefetch when the runtime first reports
+    /// ready, so the chip answers without the console page being opened.
+    /// Daemon absence settles as the offline lamp (loud degrade, no retry
+    /// loop); the console page keeps its own fetch-on-first-open.
+    fn fetch_trinity_status_once(&mut self) {
+        if self.trinity_status_fetched {
+            return;
+        }
+        self.trinity_status_fetched = true;
+        if let Some(handle) = runtime::runtime_handle() {
+            handle.trinity_refresh(self.event_tx.clone());
+        }
+    }
+
     /// Trinity console tab; the first open pulls status + timeline.
     fn toggle_trinity_view(&mut self, cx: &mut Context<Self>) {
         if !self.trinity.loaded {
@@ -3195,8 +3221,8 @@ impl ShellWindow {
     /// The navigation sidebar (R1b, desktop NavPanel shape): the "search
     /// everything" trigger in the header, the three top-scene nav rows, the
     /// sessions section (titled header with new/archive/reload actions above
-    /// the live list), and the runtime status plus the settings menu (theme,
-    /// language) in the footer.
+    /// the live list), and the runtime status line in the footer. R1d moved
+    /// the footer tool buttons to the window-bottom global status bar.
     fn render_sidebar(&self, text: &ShellText, cx: &mut Context<Self>) -> Sidebar<SidebarSection> {
         let header = div().w_full().child(
             div()
@@ -3253,54 +3279,143 @@ impl ShellWindow {
             })
             .children(self.render_session_entries(text, cx))
             .footer(
+                // R1d: only the runtime status line stays here — the tool
+                // buttons moved to the window-bottom global status bar.
                 SidebarFooter::new().child(
                     div()
                         .w_full()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_2()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .child(self.render_status_line(text, cx)),
-                        )
-                        .child(self.render_footer_actions(text, cx)),
+                        .min_w_0()
+                        .child(self.render_status_line(text, cx)),
                 ),
             )
     }
 
-    /// Footer actions: workspace, terminal dock toggle, settings. The surface
-    /// destinations moved into the sidebar nav group (M23); this footer stays
-    /// because it is always visible and reliably receives input (the component
-    /// title bar's right-click menu overlay swallows clicks above it —
-    /// gpui-component 0.7.1, reproduced on Xvfb 2026-10-09).
-    fn render_footer_actions(&self, text: &ShellText, cx: &mut Context<Self>) -> gpui_kit::Div {
-        let active_variant = |active: bool| {
-            if active {
-                ButtonVariant::Secondary
-            } else {
-                ButtonVariant::Ghost
+    /// The global status bar (R1d): a full-width strip under the body. Left
+    /// cluster: the user slot — the trinity daemon's name for the user while
+    /// connected, the OS login otherwise — and the trinity lamp chip (the
+    /// web footer lamp: spark + emotion dot while awake); clicking opens the
+    /// console page. Right cluster: the tool buttons that left the sidebar
+    /// footer — terminal dock toggle, workspace switcher, settings.
+    fn render_status_bar(&self, text: &ShellText, cx: &mut Context<Self>) -> impl IntoElement {
+        let phase = crate::trinity::chip_phase(
+            self.trinity
+                .status
+                .as_ref()
+                .map(|(_, status)| status.awakened),
+        );
+        let (chip_icon, chip_label, chip_color) = match phase {
+            crate::trinity::ChipPhase::Awake => (
+                IconName::Sparkles,
+                text.trinity_phase_awake.clone(),
+                cx.theme().foreground,
+            ),
+            crate::trinity::ChipPhase::Dormant => (
+                IconName::BrainCircuit,
+                text.trinity_phase_dormant.clone(),
+                cx.theme().muted_foreground,
+            ),
+            crate::trinity::ChipPhase::Offline => (
+                IconName::BrainCircuit,
+                text.trinity_phase_offline.clone(),
+                cx.theme().muted_foreground,
+            ),
+        };
+
+        let mut left = div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .min_w_0()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .max_w(px(160.))
+                    .truncate()
+                    .child(SharedString::from(status_bar_user(
+                        self.trinity.status.as_ref().map(|(_, status)| &**status),
+                        &self.os_user,
+                    ))),
+            )
+            .child(
+                div()
+                    .id("status-trinity-chip")
+                    .debug_selector(|| "status-trinity-chip".to_string())
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .h_5()
+                    .px_1p5()
+                    .rounded_sm()
+                    .text_xs()
+                    .text_color(chip_color)
+                    .cursor_pointer()
+                    .hover(|style| style.bg(cx.theme().muted))
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_trinity_view(cx)))
+                    .child(Icon::new(chip_icon).small())
+                    .child(div().truncate().child(chip_label)),
+            );
+        if let crate::trinity::ChipPhase::Awake = phase {
+            if let Some((psi, _)) = &self.trinity.status {
+                let dot_color = if crate::trinity::emotion_dot_positive(&psi.valence) {
+                    cx.theme().success
+                } else if psi
+                    .valence
+                    .as_deref()
+                    .is_some_and(|v| v.starts_with("negative"))
+                {
+                    cx.theme().danger
+                } else {
+                    cx.theme().muted_foreground
+                };
+                left = left.child(
+                    div()
+                        .size_1p5()
+                        .rounded_full()
+                        .bg(dot_color)
+                        .flex_shrink_0(),
+                );
             }
+        }
+
+        let terminal_variant = if self.terminal_open {
+            ButtonVariant::Secondary
+        } else {
+            ButtonVariant::Ghost
         };
         div()
-            .flex()
+            .id("shell-status-bar")
+            .debug_selector(|| "shell-status-bar".to_string())
+            .w_full()
+            .h_7()
             .flex_shrink_0()
+            .flex()
             .items_center()
-            .gap_1()
-            .child(self.render_workspace_button(text, cx))
+            .justify_between()
+            .gap_2()
+            .px_3()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().background)
+            .child(left)
             .child(
-                Button::new("footer-terminal")
-                    .icon(IconName::SquareTerminal)
-                    .small()
-                    .with_variant(active_variant(self.terminal_open))
-                    .tooltip(text.terminal_title.clone())
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.toggle_terminal_panel(window, cx)),
-                    ),
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        Button::new("status-terminal")
+                            .icon(IconName::SquareTerminal)
+                            .small()
+                            .with_variant(terminal_variant)
+                            .tooltip(text.terminal_title.clone())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.toggle_terminal_panel(window, cx)
+                            })),
+                    )
+                    .child(self.render_workspace_button(text, cx))
+                    .child(self.render_settings_button(text, cx)),
             )
-            .child(self.render_settings_button(text, cx))
     }
 
     /// The settings entry: theme and language moved into the settings page
@@ -3322,6 +3437,18 @@ fn active_variant_settings(tabs: &TabsState) -> ButtonVariant {
     } else {
         ButtonVariant::Ghost
     }
+}
+
+/// The status bar's user slot (R1d): the trinity daemon's name for the user
+/// wins while connected; the OS login backs the slot when it is not.
+fn status_bar_user<'a>(
+    status: Option<&'a crate::trinity::StatusInfo>,
+    os_user: &'a str,
+) -> &'a str {
+    status
+        .and_then(|status| status.user_name.as_deref())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(os_user)
 }
 
 /// `list` splice range invalidating the cached height of a transcript tail
@@ -5084,6 +5211,10 @@ impl Render for ShellWindow {
                             .children(panels)
                     }),
             )
+            // The global status bar (R1d) closes the window: the user slot,
+            // the trinity lamp, and the tool buttons that left the sidebar
+            // footer, across the full width under the body.
+            .child(self.render_status_bar(&text, cx))
             // The global search palette (R1b) paints last so it overlays the
             // sidebar, main area, and docked terminal alike.
             .when(self.search_overlay_open, |this| {
@@ -6758,6 +6889,85 @@ mod tests {
             .debug_bounds("shell-body-sidebar")
             .expect("body keeps its box with the terminal docked");
         assert!(body.size.height > px(300.), "body height: {:?}", body.size);
+    }
+
+    /// The status bar user slot (R1d): the trinity daemon's name for the user
+    /// wins while connected, the OS login backs the slot otherwise.
+    #[test]
+    fn status_bar_user_prefers_the_trinity_name() {
+        let os_user = "zero";
+        assert_eq!(status_bar_user(None, os_user), "zero");
+        let no_name = crate::trinity::StatusInfo::default();
+        assert_eq!(status_bar_user(Some(&no_name), os_user), "zero");
+        let named = crate::trinity::StatusInfo {
+            user_name: Some("公子".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(status_bar_user(Some(&named), os_user), "公子");
+        // An empty daemon name is no name.
+        let empty = crate::trinity::StatusInfo {
+            user_name: Some(String::new()),
+            ..Default::default()
+        };
+        assert_eq!(status_bar_user(Some(&empty), os_user), "zero");
+    }
+
+    /// The global status bar (R1d) lays out as a full-width strip pinned to
+    /// the window bottom, under the body; the trinity chip lives inside it.
+    #[gpui_kit::test]
+    fn status_bar_lays_out_at_the_window_bottom(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            let presets = theme::load_presets();
+            let active = presets
+                .iter()
+                .position(|preset| preset.id == DEFAULT_PRESET_ID)
+                .unwrap_or(0);
+            if let Some(preset) = presets.get(active) {
+                preset.apply(cx);
+            }
+            cx.set_global(ShellState {
+                presets,
+                active_preset: active,
+            });
+            cx.set_global(settings::ShellConfig::startup_default(LocaleId::ZhCN));
+            cx.set_global(sample_shell_text());
+        });
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        window.draw(point(px(0.), px(0.)), size(px(1200.), px(800.)), {
+            let shell = shell.clone();
+            move |_, _| shell.into_any_element()
+        });
+        window.run_until_parked();
+        let frame = window
+            .debug_bounds("shell-dock-frame")
+            .expect("dock frame lays out");
+        let bar = window
+            .debug_bounds("shell-status-bar")
+            .expect("status bar lays out");
+        assert_eq!(
+            bar.size.width, frame.size.width,
+            "the bar spans the full window width"
+        );
+        assert!(
+            (bar.origin.y - frame.origin.y).abs() > px(1.),
+            "the bar sits below the body, not inside it: bar {:?} frame {:?}",
+            bar,
+            frame
+        );
+        assert!(
+            (bar.bottom() - frame.bottom()).abs() < px(40.),
+            "the bar hugs the window bottom: bar {:?} frame {:?}",
+            bar,
+            frame
+        );
+        assert!(
+            window.debug_bounds("status-trinity-chip").is_some(),
+            "the trinity lamp chip renders inside the bar"
+        );
     }
 
     /// The changes view must render its failure state (no runtime attached in

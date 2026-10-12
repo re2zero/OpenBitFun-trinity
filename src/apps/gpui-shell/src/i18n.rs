@@ -439,6 +439,7 @@ pub(crate) struct ShellText {
     pub trinity_status_unavailable: String,
     pub trinity_phase_awake: String,
     pub trinity_phase_dormant: String,
+    pub trinity_phase_offline: String,
     pub trinity_label_name: String,
     pub trinity_label_persona: String,
     pub trinity_label_user: String,
@@ -1234,8 +1235,9 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
             "The Trinity cognitive engine is unavailable. Start trinityd or              check the daemon port."
                 .to_string()
         },
-        trinity_phase_awake: "Awakened".to_string(),
-        trinity_phase_dormant: "Not awakened".to_string(),
+        trinity_phase_awake: "Awake".to_string(),
+        trinity_phase_dormant: "Dormant".to_string(),
+        trinity_phase_offline: "Disconnected".to_string(),
         trinity_label_name: "Being name".to_string(),
         trinity_label_persona: "Persona".to_string(),
         trinity_label_user: "Your name".to_string(),
@@ -1786,6 +1788,7 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         trinity_status_unavailable: service.t("gpui-shell-trinity-status-unavailable").await,
         trinity_phase_awake: service.t("gpui-shell-trinity-phase-awake").await,
         trinity_phase_dormant: service.t("gpui-shell-trinity-phase-dormant").await,
+        trinity_phase_offline: service.t("gpui-shell-trinity-phase-offline").await,
         trinity_label_name: service.t("gpui-shell-trinity-label-name").await,
         trinity_label_persona: service.t("gpui-shell-trinity-label-persona").await,
         trinity_label_user: service.t("gpui-shell-trinity-label-user").await,

@@ -587,6 +587,7 @@ gpui-shell-trinity-status-title = 认知状态
 gpui-shell-trinity-status-unavailable = Trinity 认知引擎不可用。请启动 trinityd 或检查 daemon 端口。
 gpui-shell-trinity-phase-awake = 已觉醒
 gpui-shell-trinity-phase-dormant = 待觉醒
+gpui-shell-trinity-phase-offline = 未连接
 gpui-shell-trinity-label-name = 认知体名称
 gpui-shell-trinity-label-persona = 人格
 gpui-shell-trinity-label-user = 你的称呼
