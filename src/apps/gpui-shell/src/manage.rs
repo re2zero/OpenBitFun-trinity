@@ -44,6 +44,12 @@ pub(crate) struct SkillRow {
     pub(crate) builtin: bool,
     pub(crate) shadowed: bool,
     pub(crate) disabled: bool,
+    /// Built-in catalog group (`group_key`); R4 facet entries.
+    pub(crate) group_key: Option<String>,
+    /// Discovery ecosystem (`source_id`); empty or `openbitfun*` = native.
+    pub(crate) source_id: String,
+    /// Display name of the discovery source (facet label).
+    pub(crate) source_label: String,
 }
 
 impl SkillRow {
@@ -839,109 +845,449 @@ impl ManageNotice {
 // Pages
 // ---------------------------------------------------------------------------
 
-/// The skills page: the scanned catalog with per-skill global enablement.
+/// R4 facet selection for the skills page. A global because the settings
+/// render closures only see `cx` (same reason as [`ManageNotice`]).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) enum SkillFacet {
+    #[default]
+    All,
+    Builtin,
+    User,
+    Project,
+    /// A built-in catalog group (`group_key` value).
+    Group(String),
+    /// A non-native discovery ecosystem (`source_id` value).
+    Source(String),
+    /// The skill market placeholder (T3-17): an explicit degrade, not a fake.
+    Market,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct SkillsFacetState(pub SkillFacet);
+
+impl Global for SkillsFacetState {}
+
+/// Counts and facet entries derived from the scanned rows. Pure so the facet
+/// derivation stays testable against the registry scan shape.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct SkillFacets {
+    pub all: usize,
+    pub builtin: usize,
+    pub user: usize,
+    pub project: usize,
+    /// `(group_key, count)` over built-in skills, ordered by key. User-defined
+    /// groups are a web-side configuration the shell does not manage yet, so
+    /// they are absent here rather than faked.
+    pub groups: Vec<(String, usize)>,
+    /// `(source_id, label, count)` over non-native sources, ordered by label.
+    pub sources: Vec<(String, String, usize)>,
+}
+
+/// Mirrors the web `installedSkillGroup` split: the native OpenBitFun
+/// ecosystem folds into the level facets, everything else becomes a source.
+pub(crate) fn is_native_source(source_id: &str) -> bool {
+    matches!(
+        source_id,
+        "" | "openbitfun" | "openbitfun-system" | "openbitfun-user"
+    )
+}
+
+pub(crate) fn skill_facets(rows: &[SkillRow]) -> SkillFacets {
+    let mut facets = SkillFacets {
+        all: rows.len(),
+        ..Default::default()
+    };
+    let mut groups: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut sources: std::collections::BTreeMap<String, (String, usize)> = Default::default();
+    for row in rows {
+        if row.builtin {
+            facets.builtin += 1;
+            if let Some(group) = row
+                .group_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|k| !k.is_empty())
+            {
+                *groups.entry(group.to_string()).or_default() += 1;
+            }
+            continue;
+        }
+        if row.project_level {
+            facets.project += 1;
+        } else {
+            facets.user += 1;
+        }
+        if !is_native_source(&row.source_id) {
+            let label = if row.source_label.trim().is_empty() {
+                row.source_id.clone()
+            } else {
+                row.source_label.clone()
+            };
+            match sources.entry(row.source_id.clone()) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert((label, 1));
+                }
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    entry.get_mut().1 += 1;
+                }
+            }
+        }
+    }
+    facets.groups = groups.into_iter().collect();
+    facets.sources = sources
+        .into_iter()
+        .map(|(id, (label, count))| (id, label, count))
+        .collect();
+    facets
+}
+
+/// Whether one row belongs under the selected facet. Group and source facets
+/// match on their id; a row shadowed out of the scan still shows under its
+/// facet (the shadowed badge explains why it will not run).
+pub(crate) fn skill_matches(row: &SkillRow, facet: &SkillFacet) -> bool {
+    match facet {
+        SkillFacet::All => true,
+        SkillFacet::Builtin => row.builtin,
+        SkillFacet::User => !row.builtin && !row.project_level,
+        SkillFacet::Project => !row.builtin && row.project_level,
+        SkillFacet::Group(group) => row.builtin && row.group_key.as_deref() == Some(group.as_str()),
+        SkillFacet::Source(source) => {
+            !row.builtin && !is_native_source(&row.source_id) && &row.source_id == source
+        }
+        SkillFacet::Market => false,
+    }
+}
+
+/// The skills page: a facet sidebar (library / groups / sources / explore)
+/// beside the filtered skill list. The market entry renders an explicit
+/// degrade card (T3-17) instead of a dead-end.
 pub(crate) fn skills_group(text: &ShellText) -> SettingGroup {
-    let list_text = text.clone();
-    let list_field = SettingField::render(move |_options, _window, cx| skills_list(&list_text, cx));
+    let page_text = text.clone();
+    let page_field = SettingItem::render(move |_options, _window, cx| {
+        skills_page(&page_text, cx).into_any_element()
+    });
 
     SettingGroup::new()
         .title(text.manage_skills_title.clone())
-        .items(vec![SettingItem::new(
-            text.manage_skills_list.clone(),
-            list_field,
-        )
-        .description(text.manage_skills_description.clone())])
+        .items(vec![page_field])
 }
 
-fn skills_list(text: &ShellText, cx: &mut App) -> gpui_kit::AnyElement {
+fn facet_row(
+    id: String,
+    label: String,
+    count: Option<usize>,
+    selected: bool,
+    on_click: impl Fn(&mut App) + 'static,
+    cx: &App,
+) -> gpui_kit::AnyElement {
+    // Selected style mirrors the settings sidebar row: solid accent with its
+    // own foreground (a tinted background leaves the accent label unreadable).
+    let (label_color, count_color) = if selected {
+        (cx.theme().accent_foreground, cx.theme().accent_foreground)
+    } else {
+        (cx.theme().foreground, cx.theme().muted_foreground)
+    };
+    div()
+        .id(SharedString::from(id))
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap_2()
+        .px_2()
+        .py_1()
+        .rounded(cx.theme().radius)
+        .cursor_pointer()
+        .when(selected, |this| this.bg(cx.theme().accent))
+        .hover(|style| style.bg(cx.theme().sidebar_accent))
+        .on_click(move |_, _, cx| on_click(cx))
+        .child(
+            div()
+                .text_sm()
+                .text_color(label_color)
+                .min_w_0()
+                .truncate()
+                .child(label),
+        )
+        .when_some(count, |row, count| {
+            row.child(
+                div()
+                    .text_xs()
+                    .text_color(count_color)
+                    .flex_shrink_0()
+                    .child(count.to_string()),
+            )
+        })
+        .into_any_element()
+}
+
+fn facet_group_title(label: String, cx: &App) -> gpui_kit::Div {
+    div()
+        .text_xs()
+        .text_color(cx.theme().muted_foreground)
+        .px_2()
+        .pt_1()
+        .child(label)
+}
+
+fn skills_page(text: &ShellText, cx: &mut App) -> gpui_kit::Div {
     if let Some(message) = ManageNotice::current(cx) {
-        return notice_banner(text, &message, cx);
+        let mut column = div().w_full();
+        column = column.child(notice_banner(text, &message, cx));
+        return column;
     }
     let Some(catalog) = SkillCatalog::try_current(cx) else {
         return div()
             .text_sm()
             .text_color(cx.theme().muted_foreground)
-            .child(text.manage_skills_loading.clone())
-            .into_any_element();
+            .child(text.manage_skills_loading.clone());
     };
-    if catalog.skills.is_empty() {
-        return crate::shell::brand_empty(
+
+    let facet = cx
+        .try_global::<SkillsFacetState>()
+        .map(|state| state.0.clone())
+        .unwrap_or_default();
+    let facets = skill_facets(&catalog.skills);
+
+    // The facet rail: three fixed groups (library / explore) plus the
+    // derived group and source sections when the scan produced any.
+    let mut rail = div()
+        .v_flex()
+        .gap_0p5()
+        .w(px(200.))
+        .flex_shrink_0()
+        .min_w_0();
+    let set = |facet: SkillFacet| {
+        move |cx: &mut App| {
+            cx.set_global(SkillsFacetState(facet.clone()));
+            cx.refresh_windows();
+        }
+    };
+    rail = rail.child(facet_group_title(text.skills_facet_library.clone(), cx));
+    for (candidate, label, count) in [
+        (SkillFacet::All, text.skills_facet_all.clone(), facets.all),
+        (
+            SkillFacet::Builtin,
+            text.manage_skill_builtin.clone(),
+            facets.builtin,
+        ),
+        (
+            SkillFacet::User,
+            text.manage_skill_user.clone(),
+            facets.user,
+        ),
+        (
+            SkillFacet::Project,
+            text.manage_skill_project.clone(),
+            facets.project,
+        ),
+    ] {
+        let selected = facet == candidate;
+        rail = rail.child(facet_row(
+            format!("skills-facet-{}", facet_key(&candidate)),
+            label,
+            Some(count),
+            selected,
+            set(candidate),
+            cx,
+        ));
+    }
+    if !facets.groups.is_empty() {
+        rail = rail.child(facet_group_title(text.skills_facet_groups.clone(), cx));
+        for (group, count) in &facets.groups {
+            let candidate = SkillFacet::Group(group.clone());
+            rail = rail.child(facet_row(
+                format!("skills-facet-group-{}", group),
+                group.clone(),
+                Some(*count),
+                facet == candidate,
+                set(candidate),
+                cx,
+            ));
+        }
+    }
+    if !facets.sources.is_empty() {
+        rail = rail.child(facet_group_title(text.skills_facet_sources.clone(), cx));
+        for (id, label, count) in &facets.sources {
+            let candidate = SkillFacet::Source(id.clone());
+            rail = rail.child(facet_row(
+                format!("skills-facet-source-{}", id),
+                label.clone(),
+                Some(*count),
+                facet == candidate,
+                set(candidate),
+                cx,
+            ));
+        }
+    }
+    rail = rail.child(facet_group_title(text.skills_facet_explore.clone(), cx));
+    rail = rail.child(facet_row(
+        "skills-facet-market".to_string(),
+        text.skills_market_title.clone(),
+        None,
+        facet == SkillFacet::Market,
+        set(SkillFacet::Market),
+        cx,
+    ));
+
+    let mut content = div().v_flex().gap_2().flex_1().min_w_0();
+    if facet == SkillFacet::Market {
+        content = content.child(crate::shell::brand_empty(
+            IconName::Globe,
+            &text.skills_market_title,
+            &text.skills_market_degraded,
+        ));
+        return div()
+            .flex()
+            .gap_3()
+            .w_full()
+            .min_w_0()
+            .child(rail)
+            .child(content);
+    }
+
+    let rows: Vec<&SkillRow> = catalog
+        .skills
+        .iter()
+        .filter(|row| skill_matches(row, &facet))
+        .collect();
+    if rows.is_empty() {
+        content = content.child(crate::shell::brand_empty(
             IconName::BookOpen,
             &text.manage_skills_empty_title,
             &text.manage_skills_empty,
-        );
+        ));
+        return div()
+            .flex()
+            .gap_3()
+            .w_full()
+            .min_w_0()
+            .child(rail)
+            .child(content);
     }
 
-    let mut column = div().v_flex().gap_2().w_full();
-    for skill in catalog.skills {
-        let level_label = if skill.builtin {
-            text.manage_skill_builtin.clone()
-        } else if skill.project_level {
-            text.manage_skill_project.clone()
-        } else {
-            text.manage_skill_user.clone()
-        };
-        let row = div().flex().items_center().justify_between().gap_2().child(
-            div()
-                .v_flex()
-                .min_w_0()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().foreground)
-                                .truncate()
-                                .child(skill.name.clone()),
-                        )
-                        .child(
+    for skill in rows {
+        content = content.child(render_skill_card(skill, text, cx));
+    }
+    div()
+        .flex()
+        .gap_3()
+        .w_full()
+        .min_w_0()
+        .child(rail)
+        .child(content)
+}
+
+/// Stable element id fragment per facet (source ids are ecosystem slugs).
+fn facet_key(facet: &SkillFacet) -> String {
+    match facet {
+        SkillFacet::All => "all".to_string(),
+        SkillFacet::Builtin => "builtin".to_string(),
+        SkillFacet::User => "user".to_string(),
+        SkillFacet::Project => "project".to_string(),
+        SkillFacet::Group(group) => format!("group-{}", group),
+        SkillFacet::Source(source) => format!("source-{}", source),
+        SkillFacet::Market => "market".to_string(),
+    }
+}
+
+/// One skill card on the right side: name, level/source/shadowed badges,
+/// description, and the global enablement switch (built-ins stay on).
+fn render_skill_card(row: &SkillRow, text: &ShellText, cx: &App) -> gpui_kit::Div {
+    let level_label = if row.builtin {
+        text.manage_skill_builtin.clone()
+    } else if row.project_level {
+        text.manage_skill_project.clone()
+    } else {
+        text.manage_skill_user.clone()
+    };
+    let card = div()
+        .v_flex()
+        .gap_1()
+        .p_3()
+        .rounded(cx.theme().radius)
+        .border_1()
+        .border_color(cx.theme().border)
+        .flex_1()
+        .min_w_0()
+        .debug_selector(|| "skills-card".to_string())
+        .child(
+            div().flex().items_center().justify_between().gap_2().child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().foreground)
+                            .min_w_0()
+                            .truncate()
+                            .child(row.name.clone()),
+                    )
+                    .child(badge(level_label, cx))
+                    .when(!is_native_source(&row.source_id), |card| {
+                        let label = if row.source_label.trim().is_empty() {
+                            row.source_id.clone()
+                        } else {
+                            row.source_label.clone()
+                        };
+                        card.child(badge(label, cx))
+                    })
+                    .when(row.shadowed, |card| {
+                        card.child(
                             div()
                                 .text_xs()
-                                .text_color(cx.theme().muted_foreground)
+                                .text_color(cx.theme().danger)
                                 .flex_shrink_0()
-                                .child(level_label),
+                                .child(text.manage_skill_shadowed.clone()),
                         )
-                        .when(skill.shadowed, |row| {
-                            row.child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().danger)
-                                    .flex_shrink_0()
-                                    .child(text.manage_skill_shadowed.clone()),
-                            )
-                        }),
-                )
-                .when(!skill.description.is_empty(), |row| {
-                    row.child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .truncate()
-                            .child(skill.description.clone()),
-                    )
-                }),
-        );
-        let row = if skill.builtin {
-            // Built-in skills ship with the product and stay enabled.
-            row
-        } else {
-            let key = skill.key.clone();
-            let user_level = !skill.project_level;
-            row.child(
-                Switch::new(SharedString::from(format!("skill-toggle-{}", skill.key)))
-                    .checked(!skill.disabled)
+                    }),
+            ),
+        )
+        .when(!row.description.is_empty(), |card| {
+            card.child(
+                // min_w_0 + line_clamp over a bare truncate: the wrappable
+                // line keeps min-content small so the card's shrink chain
+                // constrains the text (same recipe as the agent cards).
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .min_w_0()
+                    .whitespace_normal()
+                    .line_clamp(2)
+                    .debug_selector(|| "skills-card-desc".to_string())
+                    .child(row.description.clone()),
+            )
+        });
+    if row.builtin {
+        card
+    } else {
+        let key = row.key.clone();
+        let user_level = !row.project_level;
+        card.child(
+            div().flex().justify_end().child(
+                Switch::new(SharedString::from(format!("skill-toggle-{}", row.key)))
+                    .checked(!row.disabled)
                     .on_click(move |checked: &bool, _window, _cx| {
                         set_skill_disabled(key.clone(), user_level, !*checked);
                     })
                     .flex_shrink_0(),
-            )
-        };
-        column = column.child(row);
+            ),
+        )
     }
-    column.into_any_element()
+}
+
+fn badge(label: String, cx: &App) -> gpui_kit::Div {
+    div()
+        .text_xs()
+        .text_color(cx.theme().muted_foreground)
+        .bg(cx.theme().secondary)
+        .px_1p5()
+        .py_0p5()
+        .rounded(cx.theme().radius)
+        .flex_shrink_0()
+        .child(label)
 }
 
 fn set_skill_disabled(key: String, user_level: bool, disabled: bool) {
@@ -3259,6 +3605,201 @@ mod tests {
         assert_eq!(
             disabled_project_skill_keys(&skills, &enabled),
             vec!["project::b".to_string()]
+        );
+    }
+
+    fn facet_row(
+        key: &str,
+        builtin: bool,
+        project: bool,
+        group: Option<&str>,
+        source: (&str, &str),
+    ) -> SkillRow {
+        SkillRow {
+            key: key.to_string(),
+            name: key.to_string(),
+            description: String::new(),
+            project_level: project,
+            builtin,
+            shadowed: false,
+            disabled: false,
+            group_key: group.map(str::to_string),
+            source_id: source.0.to_string(),
+            source_label: source.1.to_string(),
+        }
+    }
+
+    #[test]
+    fn facets_split_levels_groups_and_non_native_sources() {
+        let rows = vec![
+            facet_row(
+                "b1",
+                true,
+                false,
+                Some("core"),
+                ("openbitfun", "OpenBitFun"),
+            ),
+            facet_row(
+                "b2",
+                true,
+                false,
+                Some("core"),
+                ("openbitfun", "OpenBitFun"),
+            ),
+            facet_row("b3", true, false, None, ("openbitfun", "OpenBitFun")),
+            facet_row("u1", false, false, None, ("", "")),
+            facet_row("p1", false, true, None, ("codex", "Codex")),
+            facet_row("u2", false, false, None, (".agents", ".agents")),
+        ];
+        let facets = skill_facets(&rows);
+        assert_eq!(facets.all, 6);
+        assert_eq!(facets.builtin, 3);
+        assert_eq!(facets.user, 2);
+        assert_eq!(facets.project, 1);
+        // Built-in groups only, keyed, with counts.
+        assert_eq!(facets.groups, vec![("core".to_string(), 2)]);
+        // Native sources fold into the level facets; only Codex/.agents show.
+        assert_eq!(
+            facets.sources,
+            vec![
+                (".agents".to_string(), ".agents".to_string(), 1),
+                ("codex".to_string(), "Codex".to_string(), 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn facet_filters_route_rows_by_their_facet_id() {
+        let rows = vec![
+            facet_row(
+                "b1",
+                true,
+                false,
+                Some("core"),
+                ("openbitfun", "OpenBitFun"),
+            ),
+            facet_row("p1", false, true, None, ("codex", "Codex")),
+            facet_row("u1", false, false, None, ("", "")),
+        ];
+        let matches = |facet: &SkillFacet| -> Vec<String> {
+            rows.iter()
+                .filter(|row| skill_matches(row, facet))
+                .map(|row| row.key.clone())
+                .collect()
+        };
+        assert_eq!(matches(&SkillFacet::All), vec!["b1", "p1", "u1"]);
+        assert_eq!(matches(&SkillFacet::Builtin), vec!["b1"]);
+        assert_eq!(matches(&SkillFacet::User), vec!["u1"]);
+        assert_eq!(matches(&SkillFacet::Project), vec!["p1"]);
+        assert_eq!(matches(&SkillFacet::Group("core".to_string())), vec!["b1"]);
+        assert_eq!(
+            matches(&SkillFacet::Source("codex".to_string())),
+            vec!["p1"]
+        );
+        assert!(matches(&SkillFacet::Source("openbitfun".to_string())).is_empty());
+        assert!(matches(&SkillFacet::Market).is_empty());
+    }
+
+    #[test]
+    fn empty_group_keys_do_not_become_facets() {
+        let rows = vec![facet_row(
+            "b1",
+            true,
+            false,
+            Some("  "),
+            ("openbitfun", "OpenBitFun"),
+        )];
+        // runtime.rs normalizes on the way in; the derivation stays honest
+        // when a blank key slips through anyway.
+        assert!(skill_facets(&rows).groups.is_empty());
+        assert!(is_native_source(""));
+        assert!(is_native_source("openbitfun-user"));
+        assert!(!is_native_source("codex"));
+    }
+
+    #[gpui_kit::test]
+    fn skills_card_text_wraps_inside_the_settings_content_column(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            let presets = crate::theme::load_presets();
+            presets
+                .iter()
+                .find(|preset| preset.id == crate::theme::DEFAULT_PRESET_ID)
+                .or_else(|| presets.first())
+                .expect("theme preset exists")
+                .apply(cx);
+            cx.set_global(SkillCatalog {
+                loaded: true,
+                skills: vec![SkillRow {
+                    key: "user::probe".into(),
+                    name: "Probe skill".into(),
+                    description: "A deliberately long description so the wrap probe has more text than one line can hold inside the narrow settings column.".repeat(3),
+                    project_level: false,
+                    builtin: false,
+                    shadowed: false,
+                    disabled: false,
+                    group_key: None,
+                    source_id: String::new(),
+                    source_label: String::new(),
+                }],
+            });
+            cx.set_global(crate::i18n::fallback_text(
+                openbitfun_core::service::i18n::LocaleId::EnUS,
+            ));
+        });
+        let window = cx.add_empty_window();
+        struct Probe;
+        impl gpui_kit::Render for Probe {
+            fn render(
+                &mut self,
+                _window: &mut gpui_kit::Window,
+                cx: &mut gpui_kit::Context<Self>,
+            ) -> impl gpui_kit::IntoElement {
+                use gpui_kit::component::setting::{SettingPage, Settings};
+                let text = crate::i18n::current(cx);
+                // The real container: Settings drives h_resizable +
+                // container_query + the virtualized group list around the
+                // facet page; that environment is where the wrap broke.
+                Settings::new("skills-wrap-probe")
+                    .sidebar_width(gpui_kit::px(180.))
+                    .pages(vec![SettingPage::new("Tools").group(skills_group(&text))])
+                    .into_any_element()
+            }
+        }
+        let view = window.update(|_, cx| cx.new(|_| Probe));
+        window.draw(
+            gpui::point(gpui::px(0.), gpui::px(0.)),
+            gpui::size(gpui::px(1200.), gpui::px(800.)),
+            {
+                let view = view.clone();
+                move |_, _| view.clone().into_any_element()
+            },
+        );
+        window.run_until_parked();
+        let card = window.debug_bounds("skills-card").expect("card laid out");
+        let desc = window
+            .debug_bounds("skills-card-desc")
+            .expect("description laid out");
+        // The probe description exceeds one line at any pane width: the clamp
+        // must wrap it (two text_xs lines tall) and keep it inside the card,
+        // not poke a single long line past the settings column.
+        assert!(
+            desc.size.height > gpui::px(24.),
+            "description wraps to two lines: desc {:?}",
+            desc
+        );
+        assert!(
+            desc.origin.x + desc.size.width <= card.origin.x + card.size.width,
+            "description stays inside the card: desc {:?} card {:?}",
+            desc,
+            card
+        );
+        assert!(
+            card.origin.x + card.size.width <= gpui::px(1200.),
+            "card stays inside the window: card {:?}",
+            card
         );
     }
 }

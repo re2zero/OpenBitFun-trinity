@@ -2142,6 +2142,9 @@ async fn fetch_skill_catalog(root: &Path, workspace_id: &str) -> crate::manage::
                 project_level,
                 builtin: skill.is_builtin,
                 shadowed: skill.is_shadowed,
+                group_key: skill.group_key.filter(|key| !key.trim().is_empty()),
+                source_id: skill.source_id,
+                source_label: skill.source_label,
             }
         })
         .collect();
