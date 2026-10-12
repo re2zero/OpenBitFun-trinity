@@ -1,7 +1,8 @@
 # 插件 UI 贡献架构(R7)设计
 
-状态:**R7b 壳内最小闭环已实现(2026-10-12)**;设计自 R7a 稿起经实现回写(偏差已融入
-下文各节,见 §6 实现记录)。R7c(真 Plugin Host 通道)独立立项,尚未有生产消费方。本文不改变
+状态:**R7b 壳内最小闭环已实现(2026-10-12);R7c 真 host 通道 2026-10-13 立项(§7),尚未有生产
+消费方**。设计自 R7a 稿起经实现回写(偏差已融入
+下文各节,见 §6 实现记录)。本文不改变
 [产品架构](../product-architecture.md)的任何边界——它把该文第 3 节「OpenBitFun 与插件接口」中已预留的
 **界面贡献**能力落成具体契约。
 
@@ -194,11 +195,11 @@
   trait 为同步签名,fixture 以 Rust 实现同一契约,证明 schema 校验、注册、渲染与回环;壳仅消费
   core 快照,且不直接依赖 product-domains(契约类型经 core 重导出)。R7c 的异步 host 通道由
   适配层以后台工作线程桥接(缓存最近已校验快照),本 trait 不异步化。
-- **R7c(真 host,独立立项)**:沿既有 OpenCode Plugin Host 通道(loopback TCP + JSON-RPC,握手 capabilities
+- **R7c(真 host,已立项)**:沿既有 OpenCode Plugin Host 通道(loopback TCP + JSON-RPC,握手 capabilities
   交集)扩展方法族 `host.ui.describe` / `host.ui.event`(host 侧),复用 generation fencing 与实例生命
   周期(实例关闭即撤树);握手能力新增 `ui-contributions-v1`,**未协商成功 = 该插件 UI 贡献整体不激活**,
   在扩展面显示显式降级原因。`extension-host/src/protocol.ts` Zod schema、`protocol.schema.json`、
-  `PROTOCOL.md` 与 Rust 实现逐字一致同步。这属于跨运行时大项,R7b 闭环验证后另行拍板。
+  `PROTOCOL.md` 与 Rust 实现逐字一致同步。wire 契约、桥接 owner 与切分见 §7。
 
 ### 4.5 安全模型
 
@@ -307,11 +308,103 @@ v0 不做的是把弹窗组件交进插件树里自由弹出。其余留 v1+ 逐
 5. **不假装**(原则保留):fixture 是测试贡献,不进产品装配;产品插件来源接入(谁调用
    provider)属 R7c 后的产品事项。
 
-## 7. R7c 真 host 通道展望(独立立项,另行拍板)
+## 7. R7c 真 host 通道(2026-10-13 立项,公子点名)
 
-`extension-host` 方法族扩展 + 握手 `ui-contributions-v1` + 实例生命周期挂接 + `PROTOCOL.md`/Zod/JSON
-schema 三方同步 + 真插件 fixture(Bun)端到端。前置:R7b 闭环验收;同步推进 opencode-extension-
-compatibility §6 已记录的安全补课(TOCTOU 快照、激活确认)避免 UI 贡献先于信任收口上线。
+沿既有 OpenCode Plugin Host 通道(loopback TCP + JSON-RPC)扩展 UI 贡献方法族,把 R7b 的进程内
+fixture 换成真 Bun 插件。契约如下;实现偏差按惯例回写本节。
+
+### 7.1 能力协商与降级
+
+- 握手能力新增 `ui-contributions-v1`,四方同步:`PROTOCOL.md`、`src/protocol.ts` 的
+  `HOST_CAPABILITIES`、生成的 `protocol.schema.json`、Rust `opencode-plugin-host` 的能力交集
+  (`UI_CONTRIBUTIONS_V1` 常量 + `all_supported()` + 握手过滤)。
+- **未协商成功 = 该实例 UI 贡献整体不激活**:host 侧(知道自己请求的集合与握手返回的交集)跳过
+  `ui/` 段装载,并经 `backend.diagnostic.publish` 发布一条 `operation: "ui"` 的显式降级诊断;
+  Rust 侧 `open` 结果不含 `ui` = 无 UI 贡献,桥接不安装。两侧判定对称,不猜、不半激活。
+
+### 7.2 方法族 wire 契约(host 侧,Rust → host)
+
+- **`host.instance.open` 结果新增可选 `ui: UiRegistration[]`**(激活即注册,同 tools/auth 的
+  结果投影惯例):`{ plugin: PluginMeta, contributions: <contributions.json 解析体>, files:
+  Record<path, string> }`。`files` = 场景 `entry` 引用的初始树文件**原始文本**(host 是哑读文件
+  方,单一校验裁决在 Rust 投影;原始文本保证字节稳定)。host 装载规则:
+  - 从 prepare 产物的包目录读 `ui/contributions.json`;缺失 = 该插件无 UI 贡献(不报错);
+    解析失败/超限 = 诊断 + 跳过该插件 UI 段(不牵连其它插件,同 §3.4 口径)。
+  - 读取限制:条目路径必须相对、不得含 `..`、不得逃出包目录(路径禁越界);单文件 ≤ 256KiB
+    (树帧上界同源);场景 `entry` 只读其引用的文件。
+  - `hooks.ui` 处理器(§7.3)与 manifest 数据**相互独立**:只有数据文件的静态场景照常注册,
+    事件回环无处理器时等于「树不变」。
+- **`host.ui.describe`**:params `{ instanceID, generationKey?, revision? }`,result
+  `{ ui: UiRegistration[] }`。重取通道:桥接构造时拉取一次,此后缓存;v0 无自动失效重取
+  (树更新走事件回环,manifest 变更 = 插件重装 = 新实例)。
+- **`host.ui.event`**:params `{ instanceID, generationKey?, revision?, plugin: {id?, spec},
+  sceneID, action, payload?: { kind: "text"|"number"|"boolean", value } }`,result
+  `{ tree: <树文档> | null }`,`null` = Unchanged。payload 线上形状与 Rust
+  `PluginUiEventPayload` 一一映射(text/number/boolean);树文档由插件算好全量返回,host 不深校验。
+- 两个方法都要求 `ui-contributions-v1` 与 `generation-fencing-v1` 已协商,复用既有
+  require/validate fencing 错误语义;处理器按 `plugin.id ?? plugin.spec` 定位(同 auth 的每插件
+  单处理器语义,多入口后见胜)。
+
+### 7.3 插件侧创作契约(Hooks 扩展)
+
+```ts
+// 插件入口返回的 Hooks 新增可选段:数据文件(manifest+初始树)+ 代码处理器(事件算树)
+ui?: {
+  event?(input: { sceneID: string; action: string;
+                  payload?: { kind: "text"|"number"|"boolean"; value: string|number|boolean } }):
+    { schemaVersion: number; root: object } | undefined   // undefined = 树不变
+}
+```
+
+- 「插件不写界面代码」红线不破:插件写的是**返回数据文档的函数**(§4.1「插件端负责算好最终树」),
+  无组件、无样式、无宿主对象;manifest 与初始树是纯数据文件,事件处理器是纯函数。
+- 声明 `ui/contributions.json` 但无 `ui.event` 处理器的插件合法:场景可开可看,交互无效。
+
+### 7.4 Rust 桥接 owner(assembly/core,feature `plugin-runtime`)
+
+- **worker 线程桥接**:适配层 client 是异步 tokio 世界,`PluginUiProvider` 是同步 trait——桥接
+  在 assembly/core 新模块(如 `plugin_ui_host.rs`)落一个专用 OS 线程,自持 current-thread
+  tokio runtime(无 reactor 线程不得裸用 tokio,是仓库既有坑),持有 `PluginHostClient` 与
+  最近已校验快照(describe + 全场景初始树,场景 ≤8 故构造时全量预取)。
+- **渲染路径零阻塞**:`describe/package_files/tree` 一律读 worker 缓存(微秒级,零 RPC);桥接
+  provider 仅在初始快照就绪后才被安装进投影,故投影侧 `tree()` 永远命中缓存。worker 内 RPC
+  2s 超时(与壳 `LOOP_TIMEOUT` 同口径),超时 = 诊断 + 保留旧树。
+- **dispatch 两段式**:`dispatch()` 投递 worker 队列立即返回 `Ok(None)`(fire-and-forget);
+  worker 完成后把新树写入缓存并经回调通知宿主面。trait 加默认方法
+  `dispatch_deferred() -> bool { false }` 区分同步完成(fixture)与两段式(host 桥),壳据此决定
+  立即收尾还是挂在途态。
+- **测试通道**:core 提供显式命名的测试入口(如 `plugin_ui_host::open_ui_test_channel(plugin_dir)`)
+  ——绕过 global config 直接拉起 host + open 单插件实例,专供壳的 env 门与端到端冒烟。**不假装**:
+  这是测试通道,不进产品装配;configured 插件的 UI 贡献接入(谁调用 provider)仍是 R7c 后的
+  产品事项(§6.5 口径不变)。
+
+### 7.5 生命周期与信任收口
+
+- **实例关闭即撤树**:host 侧 close 丢弃 retained ui 处理器;Rust 侧桥接停止服务,投影 uninstall,
+  已打开 tab 进「贡献已移除」态(§4.2,R7c 必测此臂——R7b fixture 不触发)。
+- **安全补课继承**:open 流程的 `expectedReviewDigest`/`expectedContentDigests` 栅栏
+  (prepare→open 两阶段,内容变更即拒)就是 TOCTOU 快照 + 激活确认的既有实现;UI 贡献文件从
+  content-digest 锁定的包目录读取,继承同一栅栏,不新增旁路。
+- **信任级别**:与工具/Hook 同一激活信任面(configured 插件 = 可信本地可执行输入,`plugin_host.rs`
+  有言在先);SourceApproved 信任门与产品来源接入(R7c 后)同批落,不在测试通道里假装已收口。
+  当期收口 = 能力协商门 + 内容摘要栅栏 + 实例关闭撤树 + 校验单一裁决。
+
+### 7.6 壳侧异步化(R7c 激活 R7b 预留的状态机)
+
+- `dispatch_plugin_event` 改两段:provider 为 deferred 时保持在途态并立即返回,worker 结果经壳
+  `RuntimeEvent`(新增 plugin scene update 变体)回 UI 线程——清在途、按结果设/清横幅、
+  `cx.notify()` 重渲染拉新树。同步 provider(fixture)保持 R7b 现行为。
+- **合并队列**:在途期间新交互按 §4.3 入队合并(每场景一个待办槽,同 action 覆盖);场景更新
+  事件后若有待办则立即再投递。
+- **超时臂**:壳 2s 超时状态机首次真打在途流量(横幅 + 保守禁用),与 worker 侧 RPC 超时双保险。
+
+### 7.7 切分与验收
+
+| 步 | 内容 | 验收 |
+|---|---|---|
+| R7c-1 | §7.1-7.2 协议四方同步 + TS host 装载与方法实现 + Rust client 方法,各侧测试 | extension-host `bun test` + typecheck 绿;Rust 适配器 fake-host 协议测试绿 |
+| R7c-2 | §7.4-7.5 core 桥接 worker + provider + 测试通道 + 生命周期撤树 | core `plugin_ui` 单测绿(含撤树臂) |
+| R7c-3 | §7.6 壳异步化 + Bun 真插件 fixture + Xvfb 五步冒烟(开 tab→渲染→点击回环→提交回环→关实例撤树) | 壳单测绿;冒烟 0 panic;审计(fmt/boundaries/i18n/theme)绿 |
 
 ## 8. 升级兼容
 
