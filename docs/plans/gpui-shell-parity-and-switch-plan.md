@@ -136,6 +136,46 @@ trinity/desktop-control/acp 八类**不出树**（无假入口；后续补页时
 - **已有先例可照抄的壳内模式**：ConfigService 落盘桥（`settings.rs`）、端口 clone 进 runtime handle
   （`git.rs`）、事件泵 + 翻译（`runtime.rs`）、模态队列（权限对话框）。
 
+### 2.3 布局 parity 矩阵（Phase 3 R1-R6 收口，2026-10-12）
+
+Phase 3（接力计划 R1-R6）把壳的**布局与信息架构**对齐桌面（web-ui）。1:1 尺度 = 布局结构、
+信息架构、交互位、视觉语言（同 design token 下），**不是像素级复刻**（渲染器不同，字形/亚像素
+差异天然存在）。本矩阵逐行给出壳内锚点 × 桌面对应物 × 状态；「刻意分歧」均经双端并排签字
+（截图见下表）或有在案拍板。提交序列：R1a `5b8e393f5` / R1b `3522ac28a` / R1c `167f03f71` /
+R1d `74a58df08` / R2a `291f74d30` / R2b `a1f4bcd94` / R2c `167403c79` / R2d `77223da7d` /
+R3 `34a3effef` / R4 `006cc8063` / R5 `5da468203`（gpui-frontend 分支）。
+
+| # | 布局锚点 | 壳内实现 | 桌面对应物 | 状态 | 刻意分歧与理由 |
+|---|---|---|---|---|---|
+| 1 | 顶栏资源 tab 条 | `tabs.rs`（SceneId/SceneDef 注册表 + TabKind::Session/Scene + TabsState 纯逻辑）；渲染在 TitleBar 之下；会话与页面并 tab、可关可切 | `SceneBar` 资源 tab 条（会话/页面并 tab，可关可切可弹出） | 同构 | tab 弹出（pop-out）壳侧未做，资源面板头部保留弹出位语义 |
+| 2 | 侧栏导航收敛 | `shell.rs` 导航行 = 智能助理/认知体/任务看板（NavPanel 序）；Files/Git/Insights 注册表行 `in_nav:false` | `registry.ts` 顶层导航 5 场景（智能助理/认知体/任务看板/小应用/扩展与兼容） | 同构（裁剪口径） | 小应用/扩展与兼容不放占位入口（公子拍板「小应用 web 不做」，PLAN B 类不做） |
+| 3 | 全局搜索「搜索一切」 | `search.rs::render_overlay`（scrim + 顶部卡，Ctrl K / 点击；空 query 快捷操作行） | 侧栏顶搜索框 + Ctrl K 弹层 + `productActionCatalog` | 同构 | 快捷操作行 = productActionCatalog 的壳侧替身（新建会话/终端/文件/变更/洞察/设置）；actions/entities 两路搜索缺（§2 第 11 行） |
+| 4 | 会话列表 = 工作区分组树 | 组头（工作区名 + chevron 折叠 + 组级绿点）+ 顶级行 + lineage 子会话缩进 + 行尾 live 绿点 +「显示更多 +N」（R1c） | 工作区分组树（独立 agent 组/工作区组/子会话缩进/活动点/显示更多） | 同构（两级投影） | 组层只落工作区组（壳单工作窗口无独立 agent 组数据）；孙代隐藏（web 两级投影口径） |
+| 5 | 窗口底部全局状态栏 | 左簇用户槽 + trinity 灯芯片（awake/dormant/offline），右簇终端停靠开关 + 工作区切换 + 设置齿轮（R1d） | 窗口级全局状态栏（用户/trinity 芯片/设置齿轮） | 同构 | — |
+| 6 | 首页 slogan 面 | 无 tab 落地面：品牌行 + slogan「把如果变成真。」+ 输入卡（R2b，`a1f4bcd94`） | `WelcomeScene`（logo + slogan + 输入框） | 同构 | 打字机轮播不做（静态 = web reduced-motion 形态） |
+| 7 | composer 上下文条带 | 卡上方条带（左轨工作区 + mode，右轨本机 + 权限徽标）+ 模型选择器入卡 actions 行（R2a） | `ChatInputWorkspaceStrip` + expanded 布局（textarea 下行模型+发送） | 同构 | 数据全来自现有快照，零新命令；徽标点击开设置页 = web `openDefaultSettings` 语义 |
+| 8 | 会话资源面板（文件/变更归位） | 停靠右面板（`h_resizable` splitter，默认 360/min 240/max 720）↔ 主资源 tab 互斥 + opening policy（R2c） | `workspace-resources`（持久导航面板 + 会话 tab 右面板 + 可弹出主 tab） | 同构 | 面板 compact 形态：Files 卸 viewer、Git 卸 diff（弹出即回）；policy = web README 壳侧映射 |
+| 9 | 聊天密度（气泡/turn footer/节奏） | 用户气泡（648px 上限 = 72%×900、右对齐、3 行截断点击展开）+ turn footer fork/copy/快照 三钮 + per-entry 行距（R2d） | `UserMessageItem` 配方 + `ModelRoundItem` footer 图标族 + 900px 阅读列 | 同构 | copy 弹 full/result 双档（web `formatTranscriptTurnText` 形态）；快照钮走第 8 行 opening policy |
+| 10 | 设置页五组分组树 | `SettingsCategory`/`SettingsEntry` 驱动五组树，15 项入树 + 2 跳转卡（R3，详见 §2.1） | `settingsRegistry` 21 类目五组 | 同构（§2.1 口径） | 8 类不出树（pet/voice/shortcuts/editor/memory/trinity/desktop-control/acp，无假入口） |
+| 11 | 任务看板 = 概览卡 + 月历 | `tasks.rs`：四计数概览卡 + 周一首 7 列自绘月历（next_run/last_run 打点，today 描边）+「全部任务」分节（R4） | 计划概览卡 + 月历 | 同构 | 月历数据源 = cron 现有字段（不做新聚合查询）；图例带「壳内无历史运行日志」诚实注记 |
+| 12 | 技能页 facet 左栏 + 右列表卡 | `SkillsFacetState` + 200px facet 栏（库/来源/探索 + 计数）+ 右列表卡（R4） | `SkillsScene` facet 左栏 + 右列表卡 | 同构 | 市场 = 显式降级卡（T3-17）；用户分组壳未接配置，不伪造 |
+| 13 | 视觉语言（radius/选中/hover） | radius 全 token 化（卡片 `theme().radius`、小件 `radius_tokens().sm`）；侧栏选中 = 中性 quiet 药丸 + 主文字（R5） | token 体系同源 + `NavPanel` 行 quiet hover 语言 | 同构 | 内容密度（桌面大标题+卡片 vs 壳密行）为 R3/R4 已签壳自语言；`rounded_full` 装饰圆点不 token 化（壳无 radius=0 场景） |
+
+**双端对照截图归档**（本目录 `assets/gpui-shell-layout-parity/`，sha256 见文件名旁注；/tmp
+会清，以此为准）。拍摄配方：壳 `DISPLAY=:97`（Xvfb），桌面 dev `DISPLAY=:98 pnpm run
+desktop:dev`（窗口 1200×800@200,50，:98 屏 1600×900），两端同选 `openbitfun-tokyo-night`
+主题；R5 签字图为左壳右桌 720px 高并排拼图，R4 为壳端场景帧。
+
+| 文件 | 内容 | sha256 前 16 位 |
+|---|---|---|
+| `r5-cmp-1-home.png` | R5 签字：首页/会话（welcome + tab + 侧栏选中语言） | `8180d6bc8134c579` |
+| `r5-cmp-2-tasks.png` | R5 签字：任务看板（概览卡 + 月历） | `aa66abb24522a7a9` |
+| `r5-cmp-3-settings.png` | R5 签字：设置五组树 | `a941d35a895c88e7` |
+| `r5-cmp-4-skills.png` | R5 签字：技能 facet（左栏 + 列表卡） | `acaa2fc815879bb0` |
+| `r4-02-tasks-board.png` | R4 交付帧：看板真实 cron 数据（打点/today 描边） | `225c60fd38ecf828` |
+| `r4-07-skills-all.png` | R4 交付帧：facet 全列表 + 徽标 | `012d3cccb39ad527` |
+| `r4-13-builtin-fixed.png` | R4 交付帧：内置过滤 facet 选中 | `0f96b4d70529309c` |
+
 ## 3. 缺口分级（已拍板，2026-10-09：P0 立项为里程碑 M11）
 
 **P0 — 默认切换的最小集**（不补则无法作为日常主入口；均为"端口现成、壳侧装配"类；**2026-10-09 公子拍板：立为里程碑 M11 开工**）：
@@ -224,3 +264,4 @@ trinity/desktop-control/acp 八类**不出树**（无假入口；后续补页时
 | 2026-10-09 | 整固复核（M10 第 2 会话，仅文档）：①逐条复核 §2「可低成本补」6 行 —— SDK 方法族（第 2/3/5/18 行）、端口、core 服务全部真实存在，无一虚标；②修正证据措辞 4 处：第 4 行改为「拖放/剪贴板走 gpui-pre 原生（XDND / wl_data_device / `ClipboardItem::new_image`）＋图片落盘助手为 desktop-local」、第 5 行补「装配已通」的直接证据（`build_with_event_source` 注入 `AgentInteractionResponsePort`）、第 8 行改为「切工作区 = 运行时重装配」（ownership 与 local services 启动即固化）并标出 `current workspace` 共享指针的跨壳耦合、§2.2 修正「多数端口是能力标记（无方法）」并把文件/工作区能力指向 core 服务；③补证据锚点：第 3 行补 catalog 三个 core 函数、第 17 行补 `scheduled-jobs` 已在闭包、第 18 行补 `InsightsService` 五个方法；④第 32 行补「通知可走 gpui-pre 原生 `show_system_notification`」；⑤§2.1 application 分类修正为 7 页（补 `terminal`，壳已覆盖其 4 个共享键）、去掉不存在的独立「appearance pack」页；⑥抽查「缺」档三行的证据锚点（第 15 行 `service/worktree` 生命周期、第 21 行 `McpManager` 家族、第 39 行 `service/snapshot`），去掉对标记端口的引用；⑦第 9 / 11 行同样把「端口现成」改为指向 core 服务（`FileSystemService` / `WorkspaceSearchService`）；⑧§4.2 / §4.4 补落地锚点：M-B 的 schema/resolver/adapter/校验入口逐文件点名，feed 接入点名 `generate-linux-binaries-manifest.mjs` 的 `gpuiShell` 资产键及其 `asset()` 存在性约束 |
 | 2026-10-10 | M11-M23 落地提示（接力计划侧记录，§2 矩阵尚未逐行刷新）：P0 六项与 P1 大部分已由 M11-M23 交付——会话管理操作、模型页、附件、ask_user、文件树/查看器、全局搜索（files/sessions）、终端多标签 + profile、Git 写操作 + history + 信任横幅、worktree 全生命周期、快照恢复、tasks、insights/usage 数字面、skills/agents/MCP 管理页、子代理投影 / BTW / child views、托盘 + 自启 + 关闭语义、自更新 UI、OS 通知（turn done/failed）。逐行复核记入接力清单（.relay/PLAN.md 后置接力清单 T2-14）；残余差距清单同处（git graph/branch、content 标签、公告、搜索 actions/entities、生态导入等） |
 | 2026-10-11 | **§2 矩阵整轮刷新（T2-14，接力清单项）**：逐行刷到 2026-10-11 真相（M11-M23 + 后置接力 T1-1..5 / T2-6..13 落地后）。已支持/子集：会话管理（2）、模型（3）、附件（4）、ask_user（5）、子代理投影/BTW（6，近似口径 D67）、文件树/查看器（9，pdf 缺）、全局搜索（11，files/sessions）、终端（13）、Git（14，graph/branches 缺）、worktree（15）、定时任务（17）、洞察/用量（18）、技能/智能体/MCP 管理（19/20/21，市场/编辑器/OAuth 缺）、系统集成（32）、更新 UI（33）、快照（39）；设置页 3/21 → 13/21（§2.1 改写，含 T2-13 诊断包导出与 include_sensitive_diagnostics 假开关不复制注记）。§1 基线表未动（M10 交付物口径不变）；残余缺口：git graph/branches、搜索 actions/entities、content 标签、生态导入、Trinity（T2-15）、托盘未读角标（T2-16）等 |
+| 2026-10-12 | **§2.3 布局 parity 矩阵新增（Phase 3 R6 收口）**：布局/信息架构逐行锚点矩阵 13 行（R1a-R5 全部锚点 × 桌面对应物 × 同构/刻意分歧+理由）；双端对照签字截图 7 张归档 `assets/gpui-shell-layout-parity/`（含拍摄配方与 sha256）。Phase 3 R1-R6 主线收官；R7（插件功能+UI 一体架构）与 T3 大项维持「点名才动」；默认切换终审（§4.3）待公子重开 |
