@@ -129,6 +129,11 @@ pub(crate) struct ShellText {
     pub models_disabled: String,
     pub chat_empty: String,
     pub chat_empty_title: String,
+    /// Tabless landing face (R2b): the brand line and the pinned slogan. Web
+    /// truth: `welcomeScene.space.*` + `welcomeScene.phrases.create`, shown
+    /// in the shell's reduced-motion form (one static phrase, no typewriter).
+    pub welcome_title: String,
+    pub welcome_slogan: String,
     pub chat_input_placeholder: String,
     pub chat_jump_latest: String,
     pub chat_send: String,
@@ -860,6 +865,8 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         models_disabled: "disabled".to_string(),
         chat_empty: "Pick a session on the left, or create a new one.".to_string(),
         chat_empty_title: "Start a conversation".to_string(),
+        welcome_title: "OpenBitFun,".to_string(),
+        welcome_slogan: "Make it real.".to_string(),
         chat_input_placeholder: "Type a message to send to the agent…".to_string(),
         chat_jump_latest: "Jump to latest".to_string(),
         chat_send: "Send".to_string(),
@@ -1425,6 +1432,8 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         models_disabled: service.t("gpui-shell-models-disabled").await,
         chat_empty: service.t("gpui-shell-chat-empty").await,
         chat_empty_title: service.t("gpui-shell-chat-empty-title").await,
+        welcome_title: service.t("gpui-shell-welcome-title").await,
+        welcome_slogan: service.t("gpui-shell-welcome-slogan").await,
         chat_input_placeholder: service.t("gpui-shell-chat-input-placeholder").await,
         chat_jump_latest: service.t("gpui-shell-chat-jump-latest").await,
         chat_send: service.t("gpui-shell-chat-send").await,

@@ -2792,6 +2792,26 @@ async fn archived_session_ids(
 impl RuntimeHandle {
     /// Creates a new durable session for the shell workspace.
     pub(crate) fn create_session(&self, tx: mpsc::UnboundedSender<RuntimeEvent>) {
+        self.spawn_create_session(None, tx);
+    }
+
+    /// Creates a new durable session and submits `first_message` as its
+    /// opening turn (R2b, the welcome face's type-to-start input).
+    /// `SessionOpened` is queued ahead of the turn's events, so the shell
+    /// lands on the new tab before the reply stream starts.
+    pub(crate) fn create_session_with_first_message(
+        &self,
+        first_message: String,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+    ) {
+        self.spawn_create_session(Some(first_message), tx);
+    }
+
+    fn spawn_create_session(
+        &self,
+        first_message: Option<String>,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+    ) {
         let runtime = self.agent_runtime.clone();
         let workspace = self.workspace();
         let workspace_path = workspace.root_path.to_string_lossy().to_string();
@@ -2805,7 +2825,7 @@ impl RuntimeHandle {
                 workspace_path: Some(workspace_path.clone()),
                 project_workspace_path: None,
                 execution_target: None,
-                workspace_id,
+                workspace_id: workspace_id.clone(),
                 remote_connection_id: None,
                 remote_ssh_host: None,
                 model_id: None,
@@ -2820,14 +2840,29 @@ impl RuntimeHandle {
                     );
                     emit_opened(
                         &runtime,
-                        created.session_id,
+                        created.session_id.clone(),
                         created.session_name,
-                        created.agent_type,
+                        created.agent_type.clone(),
                         created.model_id,
                         false,
                         tx.clone(),
                     )
                     .await;
+                    if let Some(message) = first_message {
+                        // The fresh session has no recorded agent history to
+                        // resolve, so the creation-time agent type is exact.
+                        Self::submit_dialog_turn(
+                            runtime.clone(),
+                            created.session_id,
+                            message,
+                            Vec::new(),
+                            created.agent_type,
+                            Some(workspace_path),
+                            workspace_id,
+                            tx.clone(),
+                        )
+                        .await;
+                    }
                     // The fresh session belongs in the sidebar right away, not
                     // only after its first turn settles.
                     handle.reload_sessions(tx);
@@ -2863,7 +2898,6 @@ impl RuntimeHandle {
         let workspace_path = workspace.root_path.to_string_lossy().to_string();
         let workspace_id = Some(workspace.id);
         self.tokio.spawn(async move {
-            let turn_id = uuid::Uuid::new_v4().to_string();
             // The turn carries the session's own agent; the default only
             // covers sessions that predate agent recording.
             let agent_type = runtime
@@ -2872,45 +2906,70 @@ impl RuntimeHandle {
                 .ok()
                 .flatten()
                 .unwrap_or_else(|| DEFAULT_AGENT_TYPE.to_string());
-            // Ask semantics: the metadata stays empty so the turn inherits the
-            // persisted approval preference (same as the CLI interactive
-            // default); M5 wires the explicit approval surface on top.
-            let request = AgentDialogTurnRequest {
-                session_id: session_id.clone(),
-                message: message.clone(),
-                output_schema: None,
-                original_message: None,
-                turn_id: Some(turn_id.clone()),
-                execution: AgentDialogTurnExecution::Standard,
-                agent_type,
-                workspace_path: Some(workspace_path),
-                workspace_id,
-                remote_connection_id: None,
-                remote_ssh_host: None,
-                policy: DialogSubmissionPolicy::for_source(AgentSubmissionSource::Cli),
-                reply_route: None,
-                prepended_reminders: Vec::new(),
+            Self::submit_dialog_turn(
+                runtime,
+                session_id,
+                message,
                 attachments,
-                metadata: Default::default(),
-            };
-            match runtime.submit_dialog_turn(request).await {
-                Ok(_) => {
-                    let _ = tx.send(RuntimeEvent::TurnAccepted {
-                        session_id,
-                        turn_id,
-                        message,
-                    });
-                }
-                Err(error) => {
-                    let message = error.into_message();
-                    tracing::error!("Failed to submit turn: {message}");
-                    let _ = tx.send(RuntimeEvent::SendFailed {
-                        session_id,
-                        error: message,
-                    });
-                }
-            }
+                agent_type,
+                Some(workspace_path),
+                workspace_id,
+                tx,
+            )
+            .await;
         });
+    }
+
+    /// One dialog-turn submission shared by the composer send path and the
+    /// welcome face's create-then-send path (R2b): builds the request with the
+    /// ask-inherit metadata (the CLI interactive default) and reports the
+    /// outcome as [`RuntimeEvent::TurnAccepted`] / [`RuntimeEvent::SendFailed`].
+    async fn submit_dialog_turn(
+        runtime: AgentRuntime,
+        session_id: String,
+        message: String,
+        attachments: Vec<AgentInputAttachment>,
+        agent_type: String,
+        workspace_path: Option<String>,
+        workspace_id: Option<String>,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+    ) {
+        let turn_id = uuid::Uuid::new_v4().to_string();
+        let request = AgentDialogTurnRequest {
+            session_id: session_id.clone(),
+            message: message.clone(),
+            output_schema: None,
+            original_message: None,
+            turn_id: Some(turn_id.clone()),
+            execution: AgentDialogTurnExecution::Standard,
+            agent_type,
+            workspace_path,
+            workspace_id,
+            remote_connection_id: None,
+            remote_ssh_host: None,
+            policy: DialogSubmissionPolicy::for_source(AgentSubmissionSource::Cli),
+            reply_route: None,
+            prepended_reminders: Vec::new(),
+            attachments,
+            metadata: Default::default(),
+        };
+        match runtime.submit_dialog_turn(request).await {
+            Ok(_) => {
+                let _ = tx.send(RuntimeEvent::TurnAccepted {
+                    session_id,
+                    turn_id,
+                    message,
+                });
+            }
+            Err(error) => {
+                let message = error.into_message();
+                tracing::error!("Failed to submit turn: {message}");
+                let _ = tx.send(RuntimeEvent::SendFailed {
+                    session_id,
+                    error: message,
+                });
+            }
+        }
     }
 
     /// Requests cancellation of the session's current turn. The terminal

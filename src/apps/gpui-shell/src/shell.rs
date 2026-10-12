@@ -21,7 +21,7 @@ use gpui_kit::component::{
 use gpui_kit::InteractiveElement as _;
 use gpui_kit::{
     div, img, point, prelude::*, px, size, Anchor, App, Bounds, ClipboardEntry, Context, ElementId,
-    Entity, ExternalPaths, Image, ImageFormat, KeyBinding, Pixels, SharedString,
+    Entity, ExternalPaths, FontWeight, Image, ImageFormat, KeyBinding, Pixels, SharedString,
     SystemNotification, TitlebarOptions, WeakEntity, Window, WindowBackgroundAppearance,
     WindowBounds, WindowOptions,
 };
@@ -5243,16 +5243,11 @@ impl Render for ShellWindow {
                 ))
                 .into_any_element(),
             Some(TabKind::Session(session_id)) => self.render_chat_column(&session_id, &text, cx),
-            None => div()
-                .flex_1()
-                .min_h_0()
-                .min_w_0()
-                .child(brand_empty(
-                    IconName::Sparkles,
-                    &text.chat_empty_title,
-                    &text.chat_empty,
-                ))
-                .into_any_element(),
+            // No tab at all: the tabless landing face (R2b, the web
+            // WelcomeScene) — brand slogan plus one input that starts a
+            // session. The brand-empty panel stays for the "tab open but
+            // transcript not loaded" fallback inside render_chat_area.
+            None => self.render_welcome_face(&text, cx),
         };
 
         // Nothing focused (fresh window, or after the palette closed): the
@@ -5694,6 +5689,92 @@ impl ShellWindow {
                 )
             })
             .child(self.render_composer(text, cx))
+            .into_any_element()
+    }
+
+    /// The tabless landing face (R2b, the web `WelcomeScene`): the brand line
+    /// and slogan stand in for a session, and one input starts one —
+    /// submitting creates the session and sends the text as its opening turn
+    /// (`create_session_with_first_message`, so the tab opens before the
+    /// reply stream starts). The composer card's visual language carries over
+    /// so the hand-off to the session composer reads as one surface. The web
+    /// typewriter cycles seven phrases; the shell pins the brand line
+    /// ("把如果变成真。") — the web reduced-motion form — instead of ticking a
+    /// timer through the whole shell every frame.
+    fn render_welcome_face(
+        &self,
+        text: &ShellText,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        let draft_value = self.draft.read(cx).value().to_string();
+        let draft = self.draft.clone();
+        let tx = self.event_tx.clone();
+        let send = Button::new("welcome-send")
+            .label(text.chat_send.clone())
+            .with_variant(ButtonVariant::Primary)
+            .disabled(draft_value.trim().is_empty())
+            .on_click(move |_, window, cx| {
+                let body = draft.read(cx).value().to_string();
+                if body.trim().is_empty() {
+                    return;
+                }
+                draft.update(cx, |state, cx| state.set_value("", window, cx));
+                if let Some(handle) = runtime::runtime_handle() {
+                    handle.create_session_with_first_message(body, tx.clone());
+                }
+            });
+        div()
+            .debug_selector(|| "welcome-face".to_string())
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .v_flex()
+            .items_center()
+            .justify_center()
+            .gap_6()
+            .child(
+                div()
+                    .debug_selector(|| "welcome-brand".to_string())
+                    .v_flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(px(28.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(cx.theme().foreground)
+                            .child(text.welcome_title.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(28.))
+                            .text_color(cx.theme().muted_foreground)
+                            .child(text.welcome_slogan.clone()),
+                    ),
+            )
+            .child(
+                div()
+                    .debug_selector(|| "welcome-input-card".to_string())
+                    .w_full()
+                    .max_w(px(READING_COLUMN_WIDTH))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .bg(cx.theme().popover)
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .rounded(cx.theme().radius_2xl())
+                    .shadow_sm()
+                    .p_2()
+                    .child(
+                        Textarea::new(&self.draft)
+                            .appearance(false)
+                            .flex_1()
+                            .h(px(COMPOSER_HEIGHT)),
+                    )
+                    .child(send),
+            )
             .into_any_element()
     }
 
@@ -7210,6 +7291,51 @@ mod tests {
             "the model picker moved into the card below the strip: picker {:?} strip {:?} card {:?}",
             picker,
             strip,
+            card
+        );
+    }
+
+    /// The tabless landing face (R2b): with no tab open the main area shows
+    /// the brand slogan over the start-here input card, the web WelcomeScene
+    /// order — not the empty panel (which stays for the unloaded-tab state).
+    #[gpui_kit::test]
+    fn welcome_face_lays_out_when_no_tab_is_active(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+        window.draw(point(px(0.), px(0.)), size(px(1200.), px(800.)), {
+            let shell = shell.clone();
+            move |_, _| shell.into_any_element()
+        });
+        window.run_until_parked();
+        let face = window
+            .debug_bounds("welcome-face")
+            .expect("the welcome face lays out with no tabs open");
+        let brand = window
+            .debug_bounds("welcome-brand")
+            .expect("the brand slogan lays out");
+        let card = window
+            .debug_bounds("welcome-input-card")
+            .expect("the start-here input card lays out");
+        assert!(
+            brand.origin.y >= face.origin.y
+                && brand.origin.y + brand.size.height <= face.origin.y + face.size.height,
+            "the brand lives inside the face: brand {:?} face {:?}",
+            brand,
+            face
+        );
+        assert!(
+            card.origin.y >= face.origin.y
+                && card.origin.y + card.size.height <= face.origin.y + face.size.height,
+            "the input card lives inside the face: card {:?} face {:?}",
+            card,
+            face
+        );
+        assert!(
+            brand.origin.y + brand.size.height <= card.origin.y,
+            "the brand stands above the input card: brand {:?} card {:?}",
+            brand,
             card
         );
     }
