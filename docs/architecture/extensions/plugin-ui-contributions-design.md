@@ -54,20 +54,21 @@
 
 ### 3.1 包布局与版本
 
-`openbitfun.plugin.json` 本体**保持不变**(`schema_version=1`、`deny_unknown_fields`、旧读取方零影响,
+`openbitfun.plugin.json` 本体**保持不变**(`schemaVersion=1`、`deny_unknown_fields`、旧读取方零影响,
 满足升级兼容铁律)。UI 贡献是包内**独立文件**:
 
 ```
 <plugin-package>/
   openbitfun.plugin.json      # 现有清单,files[] 中登记 ui/* 文件的 sha256
   ui/
-    contributions.json        # 贡献声明(schema_version 自带,见 3.2)
+    contributions.json        # 贡献声明(自带 schemaVersion,见 3.2)
     scenes/<scene_id>.json    # 每场景初始 UI 树(按需引用)
 ```
 
-- `ui/contributions.json` 自带 `schema_version`(起步 `1`)与 `deny_unknown_fields`;未知贡献类型/未知
-  组件在**加载期**整体拒绝该插件 UI 段并发布类型化诊断(不静默忽略、不半渲染)。
-- 升级策略与 manifest 同口径:新字段加默认值可读旧包;`schema_version` 只增不减;壳对更高版本的
+- `ui/contributions.json` 自带 `schemaVersion`(线上字段名,与 manifest 的 camelCase 惯例一致;起步
+  `1`)与 `deny_unknown_fields`(Rust 侧字段 `schema_version`);未知贡献类型/未知组件在**加载期**整体
+  拒绝该插件 UI 段并发布类型化诊断(不静默忽略、不半渲染)。
+- 升级策略与 manifest 同口径:新字段加默认值可读旧包;`schemaVersion` 只增不减;壳对更高版本的
   `ui` 段显示「需要更新版本的 OpenBitFun」显式态,不猜测渲染。
 
 ### 3.2 贡献类型
@@ -89,15 +90,18 @@
 }
 ```
 
-- **slot 声明的是意图,不是结果**:壳按 §3.3 裁决最终装载位置(v0 仅 `tab`,即场景 tab;`nav` 候选
-  v1 再议——侧栏导航五项是桌面同构拍板,不自动扩)。
-- 四类贡献中 **R7b 只实现 `scenes`**;`cards`/`panels`/`actions` 的 schema 字段在 v0 冻结形状但加载器
-  忽略空表,接入各自宿主位是 v1 事项,需逐位评审。
+- **slot 声明的是意图,不是结果**:壳按 §3.3 裁决最终装载位置(v0 仅 `tab`,即场景 tab,singleton 语义
+  同内置场景 tab;`nav` 候选 v1 再议——侧栏导航五项是桌面同构拍板,不自动扩)。
+- 四类贡献中 **R7b 只实现 `scenes`**;`cards`/`panels`/`actions` 是 v0 schema 的**已知字段**,但加载器
+  本版本不消费:遇非空表,发布「该贡献类型此版本未支持」类型化诊断并忽略**该表**(scenes 不受牵连,
+  照常注册)——不用「整体拒绝」,避免插件因一个未接入位丢失全部场景;接入各自宿主位是 v1 事项,逐位
+  评审。
 
 ### 3.3 本地化与主题语义角色
 
-- **文案**:插件自带 locale map(键为 BCP-47,起步要求 `en-US` 存在;壳按当前语言选择,缺失回退
-  `en-US` → map 首项)。不进壳 ftl 体系、不进 `i18n:audit` 预算。预算限额见 3.4。
+- **文案**:插件自带 locale map(键为 BCP-47,起步要求 `en-US` 存在;壳按当前语言选择,取词顺序 =
+  精确匹配 → 同语言族回退(`zh-TW` → `zh-CN` 等主子标签匹配)→ `en-US` → map 首项)。不进壳 ftl 体系、
+  不进 `i18n:audit` 预算。预算限额见 3.4。
 - **配色**:不存在。组件 props 只允许语义角色引用(`"tone": "danger"`);角色 → `cx.theme()` token 的
   映射在渲染器(§5.2),插件无法引入新色值,theme audit 基线零增长。
 
@@ -143,8 +147,15 @@
 - **全量替换、无差量**:与壳内 `ResizablePanelGroup::children` 单次全量、`TabsState::remove` 程序化
   迁移的既有语义一致;256KiB 树上界内全量替换成本可忽略,差量协议不做(v0 决策,避免引入树 diff
   一致性问题)。
-- 树限额:节点 ≤ 512、深度 ≤ 16、单帧 ≤ 256KiB、单节点文本 ≤ 4KiB。超限 = 拒绝该树 + 类型化诊断 +
+- 树限额:节点 ≤ 512、深度 ≤ 16、单帧 ≤ 256KiB、单节点文本 ≤ 4KiB;树文件的 `schemaVersion` 必须与
+  `ui/contributions.json` 同版本族(v0 皆 `1`),不一致 = 拒绝该树。超限/不一致 = 拒绝 + 类型化诊断 +
   **保留上一棵树**(保旧不崩壳,同升级兼容的「degrade loudly」口径)。
+- **诊断必须可见**:拒绝、超时、贡献类型未支持等类型化诊断落在该场景 tab 内的显式错误态(横幅/空态,
+  渲染器自带),不静默吞。诊断文案是**壳文案**(非插件文案),进壳 ftl 三语、按惯例数键对账——R7b 若
+  出新键,§6.4 的「无新键」预期随之修正。
+- **贡献被撤的打开中 tab**:generation 失配(插件停用/撤销/版本变更撤下该场景)时,已打开的场景 tab
+  切「贡献已移除」显式态、事件回环禁用;tab 保留由用户手动关闭(不自动关用户打开的 tab,同「永不删除
+  用户数据」精神)。R7b fixture 不触发此臂,R7c 实例关闭时必测。
 
 ### 4.3 事件回环
 
@@ -157,8 +168,9 @@
    │ ←─ 整树替换(新 generation)│ 校验限额 → 更新缓存                  │
 ```
 
-- 事件只携带 `{ scene_ref, action, payload }`;`payload` v0 仅控件值(字符串/数值/布尔),无文件、无
-  任意 JSON 树(防payload 夹带)。
+- 事件只携带 `{ scene_ref, action, payload }`。`scene_ref` = (插件来源标识, 包内场景 id) 二元组
+  (Rust 侧 `#[derive(Copy)]`,壳 `SceneId::External(SceneRef)` 全链 Copy 传递);`payload` v0 仅控件值
+  (字符串/数值/布尔),字符串 ≤ 4KiB(与树文本同额),无文件、无任意 JSON 树(防 payload 夹带)。
 - 渲染器侧:**单飞合并**——同一场景同时至多一个在途回环,回环期间新事件入队合并(同 action 覆盖);
   回环超时(2s)显示保守禁用态并发布诊断,不假死、不静默丢交互。
 - 插件想要产生副作用(调工具、发请求)走既有 `backend.*` / 工具权限路径;**事件回环本身不授予任何新
@@ -206,7 +218,7 @@
 | `label` | `label` 组件 | 表单配文 |
 | `button` | `Button`(variant/tone/disabled) | `on.press` |
 | `input` | `TextInput` 单行 | `on.submit`、placeholder(@key) |
-| `textarea` | 共享 draft Textarea(壳 R2 同款) | `on.submit` |
+| `textarea` | `TextareaState`(壳 composer 同组件) | `on.submit` |
 | `select` | `select` 组件(popover 下拉) | 选项 ≤ 32,`on.change` |
 | `checkbox` / `switch` | `checkbox` / `switch` 组件 | `on.change` |
 | `badge` / `tag` | `badge` 组件 | tone 角色 |
@@ -240,8 +252,10 @@ hover/焦点/滚动/键盘快捷键事件——频度与可访问性语义都是
 
 ### 5.5 明确不支持(v0 拒绝渲染,类型化诊断)
 
-`table` / `tree` / `chart` / `image` / 自定义绘制 / 嵌入 webview / 远程资源 / 弹窗类组件(`dialog`/
-`popover` 作为插件可控表面——弹窗队列是宿主交互编排,插件 v0 不进入)。这些留 v1+ 逐项评审。
+`table` / `tree` / `chart` / `image` / 自定义绘制 / 嵌入 webview / 远程资源 / 树内弹窗组件(`dialog`/
+`popover` 作为**插件树可控组件**)。注意区分:§3.3 允许「对话框」作为**贡献类型**进入稳定接口——即插件
+声明一个对话框贡献、由宿主对话框队列编排打开(既有 permission dialog 同源语义),这条 v1+ 评审后再接;
+v0 不做的是把弹窗组件交进插件树里自由弹出。其余留 v1+ 逐项评审。
 
 ## 6. R7b 壳内最小闭环(下一会话计划)
 
