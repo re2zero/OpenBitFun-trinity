@@ -21,12 +21,12 @@ use openbitfun_agent_runtime::sdk::{
     AgentDialogTurnExecution, AgentDialogTurnRequest, AgentRuntime,
     AgentSessionArchiveStateRequest, AgentSessionCompactionRequest, AgentSessionCreateRequest,
     AgentSessionDeleteRequest, AgentSessionForkAtTurnRequest, AgentSessionForkBeforeTurnRequest,
-    AgentSessionForkRequest, AgentSessionModelUpdateRequest, AgentSessionRenameRequest,
-    AgentSessionRestoreRequest, AgentSessionRollbackToTurnOutcome,
-    AgentSessionRollbackToTurnRequest, AgentSessionUsageRequest, AgentTurnCancellationRequest,
-    AgentUserAnswersRequest, PendingUserQuestion, PermissionReply, PermissionRequest,
-    PermissionRequestEvent, SessionState, SessionTranscript, SessionTranscriptRequest,
-    SessionUsageReport,
+    AgentSessionForkRequest, AgentSessionLineageRequest, AgentSessionLineageSnapshot,
+    AgentSessionModelUpdateRequest, AgentSessionRenameRequest, AgentSessionRestoreRequest,
+    AgentSessionRollbackToTurnOutcome, AgentSessionRollbackToTurnRequest, AgentSessionUsageRequest,
+    AgentTurnCancellationRequest, AgentUserAnswersRequest, PendingUserQuestion, PermissionReply,
+    PermissionRequest, PermissionRequestEvent, SessionState, SessionTranscript,
+    SessionTranscriptRequest, SessionUsageReport,
 };
 use openbitfun_agent_runtime::user_questions::{get_user_input_manager, UserInputManager};
 use openbitfun_core::agentic::insights::{InsightsReport, InsightsReportMeta, InsightsService};
@@ -109,6 +109,10 @@ pub(crate) enum RuntimeEvent {
     Sessions(Vec<SessionListRow>),
     /// Reload failed while the runtime itself stays usable.
     SessionsFailed(String),
+    /// Per-root session lineage snapshots (R1c): the subagent tree under each
+    /// listed session, fetched alongside the list. A root whose fetch failed
+    /// simply has no snapshot and renders without children.
+    SessionLineages(Vec<AgentSessionLineageSnapshot>),
     /// Bootstrap failed; the shell stays degraded with the error shown.
     Failed(String),
     /// A session was created or restored and its transcript is ready.
@@ -2669,7 +2673,10 @@ impl RuntimeHandleLite {
 }
 
 /// Spawns one session-list read: runtime summaries plus the persisted archive
-/// flags the summary DTO omits.
+/// flags the summary DTO omits, then one lineage snapshot per listed session
+/// (R1c). Lineage reads walk the same workspace metadata, so they run bounded;
+/// a failed snapshot logs and renders that root childless instead of failing
+/// the whole list.
 fn spawn_session_reload(
     runtime: AgentRuntime,
     compat: CoreAgentRuntimeCompatibility,
@@ -2700,7 +2707,13 @@ fn spawn_session_reload(
                     })
                     .collect::<Vec<_>>();
                 tracing::info!("Session list loaded: {} sessions", rows.len());
+                let anchors: Vec<String> = rows
+                    .iter()
+                    .map(|row| row.summary.session_id.clone())
+                    .collect();
                 let _ = tx.send(RuntimeEvent::Sessions(rows));
+                let lineages = fetch_session_lineages(&runtime, &workspace.id, &anchors).await;
+                let _ = tx.send(RuntimeEvent::SessionLineages(lineages));
             }
             Err(error) => {
                 let message = error.into_message();
@@ -2710,6 +2723,51 @@ fn spawn_session_reload(
         }
     });
 }
+
+/// Lineage snapshots for every listed session (R1c sidebar tree): one
+/// subagent-tree snapshot per anchor, fetched with bounded concurrency so a
+/// large workspace cannot flood the metadata store with parallel scans. A
+/// failed anchor logs and drops out; the sidebar renders that root childless.
+///
+/// Sessions listed by the runtime are the visible top level (subagent and
+/// ephemeral children stay hidden from the index), so anchoring at each listed
+/// session covers every tree the sidebar can show.
+async fn fetch_session_lineages(
+    runtime: &AgentRuntime,
+    workspace_id: &str,
+    anchors: &[String],
+) -> Vec<AgentSessionLineageSnapshot> {
+    use futures_util::StreamExt;
+
+    futures_util::stream::iter(anchors.iter().cloned().map(|anchor_session_id| {
+        let runtime = runtime.clone();
+        let workspace_id = workspace_id.to_string();
+        async move {
+            let request = AgentSessionLineageRequest {
+                workspace_id: Some(workspace_id),
+                workspace_path: String::new(),
+                anchor_session_id,
+                remote_connection_id: None,
+                remote_ssh_host: None,
+            };
+            match runtime.get_session_lineage(request).await {
+                Ok(Some(snapshot)) => Some(snapshot),
+                Ok(None) => None,
+                Err(error) => {
+                    tracing::warn!("Session lineage fetch failed: {error}");
+                    None
+                }
+            }
+        }
+    }))
+    .buffered(LINEAGE_FETCH_CONCURRENCY)
+    .filter_map(|snapshot| async move { snapshot })
+    .collect()
+    .await
+}
+
+/// Upper bound on concurrent lineage reads per reload (R1c).
+const LINEAGE_FETCH_CONCURRENCY: usize = 8;
 
 /// Persisted ids of archived sessions for one workspace. A failed metadata
 /// read degrades to "nothing is archived" with an explicit warning: the list

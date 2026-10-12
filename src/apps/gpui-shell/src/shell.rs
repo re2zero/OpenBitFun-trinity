@@ -26,7 +26,7 @@ use gpui_kit::{
     WindowBounds, WindowOptions,
 };
 use openbitfun_agent_runtime::sdk::{PendingUserQuestion, PermissionReply, PermissionRequest};
-use openbitfun_runtime_ports::AgentInputAttachment;
+use openbitfun_runtime_ports::{AgentInputAttachment, AgentSessionLineageSnapshot};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -42,6 +42,9 @@ use crate::theme::{ShellState, DEFAULT_PRESET_ID};
 
 /// Width of the navigation sidebar, matching the web-ui desktop shell.
 const SESSION_PANE_WIDTH: f32 = 300.;
+/// Root sessions shown before the show-more fold (R1c); the web nav's
+/// collapsed level-0 page. Expanding reveals the rest, virtualized.
+const SESSIONS_COLLAPSED_VISIBLE: usize = 5;
 /// Transcript reading column; long-window content stays centered on it.
 const READING_COLUMN_WIDTH: f32 = 900.;
 /// User bubble cap inside the reading column, so short messages do not
@@ -502,15 +505,22 @@ fn nav_label<'a>(action: NavAction, text: &'a ShellText) -> &'a str {
     }
 }
 
-/// One `Sidebar` content entry: a session row, a navigation row, the
-/// empty-state line, or the list error line. One type because `Sidebar`
-/// children share one element type; collapsed-state is inert because entries
-/// are always rendered.
+/// One `Sidebar` content entry: a session row (root or indented child, R1c),
+/// a navigation row, the "show more" fold row, the empty-state line, or the
+/// list error line. One type because `Sidebar` children share one element
+/// type; collapsed-state is inert because entries are always rendered.
 #[derive(Clone)]
 enum SidebarEntry {
     Session {
         row: SessionRow,
         open: bool,
+        /// Tree depth (R1c): 0 = workspace top-level session, 1 = subagent
+        /// child indented under its root. Deeper lineage descendants stay
+        /// hidden, matching the web nav's two-level projection.
+        depth: u8,
+        /// A turn is executing for this session (process-wide live set, so
+        /// background sessions light up too).
+        running: bool,
         tx: mpsc::UnboundedSender<RuntimeEvent>,
         /// The shell view, so the row menu can drive dialogs and actions
         /// (row rendering runs outside the view's own context).
@@ -520,6 +530,12 @@ enum SidebarEntry {
         action: NavAction,
         label: SharedString,
         active: bool,
+        view: WeakEntity<ShellWindow>,
+    },
+    More {
+        /// Hidden root sessions the expansion would reveal.
+        remaining: usize,
+        expanded: bool,
         view: WeakEntity<ShellWindow>,
     },
     Empty(SharedString),
@@ -548,6 +564,8 @@ impl SidebarItem for SidebarEntry {
             SidebarEntry::Session {
                 row,
                 open,
+                depth,
+                running,
                 tx,
                 view,
             } => {
@@ -616,6 +634,9 @@ impl SidebarItem for SidebarEntry {
                     .gap_1()
                     .min_w_0()
                     .p_2()
+                    // Subagent children (R1c) indent one step under their
+                    // root; the web nav nests one level the same way.
+                    .when(depth > 0, |this| this.ml_4())
                     .rounded(cx.theme().radius)
                     .when(open, |this| this.bg(cx.theme().sidebar_accent))
                     .when(!open, |this| {
@@ -634,14 +655,27 @@ impl SidebarItem for SidebarEntry {
                                     .truncate()
                                     .child(name),
                             )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .truncate()
-                                    .child(metadata),
-                            ),
+                            // Children carry no workspace metadata line; the
+                            // subagent type rides in its place when known.
+                            .when(!metadata.is_empty(), |this| {
+                                this.child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .truncate()
+                                        .child(metadata),
+                                )
+                            }),
                     )
+                    .when(running, |this| {
+                        this.child(
+                            div()
+                                .size_1p5()
+                                .flex_shrink_0()
+                                .rounded_full()
+                                .bg(cx.theme().success),
+                        )
+                    })
                     .child(activity_badges)
                     .child(menu)
                     .into_any_element()
@@ -681,6 +715,57 @@ impl SidebarItem for SidebarEntry {
                     .child(div().truncate().child(label))
                     .into_any_element()
             }
+            SidebarEntry::More {
+                remaining,
+                expanded,
+                view,
+            } => {
+                let text = i18n::current(cx);
+                let label = if expanded {
+                    text.sessions_show_less.clone()
+                } else {
+                    text.sessions_show_more.clone()
+                };
+                let chevron = if expanded {
+                    IconName::ChevronUp
+                } else {
+                    IconName::ChevronDown
+                };
+                div()
+                    .id("sessions-show-more")
+                    .on_click(move |_, _, cx| {
+                        if let Some(view) = view.upgrade() {
+                            view.update(cx, |this, cx| {
+                                this.sessions_expanded = !this.sessions_expanded;
+                                cx.notify();
+                            });
+                        }
+                    })
+                    .cursor_pointer()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .p_2()
+                    .rounded(cx.theme().radius)
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .hover(|style| style.bg(cx.theme().sidebar_accent.opacity(0.5)))
+                    .child(Icon::new(chevron).small())
+                    .child(label)
+                    .when(!expanded && remaining > 0, |this| {
+                        this.child(
+                            div()
+                                .px_1()
+                                .text_xs()
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .rounded_sm()
+                                .child(format!("+{remaining}")),
+                        )
+                    })
+                    .into_any_element()
+            }
             SidebarEntry::Empty(text) => div()
                 .flex()
                 .flex_row()
@@ -701,32 +786,39 @@ impl SidebarItem for SidebarEntry {
     }
 }
 
-/// One `Sidebar` section: headerless nav rows (the desktop top actions sit
-/// under the search trigger without a title) or a titled section whose header
-/// carries the row actions. One type because `Sidebar` children share one
-/// element type. Neither variant collapses: the desktop nav has no section
-/// toggle, and the component group's construction-time `collapsed` has no
-/// click path anymore.
+/// One `Sidebar` child. The sessions tree (R1c) flattens into top-level
+/// children — the header, the workspace group row, and one child per tree row
+/// — so the component's internal `list` virtualizes per row (the group-level
+/// nesting it renders itself has no virtualization). One type because
+/// `Sidebar` children share one element type. Nothing collapses at this level:
+/// the component re-applies its own icon-rail state each frame.
 #[derive(Clone)]
 enum SidebarSection {
     Rows(Vec<SidebarEntry>),
-    Section {
+    /// The sessions section header (R1b): the three desktop header verbs —
+    /// new session, archive filter, list reload.
+    SectionHeader {
         label: SharedString,
-        /// Session-header action state (R1b): the channel the new-session and
-        /// reload buttons fire through, and the archive-filter state the
-        /// toggle flips.
         tx: mpsc::UnboundedSender<RuntimeEvent>,
         archived_on: bool,
-        rows: Vec<SidebarEntry>,
         view: WeakEntity<ShellWindow>,
     },
+    /// The workspace group row (R1c): chevron fold, workspace name, and the
+    /// running dot when any visible session has a live turn.
+    GroupHeader {
+        name: SharedString,
+        collapsed: bool,
+        running: bool,
+        view: WeakEntity<ShellWindow>,
+    },
+    Item(SidebarEntry),
 }
 
 impl Collapsible for SidebarSection {
     fn collapsed(self, _collapsed: bool) -> Self {
         // The sidebar re-applies its own icon-rail state to every group on
         // each frame (`Sidebar` render calls `.collapsed(layout
-        // .icon_collapsed)`); both sections are always-rendered.
+        // .icon_collapsed)`); every child is always-rendered.
         self
     }
 
@@ -755,11 +847,10 @@ impl SidebarItem for SidebarSection {
                     }))
                     .into_any_element()
             }
-            SidebarSection::Section {
+            SidebarSection::SectionHeader {
                 label,
                 tx,
                 archived_on,
-                rows,
                 view,
             } => {
                 let id = id.into();
@@ -771,81 +862,122 @@ impl SidebarItem for SidebarSection {
                 let archive_view = view.clone();
                 div()
                     .flex()
-                    .flex_col()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
                     .gap_1()
+                    .pt_1()
+                    .h_8()
+                    .px_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().sidebar_foreground.opacity(0.7))
+                            .child(label),
+                    )
                     .child(
                         div()
                             .flex()
-                            .flex_row()
                             .items_center()
-                            .justify_between()
-                            .gap_1()
-                            .h_8()
-                            .px_2()
+                            .gap_0p5()
                             .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().sidebar_foreground.opacity(0.7))
-                                    .child(label),
+                                Button::new(SharedString::from(format!("{}-new", id)))
+                                    .icon(IconName::Plus)
+                                    .small()
+                                    .with_variant(ButtonVariant::Ghost)
+                                    .tooltip(i18n::current(cx).sessions_new.clone())
+                                    .on_click(move |_, _, _| {
+                                        if let Some(handle) = runtime::runtime_handle() {
+                                            handle.create_session(new_tx.clone());
+                                        }
+                                    }),
                             )
                             .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_0p5()
-                                    .child(
-                                        Button::new(SharedString::from(format!("{}-new", id)))
-                                            .icon(IconName::Plus)
-                                            .small()
-                                            .with_variant(ButtonVariant::Ghost)
-                                            .tooltip(i18n::current(cx).sessions_new.clone())
-                                            .on_click(move |_, _, _| {
-                                                if let Some(handle) = runtime::runtime_handle() {
-                                                    handle.create_session(new_tx.clone());
-                                                }
-                                            }),
-                                    )
-                                    .child(
-                                        Button::new(SharedString::from(format!("{}-archived", id)))
-                                            .icon(IconName::Archive)
-                                            .small()
-                                            .with_variant(if archived_on {
-                                                ButtonVariant::Secondary
-                                            } else {
-                                                ButtonVariant::Ghost
-                                            })
-                                            .tooltip(
-                                                i18n::current(cx).sessions_show_archived.clone(),
-                                            )
-                                            .on_click(move |_, _, cx| {
-                                                if let Some(view) = archive_view.upgrade() {
-                                                    view.update(cx, |this, cx| {
-                                                        this.show_archived = !this.show_archived;
-                                                        cx.notify();
-                                                    });
-                                                }
-                                            }),
-                                    )
-                                    .child(
-                                        Button::new(SharedString::from(format!("{}-reload", id)))
-                                            .icon(IconName::RefreshCw)
-                                            .small()
-                                            .with_variant(ButtonVariant::Ghost)
-                                            .tooltip(i18n::current(cx).sessions_reload.clone())
-                                            .on_click(move |_, _, _| {
-                                                if let Some(handle) = runtime::runtime_handle() {
-                                                    handle.reload_sessions(reload_tx.clone());
-                                                }
-                                            }),
-                                    ),
+                                Button::new(SharedString::from(format!("{}-archived", id)))
+                                    .icon(IconName::Archive)
+                                    .small()
+                                    .with_variant(if archived_on {
+                                        ButtonVariant::Secondary
+                                    } else {
+                                        ButtonVariant::Ghost
+                                    })
+                                    .tooltip(i18n::current(cx).sessions_show_archived.clone())
+                                    .on_click(move |_, _, cx| {
+                                        if let Some(view) = archive_view.upgrade() {
+                                            view.update(cx, |this, cx| {
+                                                this.show_archived = !this.show_archived;
+                                                cx.notify();
+                                            });
+                                        }
+                                    }),
+                            )
+                            .child(
+                                Button::new(SharedString::from(format!("{}-reload", id)))
+                                    .icon(IconName::RefreshCw)
+                                    .small()
+                                    .with_variant(ButtonVariant::Ghost)
+                                    .tooltip(i18n::current(cx).sessions_reload.clone())
+                                    .on_click(move |_, _, _| {
+                                        if let Some(handle) = runtime::runtime_handle() {
+                                            handle.reload_sessions(reload_tx.clone());
+                                        }
+                                    }),
                             ),
                     )
-                    .children(rows.into_iter().enumerate().map(|(ix, row)| {
-                        row.render(SharedString::from(format!("{}-{}", id, ix)), window, cx)
-                            .into_any_element()
-                    }))
                     .into_any_element()
             }
+            SidebarSection::GroupHeader {
+                name,
+                collapsed,
+                running,
+                view,
+            } => div()
+                .id("session-group")
+                .on_click(move |_, _, cx| {
+                    if let Some(view) = view.upgrade() {
+                        view.update(cx, |this, cx| {
+                            this.sessions_group_collapsed = !this.sessions_group_collapsed;
+                            cx.notify();
+                        });
+                    }
+                })
+                .cursor_pointer()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1()
+                .min_w_0()
+                .p_2()
+                .rounded(cx.theme().radius)
+                .text_sm()
+                .hover(|style| style.bg(cx.theme().sidebar_accent.opacity(0.5)))
+                .child(
+                    Icon::new(if collapsed {
+                        IconName::ChevronRight
+                    } else {
+                        IconName::ChevronDown
+                    })
+                    .small(),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .font_medium()
+                        .truncate()
+                        .child(name),
+                )
+                .when(running, |this| {
+                    this.child(
+                        div()
+                            .size_1p5()
+                            .flex_shrink_0()
+                            .rounded_full()
+                            .bg(cx.theme().success),
+                    )
+                })
+                .into_any_element(),
+            SidebarSection::Item(entry) => entry.render(id, window, cx).into_any_element(),
         }
     }
 }
@@ -1059,6 +1191,15 @@ pub(crate) struct ShellWindow {
     git_auto_open: bool,
     /// Sidebar filter: archived sessions stay hidden until this is on.
     show_archived: bool,
+    /// Per-root session lineage snapshots (R1c): the subagent children shown
+    /// indented under each sidebar row. Replaced wholesale on each list
+    /// reload; entries for since-deleted sessions match nothing.
+    lineages: Vec<AgentSessionLineageSnapshot>,
+    /// Session-tree view state (R1c): the workspace group fold, and the
+    /// show-more expansion of long root lists (collapsed shows the web's
+    /// level-0 page).
+    sessions_group_collapsed: bool,
+    sessions_expanded: bool,
     /// Global search palette (R1b): one boolean, because the query state and
     /// the input entity live on the window already (`search`/`search_input`).
     search_overlay_open: bool,
@@ -1266,6 +1407,9 @@ impl ShellWindow {
             settings_auto_open: std::env::var_os("OPENBITFUN_GPUI_SETTINGS_AUTOOPEN").is_some(),
             git_auto_open: std::env::var_os("OPENBITFUN_GPUI_GIT_AUTOOPEN").is_some(),
             show_archived: false,
+            lineages: Vec::new(),
+            sessions_group_collapsed: false,
+            sessions_expanded: false,
             search_overlay_open: false,
             root_focus: cx.focus_handle(),
             rename_input,
@@ -1532,6 +1676,9 @@ impl ShellWindow {
             }
             RuntimeEvent::SessionsFailed(error) => {
                 self.list_error = Some(i18n::failed_status(&error, cx));
+            }
+            RuntimeEvent::SessionLineages(lineages) => {
+                self.lineages = lineages;
             }
             RuntimeEvent::Failed(error) => {
                 self.phase = RuntimePhase::Failed(i18n::failed_status(&error, cx));
@@ -2921,36 +3068,128 @@ impl ShellWindow {
         }
     }
 
-    /// Sidebar entries: one session row each (archived rows only while the
-    /// toggle is on), plus the empty-state and error lines. One type because
-    /// `Sidebar` children share one element type.
+    /// The sessions tree flattened into sidebar children (R1c): the workspace
+    /// group row, then one entry per row — top-level sessions with their
+    /// subagent children indented beneath them, the running dot on live rows,
+    /// and the show-more fold once the collapsed page overflows. Archived rows
+    /// show only while the toggle is on; a failed list surfaces as the error
+    /// line.
     fn render_session_entries(
         &self,
         text: &ShellText,
         cx: &mut Context<Self>,
-    ) -> Vec<SidebarEntry> {
-        let mut entries = Vec::new();
+    ) -> Vec<SidebarSection> {
+        let view = cx.entity().downgrade();
+        let mut sections = Vec::new();
         if let Some(error) = &self.list_error {
-            entries.push(SidebarEntry::Danger(error.clone().into()));
+            sections.push(SidebarSection::Item(SidebarEntry::Danger(
+                error.clone().into(),
+            )));
+            return sections;
         }
+
         let visible: Vec<&SessionRow> = self
             .sessions
             .iter()
             .filter(|row| self.show_archived || !row.archived)
             .collect();
-        if visible.is_empty() {
-            entries.push(SidebarEntry::Empty(text.sessions_empty.clone().into()));
+        let group_running = visible.iter().any(|row| self.session_is_running(&row.id));
+        sections.push(SidebarSection::GroupHeader {
+            name: SharedString::from(
+                runtime::runtime_handle()
+                    .map(|handle| handle.workspace().name)
+                    .unwrap_or_default(),
+            ),
+            collapsed: self.sessions_group_collapsed,
+            running: group_running,
+            view: view.clone(),
+        });
+        if self.sessions_group_collapsed {
+            return sections;
         }
-        let view = cx.entity().downgrade();
-        for row in visible {
-            entries.push(SidebarEntry::Session {
+        if visible.is_empty() {
+            sections.push(SidebarSection::Item(SidebarEntry::Empty(
+                text.sessions_empty.clone().into(),
+            )));
+            return sections;
+        }
+
+        // Collapsed shows the web nav's level-0 page; expanding reveals the
+        // rest (virtualized, so the count itself is cheap).
+        let foldable = visible.len() > SESSIONS_COLLAPSED_VISIBLE;
+        let (shown, more): (Vec<&SessionRow>, usize) = if self.sessions_expanded || !foldable {
+            (visible, 0)
+        } else {
+            (
+                visible[..SESSIONS_COLLAPSED_VISIBLE].to_vec(),
+                visible.len() - SESSIONS_COLLAPSED_VISIBLE,
+            )
+        };
+
+        for row in shown {
+            let open = self.chats.iter().any(|chat| chat.matches(&row.id));
+            sections.push(SidebarSection::Item(SidebarEntry::Session {
                 row: row.clone(),
-                open: self.chats.iter().any(|chat| chat.matches(&row.id)),
+                open,
+                depth: 0,
+                running: self.session_is_running(&row.id),
                 tx: self.event_tx.clone(),
                 view: view.clone(),
-            });
+            }));
+            for child in self.lineage_children(&row.id) {
+                let child_open = self.chats.iter().any(|chat| chat.matches(&child.id));
+                let child_running = self.session_is_running(&child.id);
+                sections.push(SidebarSection::Item(SidebarEntry::Session {
+                    row: child,
+                    open: child_open,
+                    depth: 1,
+                    running: child_running,
+                    tx: self.event_tx.clone(),
+                    view: view.clone(),
+                }));
+            }
         }
-        entries
+        // The fold row only exists when it can do something: reveal hidden
+        // roots, or re-fold an expansion that actually hid something.
+        if more > 0 || (self.sessions_expanded && foldable) {
+            sections.push(SidebarSection::Item(SidebarEntry::More {
+                remaining: more,
+                expanded: self.sessions_expanded,
+                view,
+            }));
+        }
+        sections
+    }
+
+    /// A turn is executing for this session, whether its tab is open or not:
+    /// the event pump reports every session's lifecycle process-wide.
+    fn session_is_running(&self, session_id: &str) -> bool {
+        self.live_sessions.contains(session_id)
+    }
+
+    /// Direct subagent children of a session (R1c), as sidebar rows: the
+    /// lineage snapshot rooted at the session, filtered to depth one —
+    /// deeper descendants stay hidden, matching the web nav's two-level
+    /// projection. Children keep their pre-order arrival order.
+    fn lineage_children(&self, root_session_id: &str) -> Vec<SessionRow> {
+        let Some(snapshot) = self
+            .lineages
+            .iter()
+            .find(|snapshot| snapshot.root_session_id == root_session_id)
+        else {
+            return Vec::new();
+        };
+        snapshot
+            .sessions
+            .iter()
+            .filter(|entry| entry.parent_session_id.as_deref() == Some(root_session_id))
+            .map(|entry| SessionRow {
+                id: entry.session_id.clone(),
+                name: entry.session_name.clone(),
+                metadata: entry.subagent_type.clone().unwrap_or_default(),
+                archived: false,
+            })
+            .collect()
     }
 
     /// The navigation sidebar (R1b, desktop NavPanel shape): the "search
@@ -3006,13 +3245,13 @@ impl ShellWindow {
             .w(px(SESSION_PANE_WIDTH))
             .header(header)
             .child(SidebarSection::Rows(nav_rows))
-            .child(SidebarSection::Section {
+            .child(SidebarSection::SectionHeader {
                 label: SharedString::from(text.sessions_title.clone()),
                 tx: self.event_tx.clone(),
                 archived_on: self.show_archived,
-                rows: self.render_session_entries(text, cx),
                 view: cx.entity().downgrade(),
             })
+            .children(self.render_session_entries(text, cx))
             .footer(
                 SidebarFooter::new().child(
                     div()
@@ -6818,6 +7057,224 @@ mod tests {
         assert_eq!(count, 2);
     }
 
+    /// The sidebar tree shape: `(session id, depth, running)` per session row
+    /// in render order, the fold row as `Err((remaining, expanded))`.
+    fn session_tree_shape(
+        window: &mut gpui_kit::VisualTestContext,
+        shell: &Entity<ShellWindow>,
+        text: &ShellText,
+    ) -> Vec<Result<(String, u8, bool), (usize, bool)>> {
+        let text = text.clone();
+        window.update(|_, cx| {
+            shell.update(cx, |shell, cx| {
+                shell
+                    .render_session_entries(&text, cx)
+                    .into_iter()
+                    .filter_map(|section| match section {
+                        SidebarSection::Item(SidebarEntry::Session {
+                            row,
+                            depth,
+                            running,
+                            ..
+                        }) => Some(Ok((row.id, depth, running))),
+                        SidebarSection::Item(SidebarEntry::More {
+                            remaining,
+                            expanded,
+                            ..
+                        }) => Some(Err((remaining, expanded))),
+                        _ => None,
+                    })
+                    .collect()
+            })
+        })
+    }
+
+    fn lineage_entry(
+        session_id: &str,
+        session_name: &str,
+        parent_session_id: Option<&str>,
+        subagent_type: Option<&str>,
+    ) -> openbitfun_runtime_ports::AgentSessionLineageEntry {
+        openbitfun_runtime_ports::AgentSessionLineageEntry {
+            session_id: session_id.into(),
+            session_name: session_name.into(),
+            agent_type: "Standard".into(),
+            created_at_ms: 0,
+            status: openbitfun_runtime_ports::AgentSessionLifecycleStatus::Active,
+            active_turn_id: None,
+            parent_session_id: parent_session_id.map(str::to_string),
+            parent_tool_call_id: None,
+            subagent_type: subagent_type.map(str::to_string),
+            agent_id: None,
+            workspace_id: None,
+            workspace_path: None,
+            remote_connection_id: None,
+            remote_ssh_host: None,
+            unread_completion: None,
+            needs_user_attention: None,
+        }
+    }
+
+    /// R1c: lineage snapshots project as subagent children indented under
+    /// their root, one level deep — deeper descendants stay hidden like the
+    /// web nav's two-level projection.
+    #[gpui_kit::test]
+    fn session_tree_projects_children_under_roots(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+        let text = sample_shell_text();
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(
+                    RuntimeEvent::Sessions(vec![
+                        crate::runtime::SessionListRow {
+                            summary: sample_summary("s-1", "Root one"),
+                            archived: false,
+                        },
+                        crate::runtime::SessionListRow {
+                            summary: sample_summary("s-2", "Root two"),
+                            archived: false,
+                        },
+                    ]),
+                    window,
+                    cx,
+                );
+                shell.apply_runtime_event(
+                    RuntimeEvent::SessionLineages(vec![
+                        openbitfun_runtime_ports::AgentSessionLineageSnapshot {
+                            root_session_id: "s-1".into(),
+                            sessions: vec![
+                                lineage_entry("s-1", "Root one", None, None),
+                                lineage_entry("c-1", "Child", Some("s-1"), Some("Explore")),
+                                lineage_entry("g-1", "Grandchild", Some("c-1"), None),
+                            ],
+                        },
+                        openbitfun_runtime_ports::AgentSessionLineageSnapshot {
+                            root_session_id: "s-2".into(),
+                            sessions: vec![lineage_entry("s-2", "Root two", None, None)],
+                        },
+                    ]),
+                    window,
+                    cx,
+                );
+            });
+        });
+
+        let shape = session_tree_shape(&mut window, &shell, &text);
+        assert_eq!(
+            shape,
+            vec![
+                Ok(("s-1".into(), 0, false)),
+                Ok(("c-1".into(), 1, false)),
+                Ok(("s-2".into(), 0, false)),
+            ]
+        );
+    }
+
+    /// R1c: long root lists fold to the collapsed page with a show-more row,
+    /// expand back to every root, and the workspace group folds everything
+    /// but its own row.
+    #[gpui_kit::test]
+    fn session_tree_folds_long_lists(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+        let text = sample_shell_text();
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                let rows = (0..8)
+                    .map(|ix| crate::runtime::SessionListRow {
+                        summary: sample_summary(&format!("s-{ix}"), &format!("Session {ix}")),
+                        archived: false,
+                    })
+                    .collect();
+                shell.apply_runtime_event(RuntimeEvent::Sessions(rows), window, cx);
+            });
+        });
+
+        let shape = session_tree_shape(&mut window, &shell, &text);
+        assert_eq!(shape.iter().filter(|row| row.is_ok()).count(), 5);
+        assert_eq!(shape.last(), Some(&Err((3, false))));
+
+        window.update(|_, cx| {
+            shell.update(cx, |shell, _cx| {
+                shell.sessions_expanded = true;
+            });
+        });
+        let shape = session_tree_shape(&mut window, &shell, &text);
+        assert_eq!(shape.iter().filter(|row| row.is_ok()).count(), 8);
+        assert_eq!(shape.last(), Some(&Err((0, true))));
+
+        window.update(|_, cx| {
+            shell.update(cx, |shell, _cx| {
+                shell.sessions_group_collapsed = true;
+            });
+        });
+        let shape = session_tree_shape(&mut window, &shell, &text);
+        assert!(shape.is_empty());
+    }
+
+    /// R1c: the running dot follows the process-wide live set, so background
+    /// sessions light up without being open.
+    #[gpui_kit::test]
+    fn session_tree_lights_running_rows(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+        let text = sample_shell_text();
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(
+                    RuntimeEvent::Sessions(vec![crate::runtime::SessionListRow {
+                        summary: sample_summary("s-1", "Background"),
+                        archived: false,
+                    }]),
+                    window,
+                    cx,
+                );
+            });
+        });
+        let shape = session_tree_shape(&mut window, &shell, &text);
+        assert_eq!(shape, vec![Ok(("s-1".into(), 0, false))]);
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(
+                    RuntimeEvent::TurnStarted {
+                        session_id: "s-1".into(),
+                        turn_id: "t-1".into(),
+                    },
+                    window,
+                    cx,
+                );
+            });
+        });
+        let shape = session_tree_shape(&mut window, &shell, &text);
+        assert_eq!(shape, vec![Ok(("s-1".into(), 0, true))]);
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(
+                    RuntimeEvent::TurnFinished {
+                        session_id: "s-1".into(),
+                        error: None,
+                    },
+                    window,
+                    cx,
+                );
+            });
+        });
+        let shape = session_tree_shape(&mut window, &shell, &text);
+        assert_eq!(shape, vec![Ok(("s-1".into(), 0, false))]);
+    }
+
     /// The archived settings page renders its bulk delete affordance next to
     /// the rows (T1-4); the destructive step stays behind its confirm dialog,
     /// so the render alone must not delete anything.
@@ -7052,7 +7509,12 @@ mod tests {
                 shell
                     .render_session_entries(&text, cx)
                     .into_iter()
-                    .filter(|entry| matches!(entry, SidebarEntry::Session { .. }))
+                    .filter(|section| {
+                        matches!(
+                            section,
+                            SidebarSection::Item(SidebarEntry::Session { depth: 0, .. })
+                        )
+                    })
                     .count()
             })
         })
