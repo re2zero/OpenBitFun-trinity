@@ -3,7 +3,7 @@ use crate::{i18n, runtime, settings, theme};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use gpui_kit::assets::IconName;
-use gpui_kit::component::resizable::{resizable_panel, v_resizable, ResizableState};
+use gpui_kit::component::resizable::{h_resizable, resizable_panel, v_resizable, ResizableState};
 use gpui_kit::component::{
     bubble::{Bubble, BubbleVariant},
     button::{Button, ButtonCustomVariant, ButtonRounded, ButtonVariant, ButtonVariants},
@@ -56,11 +56,16 @@ const COMPOSER_HEIGHT: f32 = 88.;
 /// Bounds of the docked terminal panel, dragged by the divider above it.
 const MIN_TERMINAL_HEIGHT: f32 = 120.;
 const MAX_TERMINAL_HEIGHT: f32 = 900.;
+/// Bounds of the session's right resource panel (R2c), dragged by the divider
+/// left of it; `DEFAULT` is the pre-drag width.
+const MIN_RESOURCE_PANEL_WIDTH: f32 = 240.;
+const MAX_RESOURCE_PANEL_WIDTH: f32 = 720.;
+const DEFAULT_RESOURCE_PANEL_WIDTH: f32 = 360.;
 
 /// Which surface the main content area shows. The shell's main area is a tab
 /// bar of session tabs and scene tabs (R1a, mirroring the web-ui desktop
 /// `SceneBar`); the tab model lives in [`crate::tabs`].
-use crate::tabs::{SceneId, TabKind, TabsState};
+use crate::tabs::{ResourcePanelKind, SceneId, TabKind, TabsState};
 
 gpui_kit::actions!(openbitfun_gpui_shell, [OpenGlobalSearch]);
 
@@ -1185,6 +1190,17 @@ pub(crate) struct ShellWindow {
     /// Height the terminal dock reopens at (the last dragged height, or the
     /// pane default before any drag).
     terminal_height: Pixels,
+    /// The session tab's right resource panel (R2c): Files or Changes docked
+    /// beside the conversation. A workspace-scoped layout preference, like the
+    /// web's `workspaceResourceState` — it follows the workspace and survives
+    /// session switches; opening it never activates a session.
+    resource_panel: Option<ResourcePanelKind>,
+    /// Split state of the session's right panel (the same shape the terminal
+    /// dock keeps for its height).
+    panel_split: Entity<ResizableState>,
+    /// Width the right panel reopens at (the last dragged width, or the
+    /// default before any drag).
+    panel_width: Pixels,
     /// One-shot automation hooks for the settings page and the changes view,
     /// mirroring `OPENBITFUN_GPUI_TERMINAL_AUTOOPEN`.
     settings_auto_open: bool,
@@ -1414,6 +1430,9 @@ impl ShellWindow {
             trinity_add_project,
             dock,
             terminal_height: TerminalPane::panel_height(),
+            resource_panel: None,
+            panel_split: cx.new(|_| ResizableState::default()),
+            panel_width: px(DEFAULT_RESOURCE_PANEL_WIDTH),
             settings_auto_open: std::env::var_os("OPENBITFUN_GPUI_SETTINGS_AUTOOPEN").is_some(),
             git_auto_open: std::env::var_os("OPENBITFUN_GPUI_GIT_AUTOOPEN").is_some(),
             show_archived: false,
@@ -2867,18 +2886,14 @@ impl ShellWindow {
     /// diff snapshot) or returns to the chat when it is already showing.
     /// The chat's open session rides along: the worktree view's session
     /// isolation toggle addresses it (M19).
-    /// Opens the changes view as a scene tab (creating the panel, which
-    /// fetches the workspace diff snapshot). Idempotent: an open tab just
-    /// activates. Closing the tab drops the panel so the next open refetches.
+    /// Opens the changes resource (R2c): docked into the active session tab's
+    /// right panel, or as a main scene tab when no session tab is active —
+    /// same opening policy as Files. Creating the panel fetches the workspace
+    /// diff snapshot. Idempotent: an open tab or docked panel just stays.
     /// The chat's active session rides along: the worktree view's session
     /// isolation toggle addresses it (M19).
     fn toggle_git_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.git.is_none() {
-            let active_session = self.active_chat().map(|chat| chat.session_id.clone());
-            self.git = Some(cx.new(|cx| GitPanel::new(active_session, window, cx)));
-        }
-        self.tabs.open(TabKind::Scene(SceneId::Git));
-        cx.notify();
+        self.toggle_resource(ResourcePanelKind::Git, window, cx);
     }
 
     /// Closes the top tab at `index`. A closing scene tab drops its page
@@ -2972,12 +2987,116 @@ impl ShellWindow {
         cx.notify();
     }
 
-    /// Files page tab; the page is created on first open (which starts the
-    /// root listing) and kept so its tabs survive closing the scene tab.
-    fn toggle_files_view(&mut self, cx: &mut Context<Self>) {
-        self.files
-            .get_or_insert_with(|| cx.new(crate::files::FilesPage::new));
-        self.tabs.open(TabKind::Scene(SceneId::Files));
+    /// Files resource (R2c): with a session tab active the page docks into
+    /// that tab's right panel; otherwise it opens as a main resource tab —
+    /// the workbench opening policy's "no matching session tab" branch.
+    /// Toggling the docked kind closed hides the panel again.
+    fn toggle_files_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_resource(ResourcePanelKind::Files, window, cx);
+    }
+
+    /// The R2c resource entry point: docked right panel while a session tab
+    /// is active, main scene tab otherwise — the workbench opening policy's
+    /// "no matching session tab" branch. Docking keeps the page entity alive
+    /// across the mount move and evicts the resource's main tab (the two
+    /// forms are mutually exclusive); closing the panel remembers the dragged
+    /// width, like the terminal dock remembers its height.
+    fn toggle_resource(
+        &mut self,
+        kind: ResourcePanelKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(self.tabs.active_kind(), Some(TabKind::Session(_))) {
+            if self.resource_panel == Some(kind) {
+                self.close_resource_panel(cx);
+            } else {
+                self.ensure_resource_page(kind, window, cx);
+                self.dock_resource_panel(kind, cx);
+            }
+        } else {
+            self.ensure_resource_page(kind, window, cx);
+            self.set_resource_compact(kind, false, cx);
+            self.tabs.open(TabKind::Scene(kind.scene()));
+            cx.notify();
+        }
+    }
+
+    /// Creates the page entity behind a resource if it does not exist yet.
+    /// Files lives for the window (its tabs survive view switches); the git
+    /// panel is recreated so the next open refetches the diff snapshot.
+    fn ensure_resource_page(
+        &mut self,
+        kind: ResourcePanelKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match kind {
+            ResourcePanelKind::Files => {
+                self.files
+                    .get_or_insert_with(|| cx.new(crate::files::FilesPage::new));
+            }
+            ResourcePanelKind::Git => {
+                if self.git.is_none() {
+                    let active_session = self.active_chat().map(|chat| chat.session_id.clone());
+                    self.git = Some(cx.new(|cx| GitPanel::new(active_session, window, cx)));
+                }
+            }
+        }
+    }
+
+    /// Docks `kind` into the session tab's right panel and closes its main
+    /// tab without dropping the page entity — one resource, one mount point.
+    /// The panel is the page's compact form (single column; a 360px panel
+    /// cannot fit the two-column main-tab layout).
+    fn dock_resource_panel(&mut self, kind: ResourcePanelKind, cx: &mut Context<Self>) {
+        self.set_resource_compact(kind, true, cx);
+        self.resource_panel = Some(kind);
+        self.tabs.remove(&TabKind::Scene(kind.scene()));
+        cx.notify();
+    }
+
+    /// Flips a page between its docked (compact) and main tab (full) forms.
+    fn set_resource_compact(
+        &mut self,
+        kind: ResourcePanelKind,
+        compact: bool,
+        cx: &mut Context<Self>,
+    ) {
+        match kind {
+            ResourcePanelKind::Files => {
+                if let Some(page) = &self.files {
+                    page.update(cx, |page, cx| page.set_compact(compact, cx));
+                }
+            }
+            ResourcePanelKind::Git => {
+                if let Some(panel) = &self.git {
+                    panel.update(cx, |panel, cx| panel.set_compact(compact, cx));
+                }
+            }
+        }
+    }
+
+    /// Hides the right panel, remembering the dragged width so the next dock
+    /// reopens at it (the terminal dock's height rule).
+    fn close_resource_panel(&mut self, cx: &mut Context<Self>) {
+        if let Some(size) = self.panel_split.read(cx).sizes().get(1) {
+            self.panel_width =
+                (*size).clamp(px(MIN_RESOURCE_PANEL_WIDTH), px(MAX_RESOURCE_PANEL_WIDTH));
+        }
+        self.resource_panel = None;
+        cx.notify();
+    }
+
+    /// Pops the right panel out to its main scene tab (the web right-panel
+    /// tab's pop-out): the panel hides, the tab opens and activates.
+    fn pop_out_resource_panel(&mut self, cx: &mut Context<Self>) {
+        let Some(kind) = self.resource_panel else {
+            return;
+        };
+        self.resource_panel = None;
+        self.set_resource_compact(kind, false, cx);
+        self.tabs.open(TabKind::Scene(kind.scene()));
         cx.notify();
     }
 
@@ -3054,20 +3173,27 @@ impl ShellWindow {
             }
             Q::Terminal => self.toggle_terminal_panel(window, cx),
             Q::Git => self.toggle_git_view(window, cx),
-            Q::Files => self.toggle_files_view(cx),
+            Q::Files => self.toggle_files_view(window, cx),
             Q::Insights => self.toggle_insights_view(cx),
             Q::Settings => self.open_settings_view(cx),
         }
     }
 
-    /// Jumps from a search hit to the files viewer with the file open.
+    /// Jumps from a search hit to the files viewer with the file open — the
+    /// same opening policy as the toggles (R2c): the active session tab's
+    /// right panel, or the main Files tab when no session tab is active.
     pub(crate) fn open_file_in_files_view(&mut self, path: String, cx: &mut Context<Self>) {
         let page = self
             .files
             .get_or_insert_with(|| cx.new(crate::files::FilesPage::new));
         page.update(cx, |page, cx| page.open_path(path, cx));
-        self.tabs.open(TabKind::Scene(SceneId::Files));
-        cx.notify();
+        if matches!(self.tabs.active_kind(), Some(TabKind::Session(_))) {
+            self.dock_resource_panel(ResourcePanelKind::Files, cx);
+        } else {
+            self.set_resource_compact(ResourcePanelKind::Files, false, cx);
+            self.tabs.open(TabKind::Scene(SceneId::Files));
+            cx.notify();
+        }
     }
 
     fn render_status_line(&self, text: &ShellText, cx: &mut Context<Self>) -> gpui_kit::Div {
@@ -5242,7 +5368,7 @@ impl Render for ShellWindow {
                     cx,
                 ))
                 .into_any_element(),
-            Some(TabKind::Session(session_id)) => self.render_chat_column(&session_id, &text, cx),
+            Some(TabKind::Session(session_id)) => self.render_session_main(&session_id, &text, cx),
             // No tab at all: the tabless landing face (R2b, the web
             // WelcomeScene) — brand slogan plus one input that starts a
             // session. The brand-empty panel stays for the "tab open but
@@ -5689,6 +5815,124 @@ impl ShellWindow {
                 )
             })
             .child(self.render_composer(text, cx))
+            .into_any_element()
+    }
+
+    /// The session tab's main area (R2c): the chat column, plus the right
+    /// resource panel when one is docked — a horizontal split whose divider
+    /// drags the panel width. The panel is a workspace-scoped preference, so
+    /// it reappears on every session tab; with it hidden the chat column
+    /// takes the full width. One `children` call: the group *replaces* its
+    /// panel list (upstream 0.7.1), so the toggle between one and two panels
+    /// is a full re-set — the same rule the terminal dock follows.
+    fn render_session_main(
+        &self,
+        session_id: &str,
+        text: &ShellText,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        let chat = self.render_chat_column(session_id, text, cx);
+        let Some(kind) = self.resource_panel else {
+            return chat;
+        };
+        h_resizable("session-panel-split")
+            .with_state(&self.panel_split)
+            .children([
+                resizable_panel().child(chat),
+                resizable_panel()
+                    .size(self.panel_width)
+                    .size_range(px(MIN_RESOURCE_PANEL_WIDTH)..px(MAX_RESOURCE_PANEL_WIDTH))
+                    .child(self.render_resource_panel(kind, text, cx)),
+            ])
+            .into_any_element()
+    }
+
+    /// The docked resource panel: a slim header (title, pop-out, close) over
+    /// the page body. The pages render unchanged — the same entities the main
+    /// scene tabs mount, moved to the docked mount point.
+    fn render_resource_panel(
+        &self,
+        kind: ResourcePanelKind,
+        text: &ShellText,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        let title = match kind {
+            ResourcePanelKind::Files => text.files_title.clone(),
+            ResourcePanelKind::Git => text.git_title.clone(),
+        };
+        // The two pages are different entity types: each arm wraps its own
+        // mount into the same panel-body shape.
+        let body = match kind {
+            ResourcePanelKind::Files => self.files.clone().map(|page| {
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .child(page)
+                    .into_any_element()
+            }),
+            ResourcePanelKind::Git => self.git.clone().map(|panel| {
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .child(panel)
+                    .into_any_element()
+            }),
+        };
+        let head = div()
+            .debug_selector(|| "resource-panel-head".to_string())
+            .h_9()
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_between()
+            .px_2()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(div().px_1().text_sm().font_medium().child(title))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_0p5()
+                    .child(
+                        Button::new("resource-panel-pop-out")
+                            .icon(IconName::ExternalLink)
+                            .small()
+                            .with_variant(ButtonVariant::Ghost)
+                            .tooltip(text.panel_pop_out.clone())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.pop_out_resource_panel(cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("resource-panel-close")
+                            .icon(IconName::X)
+                            .small()
+                            .with_variant(ButtonVariant::Ghost)
+                            .tooltip(text.panel_close.clone())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.close_resource_panel(cx);
+                            })),
+                    ),
+            );
+        div()
+            .debug_selector(|| "resource-panel".to_string())
+            .h_full()
+            .min_w_0()
+            .flex_1()
+            .v_flex()
+            .overflow_hidden()
+            .border_l_1()
+            .border_color(cx.theme().border)
+            .child(head)
+            .child(match body {
+                Some(body) => body,
+                None => div().into_any_element(),
+            })
             .into_any_element()
     }
 
@@ -8334,7 +8578,7 @@ mod tests {
                 );
                 shell.show_archived = true;
                 shell.list_error = Some("stale".into());
-                shell.toggle_files_view(cx);
+                shell.toggle_files_view(window, cx);
             });
             inject_terminal_tab(&shell, "old-ws", window, cx);
         });
@@ -8408,9 +8652,9 @@ mod tests {
         let window = cx.add_empty_window();
         let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
 
-        window.update(|_, cx| {
+        window.update(|window, cx| {
             shell.update(cx, |shell, cx| {
-                shell.toggle_files_view(cx);
+                shell.toggle_files_view(window, cx);
                 assert_eq!(
                     shell.tabs.active_kind(),
                     Some(&TabKind::Scene(tabs::SceneId::Files))
@@ -8418,7 +8662,7 @@ mod tests {
                 assert!(shell.files.is_some());
             });
         });
-        window.update(|_, cx| {
+        window.update(|window, cx| {
             shell.update(cx, |shell, cx| {
                 let page = shell.files.as_ref().unwrap().read(cx);
                 assert!(page.error().is_some(), "no runtime here: degrade loudly");
@@ -8426,7 +8670,7 @@ mod tests {
             shell.update(cx, |shell, cx| {
                 // Tab semantics (R1a): the nav row activates idempotently;
                 // the tab close drops the scene tab, the page entity stays.
-                shell.toggle_files_view(cx);
+                shell.toggle_files_view(window, cx);
                 assert_eq!(
                     shell.tabs.active_kind(),
                     Some(&TabKind::Scene(tabs::SceneId::Files))
@@ -8442,13 +8686,139 @@ mod tests {
                 );
                 assert_eq!(shell.tabs.active_kind(), None);
 
-                shell.toggle_files_view(cx);
+                shell.toggle_files_view(window, cx);
                 assert_eq!(
                     shell.tabs.active_kind(),
                     Some(&TabKind::Scene(tabs::SceneId::Files))
                 );
             });
         });
+    }
+
+    /// R2c opening policy state machine: with a session tab active the
+    /// resource docks into the session's right panel instead of opening a
+    /// scene tab, panel and main tab stay mutually exclusive, and pop-out
+    /// reverses the move without dropping the page entity.
+    #[gpui_kit::test]
+    fn resources_dock_into_the_session_panel_and_pop_out(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(
+                    RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                        session_id: "s-1".into(),
+                        name: "First".into(),
+                        agent_type: "Standard".into(),
+                        model_id: None,
+                        entries: Vec::new(),
+                        busy: false,
+                    }),
+                    window,
+                    cx,
+                );
+                // Session tab active: Files docks, no scene tab appears.
+                shell.toggle_files_view(window, cx);
+                assert_eq!(shell.resource_panel, Some(ResourcePanelKind::Files));
+                assert!(shell
+                    .tabs
+                    .index_of(&TabKind::Scene(tabs::SceneId::Files))
+                    .is_none());
+                // The other kind swaps the docked panel in place.
+                shell.toggle_git_view(window, cx);
+                assert_eq!(shell.resource_panel, Some(ResourcePanelKind::Git));
+                // Toggling the docked kind closed hides the panel.
+                shell.toggle_git_view(window, cx);
+                assert_eq!(shell.resource_panel, None);
+                // Dock again and pop out: the main tab opens and activates.
+                shell.toggle_git_view(window, cx);
+                shell.pop_out_resource_panel(cx);
+                assert_eq!(shell.resource_panel, None);
+                assert_eq!(
+                    shell.tabs.active_kind(),
+                    Some(&TabKind::Scene(tabs::SceneId::Git))
+                );
+                // The two forms are exclusive: docking evicts the main tab
+                // while keeping the page entity alive across the move.
+                shell.dock_resource_panel(ResourcePanelKind::Git, cx);
+                assert!(shell
+                    .tabs
+                    .index_of(&TabKind::Scene(tabs::SceneId::Git))
+                    .is_none());
+                assert!(shell.git.is_some(), "the mount move keeps the entity");
+            });
+        });
+    }
+
+    /// The docked panel (R2c) lays out to the right of the sidebar over the
+    /// chat column with its head chrome, and pop-out removes it from the
+    /// session view.
+    #[gpui_kit::test]
+    fn resource_panel_lays_out_right_of_the_chat_column(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(
+                    RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                        session_id: "s-1".into(),
+                        name: "First".into(),
+                        agent_type: "Standard".into(),
+                        model_id: None,
+                        entries: Vec::new(),
+                        busy: false,
+                    }),
+                    window,
+                    cx,
+                );
+                shell.toggle_files_view(window, cx);
+            });
+        });
+        let view = shell.clone();
+        window.draw(
+            point(px(0.), px(0.)),
+            size(px(1400.), px(900.)),
+            move |_, _| view.into_any_element(),
+        );
+        window.run_until_parked();
+        let sidebar = window
+            .debug_bounds("shell-body-sidebar")
+            .expect("session view lays out");
+        let panel = window
+            .debug_bounds("resource-panel")
+            .expect("docked panel lays out with the session");
+        assert!(
+            panel.origin.x > sidebar.origin.x + sidebar.size.width,
+            "panel sits right of the sidebar: panel {:?} sidebar {:?}",
+            panel,
+            sidebar
+        );
+        let head = window
+            .debug_bounds("resource-panel-head")
+            .expect("panel head lays out");
+        assert!(head.size.height > px(20.), "head height: {:?}", head.size);
+        assert!(
+            panel.size.width >= px(MIN_RESOURCE_PANEL_WIDTH),
+            "panel width: {:?}",
+            panel.size
+        );
+
+        window.update(|_, cx| {
+            shell.update(cx, |shell, cx| shell.pop_out_resource_panel(cx));
+        });
+        window.draw(
+            point(px(0.), px(0.)),
+            size(px(1400.), px(900.)),
+            move |_, _| shell.into_any_element(),
+        );
+        window.run_until_parked();
+        assert!(window.debug_bounds("resource-panel").is_none());
     }
 
     /// A process-lifetime tokio runtime for pane construction in headless

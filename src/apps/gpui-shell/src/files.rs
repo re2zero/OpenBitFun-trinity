@@ -387,9 +387,22 @@ pub(crate) struct FilesPage {
     /// The path an open request is in flight for, if any.
     opening: Option<String>,
     code_list: ListState,
+    /// Docked right-panel form (R2c): the tree takes the whole panel and the
+    /// viewer column is dropped — a 360px panel cannot fit the fixed 300px
+    /// tree plus a readable preview. The main tab keeps the two-column form.
+    compact: bool,
 }
 
 impl FilesPage {
+    /// Switches between the main tab (two columns) and the docked panel
+    /// (tree only) mount forms; called by the shell on the mount move.
+    pub(crate) fn set_compact(&mut self, compact: bool, cx: &mut Context<Self>) {
+        if self.compact != compact {
+            self.compact = compact;
+            cx.notify();
+        }
+    }
+
     pub(crate) fn new(cx: &mut Context<Self>) -> Self {
         let mut page = Self {
             root: String::new(),
@@ -406,6 +419,7 @@ impl FilesPage {
             active: None,
             opening: None,
             code_list: ListState::new(0, ListAlignment::Top, px(CODE_ROW_OVERSCAN)),
+            compact: false,
         };
         page.load_root(cx);
         page
@@ -743,14 +757,16 @@ impl Render for FilesPage {
 
         let this = cx.entity();
         let tree = div()
-            .w(px(TREE_COLUMN_WIDTH))
+            .when(self.compact, |this| this.flex_1().min_w_0())
+            .when(!self.compact, |this| {
+                this.w(px(TREE_COLUMN_WIDTH)).flex_shrink_0()
+            })
             .h_full()
-            .flex_shrink_0()
             .flex()
             .flex_col()
-            .border_r_1()
-            .border_color(cx.theme().border)
-            .pr_1()
+            .when(!self.compact, |this| {
+                this.border_r_1().border_color(cx.theme().border).pr_1()
+            })
             .child(self.render_tree(this.clone(), &text, cx));
         let viewer = div()
             .flex_1()
@@ -768,7 +784,7 @@ impl Render for FilesPage {
                 .flex()
                 .flex_row()
                 .child(tree)
-                .child(viewer),
+                .when(!self.compact, |this| this.child(viewer)),
         )
     }
 }
@@ -1305,6 +1321,7 @@ mod tests {
             active: None,
             opening: None,
             code_list: ListState::new(0, ListAlignment::Top, px(CODE_ROW_OVERSCAN)),
+            compact: false,
         }
     }
 }

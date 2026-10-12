@@ -20,11 +20,14 @@ gpui_kit::assets::icon_assets!(
     // are the quick-actions menu glyphs (T2-10); Lucide renamed `commit` to
     // `git-commit-horizontal`. Laptop/ShieldAlert are the composer strip's
     // local-execution fact and full-access permission ramp (R2a).
+    // ListTodo/Upload are the git header's stage-all and push buttons; the
+    // docked changes panel (R2c) was the first smoke to render them.
     [
         Activity,
         Archive,
         BrainCircuit,
         ChartColumn,
+        ListTodo,
         Check,
         Circle,
         CircleDot,
@@ -40,6 +43,7 @@ gpui_kit::assets::icon_assets!(
         Sparkles,
         Square,
         TextWrap,
+        Upload,
         Webhook,
         X,
         Zap

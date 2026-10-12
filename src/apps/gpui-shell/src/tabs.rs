@@ -31,17 +31,18 @@ pub(crate) struct SceneDef {
     pub id: SceneId,
     pub icon: IconName,
     /// Whether the scene owns a sidebar nav row. R1b converged the nav to the
-    /// desktop top-scene shape (assistant / trinity / task board), so only
-    /// workbench scenes that still lack their R2c home keep rows out — they
-    /// open through the global search overlay's quick actions instead, the
-    /// same programmatic path the desktop uses. The table rows outlive nav
-    /// membership.
+    /// desktop top-scene shape (assistant / trinity / task board); Files and
+    /// Git moved to their R2c home (the session's right resource panel,
+    /// popping out to a main tab when no session tab is active). Insights
+    /// still lacks its desktop home and opens through the global search
+    /// overlay's quick actions, the same programmatic path the desktop uses.
+    /// The table rows outlive nav membership.
     pub in_nav: bool,
 }
 
 /// Built-in scenes. Settings is reachable from the footer gear and the scene
-/// tab it opens, not from a nav row; Files/Git/Insights move to their desktop
-/// homes in R2c and until then open via the search overlay's quick actions.
+/// tab it opens, not from a nav row; Insights keeps its main-tab form until
+/// its desktop home lands (see `in_nav`).
 pub(crate) fn builtin_scenes() -> Vec<SceneDef> {
     use SceneId::*;
     vec![
@@ -84,6 +85,25 @@ pub(crate) fn builtin_scenes() -> Vec<SceneDef> {
 pub(crate) enum TabKind {
     Session(String),
     Scene(SceneId),
+}
+
+/// The resources that can dock into the session tab's right panel (R2c) —
+/// the same pages that also open as main scene tabs. One resource is visible
+/// in exactly one of the two forms at a time (`TabsState::remove` migrates
+/// the mount without dropping the page entity).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResourcePanelKind {
+    Files,
+    Git,
+}
+
+impl ResourcePanelKind {
+    pub(crate) fn scene(self) -> SceneId {
+        match self {
+            ResourcePanelKind::Files => SceneId::Files,
+            ResourcePanelKind::Git => SceneId::Git,
+        }
+    }
 }
 
 /// The window's open tabs plus the active index. Pure state, so the
@@ -131,6 +151,17 @@ impl TabsState {
     pub(crate) fn activate(&mut self, index: usize) {
         if index < self.tabs.len() {
             self.active = Some(index);
+        }
+    }
+
+    /// Programmatically removes the tab of this kind while keeping any page
+    /// entity alive — the R2c dock/pop-out moves migrate a resource's mount
+    /// point, they don't drop it (a user close still drops, see
+    /// `close_top_tab`). Returns whether a tab was removed.
+    pub(crate) fn remove(&mut self, kind: &TabKind) -> bool {
+        match self.index_of(kind) {
+            Some(index) => self.close(index).is_some(),
+            None => false,
         }
     }
 
@@ -236,6 +267,34 @@ mod tests {
         tabs.open(TabKind::Scene(SceneId::Trinity));
         assert_eq!(tabs.kinds().len(), 2);
         assert_eq!(tabs.active_kind(), Some(&TabKind::Scene(SceneId::Trinity)));
+    }
+
+    #[test]
+    fn remove_docks_a_scene_tab_without_touching_the_rest() {
+        let mut tabs = TabsState::default();
+        tabs.open(session("a"));
+        tabs.open(TabKind::Scene(SceneId::Files));
+        tabs.open(TabKind::Scene(SceneId::Git));
+        // The programmatic remove (R2c dock move) takes just the one tab;
+        // activation lands on the right neighbor at the same position.
+        assert!(tabs.remove(&TabKind::Scene(SceneId::Git)));
+        assert_eq!(
+            tabs.kinds(),
+            &[session("a"), TabKind::Scene(SceneId::Files)]
+        );
+        assert_eq!(tabs.active_kind(), Some(&TabKind::Scene(SceneId::Files)));
+        // Removing a kind with no tab is a no-op.
+        assert!(!tabs.remove(&TabKind::Scene(SceneId::Git)));
+        assert_eq!(tabs.kinds().len(), 2);
+    }
+
+    #[test]
+    fn removing_the_active_tab_moves_activation_like_a_close() {
+        let mut tabs = TabsState::default();
+        tabs.open(TabKind::Scene(SceneId::Insights));
+        tabs.open(session("a"));
+        assert!(tabs.remove(&session("a")));
+        assert_eq!(tabs.active_kind(), Some(&TabKind::Scene(SceneId::Insights)));
     }
 
     #[test]

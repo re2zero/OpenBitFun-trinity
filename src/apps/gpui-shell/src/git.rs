@@ -322,6 +322,21 @@ pub(crate) struct GitPanel {
     /// The active workspace is remote: worktree management and the local
     /// snapshot runtime do not reach it, so both views say so explicitly.
     remote_workspace: bool,
+    /// Docked right-panel form (R2c): the file list takes the whole panel and
+    /// the diff column is dropped — a 360px panel cannot fit the fixed 300px
+    /// file column plus a readable diff. The main tab keeps both columns.
+    compact: bool,
+}
+
+impl GitPanel {
+    /// Switches between the main tab (files + diff) and the docked panel
+    /// (files only) mount forms; called by the shell on the mount move.
+    pub(crate) fn set_compact(&mut self, compact: bool, cx: &mut Context<Self>) {
+        if self.compact != compact {
+            self.compact = compact;
+            cx.notify();
+        }
+    }
 }
 
 impl GitPanel {
@@ -373,6 +388,7 @@ impl GitPanel {
             snapshot_list: ListState::new(0, ListAlignment::Top, px(56.)),
             active_session,
             remote_workspace,
+            compact: false,
         };
         panel.refresh(cx);
         panel
@@ -1128,6 +1144,10 @@ fn render_header(panel: &GitPanel, text: &ShellText, cx: &mut Context<GitPanel>)
             div()
                 .v_flex()
                 .gap_0p5()
+                // Take the shrinkable share: without this the view-switch
+                // buttons squeeze the titles into a one-glyph column in the
+                // docked panel (R2c).
+                .flex_1()
                 .min_w_0()
                 .child(
                     div()
@@ -1140,6 +1160,7 @@ fn render_header(panel: &GitPanel, text: &ShellText, cx: &mut Context<GitPanel>)
                     div()
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
+                        .truncate()
                         .child(summary),
                 ),
         )
@@ -1148,6 +1169,7 @@ fn render_header(panel: &GitPanel, text: &ShellText, cx: &mut Context<GitPanel>)
                 .flex()
                 .items_center()
                 .gap_1()
+                .flex_shrink_0()
                 .when_some(panel.overview.as_ref(), |this, overview| {
                     let branch = overview.current_branch.clone();
                     this.child(
@@ -1713,12 +1735,16 @@ impl Render for GitPanel {
                 .min_w_0()
                 .child(
                     div()
-                        .w(px(FILE_COLUMN_WIDTH))
+                        .when(self.compact, |this| this.flex_1().min_w_0())
+                        .when(!self.compact, |this| {
+                            this.w(px(FILE_COLUMN_WIDTH)).flex_shrink_0()
+                        })
                         .h_full()
                         .min_h_0()
                         .v_flex()
-                        .border_r_1()
-                        .border_color(cx.theme().border)
+                        .when(!self.compact, |this| {
+                            this.border_r_1().border_color(cx.theme().border)
+                        })
                         .child(file_list.flex_1().min_h_0())
                         .child(render_commit_box(self, &text, cx))
                         .when(truncated, |this| {
@@ -1734,15 +1760,20 @@ impl Render for GitPanel {
                             )
                         }),
                 )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .min_h_0()
-                        .v_flex()
-                        .when_some(diff_header, |this, header| this.child(header))
-                        .child(files_body),
-                )
+                // The diff column is a main-tab luxury: the docked panel
+                // shows the file list (selection still works) and the diff
+                // comes back when the panel pops out to a tab.
+                .when(!self.compact, |this| {
+                    this.child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .v_flex()
+                            .when_some(diff_header, |this, header| this.child(header))
+                            .child(files_body),
+                    )
+                })
                 .into_any_element(),
             GitView::History => render_history(self, &text, cx),
             GitView::Worktrees => render_worktrees(self, &text, cx),
