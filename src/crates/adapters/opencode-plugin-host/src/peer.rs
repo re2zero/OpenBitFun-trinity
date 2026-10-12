@@ -1,7 +1,7 @@
 use crate::peer_runtime::{run_reader, run_writer};
 use crate::{
     PluginGenerationLease, PluginHostCapabilities, PluginHostError, PluginInstanceOpenRequest,
-    PluginPreparationSummary, PluginPrepareRequest, GENERATION_FENCING_V1,
+    PluginPreparationSummary, PluginPrepareRequest, GENERATION_FENCING_V1, UI_CONTRIBUTIONS_V1,
 };
 use openbitfun_runtime_ports::{
     HookFunctionAfterRequest, HookFunctionAfterResult, HookFunctionAvailability,
@@ -865,6 +865,79 @@ impl PluginHostClient {
             })
     }
 
+    /// Re-reads the UI contribution registrations the host loaded at instance
+    /// open (R7). The documents are passed through unvalidated; the core
+    /// projection is the single validation funnel.
+    pub async fn describe_ui(
+        &self,
+        lease: &PluginGenerationLease,
+        deadline: Duration,
+    ) -> Result<Vec<PluginUiSection>, PluginHostError> {
+        self.require_ui_contributions()?;
+        self.require_generation_fencing()?;
+        let result = self
+            .request(
+                "host.ui.describe",
+                json!({
+                    "instanceID": lease.instance_id,
+                    "generationKey": lease.generation_key,
+                    "revision": lease.revision,
+                }),
+                deadline,
+            )
+            .await?;
+        validate_fenced_response(&result, lease, None)?;
+        parse_ui_sections(&result)
+    }
+
+    /// Routes one UI interaction to the named plugin's `ui.event` handler
+    /// (R7). `payload` is the wire shape (`{"kind":"text"|"number"|"boolean",
+    /// "value":...}`); `None` yields `"payload` absent. `Ok(None)` means the
+    /// tree is unchanged; `Ok(Some)` carries the replacement tree document.
+    pub async fn dispatch_ui_event(
+        &self,
+        lease: &PluginGenerationLease,
+        plugin_id: Option<&str>,
+        plugin_spec: &str,
+        scene_id: &str,
+        action: &str,
+        payload: Option<&Value>,
+        deadline: Duration,
+    ) -> Result<Option<Value>, PluginHostError> {
+        self.require_ui_contributions()?;
+        self.require_generation_fencing()?;
+        let mut plugin = serde_json::Map::new();
+        if let Some(id) = plugin_id {
+            plugin.insert("id".to_string(), json!(id));
+        }
+        plugin.insert("spec".to_string(), json!(plugin_spec));
+        let mut params = serde_json::Map::new();
+        params.insert("instanceID".to_string(), json!(lease.instance_id));
+        params.insert("generationKey".to_string(), json!(lease.generation_key));
+        params.insert("revision".to_string(), json!(lease.revision));
+        params.insert("plugin".to_string(), Value::Object(plugin));
+        params.insert("sceneID".to_string(), json!(scene_id));
+        params.insert("action".to_string(), json!(action));
+        if let Some(payload) = payload {
+            params.insert("payload".to_string(), payload.clone());
+        }
+        let result = self
+            .request("host.ui.event", Value::Object(params), deadline)
+            .await?;
+        validate_fenced_response(&result, lease, None)?;
+        Ok(result.get("tree").filter(|tree| !tree.is_null()).cloned())
+    }
+
+    fn require_ui_contributions(&self) -> Result<(), PluginHostError> {
+        if self.capabilities().supports(UI_CONTRIBUTIONS_V1) {
+            Ok(())
+        } else {
+            Err(PluginHostError::Protocol(
+                "plugin host did not negotiate ui-contributions-v1".to_string(),
+            ))
+        }
+    }
+
     pub async fn call_hook(
         &self,
         lease: &PluginGenerationLease,
@@ -1133,6 +1206,61 @@ fn validate_fenced_response(
     Err(PluginHostError::Protocol(
         "plugin host response generation lease does not match the request".to_string(),
     ))
+}
+
+/// One plugin's declarative UI section as loaded by the host (R7): the parsed
+/// `ui/contributions.json` body plus the raw scene entry file bodies. The host
+/// is a bounded file reader here; schema and limit verdicts belong to the core
+/// projection.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PluginUiSection {
+    pub plugin_id: Option<String>,
+    pub plugin_spec: String,
+    pub contributions: Value,
+    pub files: BTreeMap<String, String>,
+}
+
+fn parse_ui_sections(result: &Value) -> Result<Vec<PluginUiSection>, PluginHostError> {
+    let sections = result.get("ui").and_then(Value::as_array).ok_or_else(|| {
+        PluginHostError::Protocol("host.ui.describe returned no ui array".to_string())
+    })?;
+    sections
+        .iter()
+        .map(|section| {
+            let plugin = section.get("plugin").ok_or_else(|| {
+                PluginHostError::Protocol("host.ui.describe section is missing plugin".to_string())
+            })?;
+            Ok(PluginUiSection {
+                plugin_id: plugin.get("id").and_then(Value::as_str).map(str::to_string),
+                plugin_spec: plugin
+                    .get("spec")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .ok_or_else(|| {
+                        PluginHostError::Protocol(
+                            "host.ui.describe section plugin is missing spec".to_string(),
+                        )
+                    })?,
+                contributions: section.get("contributions").cloned().ok_or_else(|| {
+                    PluginHostError::Protocol(
+                        "host.ui.describe section is missing contributions".to_string(),
+                    )
+                })?,
+                files: section
+                    .get("files")
+                    .and_then(Value::as_object)
+                    .map(|files| {
+                        files
+                            .iter()
+                            .filter_map(|(path, body)| {
+                                body.as_str().map(|body| (path.clone(), body.to_string()))
+                            })
+                            .collect::<BTreeMap<_, _>>()
+                    })
+                    .unwrap_or_default(),
+            })
+        })
+        .collect()
 }
 
 pub struct JsonRpcPeer {

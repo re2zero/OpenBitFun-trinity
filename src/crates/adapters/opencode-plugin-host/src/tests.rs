@@ -51,7 +51,7 @@ async fn handshake_accepts_matching_token_and_returns_cache_directory() {
                     "protocolVersion": 1,
                     "opencodeVersion": "1.17.18",
                     "maxFrameBytes": DEFAULT_MAX_FRAME_BYTES,
-                    "capabilities": ["config-contributors-v1", "config-contributions-v2", "generation-fencing-v1", "unknown-v1"]
+                    "capabilities": ["config-contributors-v1", "config-contributions-v2", "generation-fencing-v1", "ui-contributions-v1", "unknown-v1"]
                 }
             }),
             DEFAULT_MAX_FRAME_BYTES,
@@ -76,6 +76,7 @@ async fn handshake_accepts_matching_token_and_returns_cache_directory() {
     assert!(negotiated.capabilities.supports("config-contributors-v1"));
     assert!(negotiated.capabilities.supports("config-contributions-v2"));
     assert!(negotiated.capabilities.supports("generation-fencing-v1"));
+    assert!(negotiated.capabilities.supports("ui-contributions-v1"));
     assert!(!negotiated.capabilities.supports("unknown-v1"));
     assert_eq!(
         response["result"]["cacheDirectory"],

@@ -44,7 +44,7 @@ The host sends:
     "protocolVersion": 1,
     "opencodeVersion": "1.17.18",
     "maxFrameBytes": 16777216,
-    "capabilities": ["config-contributors-v1", "config-contributions-v2", "generation-fencing-v1"]
+    "capabilities": ["config-contributors-v1", "config-contributions-v2", "generation-fencing-v1", "ui-contributions-v1"]
   }
 }
 ```
@@ -59,7 +59,7 @@ Rust returns:
     "protocolVersion": 1,
     "maxFrameBytes": 16777216,
     "cacheDirectory": "/absolute/path/to/plugin-cache",
-    "capabilities": ["config-contributors-v1", "config-contributions-v2", "generation-fencing-v1"]
+    "capabilities": ["config-contributors-v1", "config-contributions-v2", "generation-fencing-v1", "ui-contributions-v1"]
   }
 }
 ```
@@ -215,15 +215,16 @@ Result:
     plugin?: Record<string, JsonValue>
     hasModels: boolean
   }>
-  workspaces: Array<{
-    registrationID: string
-    type: string
-    plugin?: Record<string, JsonValue>
-    name: string
-    description: string
-  }>
-  gatewayURL: string
-}
+    workspaces: Array<{
+      registrationID: string
+      type: string
+      plugin?: Record<string, JsonValue>
+      name: string
+      description: string
+    }>
+    ui: UiRegistration[]
+    gatewayURL: string
+  }
 ```
 
 The gateway is listening before plugin entrypoints execute, so SDK calls during initialization work. Config hooks run sequentially before the result is sent. Failed plugins are omitted and represented in `diagnostics`; successful registrations remain available.
@@ -251,6 +252,18 @@ The host binds the requested `instanceID + generationKey + revision` only after 
 - `tool.definition`
 
 `config`, `event`, `dispose`, `tool`, `auth`, and `provider` are lifecycle hooks or registrations, not operational names.
+
+The `ui` array carries one entry per activated plugin whose package contains a declarative UI section:
+
+```ts
+type UiRegistration = {
+  plugin: Record<string, JsonValue> // PluginMeta: id?, spec, entry, index
+  contributions: JsonValue // parsed ui/contributions.json body
+  files: Record<string, string> // scene entry path -> raw file body
+}
+```
+
+The host reads `ui/contributions.json` and the scene `entry` files it references from the prepared package directory. Entries must be relative `ui/` paths without `..`, `\`, or NUL, and each file is capped at 256 KiB with at most 8 scenes read. A missing `ui/contributions.json` means the plugin has no UI contributions; an unreadable or oversized section is skipped with a published diagnostic while other plugins are unaffected. The host does not deep-validate the documents — the Rust projection is the single validation funnel. `ui` stays empty when `ui-contributions-v1` was not negotiated (the host also publishes one explicit degradation diagnostic), and after instance close both the registrations and the retained `ui.event` handlers are dropped.
 
 #### `host.instance.close`
 
@@ -452,6 +465,13 @@ Workspace adapters are invoked through their opaque `registrationID`; the open r
 - `host.workspace.target`: params `{ instanceID, registrationID, config }`; result is `{ target }`, where `target` is `{ type: "local", directory }` or `{ type: "remote", url, headers? }`.
 
 `config` and `from` use the public `WorkspaceInfo` JSON shape. `env` is a record of strings or null; null reconstructs `undefined` for the plugin. Remote `URL` and `HeadersInit` values are normalized to a URL string and header-pair list.
+
+### Plugin UI contributions
+
+UI contribution methods require the `ui-contributions-v1` capability and follow the generation-fencing rules: the instance must be open and the `generationKey`/`revision` pair must match, or the call fails with `generation_mismatch`. Both results echo the instance's `instanceID`, `generationKey`, and `revision` lease.
+
+- `host.ui.describe`: params `{ instanceID, generationKey?, revision? }`; result `{ instanceID?, generationKey?, revision?, ui: UiRegistration[] }`. Re-reads the registration table loaded at instance open; it does not re-read package files.
+- `host.ui.event`: params `{ instanceID, generationKey?, revision?, plugin: { id?, spec }, sceneID, action, payload? }`; result `{ instanceID?, generationKey?, revision?, tree: JsonValue | null }`. `payload` is `{ kind: "text", value: string }`, `{ kind: "number", value: number }`, or `{ kind: "boolean", value: boolean }`. The host routes the event to the named plugin's `ui.event` handler (matched by `id ?? spec`, last registration per plugin wins). The handler returns a full replacement tree document (`{ schemaVersion, root }`) or `undefined`; `undefined` yields `tree: null` (unchanged). A plugin without a `ui.event` handler answers `tree: null` — declarative scenes stay viewable with an inert event loop. Handler failures are `plugin_error` responses; the tree verdict (schema, limits) belongs to the Rust projection.
 
 ### Host-owned streams
 

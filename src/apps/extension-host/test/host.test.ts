@@ -729,6 +729,219 @@ describe("ExtensionHost instance isolation", () => {
   })
 })
 
+describe("ExtensionHost plugin UI contributions", () => {
+  async function writeUiBoardPlugin(root: string, name: string, pluginID: string, withHandler: boolean) {
+    const pluginDir = path.join(root, name)
+    await mkdir(path.join(pluginDir, "ui", "scenes"), { recursive: true })
+    const handler = withHandler
+      ? `ui: { event: async (input) => input.action === "keep" ? undefined : { schemaVersion: 1, root: { type: "text", props: { text: [input.sceneID, input.action, String(input.payload?.value ?? "")].join(":") } } } },`
+      : ""
+    await Bun.write(
+      path.join(pluginDir, `${name}.ts`),
+      `export default { id: "${pluginID}", server: async () => ({ ${handler} }) }\n`,
+    )
+    await Bun.write(
+      path.join(pluginDir, "ui", "contributions.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        locales: {},
+        scenes: [
+          { id: "board", title: { "en-US": "Board" }, icon: "layout-dashboard", slot: { kind: "tab" }, entry: "ui/scenes/board.json" },
+        ],
+      }),
+    )
+    await Bun.write(
+      path.join(pluginDir, "ui", "scenes", "board.json"),
+      JSON.stringify({ schemaVersion: 1, root: { type: "text", props: { text: "hello" } } }),
+    )
+    return {
+      entry: path.join(pluginDir, `${name}.ts`),
+      dir: pluginDir,
+      id: pluginID,
+    }
+  }
+
+  test("loads UI sections at open, re-describes them, and routes events", async () => {
+    const harness = await createHarness()
+    const directory = await projectDirectory(harness.root, "ui-board")
+    const board = await writeUiBoardPlugin(harness.root, "ui-board", "fixture.ui-board", true)
+    const opened = await harness.host.open({
+      instanceID: "ui",
+      generationKey: "gen-ui",
+      revision: "rev-ui",
+      project: {},
+      directory,
+      worktree: directory,
+      config: {},
+      plugins: [{ spec: board.entry }],
+    })
+    expect(opened.ui).toHaveLength(1)
+    expect(opened.ui[0]?.plugin.id).toBe("fixture.ui-board")
+    expect(opened.ui[0]?.contributions).toMatchObject({ schemaVersion: 1 })
+    expect(opened.ui[0]?.files["ui/scenes/board.json"]).toContain("hello")
+
+    const described = await harness.host.describeUi({
+      instanceID: "ui",
+      generationKey: "gen-ui",
+      revision: "rev-ui",
+    })
+    expect(described.ui).toEqual(opened.ui)
+
+    const replaced = await harness.host.dispatchUiEvent({
+      instanceID: "ui",
+      generationKey: "gen-ui",
+      revision: "rev-ui",
+      plugin: { id: board.id, spec: board.entry },
+      sceneID: "board",
+      action: "echo",
+      payload: { kind: "text", value: "hi" },
+    })
+    expect(replaced.tree).toEqual({
+      schemaVersion: 1,
+      root: { type: "text", props: { text: "board:echo:hi" } },
+    })
+
+    const unchanged = await harness.host.dispatchUiEvent({
+      instanceID: "ui",
+      generationKey: "gen-ui",
+      revision: "rev-ui",
+      plugin: { id: board.id, spec: board.entry },
+      sceneID: "board",
+      action: "keep",
+    })
+    expect(unchanged.tree).toBeNull()
+  })
+
+  test("answers tree null for a manifest-only plugin without a ui.event handler", async () => {
+    const harness = await createHarness()
+    const directory = await projectDirectory(harness.root, "ui-static")
+    const plugin = await writeUiBoardPlugin(harness.root, "ui-static", "fixture.ui-static", false)
+    const opened = await harness.host.open({
+      instanceID: "ui-static",
+      generationKey: "gen-ui",
+      revision: "rev-ui",
+      project: {},
+      directory,
+      worktree: directory,
+      config: {},
+      plugins: [{ spec: plugin.entry }],
+    })
+    expect(opened.ui).toHaveLength(1)
+    const result = await harness.host.dispatchUiEvent({
+      instanceID: "ui-static",
+      generationKey: "gen-ui",
+      revision: "rev-ui",
+      plugin: { id: plugin.id, spec: plugin.entry },
+      sceneID: "board",
+      action: "echo",
+    })
+    expect(result.tree).toBeNull()
+  })
+
+  test("stays inactive with an explicit degradation diagnostic when the capability is missing", async () => {
+    const harness = await createHarness(undefined, new Set(["generation-fencing-v1"]))
+    const directory = await projectDirectory(harness.root, "ui-degraded")
+    const board = await writeUiBoardPlugin(harness.root, "ui-degraded", "fixture.ui-degraded", true)
+    const opened = await harness.host.open({
+      instanceID: "ui-degraded",
+      project: {},
+      directory,
+      worktree: directory,
+      config: {},
+      plugins: [{ spec: board.entry }],
+    })
+    expect(opened.ui).toEqual([])
+    const degradation = harness.rpc.notifications.filter(
+      (notification) =>
+        notification.method === "backend.diagnostic.publish" &&
+        (notification.params as { diagnostic?: { code?: string } }).diagnostic?.code === "ui",
+    )
+    expect(degradation).toHaveLength(1)
+    const severity = (
+      degradation[0]?.params as { diagnostic?: { severity?: string } } | undefined
+    )?.diagnostic?.severity
+    expect(severity).toBe("warning")
+  })
+
+  test("skips a plugin whose scene entry escapes the package with a diagnostic", async () => {
+    const harness = await createHarness()
+    const directory = await projectDirectory(harness.root, "ui-escape")
+    const pluginDir = path.join(harness.root, "ui-escape-plugin")
+    await mkdir(path.join(pluginDir, "ui"), { recursive: true })
+    await Bun.write(
+      path.join(pluginDir, "ui-escape.ts"),
+      'export default { id: "fixture.ui-escape", server: async () => ({}) }\n',
+    )
+    await Bun.write(
+      path.join(pluginDir, "ui", "contributions.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        scenes: [
+          { id: "board", title: { "en-US": "Board" }, icon: "square", slot: { kind: "tab" }, entry: "../secret.json" },
+        ],
+      }),
+    )
+    const opened = await harness.host.open({
+      instanceID: "ui-escape",
+      project: {},
+      directory,
+      worktree: directory,
+      config: {},
+      plugins: [{ spec: path.join(pluginDir, "ui-escape.ts") }],
+    })
+    expect(opened.ui).toEqual([])
+    const rejections = harness.rpc.notifications.filter(
+      (notification) =>
+        notification.method === "backend.diagnostic.publish" &&
+        (notification.params as { diagnostic?: { code?: string; severity?: string } }).diagnostic?.code === "ui",
+    )
+    expect(rejections).toHaveLength(1)
+    const severity = (
+      rejections[0]?.params as { diagnostic?: { severity?: string } } | undefined
+    )?.diagnostic?.severity
+    expect(severity).toBe("error")
+  })
+
+  test("fences host.ui methods by generation lease and instance lifecycle", async () => {
+    const harness = await createHarness()
+    const directory = await projectDirectory(harness.root, "ui-fence")
+    const board = await writeUiBoardPlugin(harness.root, "ui-fence", "fixture.ui-fence", true)
+    await harness.host.open({
+      instanceID: "ui-fence",
+      generationKey: "gen-ui",
+      revision: "rev-ui",
+      project: {},
+      directory,
+      worktree: directory,
+      config: {},
+      plugins: [{ spec: board.entry }],
+    })
+    try {
+      harness.host.describeUi({ instanceID: "ui-fence", generationKey: "gen-other", revision: "rev-ui" })
+      throw new Error("describeUi should have rejected the stale generation lease")
+    } catch (error) {
+      expect((error as { data?: { kind?: string } }).data?.kind).toBe("generation_mismatch")
+    }
+    await expect(
+      harness.host.dispatchUiEvent({
+        instanceID: "ui-fence",
+        generationKey: "gen-ui",
+        revision: "rev-ui",
+        plugin: { id: board.id, spec: board.entry },
+        sceneID: "board",
+        action: "echo",
+      }),
+    ).resolves.toMatchObject({ tree: { schemaVersion: 1 } })
+    await harness.host.close({ instanceID: "ui-fence" })
+    try {
+      harness.host.describeUi({ instanceID: "ui-fence" })
+      throw new Error("describeUi should have rejected the closed instance")
+    } catch (error) {
+      expect((error as { data?: { kind?: string } }).data?.kind).toBe("missing_handle")
+    }
+  })
+})
+
 class FakeRpc implements RpcConnection {
   readonly requests: Array<{ method: string; params: Record<string, unknown> }> = []
   readonly notifications: Array<{ method: string; params: unknown }> = []
@@ -799,6 +1012,7 @@ class FakeStreams implements StreamBridge {
 
 async function createHarness(
   prepare: (input: LoadPluginsInput) => Promise<PreparePluginsResult> = preparePlugins,
+  capabilities: ReadonlySet<string> = new Set(["generation-fencing-v1", "ui-contributions-v1"]),
 ) {
   const root = await temporaryDirectory()
   const rpc = new FakeRpc()
@@ -807,6 +1021,7 @@ async function createHarness(
     rpc,
     streams,
     cacheDirectory: path.join(root, "cache"),
+    capabilities,
     gatewayFactory: createGateway,
     preparePlugins: prepare,
     shell: Bun.$,
