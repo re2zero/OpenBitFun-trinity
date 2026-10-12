@@ -538,6 +538,11 @@ pub(crate) struct ShellText {
     pub trinity_need_relatedness: String,
     pub trinity_need_certainty: String,
     pub trinity_need_growth: String,
+    /// R7b plugin scene diagnostics: retraction face, rejection banner, and
+    /// the round-trip timeout banner.
+    pub plugin_ui_removed: String,
+    pub plugin_ui_rejected: String,
+    pub plugin_ui_timeout: String,
 }
 
 impl Global for ShellText {}
@@ -1387,6 +1392,9 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         trinity_need_relatedness: "Relatedness".to_string(),
         trinity_need_certainty: "Certainty".to_string(),
         trinity_need_growth: "Growth".to_string(),
+        plugin_ui_removed: "Contribution removed".to_string(),
+        plugin_ui_rejected: "Plugin UI update rejected".to_string(),
+        plugin_ui_timeout: "Plugin interaction timed out".to_string(),
     }
 }
 
@@ -1990,6 +1998,9 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         trinity_need_relatedness: service.t("gpui-shell-trinity-need-relatedness").await,
         trinity_need_certainty: service.t("gpui-shell-trinity-need-certainty").await,
         trinity_need_growth: service.t("gpui-shell-trinity-need-growth").await,
+        plugin_ui_removed: service.t("gpui-shell-plugin-ui-removed").await,
+        plugin_ui_rejected: service.t("gpui-shell-plugin-ui-rejected").await,
+        plugin_ui_timeout: service.t("gpui-shell-plugin-ui-timeout").await,
     }
 }
 

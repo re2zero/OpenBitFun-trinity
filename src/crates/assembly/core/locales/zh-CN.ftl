@@ -677,3 +677,7 @@ gpui-shell-trinity-need-autonomy = 自主
 gpui-shell-trinity-need-relatedness = 归属
 gpui-shell-trinity-need-certainty = 确定
 gpui-shell-trinity-need-growth = 成长
+
+gpui-shell-plugin-ui-removed = 贡献已移除
+gpui-shell-plugin-ui-rejected = 插件界面更新被拒绝
+gpui-shell-plugin-ui-timeout = 插件交互超时

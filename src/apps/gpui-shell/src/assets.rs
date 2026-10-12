@@ -24,11 +24,14 @@ gpui_kit::assets::icon_assets!(
     // docked changes panel (R2c) was the first smoke to render them. Trash is
     // the worktree row's remove button (git.rs) — first rendered by the R3
     // settings worktrees redirect landing on the Worktree view.
+    // LayoutDashboard is the plugin-contributed scene's tab glyph (R7b
+    // fixture; contribution icon names resolve through the closed icon set).
     [
         Activity,
         Archive,
         BrainCircuit,
         ChartColumn,
+        LayoutDashboard,
         ListTodo,
         Check,
         Circle,

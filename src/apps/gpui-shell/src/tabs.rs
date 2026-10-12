@@ -9,12 +9,15 @@
 //! contract lands.
 
 use gpui_kit::assets::IconName;
+use openbitfun_core::plugin_ui::SceneRef;
 
 use crate::i18n::ShellText;
 
-/// A registry-driven scene identity. Builtin ids are static; the R7 plugin
-/// contract will extend this table with contributed scene rows rather than
-/// growing the match arms (rendering then dispatches on the contribution).
+/// A registry-driven scene identity. Builtin ids are static; plugin
+/// contributions register through `External`, carrying the projection-owned
+/// [`SceneRef`] (copyable, so the tab chain stays `Copy`). Rendering for
+/// external scenes dispatches through the contribution, not a per-scene match
+/// arm (`crate::plugin_ui`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum SceneId {
     Settings,
@@ -23,6 +26,7 @@ pub(crate) enum SceneId {
     Tasks,
     Files,
     Trinity,
+    External(SceneRef),
 }
 
 /// A registry-driven scene: one row of the scene table.
@@ -196,15 +200,18 @@ impl TabsState {
 }
 
 /// Tab label resolution happens at render time from already-composed strings
-/// (the render path never touches the i18n service).
-pub(crate) fn scene_title(id: SceneId, text: &ShellText) -> &str {
+/// (the render path never touches the i18n service). External scenes have no
+/// builtin row: their titles come from the plugin locale map through the
+/// projection, so the caller resolves them before asking here (`None`).
+pub(crate) fn scene_title(id: SceneId, text: &ShellText) -> Option<&str> {
     match id {
-        SceneId::Settings => &text.settings_title,
-        SceneId::Git => &text.git_title,
-        SceneId::Insights => &text.insights_title,
-        SceneId::Tasks => &text.tasks_title,
-        SceneId::Files => &text.files_title,
-        SceneId::Trinity => &text.trinity_title,
+        SceneId::Settings => Some(&text.settings_title),
+        SceneId::Git => Some(&text.git_title),
+        SceneId::Insights => Some(&text.insights_title),
+        SceneId::Tasks => Some(&text.tasks_title),
+        SceneId::Files => Some(&text.files_title),
+        SceneId::Trinity => Some(&text.trinity_title),
+        SceneId::External(_) => None,
     }
 }
 
@@ -298,10 +305,11 @@ mod tests {
     }
 
     #[test]
-    fn builtin_scenes_cover_every_scene_id() {
-        // The scene table is the single source of scene metadata; every
-        // SceneId variant must have exactly one row so titles and icons
-        // always resolve.
+    fn builtin_scenes_cover_every_builtin_scene_id() {
+        // The scene table is the single source of builtin scene metadata;
+        // every builtin SceneId variant must have exactly one row so titles
+        // and icons always resolve. External (plugin) scenes live outside
+        // this table — they carry their icon and title in the contribution.
         let rows = builtin_scenes();
         let expected = [
             SceneId::Settings,
@@ -315,5 +323,22 @@ mod tests {
             assert_eq!(rows.iter().filter(|row| row.id == id).count(), 1);
         }
         assert_eq!(rows.len(), expected.len());
+    }
+
+    #[test]
+    fn external_scene_tabs_are_singletons_per_ref() {
+        let mut tabs = TabsState::default();
+        let a = SceneId::External(SceneRef::new(0, 0));
+        let b = SceneId::External(SceneRef::new(0, 1));
+        tabs.open(TabKind::Scene(a));
+        tabs.open(TabKind::Scene(a));
+        assert_eq!(tabs.kinds().len(), 1, "same ref reuses the tab");
+        tabs.open(TabKind::Scene(b));
+        assert_eq!(tabs.kinds().len(), 2, "distinct refs get distinct tabs");
+        // The full tab chain stays Copy.
+        let copy = a;
+        assert_eq!(a, copy);
+        assert!(tabs.remove(&TabKind::Scene(b)));
+        assert_eq!(tabs.kinds().len(), 1);
     }
 }

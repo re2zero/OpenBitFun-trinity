@@ -15,6 +15,7 @@ pub mod i18n;
 pub mod insights;
 pub mod instance;
 pub mod manage;
+pub mod plugin_ui;
 pub mod runtime;
 pub mod search;
 pub mod settings;

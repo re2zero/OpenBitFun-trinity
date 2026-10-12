@@ -701,3 +701,7 @@ gpui-shell-trinity-need-autonomy = Autonomy
 gpui-shell-trinity-need-relatedness = Relatedness
 gpui-shell-trinity-need-certainty = Certainty
 gpui-shell-trinity-need-growth = Growth
+
+gpui-shell-plugin-ui-removed = Contribution removed
+gpui-shell-plugin-ui-rejected = Plugin UI update rejected
+gpui-shell-plugin-ui-timeout = Plugin interaction timed out

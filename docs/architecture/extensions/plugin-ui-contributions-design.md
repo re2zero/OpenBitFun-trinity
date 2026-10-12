@@ -1,6 +1,7 @@
 # 插件 UI 贡献架构(R7)设计
 
-状态:**设计稿(R7a,2026-10-12)**,待评审;实现按 R7b(壳内最小闭环)→ R7c(真 Plugin Host 通道)推进,尚未有生产消费方。本文不改变
+状态:**R7b 壳内最小闭环已实现(2026-10-12)**;设计自 R7a 稿起经实现回写(偏差已融入
+下文各节,见 §6 实现记录)。R7c(真 Plugin Host 通道)独立立项,尚未有生产消费方。本文不改变
 [产品架构](../product-architecture.md)的任何边界——它把该文第 3 节「OpenBitFun 与插件接口」中已预留的
 **界面贡献**能力落成具体契约。
 
@@ -77,9 +78,12 @@
 // ui/contributions.json(v0 示例)
 {
   "schemaVersion": 1,
+  "locales": {                        // 插件级文案表(R7b 落地补白):key → (tag → text)
+    "btn.refresh": { "zh-CN": "刷新", "en-US": "Refresh" }
+  },
   "scenes": [{
     "id": "board",                      // 包内唯一;全局 id = "<plugin_id>.<scene_id>"
-    "title": { "zh-CN": "看板", "en-US": "Board" },   // 声明式本地化,见 3.3
+    "title": { "zh-CN": "看板", "en-US": "Board" },   // 场景标题:内联 tag → text
     "icon": "layout-dashboard",         // 封闭图标集,见 5.3
     "slot": { "kind": "tab" },          // 归属意图,宿主裁决,见下
     "entry": "ui/scenes/board.json"     // 初始树文件引用(受 files sha256 锁定)
@@ -99,11 +103,13 @@
 
 ### 3.3 本地化与主题语义角色
 
-- **文案**:插件自带 locale map(键为 BCP-47,起步要求 `en-US` 存在;壳按当前语言选择,取词顺序 =
-  精确匹配 → 同语言族回退(`zh-TW` → `zh-CN` 等主子标签匹配)→ `en-US` → map 首项)。不进壳 ftl 体系、
-  不进 `i18n:audit` 预算。预算限额见 3.4。
-- **配色**:不存在。组件 props 只允许语义角色引用(`"tone": "danger"`);角色 → `cx.theme()` token 的
-  映射在渲染器(§5.2),插件无法引入新色值,theme audit 基线零增长。
+- **文案**:两级结构。场景 `title` 是内联的 `tag → text` 映射;树节点 `@key` 引用指向
+  `contributions.json` 顶层的 `locales` 表(`key → (tag → text)`,R7a 稿未画出该表落点,
+  R7b 实现补白)。壳按当前语言选择,取词顺序 = 精确匹配 → 同语言族回退(`zh-TW` →
+  `zh-CN` 等主子标签匹配)→ `en-US` → 该键首项。不进壳 ftl 体系、不进 `i18n:audit`
+  预算。预算限额见 3.4。
+- **配色**:不存在。组件 props 只允许语义角色引用(`"tone": "danger"`);角色 → `cx.theme()`
+  token 的映射在渲染器(§5.2),插件无法引入新色值,theme audit 基线零增长。
 
 ### 3.4 校验规则(加载期,全部通过才进入注册表)
 
@@ -111,7 +117,7 @@
 |---|---|---|
 | 场景数 | ≤ 8 / 插件 | 拒绝 UI 段 + 诊断 |
 | 贡献 id | `^[a-z][a-z0-9-]{0,63}$`,包内唯一 | 拒绝 |
-| 文案键 | 每插件 ≤ 128 键,单值 ≤ 256 字符,≤ 8 locale | 拒绝 |
+| 文案键 | `locales` 表 ≤ 128 键 / 插件;title 与每键 ≤ 8 locale;单值 ≤ 256 字符 | 拒绝 |
 | 图标 | 必须在封闭图标集内(§5.3) | 拒绝 |
 | `entry` 引用 | 必须命中 `files[]` 清单(sha256 校验同包体) | 拒绝 |
 
@@ -135,7 +141,7 @@
 }
 ```
 
-- 文案引用用 `"@key"` 前缀指向插件 locale map;字面字符串也允许(但受长度限额),方便最小插件。
+- 文案引用用 `"@key"` 前缀指向插件 `locales` 表(§3.3);字面字符串也允许(但受长度限额),方便最小插件。
 - 无条件渲染、无表达式、无循环、无模板——**插件端负责算好最终树**。壳是哑渲染器,这是安全模型
   (§4.5)与实现复杂度的共同下限。
 
@@ -150,6 +156,10 @@
 - 树限额:节点 ≤ 512、深度 ≤ 16、单帧 ≤ 256KiB、单节点文本 ≤ 4KiB;树文件的 `schemaVersion` 必须与
   `ui/contributions.json` 同版本族(v0 皆 `1`),不一致 = 拒绝该树。超限/不一致 = 拒绝 + 类型化诊断 +
   **保留上一棵树**(保旧不崩壳,同升级兼容的「degrade loudly」口径)。
+- **受控输入的宿主细化(R7b 落地口径)**:input/textarea 的可见文本由壳内组件状态承载——首次挂载
+  时从树 `value`/`placeholder` 取种,此后**草稿优先**(全树替换不重置正在编辑的控件,直到下一次
+  submit 把组件值交回事件回环)。这是「全量替换」在有状态控件上的宿主侧细化,插件仍以树为唯一声明
+  真相。
 - **诊断必须可见**:拒绝、超时、贡献类型未支持等类型化诊断落在该场景 tab 内的显式错误态(横幅/空态,
   渲染器自带),不静默吞。诊断文案是**壳文案**(非插件文案),进壳 ftl 三语、按惯例数键对账——R7b 若
   出新键,§6.4 的「无新键」预期随之修正。
@@ -178,9 +188,12 @@
 
 ### 4.4 通道绑定
 
-- **R7b(fixture,不经 Plugin Host)**:core 定义 `PluginUiProvider` trait(`describe() -> contributions`
-  / `tree(scene) -> PluginUiTree` / `dispatch(event) -> PluginUiTree | Unchanged`)。fixture 以 Rust 实现
-  同一契约,证明 schema 校验、注册、渲染与回环;壳仅消费 core 快照。
+- **R7b(fixture,不经 Plugin Host,已实现)**:core 定义 `PluginUiProvider` trait——
+  `describe()` / `package_files()` / `tree(scene_id)` / `dispatch(scene_id, action, payload)`,
+  全部返回**原始 JSON 文档**(与包文件同形),校验统一在投影内完成;`Ok(None)` 即 Unchanged。
+  trait 为同步签名,fixture 以 Rust 实现同一契约,证明 schema 校验、注册、渲染与回环;壳仅消费
+  core 快照,且不直接依赖 product-domains(契约类型经 core 重导出)。R7c 的异步 host 通道由
+  适配层以后台工作线程桥接(缓存最近已校验快照),本 trait 不异步化。
 - **R7c(真 host,独立立项)**:沿既有 OpenCode Plugin Host 通道(loopback TCP + JSON-RPC,握手 capabilities
   交集)扩展方法族 `host.ui.describe` / `host.ui.event`(host 侧),复用 generation fencing 与实例生命
   周期(实例关闭即撤树);握手能力新增 `ui-contributions-v1`,**未协商成功 = 该插件 UI 贡献整体不激活**,
@@ -221,7 +234,7 @@
 | `textarea` | `TextareaState`(壳 composer 同组件) | `on.submit` |
 | `select` | `select` 组件(popover 下拉) | 选项 ≤ 32,`on.change` |
 | `checkbox` / `switch` | `checkbox` / `switch` 组件 | `on.change` |
-| `badge` / `tag` | `badge` 组件 | tone 角色 |
+| `badge` / `tag` | `tag` 组件(R7b 实测:gpui `badge` 是 dot/count 徽标无文字;文字徽标落 `tag`,tone → 主题色名族) |
 | `icon` | `gpui_kit::assets::IconName`(§5.3) | |
 | `card` | 壳卡片语言(popover 底 + border_1 + radius token + shadow_sm,R2 welcome 同款) | |
 | `progress` / `spinner` | `progress` / `spinner` 组件 | 只读展示 |
@@ -229,26 +242,35 @@
 | `list` | 简单行列表(行渲染递归子树) | ≤ 200 行;虚拟化 v1 |
 | `group` | 无视觉容器(布局组合用) | |
 
+`select` 的宿主组件(R7b 落地口径):`Button` + `dropdown_menu_with_anchor` 菜单组合
+(PopupMenuItem 点击即得 change 值,免 subscribe),不用 `select.rs` 的 SelectState
+delegate——v0 无搜索、无长列表需求,delegate 模式的实体管理成本不成立;R7c 若出现
+大选项集再评估切换。
+
 ### 5.2 主题语义角色 → `cx.theme()` 映射
 
 | 角色 | theme 字段 |
 |---|---|
 | `text` / `muted` | `foreground` / `muted_foreground` |
-| `accent` / `accent-foreground` | `primary` / 主题对应前景 |
+| `primary` / `accent` | `primary`(R7a 稿 §4.1 示例即用 `tone: "primary"`,R7b 起入表) |
 | `danger` | `danger` |
 | `surface` / `border` | popover 底 / `border`(卡片语言) |
 
-映射表唯一存在于渲染器;新增角色 = 改渲染器映射 + 本文表格,插件侧无感知。
+角色封闭集 = `{primary, accent, text, muted, danger, surface, border}`。映射表唯一存在于渲染器;
+新增角色 = 改渲染器映射 + 本文表格,插件侧无感知。
 
 ### 5.3 图标封闭集
 
-manifest 与树中的图标名是字符串,加载期校验 ∈ `gpui_kit::assets::IconName`(build.rs 生成集 + 壳
-ExtraIcons 扩展;壳铁律:图标一律用 assets 枚举,不用组件内枚举)。集外名字 = 拒绝 UI 段(§3.4)。
+manifest 与树中的图标名是字符串,加载期校验 ∈ 壳的可渲染封闭集(R7b 落地:`ShellAssets.list("icons")`
+= gpui-kit 默认 bundle + 壳 ExtraIcons,与 `IconName::ALL` 的 path 名求交;壳铁律:图标一律用
+assets 枚举,不用组件内枚举)。集外名字 = 拒绝 UI 段(§3.4)。R7b 为 fixture 新增 ExtraIcons
+`LayoutDashboard`。
 
 ### 5.4 事件语义(v0)
 
-`press`(按钮)、`submit`(input/textarea Enter)、`change`(select/checkbox/switch 提交值)。**不做**
-hover/焦点/滚动/键盘快捷键事件——频度与可访问性语义都是宿主职权(§3.3),回环成本不成立。
+`press`(按钮)、`submit`(input/textarea Enter)、`change`(select/checkbox/switch 提交值)。
+textarea 的 Enter 在 v0 直接提交(多行换行让位于提交语义;需要换行编辑的控件留 v1 评审)。
+**不做** hover/焦点/滚动/键盘快捷键事件——频度与可访问性语义都是宿主职权(§3.3),回环成本不成立。
 
 ### 5.5 明确不支持(v0 拒绝渲染,类型化诊断)
 
@@ -257,22 +279,33 @@ hover/焦点/滚动/键盘快捷键事件——频度与可访问性语义都是
 声明一个对话框贡献、由宿主对话框队列编排打开(既有 permission dialog 同源语义),这条 v1+ 评审后再接;
 v0 不做的是把弹窗组件交进插件树里自由弹出。其余留 v1+ 逐项评审。
 
-## 6. R7b 壳内最小闭环(下一会话计划)
+## 6. R7b 壳内最小闭环(已实现,2026-10-12)
 
-1. **契约**:`product-domains/src/plugin_ui.rs`——类型 + 校验纯函数(`deny_unknown_fields`、§3.4/§4.2
-   全部限额、组件/props 白名单、`@key` 引用闭合检查),单测锚校验矩阵。
-2. **投影 owner**:`assembly/core/src/plugin_ui.rs`(feature `plugin-runtime`)——`PluginUiProvider`
-   trait + 快照发布 + generation;fixture provider(Rust 硬编码一个两控件场景:标题 + 计数按钮/输入框,
-   `dispatch` 返回变更树)。
-3. **壳**:`tabs.rs` 开 `SceneId::External(SceneRef)`(渲染按贡献分发,不逐场景长 match arm——兑现
-   tabs.rs 头注释的接缝承诺);`plugin_ui.rs` 渲染器(v0 全集)+ 事件单飞回环 + i18n locale 选择;
-   TabKind/TabsState/关闭语义测试扩展。
-4. **验证口径**:`cargo test -p openbitfun-gpui-shell` + core 侧契约测试;`pnpm run fmt:rs`;
-   `check:core-boundaries`(新契约归位检查);theme/audit 零新增(无新色无新键,预期不跑;i18n 若壳
-   出现新键才跑)。Xvfb :97 冒烟:fixture 场景 tab 打开 → 树渲染(debug_bounds 量测)→ 点击/输入
-   → 回环换树 → 关 tab 撤挂载。
-5. **不假装**:fixture 是测试贡献,不进产品装配;产品插件来源接入(谁调用 provider)属 R7c 后的产品
-   事项。
+**交付记录**(原四步计划全部落地):
+
+1. **契约** ✅ `product-domains/src/plugin_ui.rs`——类型 + 校验纯函数(`deny_unknown_fields`、
+   §3.4/§4.2 全部限额、组件/props 白名单、`@key` 引用闭合检查),29 个单测锚校验矩阵。
+   实现补白:contributions.json 顶层 `locales` 文案表(§3.3)。
+2. **投影 owner** ✅ `assembly/core/src/plugin_ui.rs`(feature `plugin-runtime`)——
+   `PluginUiProvider` trait(同步签名;R7c 的 host RPC 由适配层后台桥接,本 trait 不异步化)
+   + generation 化快照 + 每场景树缓存;`FixturePluginUi`(两控件场景:标题 + 计数按钮/输入框,
+   `dispatch` 返回变更树),fixture 返回 JSON 文档走**真实校验路径**。8 个状态机单测
+   (install/open/dispatch/uninstall 撤臂/slot 不复用)。契约类型经 core 重导出,壳不直接依赖
+   product-domains。
+3. **壳** ✅ `tabs.rs` 开 `SceneId::External(SceneRef)`(`SceneRef` = (u32,u32) Copy 句柄,
+   字符串标识归投影注册表;slot 单调不复用防 ABA);`plugin_ui.rs` 渲染器(v0 全集 23 组件,
+   §5.1 映射)+ 事件回环 + i18n locale 选择;壳 ftl 新增 3 键(`plugin-ui-removed/-rejected/
+   -timeout`,632→635 三语平齐——R7a 修订⑥预告的「无新键」预期就此修正)。
+   单飞/2s 超时状态机结构就位并单测锚定(R7b 同步 provider 不产生在途窗口,R7c 激活)。
+   fixture 入口 = `OPENBITFUN_PLUGIN_UI_FIXTURE`(安装)+ `OPENBITFUN_PLUGIN_UI_AUTOOPEN`
+   (自动开 tab)双环境变量门,不进产品装配(§6.5),不接搜索 overlay 等产品入口(归 R7c)。
+4. **验证** ✅ 契约 29 + 投影 8 + 壳 251 lib 全绿;`fmt:rs`、`check:core-boundaries`、
+   `i18n:audit`、theme color audit(gpui-shell)全绿。Xvfb :97 冒烟五步闭环:fixture tab 自动
+   打开 → 树原生渲染(tab 图标/标题、@title/@btn/@name.hint 中文解析、primary/muted 语义色)
+   → 点「加一」→ count 0→1(事件回环换树)→ 输入 + Enter → name 回显且 count 保留(草稿
+   优先)→ 关 tab 撤挂载;0 panic。
+5. **不假装**(原则保留):fixture 是测试贡献,不进产品装配;产品插件来源接入(谁调用
+   provider)属 R7c 后的产品事项。
 
 ## 7. R7c 真 host 通道展望(独立立项,另行拍板)
 

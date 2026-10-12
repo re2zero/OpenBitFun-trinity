@@ -1162,7 +1162,7 @@ pub(crate) struct ShellWindow {
     chat_error: Option<String>,
     /// Main-area tab bar (R1a): session tabs and singleton scene tabs share
     /// it; the active tab decides what the main area renders.
-    tabs: TabsState,
+    pub(crate) tabs: TabsState,
     pub(crate) event_tx: mpsc::UnboundedSender<RuntimeEvent>,
     /// Approvals waiting for a user decision, oldest first. Every ask in this
     /// process surfaces here regardless of which session is open — an
@@ -1365,6 +1365,17 @@ pub(crate) struct ShellWindow {
     /// (`provider`, `configured`); fetched when the settings view opens.
     pub(crate) websearch_status: Option<(String, bool)>,
     pub(crate) websearch_credential_input: Entity<InputState>,
+    /// R7b plugin UI contributions: the projection (fixture provider behind
+    /// the env gate) plus the per-scene shell runtime (control entities and
+    /// visible diagnostics). Rendering dispatches through `crate::plugin_ui`.
+    pub(crate) plugin_ui: openbitfun_core::plugin_ui::PluginUiProjection,
+    pub(crate) plugin_ui_scenes: std::collections::BTreeMap<
+        openbitfun_core::plugin_ui::SceneRef,
+        crate::plugin_ui::PluginUiSceneRuntime,
+    >,
+    /// One-shot automation hook (`OPENBITFUN_PLUGIN_UI_AUTOOPEN`): opens the
+    /// fixture scene tab once the runtime is ready.
+    plugin_ui_auto_open: bool,
 }
 
 impl ShellWindow {
@@ -1402,6 +1413,9 @@ impl ShellWindow {
         let mcp_interaction_result_input = cx.new(|cx| TextareaState::new(window, cx));
         let mcp_json_state = cx.new(|cx| TextareaState::new(window, cx));
         let websearch_credential_input = cx.new(|cx| InputState::new(window, cx));
+        // R7b plugin UI contributions: the projection owns the installed
+        // scenes; the fixture provider installs behind its env gate.
+        let (plugin_ui, _fixture_scene) = crate::plugin_ui::setup_projection();
         receive_runtime_events(event_rx, window, cx);
 
         // M22 close-button behavior: the callback mirrors the shared setting
@@ -1511,6 +1525,9 @@ impl ShellWindow {
             usage_activity_loading: false,
             websearch_status: None,
             websearch_credential_input,
+            plugin_ui,
+            plugin_ui_scenes: std::collections::BTreeMap::new(),
+            plugin_ui_auto_open: Self::plugin_ui_auto_open_requested(),
         }
     }
 
@@ -5561,6 +5578,15 @@ impl Render for ShellWindow {
                 self.git_auto_open = false;
                 self.toggle_git_view(window, cx);
             }
+            if self.plugin_ui_auto_open {
+                self.plugin_ui_auto_open = false;
+                // Only when the fixture actually installed (env-gated test
+                // contribution): open its first scene tab.
+                if let Some(handle) = self.plugin_ui.scenes().first() {
+                    let scene = handle.scene_ref;
+                    self.open_plugin_scene(scene, cx);
+                }
+            }
         }
 
         // Terminal font preferences apply to live panes: the paint pass
@@ -5643,6 +5669,11 @@ impl Render for ShellWindow {
                     cx,
                 ))
                 .into_any_element(),
+            // R7 seam: plugin-contributed scenes dispatch through the
+            // contribution (one arm, not one per scene).
+            Some(TabKind::Scene(SceneId::External(reference))) => {
+                self.render_external_scene(reference, window, &text, cx)
+            }
             Some(TabKind::Session(session_id)) => self.render_session_main(&session_id, &text, cx),
             // No tab at all: the tabless landing face (R2b, the web
             // WelcomeScene) — brand slogan plus one input that starts a
@@ -5813,9 +5844,23 @@ impl ShellWindow {
                     let def = crate::tabs::builtin_scenes()
                         .into_iter()
                         .find(|row| row.id == *scene);
+                    let (icon, label) = match scene {
+                        // Plugin scenes carry icon and title in the
+                        // contribution; the builtin table has no row.
+                        SceneId::External(reference) => (
+                            self.plugin_scene_icon(*reference),
+                            self.plugin_scene_label(*reference, text),
+                        ),
+                        _ => (
+                            def.map(|row| row.icon).unwrap_or(IconName::Square),
+                            crate::tabs::scene_title(*scene, text)
+                                .unwrap_or_default()
+                                .to_string(),
+                        ),
+                    };
                     (
-                        def.map(|row| row.icon).unwrap_or(IconName::Square),
-                        crate::tabs::scene_title(*scene, text).to_string(),
+                        icon,
+                        label,
                         format!(
                             "top-tab-scene-{}-{index}",
                             format!("{scene:?}").to_lowercase()
