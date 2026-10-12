@@ -44,6 +44,14 @@ pub trait PluginUiProvider: Send + Sync {
         action: &str,
         payload: Option<&PluginUiEventPayload>,
     ) -> Result<Option<String>, String>;
+    /// Whether [`Self::dispatch`] completes asynchronously: `true` means the
+    /// call only posts the interaction and the replacement tree arrives later
+    /// through the provider's own channel (R7c host bridge). The shell keeps
+    /// its in-flight state until that channel reports. The default `false` is
+    /// the synchronous fixture behavior (R7b).
+    fn dispatch_deferred(&self) -> bool {
+        false
+    }
 }
 
 /// Why a scene is not available. Rendered as an explicit in-tab state (never

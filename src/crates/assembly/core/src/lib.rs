@@ -54,6 +54,8 @@ pub mod plugin_runtime;
 pub mod plugin_source;
 #[cfg(feature = "plugin-runtime")]
 pub mod plugin_ui;
+#[cfg(all(feature = "plugin-runtime", feature = "opencode-plugin-host"))]
+pub mod plugin_ui_host;
 #[cfg(feature = "agent-runtime")]
 pub mod product_assembly;
 #[cfg(all(test, feature = "product-full"))]
