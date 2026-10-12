@@ -5,12 +5,11 @@ use base64::Engine as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::resizable::{h_resizable, resizable_panel, v_resizable, ResizableState};
 use gpui_kit::component::{
-    bubble::{Bubble, BubbleVariant},
+    bubble::{Bubble, BubbleContent, BubbleVariant},
     button::{Button, ButtonCustomVariant, ButtonRounded, ButtonVariant, ButtonVariants},
     empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle},
     input::{Input, InputState, Textarea, TextareaState},
     menu::{DropdownMenu, PopupMenuItem},
-    message::MessageAlignment,
     message_scroller::{MessageScroller, MessageScrollerState},
     scroll::ScrollableElement,
     shimmer::ShimmerText,
@@ -20,10 +19,10 @@ use gpui_kit::component::{
 };
 use gpui_kit::InteractiveElement as _;
 use gpui_kit::{
-    div, img, point, prelude::*, px, size, Anchor, App, Bounds, ClipboardEntry, Context, ElementId,
-    Entity, ExternalPaths, FontWeight, Image, ImageFormat, KeyBinding, Pixels, SharedString,
-    SystemNotification, TitlebarOptions, WeakEntity, Window, WindowBackgroundAppearance,
-    WindowBounds, WindowOptions,
+    div, img, point, prelude::*, px, size, Anchor, App, Bounds, ClipboardEntry, ClipboardItem,
+    Context, ElementId, Entity, ExternalPaths, FontWeight, Image, ImageFormat, KeyBinding, Pixels,
+    SharedString, StyleRefinement, SystemNotification, TitlebarOptions, WeakEntity, Window,
+    WindowBackgroundAppearance, WindowBounds, WindowOptions,
 };
 use openbitfun_agent_runtime::sdk::{PendingUserQuestion, PermissionReply, PermissionRequest};
 use openbitfun_runtime_ports::{AgentInputAttachment, AgentSessionLineageSnapshot};
@@ -46,10 +45,25 @@ const SESSION_PANE_WIDTH: f32 = 300.;
 /// collapsed level-0 page. Expanding reveals the rest, virtualized.
 const SESSIONS_COLLAPSED_VISIBLE: usize = 5;
 /// Transcript reading column; long-window content stays centered on it.
+/// Web parity: `--openbitfun-control-flow-chat-transcript-max-width`.
 const READING_COLUMN_WIDTH: f32 = 900.;
-/// User bubble cap inside the reading column, so short messages do not
-/// stretch across the whole column.
-const USER_BUBBLE_MAX_WIDTH: f32 = 480.;
+/// User bubble width cap, so short messages do not stretch across the
+/// reading column. Web parity: the user-message `max-width: min(72%, 48rem)`
+/// — at the 900px column that is 648px, below the 768px rem cap, so a
+/// definite pixel cap is exact (a relative() max-width does not constrain
+/// content inside the virtualized row; measured 2026-10-12).
+const USER_BUBBLE_MAX_WIDTH: f32 = 648.;
+/// User bubble surface shape (web `UserMessageItem`: radius 10px, inline
+/// padding equal to the radius, ~7px block padding).
+const USER_BUBBLE_RADIUS: f32 = 10.;
+const USER_BUBBLE_PADDING_X: f32 = 10.;
+const USER_BUBBLE_PADDING_Y: f32 = 7.;
+/// Gap before a user prompt (the turn boundary) and after it; the transcript
+/// rows in between keep a tighter rhythm. Web parity: turn-gap + space-4 on
+/// the user item, `flow-item-gap` under it, ~12px between flow items.
+const TURN_GAP: f32 = 32.;
+const FLOW_ITEM_GAP: f32 = 8.;
+const TURN_RHYTHM_GAP: f32 = 12.;
 /// Composer height; explicit pixels because an auto-grown textarea makes the
 /// docked composer row jump while streaming text is typed.
 const COMPOSER_HEIGHT: f32 = 88.;
@@ -119,6 +133,10 @@ struct ChatView {
     /// question, M20): the header grows its badge and the "back to parent"
     /// entry point. `None` = a normal, user-visible session.
     child_context: Option<ChildContext>,
+    /// User prompts expanded past the three-line clamp (R2d), keyed by the
+    /// content hash (`markdown_id_key`) so the flag survives transcript
+    /// reloads that re-index entries.
+    expanded_user_texts: BTreeSet<u64>,
 }
 
 /// Why the chat pane is showing a hidden child session (M20).
@@ -388,6 +406,7 @@ impl ChatView {
             busy: false,
             submitting: false,
             child_context: None,
+            expanded_user_texts: BTreeSet::new(),
         }
     }
 
@@ -2896,6 +2915,29 @@ impl ShellWindow {
         self.toggle_resource(ResourcePanelKind::Git, window, cx);
     }
 
+    /// The chat turn footer's snapshot entry point (R2d): opens the git
+    /// resource the same way `toggle_resource` does but never closes it, then
+    /// points the panel at the snapshots view for this workspace's sessions.
+    fn open_git_snapshots(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(self.tabs.active_kind(), Some(TabKind::Session(_))) {
+            if self.resource_panel != Some(ResourcePanelKind::Git) {
+                self.ensure_resource_page(ResourcePanelKind::Git, window, cx);
+                self.dock_resource_panel(ResourcePanelKind::Git, cx);
+            }
+        } else {
+            self.ensure_resource_page(ResourcePanelKind::Git, window, cx);
+            self.set_resource_compact(ResourcePanelKind::Git, false, cx);
+            self.tabs
+                .open(TabKind::Scene(ResourcePanelKind::Git.scene()));
+        }
+        if let Some(git) = self.git.clone() {
+            git.update(cx, |panel, cx| {
+                panel.set_view(crate::git::GitView::Snapshots, cx)
+            });
+        }
+        cx.notify();
+    }
+
     /// Closes the top tab at `index`. A closing scene tab drops its page
     /// state where the old toggle did (the git panel refetches on reopen);
     /// a closing session tab drops that chat's transcript state.
@@ -3606,42 +3648,87 @@ struct ChatForkContext {
 }
 
 /// One transcript entry as a scroller row. Row insets and the inter-row gap
-/// belong to the `MessageScroller` row wrapper; the reading column is applied
-/// by the renderer closure around this item.
+/// belong to the [`MessageScroller`] row wrapper plus the spacing the chat
+/// area's row closure applies (R2d); the reading column is applied by that
+/// closure around this item.
 fn render_chat_item(
     entry: &ChatEntry,
     text: &ShellText,
     fork: Option<&ChatForkContext>,
+    row: usize,
+    user_expanded: bool,
     cx: &mut App,
 ) -> gpui_kit::AnyElement {
     match entry {
         ChatEntry::User {
             text: body,
-            turn_id,
+            turn_id: _,
         } => {
-            let mut column = div()
+            // Content-hash key: the expansion flag survives transcript
+            // reloads that re-index entries; the row index keeps the element
+            // id unique when the same prompt text appears twice.
+            let key = markdown_id_key(body);
+            let column = div()
+                .debug_selector(|| "user-bubble".to_string())
+                .id(ElementId::Name(
+                    format!("user-bubble-{row}-{:016x}", key).into(),
+                ))
                 .w_full()
                 // A column wrapper on purpose: inside a row-flex `justify_end`
                 // parent the Bubble lays out but never paints (gpui-pre 0.7.1
-                // stack, reproduced 2026-10-09). `MessageAlignment::End` already
-                // carries the right alignment through the bubble's own
-                // `ml_auto`/`self_end`.
+                // stack, reproduced 2026-10-09). The web fraction ships as a
+                // definite pixel cap (`min(72%, 48rem)` at the 900px column):
+                // a relative() max-width does not constrain the content inside
+                // the virtualized row (measured 2026-10-12), so the shell owns
+                // the cap and the right alignment on its own wrapper.
                 .v_flex()
+                .cursor_pointer()
+                // Web `UserMessageItem`: three lines collapsed, click expands
+                // (the toggle is free — the bubble has no other interaction).
+                .on_click({
+                    let view = fork.map(|fork| fork.view.clone());
+                    let session_id = fork.map(|fork| fork.session_id.clone());
+                    move |_, _, cx| {
+                        if let (Some(view), Some(session_id)) = (&view, &session_id) {
+                            let _ = view.update(cx, |shell, cx| {
+                                if let Some(chat) = shell.chat_mut_for(session_id) {
+                                    if chat.expanded_user_texts.contains(&key) {
+                                        chat.expanded_user_texts.remove(&key);
+                                    } else {
+                                        chat.expanded_user_texts.insert(key);
+                                    }
+                                }
+                                cx.notify();
+                            });
+                        }
+                    }
+                })
                 .child(
-                    Bubble::new()
-                        .alignment(MessageAlignment::End)
-                        .with_variant(BubbleVariant::Muted)
+                    div()
+                        .debug_selector(|| "user-bubble-cap".to_string())
+                        .self_end()
                         .max_w(px(USER_BUBBLE_MAX_WIDTH))
-                        .child(body.clone()),
+                        .min_w_0()
+                        .child(
+                            Bubble::new()
+                                .with_variant(BubbleVariant::Muted)
+                                // Web surface recipe (R2d): the component's
+                                // default radius_2xl/padding read visibly
+                                // airier than the web's 10px/10px/7px bubble.
+                                .content(
+                                    BubbleContent::new()
+                                        .rounded(px(USER_BUBBLE_RADIUS))
+                                        .px(px(USER_BUBBLE_PADDING_X))
+                                        .py(px(USER_BUBBLE_PADDING_Y)),
+                                )
+                                .w_full()
+                                .child(
+                                    div()
+                                        .when(!user_expanded, |this| this.line_clamp(3))
+                                        .child(body.clone()),
+                                ),
+                        ),
                 );
-            if let (Some(turn_id), Some(fork)) = (turn_id, fork) {
-                column = column.child(turn_fork_menu(
-                    fork.session_id.clone(),
-                    turn_id.clone(),
-                    fork.tx.clone(),
-                    text,
-                ));
-            }
             column.into_any_element()
         }
         ChatEntry::Assistant { text: body, .. } => div()
@@ -3675,6 +3762,144 @@ fn render_chat_item(
             .child(body.clone())
             .into_any_element(),
     }
+}
+
+/// What the turn footer (R2d) shows under a finished turn's tail entry: the
+/// fork boundary and the copy scopes derived from the turn's own rows. Zero
+/// new runtime facts — everything comes from the transcript vec.
+struct TurnFooterPlan {
+    /// The turn's user prompt id (fork boundary); `None` leaves the fork
+    /// entry out (transcript head without a persisted prompt id).
+    turn_id: Option<String>,
+    /// Whole-turn copy text (`User\n…` + every assistant round, web
+    /// `formatTranscriptTurnText` shape); `None` when the turn has no
+    /// assistant text and the copy entry hides.
+    copy_full: Option<String>,
+    /// Result-scope copy: the final assistant round.
+    copy_result: Option<String>,
+}
+
+/// The finished-turn tail test for row `index`: the entry must close a turn
+/// (the next row is a user prompt, or the transcript ends) and that turn must
+/// be complete — a tail row while `busy`/`submitting` is still streaming.
+/// Notice/info rows carry no actions of their own and never host the footer.
+fn turn_footer_plan(
+    entries: &[ChatEntry],
+    index: usize,
+    busy: bool,
+    submitting: bool,
+    text: &ShellText,
+) -> Option<TurnFooterPlan> {
+    match entries.get(index)? {
+        ChatEntry::User { .. } | ChatEntry::Notice { .. } | ChatEntry::Info { .. } => {
+            return None;
+        }
+        ChatEntry::Assistant { .. } | ChatEntry::Tool(_) => {}
+    }
+    match entries.get(index + 1) {
+        Some(ChatEntry::User { .. }) => {}
+        // Transcript tail: only a finished turn hosts a footer.
+        None if busy || submitting => return None,
+        None => {}
+        Some(_) => return None,
+    }
+    // Backward scan to the turn's prompt: the first assistant met is the
+    // final round (the copy result), the prompt supplies the fork boundary.
+    let mut rounds: Vec<&str> = Vec::new();
+    let mut turn: Option<(Option<String>, String)> = None;
+    for entry in entries[..=index].iter().rev() {
+        match entry {
+            ChatEntry::User { text, turn_id } => {
+                turn = Some((turn_id.clone(), text.clone()));
+                break;
+            }
+            ChatEntry::Assistant { text, .. } => rounds.push(text),
+            _ => {}
+        }
+    }
+    let copy_result = rounds.first().map(|text| (*text).to_string());
+    let copy_full = if rounds.is_empty() {
+        None
+    } else {
+        let mut parts = Vec::new();
+        if let Some((_, prompt)) = &turn {
+            parts.push(format!("{}\n{}", text.turn_copy_user_label, prompt));
+        }
+        parts.extend(rounds.iter().rev().map(|text| (*text).to_string()));
+        Some(parts.join("\n\n---\n\n"))
+    };
+    Some(TurnFooterPlan {
+        turn_id: turn.map(|(turn_id, _)| turn_id).flatten(),
+        copy_full,
+        copy_result,
+    })
+}
+
+/// The finished-turn footer (R2d, web `ModelRoundItem` metadata row): fork /
+/// copy / snapshots, right-aligned under the turn's last entry. Every entry
+/// hooks an existing capability — the per-turn fork menu, the clipboard, the
+/// git snapshots view.
+fn turn_footer(
+    plan: TurnFooterPlan,
+    row: usize,
+    fork: &ChatForkContext,
+    text: &ShellText,
+) -> gpui_kit::AnyElement {
+    let mut actions = div()
+        .debug_selector(|| "turn-footer".to_string())
+        .mt_1()
+        .flex()
+        .items_center()
+        .justify_end()
+        .gap_0p5();
+    if let Some(turn_id) = plan.turn_id {
+        actions = actions.child(turn_fork_menu(
+            fork.session_id.clone(),
+            turn_id,
+            fork.tx.clone(),
+            text,
+        ));
+    }
+    if let (Some(result), Some(full)) = (plan.copy_result, plan.copy_full) {
+        actions = actions.child(
+            Button::new(ElementId::Name(format!("turn-copy-{row}").into()))
+                .icon(IconName::Copy)
+                .small()
+                .with_variant(ButtonVariant::Ghost)
+                .tooltip(text.turn_copy.clone())
+                .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _window, cx| {
+                    let text = i18n::current(cx);
+                    let full = full.clone();
+                    let result = result.clone();
+                    menu.item(PopupMenuItem::new(text.turn_copy_full.clone()).on_click(
+                        move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(full.clone()));
+                        },
+                    ))
+                    .item(
+                        PopupMenuItem::new(text.turn_copy_result.clone()).on_click(
+                            move |_, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(result.clone()));
+                            },
+                        ),
+                    )
+                }),
+        );
+    }
+    let view = fork.view.clone();
+    actions = actions.child(
+        Button::new(ElementId::Name(format!("turn-snapshot-{row}").into()))
+            .icon(IconName::Archive)
+            .small()
+            .with_variant(ButtonVariant::Ghost)
+            .tooltip(text.git_snapshots_view.clone())
+            .on_click(move |_, window, cx| {
+                if let Some(view) = view.upgrade() {
+                    let _ = view.update(cx, |shell, cx| shell.open_git_snapshots(window, cx));
+                }
+            }),
+    );
+    actions.into_any_element()
 }
 
 /// Per-turn menu under a user prompt: fork including the selected turn, from
@@ -3842,30 +4067,67 @@ impl ShellWindow {
         let this = cx.entity();
         let jump_label = text.chat_jump_latest.clone();
         let text = text.clone();
+        // The scroller's uniform inter-row gap stands in for a CSS `gap`;
+        // transcript rows own their rhythm instead (turn boundary 32px,
+        // in-turn 8/12px below), so the wrapper's bottom padding zeroes out.
+        let mut row_style = StyleRefinement::default();
+        row_style.padding.bottom = Some(px(0.).into());
         MessageScroller::new("transcript", scroller, move |index, _window, cx| {
             let snapshot = this.read(cx);
-            let entry = snapshot
-                .chat_for(&session_id)
-                .and_then(|chat| chat.entries.get(index))
-                .cloned();
-            let fork = snapshot.chat_for(&session_id).map(|chat| ChatForkContext {
+            let chat = snapshot.chat_for(&session_id);
+            let entry = chat.and_then(|chat| chat.entries.get(index)).cloned();
+            let footer_plan = chat.and_then(|chat| {
+                turn_footer_plan(&chat.entries, index, chat.busy, chat.submitting, &text)
+            });
+            let user_expanded = match (&entry, chat) {
+                (Some(ChatEntry::User { text: body, .. }), Some(chat)) => {
+                    chat.expanded_user_texts.contains(&markdown_id_key(body))
+                }
+                _ => false,
+            };
+            let fork = chat.map(|chat| ChatForkContext {
                 session_id: chat.session_id.clone(),
                 tx: snapshot.event_tx.clone(),
                 view: this.downgrade(),
             });
+            let is_user = matches!(entry, Some(ChatEntry::User { .. }));
             match entry {
-                Some(entry) => div()
-                    .w_full()
-                    .max_w(px(READING_COLUMN_WIDTH))
-                    .mx_auto()
-                    .child(render_chat_item(&entry, &text, fork.as_ref(), cx))
-                    .into_any_element(),
+                Some(entry) => {
+                    let mut row = div()
+                        .debug_selector(|| "chat-row".to_string())
+                        .w_full()
+                        .max_w(px(READING_COLUMN_WIDTH))
+                        .mx_auto();
+                    if is_user {
+                        // The turn boundary opens above every prompt but the
+                        // transcript's first row; the prompt hugs its answer.
+                        if index > 0 {
+                            row = row.mt(px(TURN_GAP));
+                        }
+                        row = row.mb(px(FLOW_ITEM_GAP));
+                    } else {
+                        row = row.mb(px(TURN_RHYTHM_GAP));
+                    }
+                    row = row.child(render_chat_item(
+                        &entry,
+                        &text,
+                        fork.as_ref(),
+                        index,
+                        user_expanded,
+                        cx,
+                    ));
+                    if let (Some(plan), Some(fork)) = (footer_plan, fork.as_ref()) {
+                        row = row.child(turn_footer(plan, index, fork, &text));
+                    }
+                    row.into_any_element()
+                }
                 // Scroller item counts are synced on the same mutation
                 // that grows `entries`, so an out-of-range index cannot
                 // persist.
                 None => div().into_any_element(),
             }
         })
+        .with_row_style(row_style)
         .with_jump_button_label(jump_label)
         .with_bottom_fade(cx.theme().background)
         .flex_1()
@@ -6498,6 +6760,7 @@ mod tests {
             busy: false,
             submitting: false,
             child_context: None,
+            expanded_user_texts: BTreeSet::new(),
         }
     }
 
@@ -6509,6 +6772,91 @@ mod tests {
         assert!(!chat.append_chunk("round-1", "world"));
         assert!(chat.append_chunk("round-2", "next round"));
         assert_eq!(chat.entries.len(), 2);
+    }
+
+    fn turn_entries() -> Vec<ChatEntry> {
+        vec![
+            ChatEntry::User {
+                text: "fix the bug".into(),
+                turn_id: Some("turn-1".into()),
+            },
+            ChatEntry::Assistant {
+                round_id: "round-1".into(),
+                text: "first answer".into(),
+            },
+            ChatEntry::Tool(ToolCard {
+                key: "tool-1".into(),
+                tool_name: "read_file".into(),
+                status: ToolStatus::Done,
+                detail: String::new(),
+                subagent_session: None,
+                background: false,
+            }),
+            ChatEntry::Assistant {
+                round_id: "round-2".into(),
+                text: "final answer".into(),
+            },
+        ]
+    }
+
+    #[test]
+    fn turn_footer_plan_hosts_the_finished_turn_tail() {
+        let text = crate::i18n::fallback_text(LocaleId::EnUS);
+        let entries = turn_entries();
+        // The tail assistant closes the finished turn; the copy scopes use
+        // the web transcript shape (`User\n…` + rounds, `---` separated).
+        let plan = turn_footer_plan(&entries, 3, false, false, &text).expect("tail hosts footer");
+        assert_eq!(plan.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(plan.copy_result.as_deref(), Some("final answer"));
+        assert_eq!(
+            plan.copy_full.as_deref(),
+            Some(
+                format!(
+                    "{}\nfix the bug\n\n---\n\nfirst answer\n\n---\n\nfinal answer",
+                    text.turn_copy_user_label
+                )
+                .as_str()
+            )
+        );
+        // A turn closed by the next prompt is finished history.
+        let mut history = turn_entries();
+        history.push(ChatEntry::User {
+            text: "next please".into(),
+            turn_id: Some("turn-2".into()),
+        });
+        assert!(turn_footer_plan(&history, 3, true, false, &text).is_some());
+    }
+
+    #[test]
+    fn turn_footer_plan_rejects_streaming_and_mid_turn_rows() {
+        let text = crate::i18n::fallback_text(LocaleId::EnUS);
+        let entries = turn_entries();
+        // The executing turn's tail stays footer-less until it finishes.
+        assert!(turn_footer_plan(&entries, 3, true, false, &text).is_none());
+        assert!(turn_footer_plan(&entries, 3, false, true, &text).is_none());
+        // Tool cards inside the turn are not the tail; prompts and
+        // system rows never host the footer.
+        assert!(turn_footer_plan(&entries, 2, false, false, &text).is_none());
+        assert!(turn_footer_plan(&entries, 0, false, false, &text).is_none());
+        // A tool-only turn has no assistant text: the tail row still hosts
+        // fork/snapshots while both copy scopes hide.
+        let tool_only = vec![
+            ChatEntry::User {
+                text: "run it".into(),
+                turn_id: Some("turn-1".into()),
+            },
+            ChatEntry::Tool(ToolCard {
+                key: "tool-1".into(),
+                tool_name: "run_command".into(),
+                status: ToolStatus::Done,
+                detail: String::new(),
+                subagent_session: None,
+                background: false,
+            }),
+        ];
+        let plan = turn_footer_plan(&tool_only, 1, false, false, &text).expect("tool tail hosts");
+        assert_eq!(plan.turn_id.as_deref(), Some("turn-1"));
+        assert!(plan.copy_full.is_none() && plan.copy_result.is_none());
     }
 
     #[gpui_kit::test]
@@ -6843,7 +7191,7 @@ mod tests {
                 move |index, _window, cx| {
                     render_count.set(render_count.get() + 1);
                     match this.read(cx).entries.get(index).cloned() {
-                        Some(entry) => render_chat_item(&entry, &text, None, cx),
+                        Some(entry) => render_chat_item(&entry, &text, None, index, false, cx),
                         None => div().into_any_element(),
                     }
                 },
@@ -8756,6 +9104,124 @@ mod tests {
     /// The docked panel (R2c) lays out to the right of the sidebar over the
     /// chat column with its head chrome, and pop-out removes it from the
     /// session view.
+    #[gpui_kit::test]
+    fn user_bubble_wraps_and_caps_inside_the_reading_column(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        // A long CJK prompt: line-breaking must wrap it inside the bubble
+        // (the R2d regression: it used to render as one clipped line).
+        let long_prompt = "把如果变成真：".repeat(12);
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(
+                    RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                        session_id: "s-1".into(),
+                        name: "First".into(),
+                        agent_type: "Standard".into(),
+                        model_id: None,
+                        entries: vec![
+                            ChatEntry::User {
+                                text: long_prompt,
+                                turn_id: Some("turn-1".into()),
+                            },
+                            ChatEntry::Assistant {
+                                round_id: "round-1".into(),
+                                text: "done".into(),
+                            },
+                        ],
+                        busy: false,
+                    }),
+                    window,
+                    cx,
+                );
+            });
+        });
+        let view = shell.clone();
+        window.draw(
+            point(px(0.), px(0.)),
+            size(px(1400.), px(900.)),
+            move |_, _| view.into_any_element(),
+        );
+        window.run_until_parked();
+        let cap = window
+            .debug_bounds("user-bubble-cap")
+            .expect("user bubble cap lays out");
+        // 72% of the 900px reading column; the column is centered in the
+        // chat area right of the 300px sidebar.
+        assert!(
+            cap.size.width <= px(900. * 0.72 + 1.),
+            "bubble caps at the web fraction: {:?}",
+            cap
+        );
+        // Wrapped CJK at text_sm/1.625 line height is ~21px per line; the
+        // 168-char prompt cannot fit three 648px lines (clamp) — anything
+        // below four lines means it rendered as one clipped line again.
+        assert!(
+            cap.size.height > px(60.),
+            "bubble wraps to multiple lines: {:?}",
+            cap
+        );
+    }
+
+    #[gpui_kit::test]
+    fn turn_footer_stays_inside_the_reading_column(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(
+                    RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                        session_id: "s-1".into(),
+                        name: "First".into(),
+                        agent_type: "Standard".into(),
+                        model_id: None,
+                        entries: vec![
+                            ChatEntry::User {
+                                text: "rewrite the docs".into(),
+                                turn_id: Some("turn-1".into()),
+                            },
+                            ChatEntry::Assistant {
+                                round_id: "round-1".into(),
+                                text: "docs rewritten".into(),
+                            },
+                        ],
+                        busy: false,
+                    }),
+                    window,
+                    cx,
+                );
+            });
+        });
+        let view = shell.clone();
+        // A 1150px window: the reading column squeezes below its 900px max
+        // (the Xvfb smoke geometry that first showed the overflow).
+        window.draw(
+            point(px(0.), px(0.)),
+            size(px(1150.), px(838.)),
+            move |_, _| view.into_any_element(),
+        );
+        window.run_until_parked();
+        let footer = window
+            .debug_bounds("turn-footer")
+            .expect("finished turn hosts the footer");
+        let row = window
+            .debug_bounds("chat-row")
+            .expect("reading-column row lays out");
+        assert!(
+            footer.origin.x >= row.origin.x
+                && footer.origin.x + footer.size.width <= row.origin.x + row.size.width,
+            "footer sits inside the reading column: footer {:?} row {:?}",
+            footer,
+            row
+        );
+    }
+
     #[gpui_kit::test]
     fn resource_panel_lays_out_right_of_the_chat_column(cx: &mut gpui_kit::TestAppContext) {
         install_shell_globals(cx);

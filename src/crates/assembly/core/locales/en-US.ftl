@@ -192,6 +192,10 @@ gpui-shell-fork-before-turn = Fork before this turn
 
 gpui-shell-rollback-at-turn = Roll back to this turn
 gpui-shell-turn-menu = Turn actions
+gpui-shell-turn-copy = Copy dialog
+gpui-shell-turn-copy-full = Copy full transcript
+gpui-shell-turn-copy-result = Copy result
+gpui-shell-turn-copy-user-label = 👤 User:
 gpui-shell-export-title = Export transcript
 gpui-shell-export-done-prefix = Exported to
 gpui-shell-compaction-started = Compacting session context…

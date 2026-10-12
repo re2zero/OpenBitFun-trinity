@@ -171,6 +171,10 @@ gpui-shell-fork-before-turn = 在此轮前分叉
 
 gpui-shell-rollback-at-turn = 回滚到此轮
 gpui-shell-turn-menu = 本轮操作
+gpui-shell-turn-copy = 复制对话
+gpui-shell-turn-copy-full = 复制完整过程
+gpui-shell-turn-copy-result = 复制结果
+gpui-shell-turn-copy-user-label = 👤 用户:
 gpui-shell-export-title = 导出会话记录
 gpui-shell-export-done-prefix = 已导出到
 gpui-shell-compaction-started = 正在压缩会话上下文…

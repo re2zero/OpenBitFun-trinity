@@ -176,7 +176,7 @@ fn row_stage_action(file: &WorkspaceDiffFile) -> StageAction {
 
 /// Which body the panel shows below the header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum GitView {
+pub(crate) enum GitView {
     Files,
     History,
     /// Managed-worktree lifecycle over the core `WorktreeService` (M19).
@@ -633,7 +633,7 @@ impl GitPanel {
         cx.notify();
     }
 
-    fn set_view(&mut self, view: GitView, cx: &mut Context<Self>) {
+    pub(crate) fn set_view(&mut self, view: GitView, cx: &mut Context<Self>) {
         if self.view == view {
             return;
         }
