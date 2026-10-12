@@ -6,7 +6,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::resizable::{resizable_panel, v_resizable, ResizableState};
 use gpui_kit::component::{
     bubble::{Bubble, BubbleVariant},
-    button::{Button, ButtonVariant, ButtonVariants},
+    button::{Button, ButtonCustomVariant, ButtonRounded, ButtonVariant, ButtonVariants},
     empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle},
     input::{Input, InputState, Textarea, TextareaState},
     menu::{DropdownMenu, PopupMenuItem},
@@ -3929,8 +3929,13 @@ impl ShellWindow {
             .mx_auto()
             .px_4()
             .pb_3()
+            // Context strip above the card (R2a, the web ChatComposer
+            // contextBar): where the session runs and what the next turn may
+            // do, as a bare muted track under the capsule.
+            .child(self.render_composer_context_strip(text, cx))
             .child(
                 div()
+                    .debug_selector(|| "composer-card".to_string())
                     .flex()
                     .flex_col()
                     .gap_2()
@@ -3942,54 +3947,203 @@ impl ShellWindow {
                     .p_2()
                     .when_some(strip, |this, strip| this.child(strip))
                     .child(
+                        div().flex().flex_row().child(
+                            Textarea::new(&self.draft)
+                                .appearance(false)
+                                .flex_1()
+                                .h(px(COMPOSER_HEIGHT))
+                                // Image and file pastes become staged
+                                // attachments; text falls through to the
+                                // input's own insertion.
+                                .on_paste(move |item, _window, cx| {
+                                    let Some(view) = paste_view.upgrade() else {
+                                        return false;
+                                    };
+                                    let mut taken = false;
+                                    view.update(cx, |this, cx| {
+                                        for entry in item.entries() {
+                                            match entry {
+                                                ClipboardEntry::Image(image) => {
+                                                    this.attach_image_bytes(
+                                                        image.format,
+                                                        image.bytes.clone(),
+                                                        None,
+                                                        cx,
+                                                    );
+                                                    taken = true;
+                                                    break;
+                                                }
+                                                ClipboardEntry::ExternalPaths(paths) => {
+                                                    let paths: Vec<PathBuf> = paths.0.to_vec();
+                                                    this.attach_image_paths(paths, cx);
+                                                    taken = true;
+                                                    break;
+                                                }
+                                                ClipboardEntry::String(_) => {}
+                                            }
+                                        }
+                                    });
+                                    taken
+                                }),
+                        ),
+                    )
+                    // Action row under the input (web expanded layout):
+                    // model picker and send share the right cluster.
+                    .child(
                         div()
+                            .debug_selector(|| "composer-actions-row".to_string())
                             .flex()
                             .flex_row()
+                            .items_center()
+                            .justify_end()
                             .gap_2()
-                            .items_end()
                             .child(
-                                Textarea::new(&self.draft)
-                                    .appearance(false)
-                                    .flex_1()
-                                    .h(px(COMPOSER_HEIGHT))
-                                    // Image and file pastes become staged
-                                    // attachments; text falls through to the
-                                    // input's own insertion.
-                                    .on_paste(move |item, _window, cx| {
-                                        let Some(view) = paste_view.upgrade() else {
-                                            return false;
-                                        };
-                                        let mut taken = false;
-                                        view.update(cx, |this, cx| {
-                                            for entry in item.entries() {
-                                                match entry {
-                                                    ClipboardEntry::Image(image) => {
-                                                        this.attach_image_bytes(
-                                                            image.format,
-                                                            image.bytes.clone(),
-                                                            None,
-                                                            cx,
-                                                        );
-                                                        taken = true;
-                                                        break;
-                                                    }
-                                                    ClipboardEntry::ExternalPaths(paths) => {
-                                                        let paths: Vec<PathBuf> = paths.0.to_vec();
-                                                        this.attach_image_paths(paths, cx);
-                                                        taken = true;
-                                                        break;
-                                                    }
-                                                    ClipboardEntry::String(_) => {}
-                                                }
-                                            }
-                                        });
-                                        taken
-                                    }),
+                                div()
+                                    .debug_selector(|| "composer-model-picker".to_string())
+                                    .child(self.render_model_picker(text, cx)),
                             )
                             .child(action_button),
                     ),
             )
             .into_any_element()
+    }
+
+    /// The composer context strip (R2a, the web `ChatInputWorkspaceStrip`):
+    /// left rail names where the session runs — workspace and mode — and the
+    /// right rail states the next turn's contract — local execution and the
+    /// permission preset. Every value is a read-only fact projected from an
+    /// existing snapshot (workspace handle, chat agent type, shell config);
+    /// the strip adds no controls, so editing stays with its owner surface
+    /// (workspace switching in the status bar, the preset on the settings
+    /// permission page).
+    fn render_composer_context_strip(
+        &self,
+        text: &ShellText,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        let workspace = runtime::runtime_handle()
+            .map(|handle| handle.workspace().name)
+            .unwrap_or_default();
+        let mode = self
+            .active_chat()
+            .map(|chat| chat.agent_type.clone())
+            .unwrap_or_default();
+        let (permission_icon, permission_label, permission_full_access) =
+            match settings::ShellConfig::try_current(cx).map(|config| config.permission_preset) {
+                Some(preset) => Self::permission_badge(preset, text),
+                None => (IconName::Shield, text.permission_ask.clone(), false),
+            };
+
+        let fact = |label: String| {
+            div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .min_w_0()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(div().truncate().max_w(px(180.)).child(label))
+        };
+        let divider = || div().w_px().h_3().flex_shrink_0().bg(cx.theme().border);
+
+        let has_workspace = !workspace.is_empty();
+        let has_mode = !mode.is_empty();
+        div()
+            .debug_selector(|| "composer-context-strip".to_string())
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap_3()
+            .px_2()
+            .pb_1()
+            .min_h(px(20.))
+            // Left rail: where this session runs.
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .min_w_0()
+                    .when(has_workspace, |this| this.child(fact(workspace.clone())))
+                    .when(has_workspace && has_mode, |this| this.child(divider()))
+                    .when(has_mode, |this| this.child(fact(mode))),
+            )
+            // Right rail: what the next turn may do.
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .flex_shrink_0()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(Icon::new(IconName::Laptop).small())
+                            .child(text.composer_local.clone()),
+                    )
+                    .child(
+                        // A pill button, not a bare fact: the web trigger
+                        // carries the mode description as its tooltip and its
+                        // menu ends in "open default settings" — the click
+                        // opens the settings scene that owns the preset. No
+                        // mode switching here: the shell's preset surface
+                        // stays on the settings permission page.
+                        div()
+                            .debug_selector(|| "composer-permission-badge".to_string())
+                            .child(
+                                Button::new("composer-permission-badge-btn")
+                                    .xsmall()
+                                    .custom(
+                                        ButtonCustomVariant::new(cx)
+                                            .color(cx.theme().sidebar_accent)
+                                            .foreground(cx.theme().muted_foreground),
+                                    )
+                                    .rounded(ButtonRounded::Size(px(999.)))
+                                    .font_medium()
+                                    .icon(Icon::new(permission_icon).small().text_color(
+                                        if permission_full_access {
+                                            cx.theme().danger
+                                        } else {
+                                            cx.theme().success
+                                        },
+                                    ))
+                                    .label(permission_label)
+                                    .tooltip(if permission_full_access {
+                                        text.permission_full_access_desc.clone()
+                                    } else {
+                                        text.permission_ask_desc.clone()
+                                    })
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.open_settings_view(cx)),
+                                    ),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
+
+    /// Maps the settings permission preset onto the strip badge: icon ramp
+    /// (web `PERMISSION_MODE_ICONS` — the shield gains a mark as
+    /// confirmation is given up), label, and whether the icon takes the
+    /// danger ink of the full-access step (`false` = the success ink of ask).
+    fn permission_badge(
+        preset: openbitfun_runtime_ports::PermissionPolicyPreset,
+        text: &ShellText,
+    ) -> (IconName, String, bool) {
+        match preset {
+            openbitfun_runtime_ports::PermissionPolicyPreset::Ask => {
+                (IconName::Shield, text.permission_ask.clone(), false)
+            }
+            openbitfun_runtime_ports::PermissionPolicyPreset::FullAccess => (
+                IconName::ShieldAlert,
+                text.permission_full_access.clone(),
+                true,
+            ),
+        }
     }
 
     /// Opens the modal approval dialog bound to the head of the pending
@@ -5622,7 +5776,10 @@ impl ShellWindow {
                         })
                         .child(self.render_quick_actions_menu(text, cx))
                         .child(self.render_usage_button(cx))
-                        .child(self.render_model_picker(text, cx))
+                        // The model picker lives in the composer's action row
+                        // now (R2a, the web end-actions cluster); the header
+                        // keeps only the usage history entry and quick
+                        // actions.
                         .child({
                             let active = chat.busy || chat.submitting;
                             let label = if chat.submitting {
@@ -5731,10 +5888,12 @@ impl ShellWindow {
             .into_any_element()
     }
 
-    /// Model picker for the open session: the header shows the current model
-    /// and the menu offers every enabled configured model. The selection is
-    /// applied through the runtime (persisted per session), so the header only
-    /// changes after [`RuntimeEvent::SessionModelChanged`] confirms it.
+    /// Model picker for the open session (R2a: moved from the chat header
+    /// into the composer's action row, the web end-actions cluster). The
+    /// trigger shows the current model and the menu offers every enabled
+    /// configured model. The selection is applied through the runtime
+    /// (persisted per session), so the trigger only changes after
+    /// [`RuntimeEvent::SessionModelChanged`] confirms it.
     fn render_model_picker(
         &self,
         text: &ShellText,
@@ -6967,6 +7126,91 @@ mod tests {
         assert!(
             window.debug_bounds("status-trinity-chip").is_some(),
             "the trinity lamp chip renders inside the bar"
+        );
+    }
+
+    /// The permission badge (R2a) projects the settings preset: ask keeps the
+    /// plain shield on success ink, full access raises the alert shield on
+    /// danger ink — the web icon ramp, one step per given-up confirmation.
+    #[test]
+    fn permission_badge_maps_the_settings_preset() {
+        let text = crate::i18n::fallback_text(LocaleId::EnUS);
+        use openbitfun_runtime_ports::PermissionPolicyPreset;
+        let (icon, label, full_access) =
+            ShellWindow::permission_badge(PermissionPolicyPreset::Ask, &text);
+        assert_eq!(icon, IconName::Shield);
+        assert_eq!(label, text.permission_ask);
+        assert!(!full_access);
+        let (icon, label, full_access) =
+            ShellWindow::permission_badge(PermissionPolicyPreset::FullAccess, &text);
+        assert_eq!(icon, IconName::ShieldAlert);
+        assert_eq!(label, text.permission_full_access);
+        assert!(full_access);
+    }
+
+    /// The composer (R2a) carries the context strip above the card and the
+    /// model picker inside it: the strip reads as the capsule's footnote, and
+    /// the picker's old header home renders no such selector anymore.
+    #[gpui_kit::test]
+    fn composer_strip_and_model_picker_lay_out_in_the_composer(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(
+                    RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                        session_id: "s-1".into(),
+                        name: "First".into(),
+                        agent_type: "Standard".into(),
+                        model_id: Some("model-a".into()),
+                        entries: Vec::new(),
+                        busy: false,
+                    }),
+                    window,
+                    cx,
+                );
+            });
+        });
+        window.draw(point(px(0.), px(0.)), size(px(1200.), px(800.)), {
+            let shell = shell.clone();
+            move |_, _| shell.into_any_element()
+        });
+        window.run_until_parked();
+        let strip = window
+            .debug_bounds("composer-context-strip")
+            .expect("context strip lays out");
+        let card = window
+            .debug_bounds("composer-card")
+            .expect("composer card lays out");
+        let badge = window
+            .debug_bounds("composer-permission-badge")
+            .expect("permission badge lays out");
+        let picker = window
+            .debug_bounds("composer-model-picker")
+            .expect("model picker lays out inside the composer");
+        assert!(
+            strip.origin.y + strip.size.height <= card.origin.y,
+            "the strip sits above the card: strip {:?} card {:?}",
+            strip,
+            card
+        );
+        assert!(
+            badge.origin.y >= strip.origin.y
+                && badge.origin.y + badge.size.height <= strip.origin.y + strip.size.height,
+            "the permission badge lives in the strip's right rail: badge {:?} strip {:?}",
+            badge,
+            strip
+        );
+        assert!(
+            picker.origin.y > strip.origin.y
+                && picker.origin.y >= card.origin.y
+                && picker.origin.y + picker.size.height <= card.origin.y + card.size.height,
+            "the model picker moved into the card below the strip: picker {:?} strip {:?} card {:?}",
+            picker,
+            strip,
+            card
         );
     }
 

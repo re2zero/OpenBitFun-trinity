@@ -18,7 +18,8 @@ gpui_kit::assets::icon_assets!(
     // (settings nav) and Plug (manage pages) likewise. Without these the SVG
     // resolves missing at render time. GitCommitHorizontal/GitPullRequest/Zap
     // are the quick-actions menu glyphs (T2-10); Lucide renamed `commit` to
-    // `git-commit-horizontal`.
+    // `git-commit-horizontal`. Laptop/ShieldAlert are the composer strip's
+    // local-execution fact and full-access permission ramp (R2a).
     [
         Activity,
         Archive,
@@ -32,8 +33,10 @@ gpui_kit::assets::icon_assets!(
         GitPullRequest,
         House,
         Languages,
+        Laptop,
         Plug,
         Shield,
+        ShieldAlert,
         Sparkles,
         Square,
         TextWrap,

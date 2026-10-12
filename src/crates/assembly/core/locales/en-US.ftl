@@ -256,6 +256,12 @@ gpui-shell-terminal-profile-command = Startup command
 gpui-shell-model-picker = Session model
 gpui-shell-model-picker-empty = No configured models
 gpui-shell-model-default = Default model
+
+gpui-shell-composer-local = On this device
+gpui-shell-permission-ask = Ask
+gpui-shell-permission-ask-desc = External access, file changes, and command execution require confirmation.
+gpui-shell-permission-full-access = Full access
+gpui-shell-permission-full-access-desc = Tools are allowed by default without confirmation.
 gpui-shell-models-title = Models
 gpui-shell-models-default = Default model
 gpui-shell-models-default-desc = Model new sessions start on; existing sessions keep their own selection.

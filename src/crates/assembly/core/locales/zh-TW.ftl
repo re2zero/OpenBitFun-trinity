@@ -235,6 +235,12 @@ gpui-shell-terminal-profile-command = 啟動命令
 gpui-shell-model-picker = 會話模型
 gpui-shell-model-picker-empty = 未設定模型
 gpui-shell-model-default = 預設模型
+
+gpui-shell-composer-local = 本機
+gpui-shell-permission-ask = 需要確認
+gpui-shell-permission-ask-desc = 外部存取、修改檔案和執行命令需要確認。
+gpui-shell-permission-full-access = 完全存取
+gpui-shell-permission-full-access-desc = 預設允許工具執行，無需確認。
 gpui-shell-models-title = 模型
 gpui-shell-models-default = 預設模型
 gpui-shell-models-default-desc = 新增會話使用的模型；既有會話維持各自的選擇。

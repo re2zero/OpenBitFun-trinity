@@ -111,6 +111,14 @@ pub(crate) struct ShellText {
     pub model_picker: String,
     pub model_picker_empty: String,
     pub model_default: String,
+    /// Composer strip (R2a): local execution fact and the permission preset
+    /// badge copied from the web strip labels (web truth: flow-chat
+    /// `chatInput.permissionMode.*`, device `footerLocalSimple`).
+    pub composer_local: String,
+    pub permission_ask: String,
+    pub permission_ask_desc: String,
+    pub permission_full_access: String,
+    pub permission_full_access_desc: String,
     pub models_title: String,
     pub models_default: String,
     pub models_default_description: String,
@@ -832,6 +840,14 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         model_picker: "Session model".to_string(),
         model_picker_empty: "No configured models".to_string(),
         model_default: "Default model".to_string(),
+        composer_local: "On this device".to_string(),
+        permission_ask: "Ask".to_string(),
+        permission_ask_desc:
+            "External access, file changes, and command execution require confirmation."
+                .to_string(),
+        permission_full_access: "Full access".to_string(),
+        permission_full_access_desc: "Tools are allowed by default without confirmation."
+            .to_string(),
         models_title: "Models".to_string(),
         models_default: "Default model".to_string(),
         models_default_description:
@@ -1394,6 +1410,11 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         model_picker: service.t("gpui-shell-model-picker").await,
         model_picker_empty: service.t("gpui-shell-model-picker-empty").await,
         model_default: service.t("gpui-shell-model-default").await,
+        composer_local: service.t("gpui-shell-composer-local").await,
+        permission_ask: service.t("gpui-shell-permission-ask").await,
+        permission_ask_desc: service.t("gpui-shell-permission-ask-desc").await,
+        permission_full_access: service.t("gpui-shell-permission-full-access").await,
+        permission_full_access_desc: service.t("gpui-shell-permission-full-access-desc").await,
         models_title: service.t("gpui-shell-models-title").await,
         models_default: service.t("gpui-shell-models-default").await,
         models_default_description: service.t("gpui-shell-models-default-desc").await,
