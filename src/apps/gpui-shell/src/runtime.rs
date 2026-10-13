@@ -366,6 +366,24 @@ pub(crate) enum RuntimeEvent {
     /// A memory mutation (memorize / forget / reinforce) or the recall
     /// failed; surfaced as the page's inline action error.
     TrinityActionFailed(String),
+    /// R7c: the plugin UI host channel is live and its initial describe
+    /// landed; the named providers install into the projection now (each
+    /// entry is the source key plus its provider).
+    PluginUiBridgeReady {
+        providers: Vec<PluginUiProviderInstall>,
+    },
+    /// R7c: one dispatched interaction settled on the host channel; the
+    /// shell clears the scene's in-flight state and applies the outcome.
+    PluginUiSceneUpdate {
+        update: openbitfun_core::plugin_ui_host::PluginUiSceneUpdate,
+    },
+    /// R7c: the plugin UI host channel failed to open or its initial
+    /// describe failed; no contributions install from it and the reason is
+    /// logged (the test channel surfaces it in the smoke output).
+    PluginUiBridgeFailed(String),
+    /// R7c: the plugin UI test channel shut down; its installed providers
+    /// retract and open tabs fall into the contribution-removed state.
+    PluginUiChannelClosed,
 }
 
 /// One session list row: the runtime summary plus its persisted archive state.
@@ -375,6 +393,21 @@ pub(crate) enum RuntimeEvent {
 pub(crate) struct SessionListRow {
     pub summary: AgentSessionSummary,
     pub archived: bool,
+}
+
+/// R7c: one host-channel provider ready to install into the shell projection.
+/// The trait object has no `Debug`, so the event enum derives around it.
+pub(crate) struct PluginUiProviderInstall {
+    pub source_key: String,
+    pub provider: std::sync::Arc<dyn openbitfun_core::plugin_ui::PluginUiProvider>,
+}
+
+impl std::fmt::Debug for PluginUiProviderInstall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PluginUiProviderInstall")
+            .field("source_key", &self.source_key)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Dialog-ready projection of a session usage report: the headline numbers
@@ -3732,12 +3765,19 @@ pub(crate) fn spawn_bootstrap(
     tokio: tokio::runtime::Handle,
     tx: mpsc::UnboundedSender<RuntimeEvent>,
 ) {
+    let bootstrap_tx = tx.clone();
     tokio.spawn(async move {
-        if let Err(error) = bootstrap(tx.clone()).await {
+        if let Err(error) = bootstrap(bootstrap_tx.clone()).await {
             tracing::error!("Embedded runtime bootstrap failed: {error:#}");
-            let _ = tx.send(RuntimeEvent::Failed(format!("{error:#}")));
+            let _ = bootstrap_tx.send(RuntimeEvent::Failed(format!("{error:#}")));
         }
     });
+    // R7c test channel (design §7.7): an env-named file plugin opens on a
+    // dedicated extension host next to the main bootstrap. Its bridge events
+    // ride the same RuntimeEvent pump.
+    if let Some(plugin_dir) = crate::plugin_ui::host_channel_plugin_dir() {
+        crate::plugin_ui::spawn_host_channel(tokio, plugin_dir, tx);
+    }
 }
 
 /// Assembles the embedded runtime following the CLI order of operations.

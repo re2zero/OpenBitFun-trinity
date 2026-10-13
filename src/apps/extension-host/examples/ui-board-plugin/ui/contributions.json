@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "locales": {
+    "title": { "zh-CN": "插件看板", "en-US": "Plugin Board" },
+    "btn.increment": { "zh-CN": "加一", "en-US": "Increment" },
+    "name.hint": { "zh-CN": "输入名字回车", "en-US": "Type a name and press Enter" }
+  },
+  "scenes": [{
+    "id": "board",
+    "title": { "zh-CN": "插件场景", "en-US": "Plugin Scene" },
+    "icon": "layout-dashboard",
+    "slot": { "kind": "tab" },
+    "entry": "ui/scenes/board.json"
+  }],
+  "cards": [],
+  "panels": [],
+  "actions": []
+}

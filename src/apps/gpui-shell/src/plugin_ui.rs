@@ -14,7 +14,8 @@
 //! unit-tested) for the R7c async host channel, where events genuinely queue.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::OnceLock;
+use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use gpui_kit::assets::IconName;
@@ -41,6 +42,7 @@ use openbitfun_core::plugin_ui::{
     PluginUiEventPayload, PluginUiNode, PluginUiNodeKind, PluginUiProjection, PluginUiSceneGate,
     PluginUiTone, PluginUiTree, SceneRef,
 };
+use openbitfun_core::plugin_ui_host::{PluginUiSceneOutcome, UiHostBridgeEvent, UiTestChannel};
 
 use crate::i18n::ShellText;
 use crate::shell::ShellWindow;
@@ -119,6 +121,10 @@ pub(crate) struct PluginUiSceneRuntime {
     /// the removed state and disables its controls, but stays open for the
     /// user to close (design §4.2).
     removed: bool,
+    /// R7c deferred dispatch: the interaction a click posted while another
+    /// round trip was still in flight (same action overwrites). Re-posted
+    /// when the in-flight trip settles.
+    pending: Option<(String, Option<PluginUiEventPayload>)>,
 }
 
 impl PluginUiSceneRuntime {
@@ -159,6 +165,119 @@ pub(crate) fn setup_projection() -> (PluginUiProjection, Option<SceneRef>) {
             (projection, None)
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// R7c host test channel (design §7.7): a real plugin opens on a dedicated
+// extension host through the core test channel and its bridge events ride the
+// shell's RuntimeEvent pump. Env-gated test contribution, same trust stance as
+// the R7b fixture: never part of product assembly.
+// ---------------------------------------------------------------------------
+
+/// Env gate: names the local file plugin directory the test channel opens.
+pub(crate) fn host_channel_plugin_dir() -> Option<PathBuf> {
+    std::env::var_os("OPENBITFUN_PLUGIN_UI_HOST_PLUGIN")
+        .map(PathBuf::from)
+        .filter(|dir| !dir.as_os_str().is_empty())
+}
+
+/// Smoke automation hook: shut the test channel down after this many
+/// milliseconds so the retraction path (providers uninstall → tabs fall into
+/// the contribution-removed state) is scriptable end to end.
+fn host_channel_shutdown_after() -> Option<std::time::Duration> {
+    std::env::var("OPENBITFUN_PLUGIN_UI_TEST_SHUTDOWN_AFTER_MS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .map(std::time::Duration::from_millis)
+}
+
+/// The live test channel; keeps the extension-host process alive. Taken by
+/// the shutdown timer (smoke) — the drain loop below keeps a bridge clone, so
+/// the channel leaving this slot only reaps the host process.
+static UI_TEST_CHANNEL: OnceLock<std::sync::Mutex<Option<UiTestChannel>>> = OnceLock::new();
+
+/// Opens the test channel and forwards its bridge events onto the shell's
+/// event pump. The initial `Ready` can fire before this task resumes after
+/// `open`, so events queue through an unbounded forward channel instead of
+/// racing the pump.
+pub(crate) fn spawn_host_channel(
+    tokio: tokio::runtime::Handle,
+    plugin_dir: PathBuf,
+    tx: tokio::sync::mpsc::UnboundedSender<crate::runtime::RuntimeEvent>,
+) {
+    tokio.spawn(async move {
+        let (forward_tx, mut forward_rx) = tokio::sync::mpsc::unbounded_channel();
+        let sink: Arc<dyn Fn(UiHostBridgeEvent) + Send + Sync> = Arc::new(move |event| {
+            let _ = forward_tx.send(event);
+        });
+        tracing::info!(
+            "Opening plugin UI host test channel for {}",
+            plugin_dir.display()
+        );
+        match openbitfun_core::plugin_ui_host::open_ui_test_channel(plugin_dir, sink).await {
+            Ok(channel) => {
+                let bridge = channel.bridge();
+                let holder = UI_TEST_CHANNEL.get_or_init(|| std::sync::Mutex::new(None));
+                *holder.lock().expect("plugin ui test channel lock") = Some(channel);
+                if let Some(after) = host_channel_shutdown_after() {
+                    let tx = tx.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(after).await;
+                        let channel = UI_TEST_CHANNEL.get().and_then(|holder| {
+                            holder.lock().expect("plugin ui test channel lock").take()
+                        });
+                        match channel {
+                            Some(channel) => {
+                                let report = channel.shutdown().await;
+                                tracing::info!(
+                                    "Plugin UI test channel shut down: disposition={:?}",
+                                    report.disposition
+                                );
+                            }
+                            None => {
+                                tracing::warn!(
+                                    "Plugin UI test channel was already gone at shutdown"
+                                )
+                            }
+                        }
+                        let _ = tx.send(crate::runtime::RuntimeEvent::PluginUiChannelClosed);
+                    });
+                }
+                while let Some(event) = forward_rx.recv().await {
+                    let runtime_event = match event {
+                        UiHostBridgeEvent::Ready { plugin_keys } => {
+                            crate::runtime::RuntimeEvent::PluginUiBridgeReady {
+                                providers: plugin_keys
+                                    .into_iter()
+                                    .filter_map(|key| {
+                                        bridge.provider(&key).map(|provider| {
+                                            crate::runtime::PluginUiProviderInstall {
+                                                source_key: key,
+                                                provider,
+                                            }
+                                        })
+                                    })
+                                    .collect(),
+                            }
+                        }
+                        UiHostBridgeEvent::SceneUpdate(update) => {
+                            crate::runtime::RuntimeEvent::PluginUiSceneUpdate { update }
+                        }
+                        UiHostBridgeEvent::Failed(error) => {
+                            crate::runtime::RuntimeEvent::PluginUiBridgeFailed(error)
+                        }
+                    };
+                    let _ = tx.send(runtime_event);
+                }
+            }
+            Err(error) => {
+                tracing::error!("Plugin UI host test channel failed to open: {error}");
+                let _ = tx.send(crate::runtime::RuntimeEvent::PluginUiBridgeFailed(
+                    error.to_string(),
+                ));
+            }
+        }
+    });
 }
 
 impl ShellWindow {
@@ -330,7 +449,11 @@ impl ShellWindow {
     }
 
     /// One interaction, dispatched through the projection (the only arbiter
-    /// of event ownership). Rejections land in the scene banner.
+    /// of event ownership). Rejections land in the scene banner. The path
+    /// splits on the provider's dispatch mode: the R7b fixture completes
+    /// inside the click handler; the R7c host bridge only posts, and the
+    /// scene stays in its in-flight state until the bridge reports through
+    /// [`Self::apply_plugin_ui_scene_update`].
     pub(crate) fn dispatch_plugin_event(
         &mut self,
         reference: SceneRef,
@@ -338,8 +461,43 @@ impl ShellWindow {
         payload: Option<PluginUiEventPayload>,
         cx: &mut Context<Self>,
     ) {
-        let runtime = self.plugin_ui_scenes.entry(reference).or_default();
-        runtime.inflight_since = Some(Instant::now());
+        if !self.plugin_ui.dispatch_deferred(reference) {
+            let runtime = self.plugin_ui_scenes.entry(reference).or_default();
+            runtime.inflight_since = Some(Instant::now());
+            let event = PluginUiEvent {
+                scene: reference,
+                action,
+                payload,
+            };
+            let outcome = self.plugin_ui.dispatch(&event);
+            let runtime = self.plugin_ui_scenes.entry(reference).or_default();
+            runtime.inflight_since = None;
+            match outcome {
+                Ok(_) => runtime.banner = None,
+                Err(PluginUiSceneGate::ContributionRemoved) => runtime.removed = true,
+                Err(PluginUiSceneGate::ProviderError(detail)) => {
+                    runtime.banner = Some(PluginUiBanner::Provider(detail));
+                }
+                Err(PluginUiSceneGate::Rejected(rejection)) => {
+                    runtime.banner =
+                        Some(PluginUiBanner::Rejected(rejection.first().detail.clone()));
+                }
+            }
+            cx.notify();
+            return;
+        }
+
+        // Deferred: one round trip at a time; a click while in flight is
+        // coalesced (same action overwrites) and re-posted on settlement.
+        {
+            let runtime = self.plugin_ui_scenes.entry(reference).or_default();
+            if runtime.inflight_since.is_some() {
+                runtime.pending = Some((action, payload));
+                cx.notify();
+                return;
+            }
+            runtime.inflight_since = Some(Instant::now());
+        }
         let event = PluginUiEvent {
             scene: reference,
             action,
@@ -347,16 +505,74 @@ impl ShellWindow {
         };
         let outcome = self.plugin_ui.dispatch(&event);
         let runtime = self.plugin_ui_scenes.entry(reference).or_default();
-        runtime.inflight_since = None;
         match outcome {
-            Ok(_) => runtime.banner = None,
-            Err(PluginUiSceneGate::ContributionRemoved) => runtime.removed = true,
+            // Posted: the in-flight state holds until the bridge reports.
+            Ok(_) => {}
+            Err(PluginUiSceneGate::ContributionRemoved) => {
+                runtime.inflight_since = None;
+                runtime.removed = true;
+            }
             Err(PluginUiSceneGate::ProviderError(detail)) => {
+                runtime.inflight_since = None;
                 runtime.banner = Some(PluginUiBanner::Provider(detail));
             }
             Err(PluginUiSceneGate::Rejected(rejection)) => {
+                runtime.inflight_since = None;
                 runtime.banner = Some(PluginUiBanner::Rejected(rejection.first().detail.clone()));
             }
+        }
+        cx.notify();
+    }
+
+    /// One deferred interaction settled on the host bridge (R7c): refresh the
+    /// scene tree from the provider's updated document, clear the in-flight
+    /// state, apply the outcome as the scene banner, and re-post a coalesced
+    /// click.
+    pub(crate) fn apply_plugin_ui_scene_update(
+        &mut self,
+        update: openbitfun_core::plugin_ui_host::PluginUiSceneUpdate,
+        cx: &mut Context<Self>,
+    ) {
+        let openbitfun_core::plugin_ui_host::PluginUiSceneUpdate {
+            plugin_key,
+            scene_id,
+            action: _,
+            outcome,
+        } = update;
+        let Some(reference) = self.plugin_ui.scene_ref_of(&plugin_key, &scene_id) else {
+            tracing::warn!(
+                "Plugin UI scene update has no live scene: key={plugin_key}, scene={scene_id}"
+            );
+            return;
+        };
+        let pending = self
+            .plugin_ui_scenes
+            .get_mut(&reference)
+            .and_then(|runtime| runtime.pending.take());
+        {
+            let runtime = self.plugin_ui_scenes.entry(reference).or_default();
+            runtime.inflight_since = None;
+            match outcome {
+                Ok(PluginUiSceneOutcome::TreeReplaced) => {
+                    match self.plugin_ui.refresh_tree(reference) {
+                        Ok(()) => runtime.banner = None,
+                        Err(PluginUiSceneGate::ContributionRemoved) => runtime.removed = true,
+                        Err(PluginUiSceneGate::ProviderError(detail)) => {
+                            runtime.banner = Some(PluginUiBanner::Provider(detail));
+                        }
+                        Err(PluginUiSceneGate::Rejected(rejection)) => {
+                            runtime.banner =
+                                Some(PluginUiBanner::Rejected(rejection.first().detail.clone()));
+                        }
+                    }
+                }
+                Ok(PluginUiSceneOutcome::Unchanged) => runtime.banner = None,
+                Err(detail) => runtime.banner = Some(PluginUiBanner::Provider(detail)),
+            }
+        }
+        if let Some((action, payload)) = pending {
+            self.dispatch_plugin_event(reference, action, payload, cx);
+            return;
         }
         cx.notify();
     }

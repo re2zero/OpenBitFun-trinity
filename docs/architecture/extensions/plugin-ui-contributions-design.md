@@ -308,10 +308,13 @@ v0 不做的是把弹窗组件交进插件树里自由弹出。其余留 v1+ 逐
 5. **不假装**(原则保留):fixture 是测试贡献,不进产品装配;产品插件来源接入(谁调用
    provider)属 R7c 后的产品事项。
 
-## 7. R7c 真 host 通道(2026-10-13 立项,公子点名)
+## 7. R7c 真 host 通道(2026-10-13 立项,公子点名;2026-10-13 全量交付)
 
 沿既有 OpenCode Plugin Host 通道(loopback TCP + JSON-RPC)扩展 UI 贡献方法族,把 R7b 的进程内
 fixture 换成真 Bun 插件。契约如下;实现偏差按惯例回写本节。
+
+**交付**:`6f33a94ff`(本节契约化)→ `13b56286d`(R7c-1)→ `981b01c22`(R7c-2a 桥接)→
+R7c-2b/3(测试通道 + 壳异步化 + 真插件冒烟,Xvfb :73 五步闭环 0 panic,证据 /tmp/pu-r7c/)。
 
 ### 7.1 能力协商与降级
 
@@ -400,11 +403,26 @@ ui?: {
 
 ### 7.7 切分与验收
 
-| 步 | 内容 | 验收 |
-|---|---|---|
-| R7c-1 | §7.1-7.2 协议四方同步 + TS host 装载与方法实现 + Rust client 方法,各侧测试 | extension-host `bun test` + typecheck 绿;Rust 适配器 fake-host 协议测试绿 |
-| R7c-2 | §7.4-7.5 core 桥接 worker + provider + 测试通道 + 生命周期撤树 | core `plugin_ui` 单测绿(含撤树臂) |
-| R7c-3 | §7.6 壳异步化 + Bun 真插件 fixture + Xvfb 五步冒烟(开 tab→渲染→点击回环→提交回环→关实例撤树) | 壳单测绿;冒烟 0 panic;审计(fmt/boundaries/i18n/theme)绿 |
+| 步 | 内容 | 验收 | 状态 |
+|---|---|---|---|
+| R7c-1 | §7.1-7.2 协议四方同步 + TS host 装载与方法实现 + Rust client 方法,各侧测试 | extension-host `bun test` + typecheck 绿;Rust 适配器 fake-host 协议测试绿 | ✅ `13b56286d` |
+| R7c-2a | §7.4 core 桥接 worker + provider(缓存直读 + 两段式 dispatch + `dispatch_deferred`) | core 单测绿(超时/失败/shutdown 臂) | ✅ `981b01c22` |
+| R7c-2b | §7.4-7.5 测试通道 `open_ui_test_channel(dir, on_event)` + 壳 env 门 | core 单测绿(lease 提取/目录拒绝);投影 8 测无回归 | ✅ 本提交 |
+| R7c-3 | §7.6 壳异步化 + Bun 真插件 fixture + Xvfb 五步冒烟(开 tab→渲染→点击回环→提交回环→关实例撤树) | 壳单测绿;冒烟 0 panic;审计(fmt/boundaries/i18n/theme)绿 | ✅ 本提交 |
+
+实现回写(与契约的偏差/落点澄清):
+
+- `open_ui_test_channel` 的事件回调在 **open 时注入**(参数传入),而非事后订阅——桥接 worker
+  在 spawn 后立刻做初始 describe,`Ready` 可能先于 open 返回;壳侧经无界转发队列排队,
+  事件不丢(§7.4 的「spawn 时注入」决策沿用)。
+- 壳 env 门 = `OPENBITFUN_PLUGIN_UI_HOST_PLUGIN=<插件目录>`(host 通道,与 R7b fixture 门
+  `OPENBITFUN_PLUGIN_UI_FIXTURE` 互斥使用);冒烟撤树臂由
+  `OPENBITFUN_PLUGIN_UI_TEST_SHUTDOWN_AFTER_MS=<毫秒>` 脚本化——测试通道专属,不进产品装配。
+- **冒烟环境坑**:壳按 bundled 候选(`target/*/resources/ext-host/`)→ 开发 dist 的顺序解析
+  host 入口;`target/` 内残留旧 dist 时握手能力集陈旧,冒烟必须显式设
+  `OPENBITFUN_OPENCODE_BUN_HOST_ENTRY` 指向新构建的 `dist/extension-host.js`。
+- fixture 插件:`src/apps/extension-host/examples/ui-board-plugin/`(零依赖 index.ts +
+  ui/contributions.json + ui/scenes/board.json),复刻 R7b fixture 的 board 场景。
 
 ## 8. 升级兼容
 

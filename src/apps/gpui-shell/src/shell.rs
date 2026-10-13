@@ -1376,6 +1376,9 @@ pub(crate) struct ShellWindow {
     /// One-shot automation hook (`OPENBITFUN_PLUGIN_UI_AUTOOPEN`): opens the
     /// fixture scene tab once the runtime is ready.
     plugin_ui_auto_open: bool,
+    /// R7c host test channel: the source keys whose providers installed from
+    /// the bridge's Ready event; the channel-closed event retracts them.
+    pub(crate) plugin_ui_host_keys: Vec<String>,
 }
 
 impl ShellWindow {
@@ -1528,6 +1531,7 @@ impl ShellWindow {
             plugin_ui,
             plugin_ui_scenes: std::collections::BTreeMap::new(),
             plugin_ui_auto_open: Self::plugin_ui_auto_open_requested(),
+            plugin_ui_host_keys: Vec::new(),
         }
     }
 
@@ -2042,6 +2046,41 @@ impl ShellWindow {
                 tracing::warn!("Trinity action failed: {message}");
                 self.trinity.recall_busy = false;
                 self.trinity.action_error = Some(message);
+            }
+            RuntimeEvent::PluginUiBridgeReady { providers } => {
+                for install in providers {
+                    let crate::runtime::PluginUiProviderInstall {
+                        source_key,
+                        provider,
+                    } = install;
+                    match self.plugin_ui.install(&source_key, provider) {
+                        Ok(handles) => {
+                            tracing::info!(
+                                "Plugin UI host provider installed: key={source_key}, scenes={}",
+                                handles.len()
+                            );
+                            self.plugin_ui_host_keys.push(source_key);
+                        }
+                        Err(gate) => tracing::error!(
+                            "Plugin UI host provider rejected: key={source_key}, gate={gate:?}"
+                        ),
+                    }
+                }
+                cx.notify();
+            }
+            RuntimeEvent::PluginUiSceneUpdate { update } => {
+                self.apply_plugin_ui_scene_update(update, cx);
+            }
+            RuntimeEvent::PluginUiBridgeFailed(error) => {
+                tracing::error!("Plugin UI host channel failed: {error}");
+            }
+            RuntimeEvent::PluginUiChannelClosed => {
+                for key in self.plugin_ui_host_keys.drain(..) {
+                    if self.plugin_ui.uninstall(&key) {
+                        tracing::info!("Plugin UI host provider retracted: key={key}");
+                    }
+                }
+                cx.notify();
             }
             RuntimeEvent::CronJobs(jobs) => {
                 self.tasks.jobs = jobs;
@@ -5578,10 +5617,12 @@ impl Render for ShellWindow {
                 self.git_auto_open = false;
                 self.toggle_git_view(window, cx);
             }
-            if self.plugin_ui_auto_open {
+            if self.plugin_ui_auto_open && !self.plugin_ui.scenes().is_empty() {
                 self.plugin_ui_auto_open = false;
-                // Only when the fixture actually installed (env-gated test
-                // contribution): open its first scene tab.
+                // A contributed scene installed (env-gated test contribution):
+                // the R7b fixture installs at construction; the R7c host
+                // channel lands later through PluginUiBridgeReady, so the
+                // flag holds until the projection actually has a scene.
                 if let Some(handle) = self.plugin_ui.scenes().first() {
                     let scene = handle.scene_ref;
                     self.open_plugin_scene(scene, cx);

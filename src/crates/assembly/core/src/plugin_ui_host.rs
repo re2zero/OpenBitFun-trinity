@@ -10,10 +10,15 @@
 //! callback the host surface (shell) subscribes to.
 
 use crate::plugin_ui::{PluginUiEventPayload, PluginUiProvider};
-use openbitfun_opencode_plugin_host::{PluginGenerationLease, PluginHostClient, PluginUiSection};
+use openbitfun_opencode_plugin_host::{
+    PluginDeclaration, PluginGenerationLease, PluginHost, PluginHostClient, PluginHostConfig,
+    PluginHostShutdownPolicy, PluginHostShutdownReport, PluginInstanceOpenRequest, PluginUiSection,
+    GENERATION_FENCING_V1, UI_CONTRIBUTIONS_V1,
+};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -458,6 +463,199 @@ fn payload_to_wire(payload: &PluginUiEventPayload) -> Value {
     }
 }
 
+static NEXT_UI_TEST_CHANNEL: AtomicU64 = AtomicU64::new(1);
+const UI_TEST_HOST_LOG_LEVEL: &str = "info";
+
+/// A self-contained plugin host + UI bridge pair for host-driven UI smoke
+/// verification (design §7.7). It bypasses the global plugin configuration:
+/// the channel starts a dedicated extension host, opens one local file plugin
+/// directory directly, and hands out the bridge so the host surface can
+/// install providers once [`UiHostBridgeEvent::Ready`] lands.
+pub struct UiTestChannel {
+    bridge: Arc<UiHostBridge>,
+    host: PluginHost,
+}
+
+impl UiTestChannel {
+    pub fn bridge(&self) -> Arc<UiHostBridge> {
+        self.bridge.clone()
+    }
+
+    /// Retracts installed providers first (bridge shutdown turns provider
+    /// reads into explicit errors) and then reaps the host process tree.
+    /// The [`UiHostBridge`] worker thread is kept alive by the host surface
+    /// until this runs; a dropped channel stops the bridge via `Drop` but the
+    /// host process must always be reaped here.
+    pub async fn shutdown(self) -> PluginHostShutdownReport {
+        self.bridge.shutdown();
+        self.host
+            .shutdown(PluginHostShutdownPolicy::default())
+            .await
+    }
+}
+
+/// Opens one local file plugin's UI contributions on a dedicated extension
+/// host (design §7.7 test channel). The host must negotiate
+/// `generation-fencing-v1` + `ui-contributions-v1` and the open result must
+/// carry a non-empty `ui` section — anything else is an explicit error and
+/// the host is reaped, never a silent empty channel. `on_event` receives the
+/// bridge lifecycle events; install providers on [`UiHostBridgeEvent::Ready`]
+/// and follow dispatch settlements on [`UiHostBridgeEvent::SceneUpdate`].
+pub async fn open_ui_test_channel(
+    plugin_dir: impl Into<PathBuf>,
+    on_event: Arc<dyn Fn(UiHostBridgeEvent) + Send + Sync>,
+) -> crate::OpenBitFunResult<UiTestChannel> {
+    let plugin_dir = plugin_dir.into();
+    if !plugin_dir.is_dir() {
+        return Err(crate::OpenBitFunError::Validation(format!(
+            "Plugin UI test channel requires an existing plugin directory: {}",
+            plugin_dir.display()
+        )));
+    }
+    let directory = dunce::canonicalize(&plugin_dir)
+        .map_err(|error| {
+            crate::OpenBitFunError::Io(std::io::Error::other(format!(
+                "Failed to canonicalize the plugin UI test channel directory {}: {error}",
+                plugin_dir.display()
+            )))
+        })?
+        .to_string_lossy()
+        .into_owned();
+
+    let launch_spec = crate::plugin_host::PluginHostLaunchSpec::bun();
+    let entry = crate::plugin_host::resolve_host_entry(launch_spec)?;
+    let working_directory = entry.parent().ok_or_else(|| {
+        crate::OpenBitFunError::config(format!(
+            "{} plugin host entry has no parent directory: {}",
+            launch_spec.runtime_name,
+            entry.display()
+        ))
+    })?;
+    let host = PluginHost::start(PluginHostConfig {
+        runtime_command: std::env::var_os(launch_spec.command_env)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(launch_spec.default_command)),
+        entry: entry.clone(),
+        working_directory: working_directory.to_path_buf(),
+        cache_directory: std::env::temp_dir().join("openbitfun-plugin-ui-test-channel"),
+        log_file: std::env::temp_dir().join("openbitfun-plugin-ui-test-channel-host.log"),
+        log_level: UI_TEST_HOST_LOG_LEVEL.to_string(),
+    })
+    .await
+    .map_err(|error| {
+        crate::OpenBitFunError::ProcessError(format!(
+            "Failed to start the plugin UI test channel host from {}: {error}",
+            entry.display()
+        ))
+    })?;
+    match open_ui_test_channel_on_host(&host, &directory, on_event).await {
+        Ok(bridge) => Ok(UiTestChannel {
+            bridge: Arc::new(bridge),
+            host,
+        }),
+        Err(error) => {
+            let report = host.shutdown(PluginHostShutdownPolicy::default()).await;
+            log::warn!(
+                "Plugin UI test channel open failed; host reaped: disposition={:?}, error={}",
+                report.disposition,
+                error
+            );
+            Err(error)
+        }
+    }
+}
+
+async fn open_ui_test_channel_on_host(
+    host: &PluginHost,
+    directory: &str,
+    on_event: Arc<dyn Fn(UiHostBridgeEvent) + Send + Sync>,
+) -> crate::OpenBitFunResult<UiHostBridge> {
+    let client = host.client();
+    for capability in [GENERATION_FENCING_V1, UI_CONTRIBUTIONS_V1] {
+        if !client.capabilities().supports(capability) {
+            return Err(crate::OpenBitFunError::ProcessError(format!(
+                "Plugin UI test channel host did not negotiate {capability}"
+            )));
+        }
+    }
+    let sequence = NEXT_UI_TEST_CHANNEL.fetch_add(1, Ordering::Relaxed);
+    let instance_id = format!("openbitfun:ui-test:{sequence}");
+    let open_result = client
+        .open_instance(
+            PluginInstanceOpenRequest {
+                instance_id: instance_id.clone(),
+                generation_key: format!("ui-test-generation-{sequence}"),
+                revision: format!("revision-{sequence}"),
+                project: json!({ "id": "openbitfun-plugin-ui-test", "worktree": directory }),
+                config: serde_json::Map::new(),
+                directory: directory.to_string(),
+                worktree: directory.to_string(),
+                plugins: vec![PluginDeclaration {
+                    spec: directory.to_string(),
+                    options: None,
+                    base_directory: None,
+                }],
+                configuration_fingerprint: None,
+                expected_content_digests: None,
+                expected_review_digest: None,
+            },
+            Duration::from_secs(30),
+        )
+        .await
+        .map_err(|error| {
+            crate::OpenBitFunError::ProcessError(format!(
+                "Plugin UI test channel instance open failed: {error}"
+            ))
+        })?;
+    let ui_count = open_result
+        .get("ui")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(0);
+    if ui_count == 0 {
+        return Err(crate::OpenBitFunError::Validation(format!(
+            "Plugin {directory} carries no UI contributions; the test channel refuses to open an empty UI surface"
+        )));
+    }
+    let lease = lease_from_open_result(&open_result, &instance_id)?;
+    let transport = Arc::new(PluginHostUiTransport::new(client, lease));
+    Ok(UiHostBridge::spawn_with_timeout(
+        transport,
+        UI_HOST_RPC_TIMEOUT,
+        on_event,
+    ))
+}
+
+/// The host echoes the lease it activated; those echoed values are the
+/// authoritative fencing identity for every later `host.ui.*` call.
+fn lease_from_open_result(
+    result: &Value,
+    fallback_instance_id: &str,
+) -> crate::OpenBitFunResult<PluginGenerationLease> {
+    let missing = |field: &str| {
+        crate::OpenBitFunError::ProcessError(format!(
+            "Plugin UI test channel open result is missing {field}"
+        ))
+    };
+    Ok(PluginGenerationLease {
+        instance_id: result
+            .get("instanceID")
+            .and_then(Value::as_str)
+            .unwrap_or(fallback_instance_id)
+            .to_string(),
+        generation_key: result
+            .get("generationKey")
+            .and_then(Value::as_str)
+            .ok_or_else(|| missing("generationKey"))?
+            .to_string(),
+        revision: result
+            .get("revision")
+            .and_then(Value::as_str)
+            .ok_or_else(|| missing("revision"))?
+            .to_string(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -793,5 +991,37 @@ mod tests {
             "ui host channel is stopped"
         );
         assert!(bridge.provider(BOARD_KEY).is_none());
+    }
+
+    #[test]
+    fn lease_extraction_takes_the_echoed_generation_identity() {
+        let lease = lease_from_open_result(
+            &json!({
+                "instanceID": "openbitfun:ui-test:9",
+                "generationKey": "ui-test-generation-9",
+                "revision": "revision-9",
+            }),
+            "openbitfun:ui-test:1",
+        )
+        .expect("a complete open result carries a lease");
+        assert_eq!(lease.instance_id, "openbitfun:ui-test:9");
+        assert_eq!(lease.generation_key, "ui-test-generation-9");
+        assert_eq!(lease.revision, "revision-9");
+
+        let missing_revision =
+            lease_from_open_result(&json!({ "generationKey": "gen" }), "openbitfun:ui-test:1")
+                .expect_err("a missing revision must fail the open");
+        assert!(missing_revision.to_string().contains("revision"));
+    }
+
+    #[tokio::test]
+    async fn open_ui_test_channel_rejects_a_missing_plugin_directory_without_a_host() {
+        let missing =
+            std::env::temp_dir().join(format!("openbitfun-ui-test-missing-{}", std::process::id()));
+        let error = match open_ui_test_channel(missing, Arc::new(|_| {})).await {
+            Err(error) => error,
+            Ok(_) => panic!("a missing plugin directory must fail before any host spawn"),
+        };
+        assert!(error.to_string().contains("plugin directory"));
     }
 }

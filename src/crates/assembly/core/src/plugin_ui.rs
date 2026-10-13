@@ -210,6 +210,38 @@ impl PluginUiProjection {
         handles
     }
 
+    /// Resolves the live scene ref for a source plugin's scene id. The host
+    /// bridge addresses settled events by (source key, in-package scene id);
+    /// the shell addresses scenes by [`SceneRef`]. `None` when the plugin is
+    /// not installed or does not carry the scene.
+    pub fn scene_ref_of(&self, source_key: &str, scene_id: &str) -> Option<SceneRef> {
+        let (plugin_slot, installed) = self
+            .plugins
+            .iter()
+            .find(|(_, installed)| installed.source_key == source_key)?;
+        let scene_slot = installed.scene_slots.get(scene_id)?;
+        Some(SceneRef::new(*plugin_slot, *scene_slot))
+    }
+
+    /// Whether the scene's provider completes dispatches asynchronously (R7c
+    /// host bridge): the shell keeps its in-flight state until the bridge
+    /// reports instead of inside the click handler. A dangling ref reads as
+    /// synchronous (the fixture semantics).
+    pub fn dispatch_deferred(&self, scene_ref: SceneRef) -> bool {
+        self.installed(scene_ref)
+            .map(|installed| installed.provider.dispatch_deferred())
+            .unwrap_or(false)
+    }
+
+    /// Re-pulls the scene tree through the provider and swaps the validated
+    /// cache. The R7c deferred dispatch changes the provider's backing
+    /// document after the interaction settles, so the shell must re-fetch
+    /// instead of waiting for a cache miss. A validation failure keeps the
+    /// previous tree and reports it.
+    pub fn refresh_tree(&mut self, scene_ref: SceneRef) -> Result<(), PluginUiSceneGate> {
+        self.fetch_tree(scene_ref)
+    }
+
     /// The copy table of the owning plugin, for `@key` resolution at render
     /// time. A dangling ref yields an empty table (the tab shows the removed
     /// state instead of rendering).
