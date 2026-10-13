@@ -9,7 +9,7 @@ use gpui_kit::component::{
     bubble::{Bubble, BubbleContent, BubbleVariant},
     button::{Button, ButtonCustomVariant, ButtonRounded, ButtonVariant, ButtonVariants},
     empty::{Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyMediaVariant, EmptyTitle},
-    input::{Input, InputState, Textarea, TextareaState},
+    input::{Input, InputEvent, InputState, Textarea, TextareaState},
     menu::{DropdownMenu, PopupMenuItem},
     message_scroller::{MessageScroller, MessageScrollerState},
     scroll::ScrollableElement,
@@ -627,9 +627,28 @@ enum SidebarEntry {
         /// A turn is executing for this session (process-wide live set, so
         /// background sessions light up too).
         running: bool,
+        /// The workspace root this row belongs to: `None` = the active
+        /// workspace, `Some(root)` = another workspace's group. Opening a
+        /// foreign row switches the workspace first (web `openMainSession`
+        /// activates the session's owning workspace), because the runtime
+        /// restores a transcript from the *active* workspace's store.
+        group: Option<String>,
         tx: mpsc::UnboundedSender<RuntimeEvent>,
         /// The shell view, so the row menu can drive dialogs and actions
         /// (row rendering runs outside the view's own context).
+        view: WeakEntity<ShellWindow>,
+    },
+    /// The workspace group row (R1c): chevron fold, workspace name, and the
+    /// running dot when any visible session has a live turn. It is an entry,
+    /// not a section, so a whole group — header, rows, folds — is ONE
+    /// `Sidebar` child and the child count never changes with a fold.
+    GroupHeader {
+        name: SharedString,
+        collapsed: bool,
+        running: bool,
+        /// Fold key: `None` = the active workspace, `Some(root_path)` = one
+        /// of the other-workspace groups.
+        group: Option<String>,
         view: WeakEntity<ShellWindow>,
     },
     Nav {
@@ -683,6 +702,7 @@ impl SidebarItem for SidebarEntry {
                 active,
                 depth,
                 running,
+                group,
                 tx,
                 view,
             } => {
@@ -693,6 +713,8 @@ impl SidebarItem for SidebarEntry {
                     archived,
                 } = row;
                 let open_id = id.clone();
+                let open_group = group.clone();
+                let open_view = view.clone();
                 let menu = session_row_menu(
                     id.clone(),
                     name.clone(),
@@ -739,9 +761,16 @@ impl SidebarItem for SidebarEntry {
                     });
                 div()
                     .id(SharedString::from(format!("session-{id}")))
-                    .on_click(move |_, _, _| {
-                        if let Some(handle) = runtime::runtime_handle() {
-                            handle.open_session(open_id.clone(), tx.clone());
+                    .on_click(move |_, _, cx| {
+                        // The click lands on the window (not on a bare
+                        // runtime call) so a foreign-group row can switch the
+                        // workspace and open afterwards.
+                        if let Some(view) = open_view.upgrade() {
+                            let session_id = open_id.clone();
+                            let group = open_group.clone();
+                            view.update(cx, |this, cx| {
+                                this.open_session_row(session_id, group, cx);
+                            });
                         }
                     })
                     .cursor_pointer()
@@ -800,6 +829,64 @@ impl SidebarItem for SidebarEntry {
                     .child(menu)
                     .into_any_element()
             }
+            SidebarEntry::GroupHeader {
+                name,
+                collapsed,
+                running,
+                group,
+                view,
+            } => div()
+                .id(SharedString::from(format!(
+                    "session-group-{}",
+                    group.clone().unwrap_or_else(|| "current".to_string())
+                )))
+                .on_click(move |_, _, cx| {
+                    if let Some(view) = view.upgrade() {
+                        view.update(cx, |this, cx| {
+                            this.toggle_session_group(group.as_deref(), cx);
+                        });
+                    }
+                })
+                .cursor_pointer()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1()
+                .min_w_0()
+                .p_2()
+                .rounded(cx.theme().radius)
+                .text_sm()
+                .hover(|style| style.bg(cx.theme().muted))
+                .child(
+                    Icon::new(if collapsed {
+                        IconName::ChevronRight
+                    } else {
+                        IconName::ChevronDown
+                    })
+                    .small(),
+                )
+                // The desktop workspace group carries a folder glyph (the
+                // person icon is the standalone-agent group, which the shell
+                // has no data for).
+                .child(Icon::new(IconName::Folder).small())
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .font_medium()
+                        .truncate()
+                        .child(name),
+                )
+                .when(running, |this| {
+                    this.child(
+                        div()
+                            .size_1p5()
+                            .flex_shrink_0()
+                            .rounded_full()
+                            .bg(cx.theme().success),
+                    )
+                })
+                .into_any_element(),
             SidebarEntry::Nav {
                 action,
                 label,
@@ -963,32 +1050,23 @@ impl SidebarItem for SidebarEntry {
     }
 }
 
-/// One `Sidebar` child. The sessions tree (R1c) flattens into top-level
-/// children — the header, the workspace group row, and one child per tree row
-/// — so the component's internal `list` virtualizes per row (the group-level
-/// nesting it renders itself has no virtualization). One type because
-/// `Sidebar` children share one element type. Nothing collapses at this level:
-/// the component re-applies its own icon-rail state each frame.
+/// One `Sidebar` child. A workspace group is ONE child holding its header,
+/// its session rows, and its fold pair, so folding a group never changes how
+/// many children the sidebar has — `Sidebar`'s internal `list` resets (and
+/// jumps to the top) whenever the child count changes. Only the number of
+/// workspace groups (and the error/empty line) moves the count. One type
+/// because `Sidebar` children share one element type. Nothing collapses at
+/// this level: the component re-applies its own icon-rail state each frame.
 #[derive(Clone)]
 enum SidebarSection {
     Rows(Vec<SidebarEntry>),
     /// The sessions section header (R1b): the three desktop header verbs —
-    /// new session, archive filter, list reload.
+    /// new session, archive filter, list reload — plus the workspace menu
+    /// trigger (web `nav.tooltips.addSessionGroup`, FolderPlus).
     SectionHeader {
         label: SharedString,
         tx: mpsc::UnboundedSender<RuntimeEvent>,
         archived_on: bool,
-        view: WeakEntity<ShellWindow>,
-    },
-    /// The workspace group row (R1c): chevron fold, workspace name, and the
-    /// running dot when any visible session has a live turn. `group` keys the
-    /// collapse state: `None` = the current workspace (`sessions_group_
-    /// collapsed`), `Some(root_path)` = one of the other-workspace groups.
-    GroupHeader {
-        name: SharedString,
-        collapsed: bool,
-        running: bool,
-        group: Option<String>,
         view: WeakEntity<ShellWindow>,
     },
     Item(SidebarEntry),
@@ -1036,10 +1114,12 @@ impl SidebarItem for SidebarSection {
                 let id = id.into();
                 // Session-header actions (R1b): the three desktop header
                 // verbs the shell has real semantics for — new session,
-                // archive filter, list reload.
+                // archive filter, list reload — plus the workspace menu
+                // (R1c*) whose first two entries are 打开项目 / 新建项目.
                 let new_tx = tx.clone();
                 let reload_tx = tx.clone();
                 let archive_view = view.clone();
+                let add_project_view = view.clone();
                 div()
                     .flex()
                     .flex_row()
@@ -1102,82 +1182,27 @@ impl SidebarItem for SidebarSection {
                                             handle.reload_sessions(reload_tx.clone());
                                         }
                                     }),
+                            )
+                            // The workspace menu trigger (web MainNav: the
+                            // sessions header's last action opens 打开项目 /
+                            // 新建项目 / the recent workspace list). Same
+                            // builder as the nav top bar and composer pill.
+                            .child(
+                                Button::new(SharedString::from(format!("{}-add-project", id)))
+                                    .icon(IconName::FolderPlus)
+                                    .small()
+                                    .with_variant(ButtonVariant::Ghost)
+                                    .tooltip(i18n::current(cx).sessions_add_group.clone())
+                                    .dropdown_menu_with_anchor(Anchor::BottomRight, {
+                                        let view = add_project_view.clone();
+                                        move |menu, _window, cx| {
+                                            workspace_menu_into(menu, view.clone(), cx)
+                                        }
+                                    }),
                             ),
                     )
                     .into_any_element()
             }
-            SidebarSection::GroupHeader {
-                name,
-                collapsed,
-                running,
-                group,
-                view,
-            } => div()
-                .id(SharedString::from(format!(
-                    "session-group-{}",
-                    group.clone().unwrap_or_else(|| "current".to_string())
-                )))
-                .on_click(move |_, _, cx| {
-                    if let Some(view) = view.upgrade() {
-                        view.update(cx, |this, cx| {
-                            match &group {
-                                Some(path) => {
-                                    if let Some(group) = this
-                                        .other_groups
-                                        .iter_mut()
-                                        .find(|group| group.root_path == *path)
-                                    {
-                                        group.collapsed = !group.collapsed;
-                                    }
-                                }
-                                None => {
-                                    this.sessions_group_collapsed = !this.sessions_group_collapsed
-                                }
-                            }
-                            cx.notify();
-                        });
-                    }
-                })
-                .cursor_pointer()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap_1()
-                .min_w_0()
-                .p_2()
-                .rounded(cx.theme().radius)
-                .text_sm()
-                .hover(|style| style.bg(cx.theme().muted))
-                .child(
-                    Icon::new(if collapsed {
-                        IconName::ChevronRight
-                    } else {
-                        IconName::ChevronDown
-                    })
-                    .small(),
-                )
-                // The desktop workspace group carries a folder glyph (the
-                // person icon is the standalone-agent group, which the shell
-                // has no data for).
-                .child(Icon::new(IconName::Folder).small())
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .font_medium()
-                        .truncate()
-                        .child(name),
-                )
-                .when(running, |this| {
-                    this.child(
-                        div()
-                            .size_1p5()
-                            .flex_shrink_0()
-                            .rounded_full()
-                            .bg(cx.theme().success),
-                    )
-                })
-                .into_any_element(),
             SidebarSection::Item(entry) => entry.render(id, window, cx).into_any_element(),
         }
     }
@@ -1475,6 +1500,21 @@ pub(crate) struct ShellWindow {
     workspaces: Vec<WorkspaceChoice>,
     /// Path input of the "switch workspace" dialog, reused across opens.
     workspace_input: Entity<InputState>,
+    /// New-project dialog inputs (parent folder + project name), reused
+    /// across opens like every dialog input.
+    workspace_new_parent_input: Entity<InputState>,
+    workspace_new_name_input: Entity<InputState>,
+    /// Inline validation/create failure of the new-project dialog; cleared
+    /// when the dialog opens.
+    new_project_error: Option<String>,
+    /// Session id waiting for its owning workspace to become active (clicked
+    /// in another workspace's sidebar group): opened on
+    /// [`RuntimeEvent::WorkspaceSwitched`], dropped on a failed switch.
+    pending_open_session: Option<String>,
+    /// Last session-transcript load failure, shown in the sidebar footer
+    /// status line (a failed open would otherwise only surface inside an
+    /// active chat tab). Cleared by a successful open or a switch.
+    session_open_error: Option<String>,
     /// Last workspace-switch failure, shown under the sidebar status; cleared
     /// by a successful switch.
     workspace_error: Option<String>,
@@ -1583,6 +1623,28 @@ impl ShellWindow {
         let dock = cx.new(|_| ResizableState::default());
         let rename_input = cx.new(|cx| InputState::new(window, cx));
         let workspace_input = cx.new(|cx| InputState::new(window, cx));
+        let workspace_new_parent_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(text.new_project_parent_placeholder.clone())
+        });
+        let workspace_new_name_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(text.new_project_name_placeholder.clone())
+        });
+        // Editing any project-dialog field clears its inline error, the way
+        // the web dialog does (`handleProjectNameChange`): a message about
+        // the previous submission must not sit under a fixed value.
+        for input in [
+            &workspace_input,
+            &workspace_new_parent_input,
+            &workspace_new_name_input,
+        ] {
+            cx.subscribe(input, |this: &mut Self, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) && this.new_project_error.is_some() {
+                    this.new_project_error = None;
+                    cx.notify();
+                }
+            })
+            .detach();
+        }
         let export_input = cx.new(|cx| InputState::new(window, cx));
         let search_input = cx.new(|cx| InputState::new(window, cx));
         let trinity_recall_input = cx.new(|cx| {
@@ -1684,6 +1746,11 @@ impl ShellWindow {
             tasks: Default::default(),
             workspaces: Vec::new(),
             workspace_input,
+            workspace_new_parent_input,
+            workspace_new_name_input,
+            new_project_error: None,
+            pending_open_session: None,
+            session_open_error: None,
             workspace_error: None,
             pending_attachments: Vec::new(),
             subagent_links: Vec::new(),
@@ -1951,6 +2018,7 @@ impl ShellWindow {
             }
             RuntimeEvent::SessionOpened(opened) => {
                 self.chat_error = None;
+                self.session_open_error = None;
                 // Opening a session is a chat action: the session tab the
                 // transcript lands on activates below (tabs.open).
                 // Opening the session is "reading it" (T2-16): its unread
@@ -2000,6 +2068,9 @@ impl ShellWindow {
                 tracing::info!("Session transcript ready in a session tab");
             }
             RuntimeEvent::SessionOpenFailed(error) => {
+                // Loud, and outside the chat pane: the click that requested
+                // this open may have had no active chat tab to show it in.
+                self.session_open_error = Some(i18n::failed_status(&error, cx));
                 self.chat_error = Some(i18n::failed_status(&error, cx));
             }
             RuntimeEvent::SubagentLinked {
@@ -2576,10 +2647,24 @@ impl ShellWindow {
             RuntimeEvent::WorkspaceSwitched(choice) => {
                 tracing::info!("Adopted workspace {} ({})", choice.name, choice.root_path);
                 self.workspace_error = None;
+                self.session_open_error = None;
                 self.apply_workspace_reset(cx);
+                // A session clicked in another workspace's group opens now
+                // that its owning workspace is active (the restore reads the
+                // active workspace's store).
+                if let Some(session_id) = self.pending_open_session.take() {
+                    if let Some(handle) = runtime::runtime_handle() {
+                        tracing::info!("Opening pending session {session_id} after switch");
+                        handle.open_session(session_id, self.event_tx.clone());
+                    }
+                }
             }
             RuntimeEvent::WorkspaceSwitchFailed(message) => {
                 tracing::warn!("Workspace switch failed: {message}");
+                // The switch that was going to carry a pending open never
+                // happened; opening against the old workspace would fail for
+                // a second, more confusing reason.
+                self.pending_open_session = None;
                 self.workspace_error = Some(message);
             }
             RuntimeEvent::SessionRenamed { session_id, name } => {
@@ -3670,12 +3755,14 @@ impl ShellWindow {
         }
     }
 
-    /// The sessions tree flattened into sidebar children (R1c): the workspace
-    /// group row, then one entry per row — top-level sessions with their
-    /// subagent children indented beneath them, the running dot on live rows,
-    /// and the show-more fold once the collapsed page overflows. Archived rows
-    /// show only while the toggle is on; a failed list surfaces as the error
-    /// line.
+    /// The sessions tree as sidebar children (R1c): ONE child per workspace
+    /// group — its header row, the visible session rows with their subagent
+    /// children, the show-more fold, and the group-tail collapse row all fold
+    /// *inside* that child. The child count therefore tracks the number of
+    /// workspace groups, not the rows under them: folding a group (or any row
+    /// list change) leaves it alone, which is what keeps `Sidebar`'s internal
+    /// list from resetting the scroll offset to the top. Archived rows show
+    /// only while the toggle is on; a failed list surfaces as the error line.
     fn render_session_entries(
         &self,
         text: &ShellText,
@@ -3696,27 +3783,23 @@ impl ShellWindow {
         let current_name = runtime::runtime_handle()
             .map(|handle| handle.workspace().name)
             .unwrap_or_default();
-        self.push_group_sections(
-            &mut sections,
+        sections.push(SidebarSection::Rows(self.group_entries(
             &current_name,
             None,
             &self.sessions,
             self.sessions_group_collapsed,
             self.sessions_expanded,
-            text,
             cx,
-        );
+        )));
         for group in &self.other_groups {
-            self.push_group_sections(
-                &mut sections,
+            sections.push(SidebarSection::Rows(self.group_entries(
                 &group.name,
                 Some(group.root_path.clone()),
                 &group.rows,
                 group.collapsed,
                 group.expanded,
-                text,
                 cx,
-            );
+            )));
         }
         if sections.is_empty() {
             sections.push(SidebarSection::Item(SidebarEntry::Empty(
@@ -3726,42 +3809,40 @@ impl ShellWindow {
         sections
     }
 
-    /// One workspace group's sidebar sections: the group header (folder
-    /// glyph, fold chevron, running dot), the single-line session rows with
-    /// their lineage children, the show-more fold, and the desktop group-tail
-    /// collapse row. `group` routes fold toggles: `None` mutates the window's
-    /// current-workspace state, `Some(root_path)` the matching other group.
-    #[allow(clippy::too_many_arguments)]
-    fn push_group_sections(
+    /// One workspace group's entries, in render order: the group header
+    /// (folder glyph, fold chevron, running dot), the single-line session
+    /// rows with their lineage children, the show-more fold, and the desktop
+    /// group-tail collapse row. `group` routes fold toggles: `None` mutates
+    /// the window's current-workspace state, `Some(root_path)` the matching
+    /// other group.
+    fn group_entries(
         &self,
-        sections: &mut Vec<SidebarSection>,
         name: &str,
         group: Option<String>,
         rows: &[SessionRow],
         collapsed: bool,
         expanded: bool,
-        _text: &ShellText,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Vec<SidebarEntry> {
         let view = cx.entity().downgrade();
         let visible: Vec<&SessionRow> = rows
             .iter()
             .filter(|row| self.show_archived || !row.archived)
             .collect();
         let group_running = visible.iter().any(|row| self.session_is_running(&row.id));
-        sections.push(SidebarSection::GroupHeader {
+        let mut entries = vec![SidebarEntry::GroupHeader {
             name: SharedString::from(name.to_string()),
             collapsed,
             running: group_running,
             group: group.clone(),
             view: view.clone(),
-        });
+        }];
         if collapsed {
-            return;
+            return entries;
         }
 
         // Collapsed shows the web nav's level-0 page; expanding reveals the
-        // rest (virtualized, so the count itself is cheap).
+        // rest.
         let foldable = visible.len() > SESSIONS_COLLAPSED_VISIBLE;
         let (shown, more): (Vec<&SessionRow>, usize) = if expanded || !foldable {
             (visible, 0)
@@ -3772,46 +3853,93 @@ impl ShellWindow {
             )
         };
 
-        for row in shown {
+        let mut push_row = |row: SessionRow, depth: u8| {
             let open = self.chats.iter().any(|chat| chat.matches(&row.id));
             let active = self.tabs.active_kind() == Some(&TabKind::Session(row.id.clone()));
-            sections.push(SidebarSection::Item(SidebarEntry::Session {
-                row: row.clone(),
+            let running = self.session_is_running(&row.id);
+            entries.push(SidebarEntry::Session {
+                row,
                 open,
                 active,
-                depth: 0,
-                running: self.session_is_running(&row.id),
+                depth,
+                running,
+                group: group.clone(),
                 tx: self.event_tx.clone(),
                 view: view.clone(),
-            }));
-            for child in self.lineage_children(&row.id) {
-                let child_open = self.chats.iter().any(|chat| chat.matches(&child.id));
-                let child_active =
-                    self.tabs.active_kind() == Some(&TabKind::Session(child.id.clone()));
-                let child_running = self.session_is_running(&child.id);
-                sections.push(SidebarSection::Item(SidebarEntry::Session {
-                    row: child,
-                    open: child_open,
-                    active: child_active,
-                    depth: 1,
-                    running: child_running,
-                    tx: self.event_tx.clone(),
-                    view: view.clone(),
-                }));
+            });
+        };
+        for row in shown {
+            let children = self.lineage_children(&row.id);
+            push_row(row.clone(), 0);
+            for child in children {
+                push_row(child, 1);
             }
         }
         // The fold row only exists when it can do something: reveal hidden
         // roots, or re-fold an expansion that actually hid something. The
         // collapse row closes the whole group (the desktop group tail).
         if more > 0 || (expanded && foldable) {
-            sections.push(SidebarSection::Item(SidebarEntry::More {
+            entries.push(SidebarEntry::More {
                 remaining: more,
                 expanded,
                 group: group.clone(),
                 view: view.clone(),
-            }));
+            });
         }
-        sections.push(SidebarSection::Item(SidebarEntry::Collapse { group, view }));
+        entries.push(SidebarEntry::Collapse { group, view });
+        entries
+    }
+
+    /// Flips one workspace group's fold. `None` is the active workspace (the
+    /// window's own flag), `Some(root_path)` one of the other groups.
+    fn toggle_session_group(&mut self, group: Option<&str>, cx: &mut Context<Self>) {
+        match group {
+            Some(path) => {
+                if let Some(group) = self
+                    .other_groups
+                    .iter_mut()
+                    .find(|group| group.root_path == path)
+                {
+                    group.collapsed = !group.collapsed;
+                }
+            }
+            None => self.sessions_group_collapsed = !self.sessions_group_collapsed,
+        }
+        cx.notify();
+    }
+
+    /// Opens one sidebar session row. A row under the active workspace opens
+    /// directly; a row that belongs to another workspace's group switches
+    /// that workspace first and opens once the switch lands
+    /// ([`RuntimeEvent::WorkspaceSwitched`]), because the runtime restores a
+    /// transcript from the active workspace's own store — the same order the
+    /// web UI uses (`openMainSession` activates the owning workspace, then
+    /// switches the chat session).
+    fn open_session_row(
+        &mut self,
+        session_id: String,
+        group: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(handle) = runtime::runtime_handle() else {
+            return;
+        };
+        let current_root = {
+            let workspace = handle.workspace();
+            workspace.root_path.to_string_lossy().to_string()
+        };
+        match session_open_plan(group.as_deref(), &current_root) {
+            SessionOpenPlan::Open => handle.open_session(session_id, self.event_tx.clone()),
+            SessionOpenPlan::SwitchThenOpen { root } => {
+                tracing::info!(
+                    "Session {session_id} belongs to workspace {root}: switching before opening"
+                );
+                self.pending_open_session = Some(session_id);
+                self.session_open_error = None;
+                handle.switch_workspace(std::path::PathBuf::from(root), self.event_tx.clone());
+            }
+        }
+        cx.notify();
     }
 
     /// A turn is executing for this session, whether its tab is open or not:
@@ -3847,9 +3975,12 @@ impl ShellWindow {
 
     /// The navigation sidebar (R1b, desktop NavPanel shape): the "search
     /// everything" trigger in the header, the three top-scene nav rows, the
-    /// sessions section (titled header with new/archive/reload actions above
-    /// the live list), and the runtime status line in the footer. R1d moved
-    /// the footer tool buttons to the window-bottom global status bar.
+    /// sessions section (titled header with new/archive/reload/workspace-menu
+    /// actions above the live list), and the runtime status line in the
+    /// footer. R1d moved the footer tool buttons to the window-bottom global
+    /// status bar. Each workspace group is one child of the sidebar list (see
+    /// [`Self::group_entries`]); only the group count moves that list's item
+    /// count, so nothing a click can fold resets the scroll position.
     fn render_sidebar(&self, text: &ShellText, cx: &mut Context<Self>) -> Sidebar<SidebarSection> {
         let header = div().w_full().child(
             div()
@@ -4007,8 +4138,9 @@ impl ShellWindow {
             }
             RuntimePhase::Failed(error) => Some((error.clone(), cx.theme().danger)),
             RuntimePhase::Ready => self
-                .workspace_error
+                .session_open_error
                 .clone()
+                .or_else(|| self.workspace_error.clone())
                 .map(|error| (error, cx.theme().danger)),
         };
         div()
@@ -4061,9 +4193,11 @@ impl ShellWindow {
     }
 }
 
-/// The shared recent-workspace menu body: choices with the active one
-/// checked, then open-by-path. Used by the nav-top-bar button and the
-/// composer strip pill so both triggers stay one menu.
+/// The shared workspace menu body (web MainNav workspace menu + the nav top
+/// bar's workspace button): the two project verbs first — 打开项目, 新建项目 —
+/// then the recent workspace list with the active one checked. Used by the
+/// nav-top-bar button, the composer strip pill, and the sessions header's
+/// FolderPlus trigger so every entry stays one menu.
 fn workspace_menu_into(
     menu: gpui_kit::component::menu::PopupMenu,
     view: WeakEntity<ShellWindow>,
@@ -4086,6 +4220,24 @@ fn workspace_menu_into(
     if let Some(error) = error {
         menu = menu.item(PopupMenuItem::new(error).disabled(true));
     }
+    let open_view = view.clone();
+    let new_view = view.clone();
+    menu = menu
+        .item(
+            PopupMenuItem::new(text.workspace_open_project.clone()).on_click(
+                move |_, window, cx| {
+                    open_workspace_path_dialog(open_view.clone(), window, cx);
+                },
+            ),
+        )
+        .item(
+            PopupMenuItem::new(text.workspace_new_project.clone()).on_click(
+                move |_, window, cx| {
+                    open_new_project_dialog(new_view.clone(), window, cx);
+                },
+            ),
+        )
+        .separator();
     for choice in choices {
         let label = format!("{} · {}", choice.name, choice.root_path);
         let item = if active_id.as_deref() == Some(choice.id.as_str()) {
@@ -4101,11 +4253,7 @@ fn workspace_menu_into(
             }
         }));
     }
-    menu.separator().item(
-        PopupMenuItem::new(text.workspace_open_path.clone()).on_click(move |_, window, cx| {
-            open_workspace_path_dialog(view.clone(), window, cx);
-        }),
-    )
+    menu
 }
 
 /// The settings button keeps a raised variant while its page is showing.
@@ -6273,10 +6421,18 @@ fn open_rename_dialog(
     });
 }
 
-/// Opens the "switch workspace by path" dialog: the typed path is registered
-/// (or reused) as a workspace record and becomes this shell's active
-/// workspace. The dialog is dismissable; unlike an ask, nobody answering it
-/// blocks nothing.
+/// Opens the "打开项目" dialog: the typed folder path is registered (or reused)
+/// as a workspace record and becomes this shell's active workspace. The
+/// dialog is dismissable; unlike an ask, nobody answering it blocks nothing.
+///
+/// The web UI picks this folder through the platform's native directory
+/// chooser. The shell keeps the path field instead: the file-chooser route
+/// runs on the platform's XDG-portal client (ashpd -> zbus), and a workspace
+/// build resolves zbus with a tokio executor that has no reactor on the GPUI
+/// thread (the desktop portal hazard documented for this repository), so the
+/// chooser is not a call the shell can make safely yet.
+/// `ponytail: path field now, native folder chooser once the shell carries an
+/// async-io-only zbus build.`
 fn open_workspace_path_dialog(view: WeakEntity<ShellWindow>, window: &mut Window, cx: &mut App) {
     let Some(shell) = view.upgrade() else {
         return;
@@ -6295,10 +6451,20 @@ fn open_workspace_path_dialog(view: WeakEntity<ShellWindow>, window: &mut Window
             .value()
             .trim()
             .to_string();
-        if path.is_empty() {
-            tracing::warn!("Ignoring empty workspace path");
+        let text = i18n::current(cx);
+        let error = match check_project_path(&path) {
+            ProjectPathCheck::Ok => None,
+            ProjectPathCheck::Empty => Some(text.new_project_error_parent.clone()),
+            ProjectPathCheck::Missing => Some(text.new_project_error_missing.clone()),
+        };
+        if let Some(message) = error {
+            shell.update(cx, |this, cx| {
+                this.new_project_error = Some(message);
+                cx.notify();
+            });
             return;
         }
+        shell.update(cx, |this, _cx| this.new_project_error = None);
         let tx = shell.read(cx).event_tx.clone();
         if let Some(handle) = runtime::runtime_handle() {
             handle.switch_workspace(std::path::PathBuf::from(path), tx);
@@ -6311,21 +6477,21 @@ fn open_workspace_path_dialog(view: WeakEntity<ShellWindow>, window: &mut Window
 
     window.open_dialog(cx, move |dialog, _window, cx| {
         let text = i18n::current(cx);
+        let error = view
+            .upgrade()
+            .and_then(|shell| shell.read(cx).new_project_error.clone());
+        let mut body = div().v_flex().gap_2().w(px(420.)).child(
+            div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(text.workspace_open_path_description.clone()),
+        );
+        if let Some(error) = error {
+            body = body.child(div().text_sm().text_color(cx.theme().danger).child(error));
+        }
         dialog
-            .title(div().child(text.workspace_switch.clone()))
-            .child(
-                div()
-                    .v_flex()
-                    .gap_2()
-                    .w(px(420.))
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(text.workspace_open_path_description.clone()),
-                    )
-                    .child(Input::new(&input)),
-            )
+            .title(div().child(text.workspace_open_project.clone()))
+            .child(body.child(Input::new(&input)))
             .footer(
                 div()
                     .flex()
@@ -6340,12 +6506,276 @@ fn open_workspace_path_dialog(view: WeakEntity<ShellWindow>, window: &mut Window
                     )
                     .child(
                         Button::new("workspace-confirm")
-                            .label(text.workspace_switch.clone())
+                            .label(text.workspace_open_project.clone())
                             .with_variant(ButtonVariant::Primary)
                             .on_click(confirm.clone()),
                     ),
             )
     });
+}
+
+/// Opens the "新建项目" dialog (web `NewProjectDialog` with a typed parent
+/// folder instead of the platform picker — see [`open_workspace_path_dialog`]
+/// for why). Confirm creates the directory and opens it as this shell's
+/// workspace, exactly like the web's `createDirectory` + `openWorkspace` pair.
+fn open_new_project_dialog(view: WeakEntity<ShellWindow>, window: &mut Window, cx: &mut App) {
+    let Some(shell) = view.upgrade() else {
+        return;
+    };
+    let (parent_input, name_input) = {
+        let shell = shell.read(cx);
+        (
+            shell.workspace_new_parent_input.clone(),
+            shell.workspace_new_name_input.clone(),
+        )
+    };
+    // Web `defaultParentPath` is the picker's start directory; with a typed
+    // field the useful default is the active workspace's parent folder.
+    let default_parent = runtime::runtime_handle()
+        .and_then(|handle| {
+            handle
+                .workspace()
+                .root_path
+                .parent()
+                .map(|p| p.to_path_buf())
+        })
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_default();
+    parent_input.update(cx, |state, cx| state.set_value(default_parent, window, cx));
+    name_input.update(cx, |state, cx| state.set_value("", window, cx));
+    shell.update(cx, |this, cx| {
+        this.new_project_error = None;
+        cx.notify();
+    });
+
+    let confirm_view = view.clone();
+    let confirm = move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
+        let Some(shell) = confirm_view.upgrade() else {
+            return;
+        };
+        let (parent, name) = {
+            let shell = shell.read(cx);
+            (
+                shell
+                    .workspace_new_parent_input
+                    .read(cx)
+                    .value()
+                    .trim()
+                    .to_string(),
+                shell
+                    .workspace_new_name_input
+                    .read(cx)
+                    .value()
+                    .trim()
+                    .to_string(),
+            )
+        };
+        let text = i18n::current(cx);
+        let error = if parent.is_empty() {
+            Some(text.new_project_error_parent.clone())
+        } else if name.is_empty() {
+            Some(text.new_project_error_name.clone())
+        } else if check_project_path(&parent) == ProjectPathCheck::Missing {
+            // The web dialog picks the parent, so it is always an existing
+            // folder; this one types it, and `create_dir_all`-style parent
+            // creation would bury a mistyped project somewhere unintended.
+            Some(text.new_project_error_missing.clone())
+        } else {
+            None
+        };
+        if let Some(message) = error {
+            shell.update(cx, |this, cx| {
+                this.new_project_error = Some(message);
+                cx.notify();
+            });
+            return;
+        }
+        let target = new_project_path(&parent, &name);
+        if let Err(message) = create_project_dir(&target) {
+            tracing::error!("Failed to create project directory {target}: {message}");
+            let message = format!("{}: {message}", text.new_project_error_create);
+            shell.update(cx, |this, cx| {
+                this.new_project_error = Some(message);
+                cx.notify();
+            });
+            return;
+        }
+        tracing::info!("Created project directory {target}; switching workspace");
+        shell.update(cx, |this, cx| {
+            this.new_project_error = None;
+            this.workspace_error = None;
+            cx.notify();
+        });
+        let tx = shell.read(cx).event_tx.clone();
+        if let Some(handle) = runtime::runtime_handle() {
+            handle.switch_workspace(std::path::PathBuf::from(target), tx);
+        }
+        window.close_dialog(cx);
+    };
+    let cancel_view = view.clone();
+    let cancel = move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
+        if let Some(shell) = cancel_view.upgrade() {
+            shell.update(cx, |this, cx| {
+                this.new_project_error = None;
+                cx.notify();
+            });
+        }
+        window.close_dialog(cx);
+    };
+
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let text = i18n::current(cx);
+        let (error, preview) = view
+            .upgrade()
+            .map(|shell| {
+                let shell = shell.read(cx);
+                let parent = shell
+                    .workspace_new_parent_input
+                    .read(cx)
+                    .value()
+                    .trim()
+                    .to_string();
+                let name = shell
+                    .workspace_new_name_input
+                    .read(cx)
+                    .value()
+                    .trim()
+                    .to_string();
+                let preview = (!parent.is_empty() && !name.is_empty())
+                    .then(|| new_project_path(&parent, &name));
+                (shell.new_project_error.clone(), preview)
+            })
+            .unwrap_or((None, None));
+        let mut body = div()
+            .v_flex()
+            .gap_3()
+            .w(px(420.))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(text.new_project_subtitle.clone()),
+            )
+            .child(
+                div()
+                    .v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(text.new_project_parent.clone()),
+                    )
+                    .child(Input::new(&parent_input)),
+            )
+            .child(
+                div()
+                    .v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(text.new_project_name.clone()),
+                    )
+                    .child(Input::new(&name_input)),
+            );
+        if let Some(preview) = preview {
+            body = body.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap_1()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(text.new_project_full_path.clone())
+                    .child(div().min_w_0().truncate().child(preview)),
+            );
+        }
+        if let Some(error) = error {
+            body = body.child(div().text_sm().text_color(cx.theme().danger).child(error));
+        }
+        dialog
+            .title(div().child(text.new_project_title.clone()))
+            .child(body)
+            .footer(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("new-project-cancel")
+                            .label(text.session_action_cancel.clone())
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(cancel.clone()),
+                    )
+                    .child(
+                        Button::new("new-project-confirm")
+                            .label(text.new_project_create.clone())
+                            .with_variant(ButtonVariant::Primary)
+                            .on_click(confirm.clone()),
+                    ),
+            )
+    });
+}
+
+/// The full path of a new project: the web UI's `${parent}/${name}` join with
+/// backslashes normalized, so a pasted Windows path still lands on one
+/// separator. Trailing separators on the parent are collapsed.
+fn new_project_path(parent: &str, name: &str) -> String {
+    let parent = parent.trim().replace('\\', "/");
+    let parent = parent.trim_end_matches('/');
+    let name = name.trim().trim_matches('/');
+    format!("{parent}/{name}")
+}
+
+/// Validation outcome for the 打开项目 field: the path must name an existing
+/// directory (`switch_workspace` would otherwise fail later with a less
+/// specific message). Missing and non-directory paths get the same refusal
+/// the web's directory chooser gives by never offering them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProjectPathCheck {
+    Ok,
+    Empty,
+    Missing,
+}
+
+fn check_project_path(path: &str) -> ProjectPathCheck {
+    if path.trim().is_empty() {
+        return ProjectPathCheck::Empty;
+    }
+    if !std::path::Path::new(path).is_dir() {
+        return ProjectPathCheck::Missing;
+    }
+    ProjectPathCheck::Ok
+}
+
+/// What clicking one sidebar session row should do, given the row's workspace
+/// group (`None` = the active workspace) and the active workspace's root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SessionOpenPlan {
+    /// The row belongs to the active workspace: restore it straight away.
+    Open,
+    /// The row belongs to another workspace: switch there first, then open.
+    SwitchThenOpen { root: String },
+}
+
+fn session_open_plan(group: Option<&str>, current_root: &str) -> SessionOpenPlan {
+    match group {
+        Some(root) if root != current_root => SessionOpenPlan::SwitchThenOpen {
+            root: root.to_string(),
+        },
+        _ => SessionOpenPlan::Open,
+    }
+}
+
+/// Creates the new project directory (the web `workspaceAPI.createDirectory`
+/// step). Only the leaf is created: the dialog has already refused a parent
+/// that is not an existing folder, and the parent here is typed rather than
+/// picked, so `create_dir_all` would turn a typo into a nested project.
+fn create_project_dir(path: &str) -> Result<(), std::io::Error> {
+    std::fs::create_dir(path)
 }
 
 /// Opens the delete confirmation for one session. Deleting is destructive and
@@ -9813,6 +10243,11 @@ mod tests {
 
     /// The sidebar tree shape: `(session id, depth, running)` per session row
     /// in render order, the fold row as `Err((remaining, expanded))`.
+    /// Flattens the built sidebar sections into the shape assertions use:
+    /// one `Ok((id, depth, running))` per session row and one
+    /// `Err((remaining, expanded))` per show-more row, in render order. Rows
+    /// live inside their workspace group's single child, so the walk goes
+    /// through [`SidebarSection::Rows`].
     fn session_tree_shape(
         window: &mut gpui_kit::VisualTestContext,
         shell: &Entity<ShellWindow>,
@@ -9821,24 +10256,31 @@ mod tests {
         let text = text.clone();
         window.update(|_, cx| {
             shell.update(cx, |shell, cx| {
-                shell
-                    .render_session_entries(&text, cx)
-                    .into_iter()
-                    .filter_map(|section| match section {
-                        SidebarSection::Item(SidebarEntry::Session {
-                            row,
-                            depth,
-                            running,
-                            ..
-                        }) => Some(Ok((row.id, depth, running))),
-                        SidebarSection::Item(SidebarEntry::More {
-                            remaining,
-                            expanded,
-                            ..
-                        }) => Some(Err((remaining, expanded))),
-                        _ => None,
-                    })
-                    .collect()
+                let mut shape = Vec::new();
+                for section in shell.render_session_entries(&text, cx) {
+                    let entries = match section {
+                        SidebarSection::Rows(entries) => entries,
+                        SidebarSection::Item(entry) => vec![entry],
+                        SidebarSection::SectionHeader { .. } => continue,
+                    };
+                    for entry in entries {
+                        match entry {
+                            SidebarEntry::Session {
+                                row,
+                                depth,
+                                running,
+                                ..
+                            } => shape.push(Ok((row.id, depth, running))),
+                            SidebarEntry::More {
+                                remaining,
+                                expanded,
+                                ..
+                            } => shape.push(Err((remaining, expanded))),
+                            _ => {}
+                        }
+                    }
+                }
+                shape
             })
         })
     }
@@ -9971,6 +10413,242 @@ mod tests {
         });
         let shape = session_tree_shape(&mut window, &shell, &text);
         assert!(shape.is_empty());
+    }
+
+    /// The sidebar's child count must not move when a group folds or a long
+    /// list expands: `Sidebar` resets its virtualized list (and the scroll
+    /// offset with it) whenever the child count changes, so one child per
+    /// workspace group is what keeps a click on a project row from throwing
+    /// the list back to the top.
+    #[gpui_kit::test]
+    fn sidebar_keeps_one_child_per_group_across_folds(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+        let text = sample_shell_text();
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                let rows = (0..7)
+                    .map(|ix| crate::runtime::SessionListRow {
+                        summary: sample_summary(&format!("s-{ix}"), &format!("Session {ix}")),
+                        archived: false,
+                    })
+                    .collect();
+                shell.apply_runtime_event(RuntimeEvent::Sessions(rows), window, cx);
+                shell.apply_runtime_event(
+                    RuntimeEvent::OtherWorkspaceSessions {
+                        name: "zenix".into(),
+                        root_path: "/home/zero/zenix".into(),
+                        rows: vec![crate::runtime::SessionListRow {
+                            summary: sample_summary("m-3", "M3"),
+                            archived: false,
+                        }],
+                    },
+                    window,
+                    cx,
+                );
+            });
+        });
+
+        let children = |window: &mut gpui_kit::VisualTestContext| {
+            let text = text.clone();
+            window.update(|_, cx| {
+                shell.update(cx, |shell, cx| {
+                    shell
+                        .render_session_entries(&text, cx)
+                        .into_iter()
+                        .map(|section| match section {
+                            SidebarSection::Rows(rows) => rows.len(),
+                            _ => 1,
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+        };
+
+        // One child per workspace group, and the rows stay inside them: the
+        // current group folds its long list (header + 5 rows + show-more +
+        // collapse row), zenix shows its single row.
+        let before = children(&mut window);
+        assert_eq!(before, vec![8, 3], "current group + zenix group");
+
+        window.update(|_, cx| {
+            shell.update(cx, |shell, _cx| {
+                shell.sessions_group_collapsed = true;
+                shell.sessions_expanded = true;
+                if let Some(group) = shell.other_groups.first_mut() {
+                    group.collapsed = true;
+                }
+            });
+        });
+        let folded = children(&mut window);
+        assert_eq!(
+            folded.len(),
+            before.len(),
+            "folding must not change the number of sidebar children"
+        );
+        assert_eq!(
+            folded,
+            vec![1, 1],
+            "a folded group keeps its header row only"
+        );
+
+        // Row-list traffic stays inside the group too: a session arriving, a
+        // new workspace group appearing, and a workspace row reload all leave
+        // the child count alone (only a new *group* adds a child).
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.sessions_group_collapsed = false;
+                if let Some(group) = shell.other_groups.first_mut() {
+                    group.collapsed = false;
+                }
+                let rows = (0..9)
+                    .map(|ix| crate::runtime::SessionListRow {
+                        summary: sample_summary(&format!("s-{ix}"), &format!("Session {ix}")),
+                        archived: false,
+                    })
+                    .collect();
+                shell.apply_runtime_event(RuntimeEvent::Sessions(rows), window, cx);
+            });
+        });
+        let reloaded = children(&mut window);
+        assert_eq!(
+            reloaded.len(),
+            before.len(),
+            "a session appearing must not change the number of sidebar children"
+        );
+    }
+
+    /// Rows under another workspace's group carry that workspace's root — the
+    /// click handler needs it to switch before opening — while the active
+    /// workspace's rows stay ungrouped.
+    #[gpui_kit::test]
+    fn foreign_group_rows_carry_their_workspace(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+        let text = sample_shell_text();
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(
+                    RuntimeEvent::Sessions(vec![crate::runtime::SessionListRow {
+                        summary: sample_summary("s-1", "Home"),
+                        archived: false,
+                    }]),
+                    window,
+                    cx,
+                );
+                shell.apply_runtime_event(
+                    RuntimeEvent::OtherWorkspaceSessions {
+                        name: "zenix".into(),
+                        root_path: "/home/zero/zenix".into(),
+                        rows: vec![crate::runtime::SessionListRow {
+                            summary: sample_summary("m-3", "M3"),
+                            archived: false,
+                        }],
+                    },
+                    window,
+                    cx,
+                );
+            });
+        });
+
+        let grouped: Vec<(String, Option<String>)> = window.update(|_, cx| {
+            let text = text.clone();
+            shell.update(cx, |shell, cx| {
+                shell
+                    .render_session_entries(&text, cx)
+                    .into_iter()
+                    .flat_map(|section| match section {
+                        SidebarSection::Rows(rows) => rows,
+                        _ => Vec::new(),
+                    })
+                    .filter_map(|entry| match entry {
+                        SidebarEntry::Session { row, group, .. } => Some((row.id, group)),
+                        _ => None,
+                    })
+                    .collect()
+            })
+        });
+        assert_eq!(
+            grouped,
+            vec![
+                ("s-1".to_string(), None),
+                ("m-3".to_string(), Some("/home/zero/zenix".to_string())),
+            ]
+        );
+    }
+
+    /// The open plan switches only for rows whose group is not the active
+    /// workspace; a row of the active workspace (or one without a group)
+    /// restores straight away.
+    #[test]
+    fn session_open_plan_switches_foreign_workspaces_only() {
+        assert_eq!(
+            session_open_plan(Some("/home/zero/zenix"), "/home/zero/BitFun"),
+            SessionOpenPlan::SwitchThenOpen {
+                root: "/home/zero/zenix".to_string()
+            }
+        );
+        assert_eq!(
+            session_open_plan(Some("/home/zero/BitFun"), "/home/zero/BitFun"),
+            SessionOpenPlan::Open
+        );
+        assert_eq!(
+            session_open_plan(None, "/home/zero/BitFun"),
+            SessionOpenPlan::Open
+        );
+    }
+
+    /// The new-project path joins like the web dialog (`${parent}/${name}`
+    /// with backslashes normalized) and never leaves doubled separators.
+    #[test]
+    fn new_project_path_joins_like_the_web_dialog() {
+        assert_eq!(new_project_path("/home/zero", "proj"), "/home/zero/proj");
+        assert_eq!(new_project_path("/home/zero/", "proj"), "/home/zero/proj");
+        assert_eq!(
+            new_project_path(r"C:\Users\zero", "proj"),
+            "C:/Users/zero/proj"
+        );
+        assert_eq!(new_project_path("/home/zero", " proj "), "/home/zero/proj");
+    }
+
+    /// 打开项目 accepts only an existing directory, and the create step makes
+    /// exactly one directory (the web `createDirectory` contract: a mistyped
+    /// parent chain is refused instead of invented).
+    #[test]
+    fn project_paths_validate_and_create_exactly_one_directory() {
+        assert_eq!(check_project_path(""), ProjectPathCheck::Empty);
+        assert_eq!(check_project_path("   "), ProjectPathCheck::Empty);
+        assert_eq!(
+            check_project_path("/definitely/not/here-1234567890"),
+            ProjectPathCheck::Missing
+        );
+
+        let parent = std::env::temp_dir().join(format!(
+            "openbitfun-gpui-project-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&parent);
+        std::fs::create_dir_all(&parent).expect("temp parent");
+        let target = new_project_path(&parent.to_string_lossy(), "proj");
+        assert_eq!(check_project_path(&target), ProjectPathCheck::Missing);
+        create_project_dir(&target).expect("create project");
+        assert_eq!(check_project_path(&target), ProjectPathCheck::Ok);
+
+        // A second create of the same path fails (the directory is a fact,
+        // not an idempotent no-op) and a missing parent is not invented.
+        assert!(create_project_dir(&target).is_err());
+        let orphan = new_project_path(
+            &new_project_path(&parent.to_string_lossy(), "missing-parent"),
+            "proj",
+        );
+        assert!(create_project_dir(&orphan).is_err());
+        let _ = std::fs::remove_dir_all(&parent);
     }
 
     /// R1c: the running dot follows the process-wide live set, so background
@@ -10265,12 +10943,12 @@ mod tests {
                 shell
                     .render_session_entries(&text, cx)
                     .into_iter()
-                    .filter(|section| {
-                        matches!(
-                            section,
-                            SidebarSection::Item(SidebarEntry::Session { depth: 0, .. })
-                        )
+                    .flat_map(|section| match section {
+                        SidebarSection::Rows(entries) => entries,
+                        SidebarSection::Item(entry) => vec![entry],
+                        SidebarSection::SectionHeader { .. } => Vec::new(),
                     })
+                    .filter(|entry| matches!(entry, SidebarEntry::Session { depth: 0, .. }))
                     .count()
             })
         })

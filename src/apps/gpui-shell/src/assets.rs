@@ -28,12 +28,14 @@ gpui_kit::assets::icon_assets!(
     // fixture; contribution icon names resolve through the closed icon set).
     // Puzzle is the extensions nav row (the desktop 扩展与兼容 scene).
     // FilePlus/Pencil/Wrench/Users/Route are the rich transcript's tool-family
-    // and group glyphs (M24).
+    // and group glyphs (M24). FolderPlus is the sessions header's workspace
+    // menu trigger (打开项目 / 新建项目).
     [
         Activity,
         Archive,
         BrainCircuit,
         ChartColumn,
+        FolderPlus,
         LayoutDashboard,
         ListTodo,
         Check,

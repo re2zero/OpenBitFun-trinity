@@ -26,6 +26,9 @@ pub(crate) struct ShellText {
     pub sessions_reload: String,
     pub sessions_new: String,
     pub sessions_show_archived: String,
+    /// Tooltip of the sessions header's workspace-menu trigger (web
+    /// `nav.tooltips.addSessionGroup`, shell scope: projects only).
+    pub sessions_add_group: String,
     /// Session-tree fold rows (R1c).
     pub sessions_show_more: String,
     /// Desktop group-tail collapse row.
@@ -188,8 +191,26 @@ pub(crate) struct ShellText {
     pub question_cancel: String,
     pub question_unreadable: String,
     pub workspace_switch: String,
-    pub workspace_open_path: String,
+    /// 打开项目 / 新建项目 (web MainNav workspace menu): the sessions header's
+    /// FolderPlus trigger, the nav top bar button, and the composer pill all
+    /// open this one menu.
+    pub workspace_open_project: String,
+    pub workspace_new_project: String,
     pub workspace_open_path_description: String,
+    /// New-project dialog (web `NewProjectDialog`; the parent folder is typed
+    /// instead of picked — see `open_workspace_path_dialog`).
+    pub new_project_title: String,
+    pub new_project_subtitle: String,
+    pub new_project_parent: String,
+    pub new_project_parent_placeholder: String,
+    pub new_project_name: String,
+    pub new_project_name_placeholder: String,
+    pub new_project_full_path: String,
+    pub new_project_create: String,
+    pub new_project_error_parent: String,
+    pub new_project_error_name: String,
+    pub new_project_error_missing: String,
+    pub new_project_error_create: String,
     pub terminal_title: String,
     pub terminal_close: String,
     pub terminal_exited: String,
@@ -914,6 +935,7 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         sessions_reload: "Reload".to_string(),
         sessions_new: "New session".to_string(),
         sessions_show_archived: "Show archived sessions".to_string(),
+        sessions_add_group: "Add project".to_string(),
         sessions_show_more: "Show more".to_string(),
         sessions_collapse: "Collapse".to_string(),
         miniapps_title: "MiniApps".to_string(),
@@ -1073,10 +1095,23 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         question_cancel: "Cancel".to_string(),
         question_unreadable: "This question could not be displayed.".to_string(),
         workspace_switch: "Switch workspace".to_string(),
-        workspace_open_path: "Open workspace by path…".to_string(),
+        workspace_open_project: "Open Project".to_string(),
+        workspace_new_project: "New Project".to_string(),
         workspace_open_path_description:
             "Folder to use as this shell's workspace. It is registered in the shared workspace list without changing the desktop's selection."
                 .to_string(),
+        new_project_title: "New Project".to_string(),
+        new_project_subtitle: "Create a new workspace directory".to_string(),
+        new_project_parent: "Parent Folder".to_string(),
+        new_project_parent_placeholder: "Absolute path of the parent folder".to_string(),
+        new_project_name: "Project Name".to_string(),
+        new_project_name_placeholder: "e.g. my-project".to_string(),
+        new_project_full_path: "Full Path".to_string(),
+        new_project_create: "Create".to_string(),
+        new_project_error_parent: "Enter the parent folder path".to_string(),
+        new_project_error_name: "Please enter a project name".to_string(),
+        new_project_error_missing: "That folder does not exist".to_string(),
+        new_project_error_create: "Failed to create project".to_string(),
         terminal_title: "Terminal".to_string(),
         terminal_close: "Close terminal".to_string(),
         terminal_exited: "process exited".to_string(),
@@ -1567,6 +1602,7 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         nav_tasks: service.t("gpui-shell-nav-tasks").await,
         sessions_reload: service.t("gpui-shell-sessions-reload").await,
         sessions_new: service.t("gpui-shell-sessions-new").await,
+        sessions_add_group: service.t("gpui-shell-sessions-add-group").await,
         sessions_show_archived: service.t("gpui-shell-sessions-show-archived").await,
         sessions_show_more: service.t("gpui-shell-sessions-show-more").await,
         sessions_collapse: service.t("gpui-shell-sessions-collapse").await,
@@ -1718,10 +1754,25 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         question_cancel: service.t("gpui-shell-question-cancel").await,
         question_unreadable: service.t("gpui-shell-question-unreadable").await,
         workspace_switch: service.t("gpui-shell-workspace-switch").await,
-        workspace_open_path: service.t("gpui-shell-workspace-open-path").await,
+        workspace_open_project: service.t("gpui-shell-workspace-open-project").await,
+        workspace_new_project: service.t("gpui-shell-workspace-new-project").await,
         workspace_open_path_description: service
             .t("gpui-shell-workspace-open-path-description")
             .await,
+        new_project_title: service.t("gpui-shell-new-project-title").await,
+        new_project_subtitle: service.t("gpui-shell-new-project-subtitle").await,
+        new_project_parent: service.t("gpui-shell-new-project-parent").await,
+        new_project_parent_placeholder: service
+            .t("gpui-shell-new-project-parent-placeholder")
+            .await,
+        new_project_name: service.t("gpui-shell-new-project-name").await,
+        new_project_name_placeholder: service.t("gpui-shell-new-project-name-placeholder").await,
+        new_project_full_path: service.t("gpui-shell-new-project-full-path").await,
+        new_project_create: service.t("gpui-shell-new-project-create").await,
+        new_project_error_parent: service.t("gpui-shell-new-project-error-parent").await,
+        new_project_error_name: service.t("gpui-shell-new-project-error-name").await,
+        new_project_error_missing: service.t("gpui-shell-new-project-error-missing").await,
+        new_project_error_create: service.t("gpui-shell-new-project-error-create").await,
         terminal_title: service.t("gpui-shell-terminal-title").await,
         terminal_close: service.t("gpui-shell-terminal-close").await,
         terminal_exited: service.t("gpui-shell-terminal-exited").await,
