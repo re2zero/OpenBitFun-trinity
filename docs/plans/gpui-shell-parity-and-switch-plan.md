@@ -156,7 +156,7 @@ R3 `34a3effef` / R4 `006cc8063` / R5 `5da468203`（gpui-frontend 分支）。
 | 7 | composer 上下文条带 | 卡上方条带（左轨工作区 + mode，右轨本机 + 权限徽标）+ 模型选择器入卡 actions 行（R2a） | `ChatInputWorkspaceStrip` + expanded 布局（textarea 下行模型+发送） | 同构 | 数据全来自现有快照，零新命令；徽标点击开设置页 = web `openDefaultSettings` 语义 |
 | 8 | 会话资源面板（文件/变更归位） | 停靠右面板（`h_resizable` splitter，默认 360/min 240/max 720）↔ 主资源 tab 互斥 + opening policy（R2c） | `workspace-resources`（持久导航面板 + 会话 tab 右面板 + 可弹出主 tab） | 同构 | 面板 compact 形态：Files 卸 viewer、Git 卸 diff（弹出即回）；policy = web README 壳侧映射 |
 | 9 | 聊天密度（气泡/turn footer/节奏） | 用户气泡（648px 上限 = 72%×900、右对齐、3 行截断点击展开）+ turn footer fork/copy/快照 三钮 + per-entry 行距（R2d） | `UserMessageItem` 配方 + `ModelRoundItem` footer 图标族 + 900px 阅读列 | 同构 | copy 弹 full/result 双档（web `formatTranscriptTurnText` 形态）；快照钮走第 8 行 opening policy |
-| 10 | 设置页五组分组树 | `SettingsCategory`/`SettingsEntry` 驱动五组树，15 项入树 + 2 跳转卡（R3，详见 §2.1） | `settingsRegistry` 21 类目五组 | 同构（§2.1 口径） | 8 类不出树（pet/voice/shortcuts/editor/memory/trinity/desktop-control/acp，无假入口） |
+| 10 | 设置导航覆盖侧栏 + 内容居中列 | `settings::render_nav`（设置场景激活时占用导航列：`Sidebar` = 搜索设置栏 + 五组分类树，页行 30px 高 / 36px 图标位缩进 / 选中 quiet 药丸；查询折成扁平结果行 + 诚实空态）+ `settings::render_page`（gpui-kit 组件自带侧栏收 0 宽、页头 24px 粗标题 + 页副标题、`GroupBoxVariant::Fill` 组卡）+ 壳侧 `settings-column`（`max_w(680px).mx_auto()` 居中，边缘 1px 遮线盖住组件侧栏残留）+ 导航顶栏显示场景标题「设置」 | `SettingsNav`（`nav-registry` 场景导航，激活时替换 `MainNav`）+ `ConfigPageHeader` / `ConfigPageLayout`（`min(100% - 2*clamp(12px,3vw,20px), 680px)` 居中列 + `margin-inline: auto`） | 同构 | 刻意分歧：① 壳页 = 单卡片（壳页行集不映射桌面的 `ConfigPageSection` 子分节：桌面「通用」分「启动与更新 / 窗口与通知」两节，壳是六行一卡），组标题因此不再重复页名；② 行内分隔线、行标签字重（壳 14px regular vs 桌面 semibold）、副标题 14px muted vs 桌面 15px primary = gpui-kit 组件语言（沿用 R3/R5 已签壳自语言口径）；③ 导航列宽 300（壳既有侧栏宽，桌面约 348），组件自身的段间距 12px（桌面 16px）；④ 脏标记（draft registry）不做（壳无草稿注册表）；⑤ 搜索命中 = 页名/副标题/分类/注册 id（壳页行文案在组件内部不可索引，桌面索引还含页内文案短语） |
 | 11 | 任务看板 = 概览卡 + 月历 | `tasks.rs`：四计数概览卡 + 周一首 7 列自绘月历（next_run/last_run 打点，today 描边）+「全部任务」分节（R4） | 计划概览卡 + 月历 | 同构 | 月历数据源 = cron 现有字段（不做新聚合查询）；图例带「壳内无历史运行日志」诚实注记 |
 | 12 | 技能页 facet 左栏 + 右列表卡 | `SkillsFacetState` + 200px facet 栏（库/来源/探索 + 计数）+ 右列表卡（R4） | `SkillsScene` facet 左栏 + 右列表卡 | 同构 | 市场 = 显式降级卡（T3-17）；用户分组壳未接配置，不伪造 |
 | 13 | 视觉语言（radius/选中/hover） | radius 全 token 化（卡片 `theme().radius`、小件 `radius_tokens().sm`）；侧栏选中 = 中性 quiet 药丸 + 主文字（R5） | token 体系同源 + `NavPanel` 行 quiet hover 语言 | 同构 | 内容密度（桌面大标题+卡片 vs 壳密行）为 R3/R4 已签壳自语言；`rounded_full` 装饰圆点不 token 化（壳无 radius=0 场景） |
@@ -196,6 +196,26 @@ switched workspace`，面板标题即切换后工作区路径）；＋新建会�
 工作区根路径；两轮 0 panic、0 missing asset；冒烟建的两个临时工作区（`pm-a`/`pm-b`）与
 工作区注册表条目、会话存储目录均已清理；「全部标为已读」已接线
 （`RuntimeEvent::TrayMarkAllRead`）但本轮无后台未读可验，留待真机。
+
+**R9 设置布局 1:1 证据**（2026-10-14，提交 `5e916ba1b`，Xvfb :131 私有号，壳窗口 1200×800@200,50，
+`OPENBITFUN_GPUI_SETTINGS_AUTOOPEN=1` autoopen；对照 = 归档并排图 `r5-cmp-3-settings.png` 的桌面右半
+（桌面 UI 自 R5 未变），并排 `r9-03`）：
+
+- `r9-01-settings-nav-general.png` `2ae6889f080d4539`：设置场景激活时**左列整列为设置导航**
+  （搜索设置… + 应用与界面/AI 与模型/会话与工作区/工具与集成/数据与维护五组标题 + 缩进页行，通用选中药丸），
+  导航顶栏 = `[面板][←][→] 设置`；右侧内容 = 680px 居中列（实测列 482..1162，居中期望 481.5），
+  页头 24px 粗标题 + 副标题，组卡内行 = 标签/描述左 + 控件右。
+- `r9-02-settings-nav-click-terminal.png` `770c33fb477528b7`：点导航行 → 内容整页切换
+  （终端页：字号/字体/回滚行数/Shell 命令/终端 Profile；导航药丸随动）= 实机点击路径证据。
+- `r9-03-settings-side-by-side.png` `e9c1cb88f3e8b29d`：左壳右桌面并排（两侧同缩放到 800px 高）：
+  导航结构、页头文案与字号、居中列宽、行内控件位一致。
+- 同一轮冒烟逐页点击扫过 15 个设置页（0 panic、0 missing asset；日志仅既有 xinput/wgpu 噪声），
+  顺带修掉两处行内长文案溢出（控制列 280px 界宽内换行）与「搜索栏输入不触发重绘」
+  （`InputEvent::Change` → `cx.notify`）。
+
+headless 锚点：`settings_scene_nav_selects_pages_and_searches`（树 15 行渲染 / 选页切换 / 查询折结果行 /
+无命中空态 / 列宽 ≤ 680）与 `settings_nav_projects_the_tree_and_the_search`（投影：五组分类树 + active 标记 +
+扁平行 + 空态文案）。
 
 **M24 富转写证据**（2026-10-13，Xvfb :81，真会话 `3261d9fc`「接力 M3」autoopen 渲染；归档帧
 `m24-01-transcript-top.png` `ed3cd856dba0736d` / `m24-02-group-open.png` `3ba4bed7dcec1009` /
@@ -296,5 +316,6 @@ AgentList（3 个子代理 · 0 个运行中）全部渲染，展开/收起往�
 | 2026-10-11 | **§2 矩阵整轮刷新（T2-14，接力清单项）**：逐行刷到 2026-10-11 真相（M11-M23 + 后置接力 T1-1..5 / T2-6..13 落地后）。已支持/子集：会话管理（2）、模型（3）、附件（4）、ask_user（5）、子代理投影/BTW（6，近似口径 D67）、文件树/查看器（9，pdf 缺）、全局搜索（11，files/sessions）、终端（13）、Git（14，graph/branches 缺）、worktree（15）、定时任务（17）、洞察/用量（18）、技能/智能体/MCP 管理（19/20/21，市场/编辑器/OAuth 缺）、系统集成（32）、更新 UI（33）、快照（39）；设置页 3/21 → 13/21（§2.1 改写，含 T2-13 诊断包导出与 include_sensitive_diagnostics 假开关不复制注记）。§1 基线表未动（M10 交付物口径不变）；残余缺口：git graph/branches、搜索 actions/entities、content 标签、生态导入、Trinity（T2-15）、托盘未读角标（T2-16）等 |
 | 2026-10-12 | **§2.3 布局 parity 矩阵新增（Phase 3 R6 收口）**：布局/信息架构逐行锚点矩阵 13 行（R1a-R5 全部锚点 × 桌面对应物 × 同构/刻意分歧+理由）；双端对照签字截图 7 张归档 `assets/gpui-shell-layout-parity/`（含拍摄配方与 sha256）。Phase 3 R1-R6 主线收官；R7（插件功能+UI 一体架构）与 T3 大项维持「点名才动」；默认切换终审（§4.3）待公子重开 |
 | 2026-10-13 | **真机 parity 修正四项（公子看真机后点名）**：桌面 `92ce04f8d`（simplify desktop shell UI）后拓扑已变——无独立 TitleBar/横贯底栏、侧栏 NavBar+footer 贯穿左列、SceneTopBar 带 tabs+场景动作+窗口钮。壳随之重排：分列式 45px 双顶栏、侧栏抽屉折叠（Ctrl B + 左上悬浮条）、tab 移右顶栏（横向滚动不覆盖动作区）、会话列表单行 30px、选中(selection)/hover(muted) token 分离、inline code 高亮 accent→neutral 弱底（`theme.rs::install_text_view_style` 随主题应用重装 TextViewDefaults）、composer 圆形发送钮 + placeholder「有什么可以帮您...」+「+」boost 菜单。壳 251 测绿，Xvfb :73 截图对照 0 panic |
+| 2026-10-14 | **R9 设置布局 1:1（`5e916ba1b`，公子点名：左侧项覆盖侧栏、内容右侧居中）**：设置场景改为「场景导航列」——设置导航替换侧栏（`settings::render_nav`：搜索设置 + 五组分类树，`SettingsNav` 同构；查询折平结果 + 诚实空态）、内容列 680px 居中（`ConfigPageLayout` 同构）、页头改 24px 粗标题 + 新增 15 条页副标题文案（×3 语言，ftl 616→633）、组卡 `GroupBoxVariant::Fill`、去掉重复页名的组标题；顺带修控制列长文案溢出与导航搜索不重绘。壳 282 测绿（+1 无头导航测试、+2 投影断言）；证据 `r9-01..03`（§2.3 证据段）。刻意分歧按矩阵第 10 行「理由」栏在案（单卡片无子分节 / 行内语言随组件 / 列宽 300 / 无脏标记 / 搜索索引面） |
 | 2026-10-13 | **§2.3 矩阵 R8 两行（会话列表投影 + 工作区组头操作）**：侧栏 1:1 尾项落地——分组切换 grouped/all（全平铺跨工作区全局排序 + 行首工作区名 + 无折叠上限）、过滤菜单（排序/显示/筛选 运行中/重置/全部折叠/全部标为已读）、组头 ＋/⋯（新建会话/文件面板/复制路径/在文件管理器打开，异工作区先切后动）。刻意分歧按矩阵各行「理由」栏在案（web-only 段：状态排序、需要处理、工作树/环境/来源、计划任务/项目权限/端口转发/批量管理/助理重置删除）。子项数不变量跨视图保持（平铺 = 首子项 + 空占位子项）；Xvfb 冒烟见 §6 次行 |
 | 2026-10-13 | **§2.3 矩阵第 17 行（侧栏固定区）**：公子点名「要补」——会话区头与视图切换/过滤钮在侧栏滚动后不可达。修法 = 搜索/导航/会话区头整块进 `Sidebar` 固定头槽（列表只剩工作区分组，顺带把子项数常量 +2 也去掉）。先试过「读组件列表偏移、滚过再钉同款行」：`ListState` 键含完整元素 id 栈，壳外读不到（探针实测恒为未滚动），弃用；同源分歧（导航行不随滚动移出）已记入该行 |

@@ -484,6 +484,25 @@ pub(crate) struct ShellText {
     pub settings_category_workspace: String,
     pub settings_category_tools: String,
     pub settings_category_data: String,
+    /// Settings page header subtitles (web `navigation.pages.<id>.description`),
+    /// shown under the page title; the nav search field copy rides along.
+    pub settings_nav_search_placeholder: String,
+    pub settings_nav_search_empty: String,
+    pub settings_page_general_description: String,
+    pub settings_page_appearance_description: String,
+    pub settings_page_terminal_description: String,
+    pub settings_page_models_description: String,
+    pub settings_page_session_description: String,
+    pub settings_page_worktrees_description: String,
+    pub settings_page_execution_description: String,
+    pub settings_page_automation_description: String,
+    pub settings_page_websearch_description: String,
+    pub settings_page_skills_description: String,
+    pub settings_page_agents_description: String,
+    pub settings_page_mcp_description: String,
+    pub settings_page_usage_description: String,
+    pub settings_page_archived_description: String,
+    pub settings_page_diagnostics_description: String,
     pub settings_jump_session_label: String,
     pub settings_jump_session_description: String,
     pub settings_jump_session_action: String,
@@ -1434,6 +1453,23 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_category_workspace: "Sessions & Workspace".to_string(),
         settings_category_tools: "Tools & Integrations".to_string(),
         settings_category_data: "Data & Maintenance".to_string(),
+        settings_nav_search_placeholder: "Search settings…".to_string(),
+        settings_nav_search_empty: "No matching settings".to_string(),
+        settings_page_general_description: "Set startup, update, sleep, window, and notification behavior".to_string(),
+        settings_page_appearance_description: "Choose the interface language, theme, and text size".to_string(),
+        settings_page_terminal_description: "Choose the shell for new terminals and commands in local workspaces".to_string(),
+        settings_page_models_description: "Connect model providers and choose models for each type of task".to_string(),
+        settings_page_session_description: "Set the runtime for new sessions, title generation, and workspace search".to_string(),
+        settings_page_worktrees_description: "Set session isolation defaults and manage workspace worktrees".to_string(),
+        settings_page_execution_description: "Set tool approval rules, timeouts, and task concurrency".to_string(),
+        settings_page_automation_description: "Set up reusable AI prompts and commands triggered by events".to_string(),
+        settings_page_websearch_description: "Choose the service agents use to search the web".to_string(),
+        settings_page_skills_description: "Review installed skills and control their global enabled state".to_string(),
+        settings_page_agents_description: "Create and manage agents with a name, description, and system prompt".to_string(),
+        settings_page_mcp_description: "Connect MCP servers to give agents access to external tools and data".to_string(),
+        settings_page_usage_description: "See model request counts, token use, and cache hit rate".to_string(),
+        settings_page_archived_description: "Review, restore, or permanently delete archived sessions".to_string(),
+        settings_page_diagnostics_description: "Adjust logging and export troubleshooting information".to_string(),
         settings_jump_session_label: "Session & Workspace".to_string(),
         settings_jump_session_description: {
             "Covered by the global search overlay in this shell: search sessions and workspace content from the command bar."
@@ -2115,6 +2151,53 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         settings_category_workspace: service.t("gpui-shell-settings-category-workspace").await,
         settings_category_tools: service.t("gpui-shell-settings-category-tools").await,
         settings_category_data: service.t("gpui-shell-settings-category-data").await,
+        settings_nav_search_placeholder: service
+            .t("gpui-shell-settings-nav-search-placeholder")
+            .await,
+        settings_nav_search_empty: service.t("gpui-shell-settings-nav-search-empty").await,
+        settings_page_general_description: service
+            .t("gpui-shell-settings-page-general-description")
+            .await,
+        settings_page_appearance_description: service
+            .t("gpui-shell-settings-page-appearance-description")
+            .await,
+        settings_page_terminal_description: service
+            .t("gpui-shell-settings-page-terminal-description")
+            .await,
+        settings_page_models_description: service
+            .t("gpui-shell-settings-page-models-description")
+            .await,
+        settings_page_session_description: service
+            .t("gpui-shell-settings-page-session-description")
+            .await,
+        settings_page_worktrees_description: service
+            .t("gpui-shell-settings-page-worktrees-description")
+            .await,
+        settings_page_execution_description: service
+            .t("gpui-shell-settings-page-execution-description")
+            .await,
+        settings_page_automation_description: service
+            .t("gpui-shell-settings-page-automation-description")
+            .await,
+        settings_page_websearch_description: service
+            .t("gpui-shell-settings-page-websearch-description")
+            .await,
+        settings_page_skills_description: service
+            .t("gpui-shell-settings-page-skills-description")
+            .await,
+        settings_page_agents_description: service
+            .t("gpui-shell-settings-page-agents-description")
+            .await,
+        settings_page_mcp_description: service.t("gpui-shell-settings-page-mcp-description").await,
+        settings_page_usage_description: service
+            .t("gpui-shell-settings-page-usage-description")
+            .await,
+        settings_page_archived_description: service
+            .t("gpui-shell-settings-page-archived-description")
+            .await,
+        settings_page_diagnostics_description: service
+            .t("gpui-shell-settings-page-diagnostics-description")
+            .await,
         settings_jump_session_label: service.t("gpui-shell-settings-jump-session-label").await,
         settings_jump_session_description: service
             .t("gpui-shell-settings-jump-session-description")

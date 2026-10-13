@@ -967,9 +967,7 @@ pub(crate) fn skills_group(text: &ShellText) -> SettingGroup {
         skills_page(&page_text, cx).into_any_element()
     });
 
-    SettingGroup::new()
-        .title(text.manage_skills_title.clone())
-        .items(vec![page_field])
+    SettingGroup::new().items(vec![page_field])
 }
 
 fn facet_row(
@@ -1337,13 +1335,11 @@ pub(crate) fn agents_group(text: &ShellText, view: WeakEntity<ShellWindow>) -> S
             .into_any_element()
     });
 
-    SettingGroup::new()
-        .title(text.manage_agents_title.clone())
-        .items(vec![
-            SettingItem::new(text.manage_agents_modes.clone(), modes_field),
-            SettingItem::new(text.manage_agents_subagents.clone(), subagents_field),
-            SettingItem::new(text.manage_agents_create.clone(), create_field),
-        ])
+    SettingGroup::new().items(vec![
+        SettingItem::new(text.manage_agents_modes.clone(), modes_field),
+        SettingItem::new(text.manage_agents_subagents.clone(), subagents_field),
+        SettingItem::new(text.manage_agents_create.clone(), create_field),
+    ])
 }
 
 enum AgentListKind {
@@ -1537,14 +1533,12 @@ pub(crate) fn mcp_group(text: &ShellText, view: WeakEntity<ShellWindow>) -> Sett
             .into_any_element()
     });
 
-    SettingGroup::new()
-        .title(text.manage_mcp_title.clone())
-        .items(vec![
-            SettingItem::new(text.manage_mcp_servers.clone(), servers_field)
-                .description(text.manage_mcp_description.clone()),
-            SettingItem::new(text.manage_mcp_json_item.clone(), json_field)
-                .description(text.manage_mcp_json_description.clone()),
-        ])
+    SettingGroup::new().items(vec![
+        SettingItem::new(text.manage_mcp_servers.clone(), servers_field)
+            .description(text.manage_mcp_description.clone()),
+        SettingItem::new(text.manage_mcp_json_item.clone(), json_field)
+            .description(text.manage_mcp_json_description.clone()),
+    ])
 }
 
 fn mcp_server_list(

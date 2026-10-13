@@ -22,9 +22,9 @@ use gpui_kit::InteractiveElement as _;
 use gpui_kit::StatefulInteractiveElement as _;
 use gpui_kit::{
     div, img, point, prelude::*, px, size, Anchor, App, Bounds, ClipboardEntry, ClipboardItem,
-    Context, ElementId, Entity, ExternalPaths, FontWeight, Image, ImageFormat, KeyBinding, Pixels,
-    SharedString, StyleRefinement, SystemNotification, TitlebarOptions, WeakEntity, Window,
-    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowOptions,
+    Context, ElementId, Entity, ExternalPaths, FontWeight, Image, ImageFormat, KeyBinding,
+    Pixels, SharedString, StyleRefinement, SystemNotification, TitlebarOptions,
+    WeakEntity, Window, WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowOptions,
 };
 use openbitfun_agent_runtime::sdk::{PendingUserQuestion, PermissionReply, PermissionRequest};
 use openbitfun_runtime_ports::{AgentInputAttachment, AgentSessionLineageSnapshot};
@@ -44,7 +44,10 @@ use crate::theme::{ShellState, DEFAULT_PRESET_ID};
 use crate::transcript::{self, ToolKind};
 
 /// Width of the navigation sidebar, matching the web-ui desktop shell.
-const SESSION_PANE_WIDTH: f32 = 300.;
+pub(crate) const SESSION_PANE_WIDTH: f32 = 300.;
+/// The settings content column (web `$config-page-content-max-width`): the
+/// page centers on this measure inside whatever the scene column gives it.
+const SETTINGS_CONTENT_WIDTH: f32 = 680.;
 /// Height of the two top chrome bars (nav top bar over the sidebar column,
 /// scene top bar over the scene face). Web parity: the 45px
 /// `--openbitfun-layout-toolbar-md-height` both `NavBar` and `SceneTopBar`
@@ -1629,6 +1632,14 @@ pub(crate) struct ShellWindow {
     /// One-shot automation hooks for the settings page and the changes view,
     /// mirroring `OPENBITFUN_GPUI_TERMINAL_AUTOOPEN`.
     settings_auto_open: bool,
+    /// The settings page the settings nav has selected (web
+    /// `useSettingsStore.activePageId`). A window preference, like the tab
+    /// strip: switching tabs keeps it, and the nav column shows it while the
+    /// settings scene is active.
+    settings_page: settings::SettingsEntry,
+    /// The settings nav's search field (web `SettingsNav`'s `SearchField`).
+    /// Owned by the window because the nav is rebuilt every frame.
+    settings_search_input: Entity<InputState>,
     git_auto_open: bool,
     /// One-shot automation hook (`OPENBITFUN_GPUI_AUTOOPEN_SESSION`): opens a
     /// named session once the runtime is ready, so a screenshot run can
@@ -1873,6 +1884,21 @@ impl ShellWindow {
         let mcp_interaction_result_input = cx.new(|cx| TextareaState::new(window, cx));
         let mcp_json_state = cx.new(|cx| TextareaState::new(window, cx));
         let websearch_credential_input = cx.new(|cx| InputState::new(window, cx));
+        let settings_search_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(text.settings_nav_search_placeholder.clone())
+        });
+        // The settings nav list is a projection of this field's value, so a
+        // keystroke has to repaint the window that renders it (the input owns
+        // its own text; nothing else would notify the shell).
+        cx.subscribe(
+            &settings_search_input,
+            |_: &mut Self, _, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            },
+        )
+        .detach();
         // R7b plugin UI contributions: the projection owns the installed
         // scenes; the fixture provider installs behind its env gate.
         let (plugin_ui, _fixture_scene) = crate::plugin_ui::setup_projection();
@@ -1927,6 +1953,8 @@ impl ShellWindow {
             panel_split: cx.new(|_| ResizableState::default()),
             panel_width: px(DEFAULT_RESOURCE_PANEL_WIDTH),
             settings_auto_open: std::env::var_os("OPENBITFUN_GPUI_SETTINGS_AUTOOPEN").is_some(),
+            settings_page: settings::SettingsEntry::General,
+            settings_search_input,
             git_auto_open: std::env::var_os("OPENBITFUN_GPUI_GIT_AUTOOPEN").is_some(),
             session_auto_open: std::env::var("OPENBITFUN_GPUI_AUTOOPEN_SESSION")
                 .ok()
@@ -3540,10 +3568,11 @@ impl ShellWindow {
         cx.notify();
     }
 
-    /// Shows the settings page in the main area. The page owns its own
-    /// sidebar; the session sidebar stays where it is. M22 page data (global
-    /// usage stats, web-search credential status) loads here so a page render
-    /// never triggers fetches.
+    /// Shows the settings page in the main area. The nav column switches to
+    /// the settings tree while the scene is active (web `SettingsNav`), and
+    /// the page renders the selected `settings_page` entry in the centered
+    /// column. M22 page data (global usage stats, web-search credential
+    /// status) loads here so a page render never triggers fetches.
     fn open_settings_view(&mut self, cx: &mut Context<Self>) {
         self.tabs.open(TabKind::Scene(SceneId::Settings));
         if self.usage_stats.is_none() && !self.usage_loading {
@@ -3569,6 +3598,18 @@ impl ShellWindow {
                 handle.load_web_search_credential_status(provider);
             }
         }
+        cx.notify();
+    }
+
+    /// Selects the settings page the nav column and the content column show
+    /// (web `openDestination`: the nav drives the page, the tab strip stays
+    /// where it is; the page keeps its own scroll position).
+    pub(crate) fn set_settings_page(
+        &mut self,
+        page: settings::SettingsEntry,
+        cx: &mut Context<Self>,
+    ) {
+        self.settings_page = page;
         cx.notify();
     }
 
@@ -7884,24 +7925,50 @@ impl Render for ShellWindow {
         let main_area = match self.tabs.active_kind().cloned() {
             Some(TabKind::Scene(SceneId::Settings)) => div()
                 .id("settings-page")
+                .debug_selector(|| "settings-page".to_string())
                 .flex_1()
                 .min_h_0()
                 .min_w_0()
                 .flex()
                 .flex_col()
-                // The desktop settings page centers one bounded column; a
-                // maximized window otherwise stretches every group box edge
-                // to edge.
+                // The desktop settings content is one bounded column centered
+                // in the scene (web `ConfigPageLayout`: `min(100% - 2 *
+                // inline-padding, 680px)` with `margin-inline: auto`); a
+                // maximized window otherwise stretches every row edge to edge.
                 .child(
                     div()
+                        .debug_selector(|| "settings-column".to_string())
+                        .relative()
                         .w_full()
-                        .max_w(px(1000.))
+                        .max_w(px(SETTINGS_CONTENT_WIDTH))
                         .mx_auto()
                         .flex_1()
                         .min_h_0()
                         .flex()
                         .flex_col()
-                        .child(settings::render_page(&text, cx.entity().downgrade(), cx)),
+                        .child(settings::render_page(
+                            &text,
+                            cx.entity().downgrade(),
+                            self.settings_page,
+                            cx,
+                        ))
+                        // The settings component keeps its own sidebar (at zero
+                        // width) and whatever edge rule that sidebar or its
+                        // resize handle paints lands on this column's first
+                        // pixel. One hairline-width strip in the scene's own
+                        // colour keeps the column's edge clean without
+                        // clipping the page (a clip would cut the row menus
+                        // that open past the column).
+                        .child(
+                            div()
+                                .debug_selector(|| "settings-column-edge".to_string())
+                                .absolute()
+                                .left_0()
+                                .top_0()
+                                .bottom_0()
+                                .w(px(1.))
+                                .bg(cx.theme().background),
+                        ),
                 )
                 .into_any_element(),
             Some(TabKind::Scene(SceneId::Git)) => match self.git.clone() {
@@ -8021,6 +8088,24 @@ impl Render for ShellWindow {
         // no full-width bottom status bar: the desktop dropped both when it
         // simplified its shell (`92ce04f8d`), and the drawer fold takes the
         // whole nav column out of the layout.
+        // The settings scene owns the nav column (web `nav-registry`: the
+        // settings scene registers `SettingsNav` as its NavPanel, which
+        // replaces MainNav while the scene is active). The footer stays: the
+        // desktop keeps its user/trinity cluster under the settings tree.
+        let settings_active = self.tabs.active_kind() == Some(&TabKind::Scene(SceneId::Settings));
+        let nav_body: gpui_kit::AnyElement = if settings_active {
+            settings::render_nav(
+                &text,
+                self.settings_page,
+                &self.settings_search_input,
+                SESSION_PANE_WIDTH,
+                cx.entity().downgrade(),
+                cx,
+            )
+        } else {
+            self.render_sidebar(&text, window, cx).into_any_element()
+        };
+
         let nav_column = div()
             .id("shell-nav-column")
             .debug_selector(|| "shell-nav-column".to_string())
@@ -8034,7 +8119,7 @@ impl Render for ShellWindow {
                     .debug_selector(|| "shell-body-sidebar".to_string())
                     .flex_1()
                     .min_h_0()
-                    .child(self.render_sidebar(&text, window, cx)),
+                    .child(nav_body),
             )
             .child(self.render_sidebar_footer(&text, cx));
 
@@ -8423,6 +8508,8 @@ impl ShellWindow {
     /// the brand at the left, the rest a native drag area. The window
     /// controls sit on the scene top bar, matching the desktop split.
     fn render_nav_top_bar(&self, text: &ShellText, cx: &mut Context<Self>) -> impl IntoElement {
+        let settings_nav_active =
+            self.tabs.active_kind() == Some(&TabKind::Scene(SceneId::Settings));
         div()
             .id("shell-nav-top-bar")
             .debug_selector(|| "shell-nav-top-bar".to_string())
@@ -8445,7 +8532,12 @@ impl ShellWindow {
                         cx.notify();
                     })),
             )
-            .child(div().text_sm().font_medium().child("OpenBitFun"))
+            // The desktop NavBar: the panel toggle, the history arrows, then
+            // the active scene nav's title. The brand wordmark stands in for
+            // the title while the default (MainNav) navigation is showing.
+            .when(!settings_nav_active, |this| {
+                this.child(div().text_sm().font_medium().child("OpenBitFun"))
+            })
             // The desktop NavBar arrows: tab-activation history (scene and
             // session tabs alike, entries keyed by kind so closes survive).
             .child(
@@ -8472,6 +8564,17 @@ impl ShellWindow {
                         cx.notify();
                     })),
             )
+            .when(settings_nav_active, |this| {
+                this.child(
+                    div()
+                        .id("nav-scene-title")
+                        .debug_selector(|| "nav-scene-title".to_string())
+                        .truncate()
+                        .text_sm()
+                        .font_medium()
+                        .child(text.settings_title.clone()),
+                )
+            })
             // Workspace switching at the window chrome (the desktop keeps it
             // in the nav's workspace section and the composer strip pill).
             .child(self.render_workspace_button(text, cx))
@@ -9384,6 +9487,7 @@ pub fn launch_main_window(tokio_handle: tokio::runtime::Handle) {
 
 #[cfg(test)]
 mod tests {
+    use gpui_kit::Modifiers;
     use super::*;
     use crate::runtime::ToolStatus;
     use crate::tabs;
@@ -10217,11 +10321,126 @@ mod tests {
                 cx.new(|_| SettingsHarness {
                     text: text.clone(),
                     view: shell_view.clone(),
+                    page: settings::SettingsEntry::General,
                 })
                 .into_any_element()
             },
         );
         window.run_until_parked();
+    }
+
+    /// The settings scene owns the nav column: the tree lists the registry
+    /// pages, a row click selects one, and a query swaps the tree for the
+    /// matching results (web `SettingsNav` in `NavPanel` + its search mode).
+    #[gpui_kit::test]
+    fn settings_scene_nav_selects_pages_and_searches(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            let presets = theme::load_presets();
+            let active = presets
+                .iter()
+                .position(|preset| preset.id == DEFAULT_PRESET_ID)
+                .unwrap_or(0);
+            if let Some(preset) = presets.get(active) {
+                preset.apply(cx);
+            }
+            cx.set_global(ShellState {
+                presets,
+                active_preset: active,
+            });
+            cx.set_global(settings::ShellConfig::startup_default(LocaleId::ZhCN));
+            cx.set_global(sample_shell_text());
+        });
+        let (ttx, trx) = mpsc::unbounded_channel();
+        let mut window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(ttx, trx, window, cx)));
+        window.update(|_, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.tabs.open(TabKind::Scene(SceneId::Settings));
+                cx.notify();
+            });
+        });
+        draw_shell_for_test(&mut window, &shell);
+
+        // The tree covers the registry: the page rows are the settings nav's,
+        // and the page renders in the web's bounded, centered column.
+        assert!(
+            window.debug_bounds("settings-nav-page-general").is_some(),
+            "the settings nav lists the pages"
+        );
+        assert_eq!(
+            window.update(|_, cx| shell.read(cx).settings_page),
+            settings::SettingsEntry::General
+        );
+        let column = window.debug_bounds("settings-column").expect("column");
+        assert!(
+            column.size.width <= px(SETTINGS_CONTENT_WIDTH) + px(1.),
+            "the page renders in the bounded column, got {:?}",
+            column.size
+        );
+
+        // The nav entry point selects the page (the click itself is exercised
+        // in the Xvfb smoke: this harness does not route pointer events into
+        // the component library's list rows).
+        window.update(|_, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.set_settings_page(settings::SettingsEntry::Appearance, cx)
+            });
+        });
+        draw_shell_for_test(&mut window, &shell);
+        assert_eq!(
+            window.update(|_, cx| shell.read(cx).settings_page),
+            settings::SettingsEntry::Appearance
+        );
+        assert!(
+            window
+                .debug_bounds("settings-nav-page-appearance")
+                .is_some(),
+            "the nav keeps its rows after a page switch"
+        );
+
+        // A query replaces the tree with the matching pages.
+        set_settings_search_for_test(&mut window, &shell, "mcp");
+        assert!(
+            window.debug_bounds("settings-nav-page-general").is_none(),
+            "the tree folds away while searching"
+        );
+        assert!(
+            window.debug_bounds("settings-nav-result-mcp").is_some(),
+            "the matching page is a result row"
+        );
+
+        // No match states it, rather than rendering an empty list.
+        set_settings_search_for_test(&mut window, &shell, "no-such-setting");
+        assert!(window.debug_bounds("settings-nav-empty").is_some());
+    }
+
+    /// Draws the shell as the window root and settles the frame — the test
+    /// harness paints one frame per `draw` call, so state changes have to be
+    /// followed by another one before `debug_bounds` sees them.
+    fn draw_shell_for_test(window: &mut gpui_kit::VisualTestContext, shell: &Entity<ShellWindow>) {
+        let shell = shell.clone();
+        window.draw(
+            point(px(0.), px(0.)),
+            size(px(1200.), px(800.)),
+            move |_, _| shell.into_any_element(),
+        );
+        window.run_until_parked();
+    }
+
+    /// Writes a query into the settings nav field through the shell's own input
+    /// (the same path a keystroke takes) and paints the frame it produces.
+    fn set_settings_search_for_test(
+        window: &mut gpui_kit::VisualTestContext,
+        shell: &Entity<ShellWindow>,
+        query: &str,
+    ) {
+        let input = window.update(|_, cx| shell.read(cx).settings_search_input.clone());
+        let query = query.to_string();
+        window.update(|window, cx| {
+            input.update(cx, |state, cx| state.set_value(query, window, cx));
+        });
+        draw_shell_for_test(window, shell);
     }
 
     /// The models page must render the configured catalog (including disabled
@@ -10278,6 +10497,7 @@ mod tests {
                 cx.new(|_| SettingsHarness {
                     text: text.clone(),
                     view: shell_view.clone(),
+                    page: settings::SettingsEntry::General,
                 })
                 .into_any_element()
             },
@@ -10287,6 +10507,8 @@ mod tests {
 
     struct SettingsHarness {
         text: ShellText,
+        /// Which page the harness renders (the nav selects one at a time).
+        page: settings::SettingsEntry,
         /// The settings page opens profile dialogs through the shell weak
         /// handle (D57); the harness never upgrades it, a shell-shaped
         /// placeholder is enough for layout.
@@ -10295,7 +10517,7 @@ mod tests {
 
     impl Render for SettingsHarness {
         fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            settings::render_page(&self.text, self.view.clone(), cx)
+            settings::render_page(&self.text, self.view.clone(), self.page, cx)
         }
     }
 

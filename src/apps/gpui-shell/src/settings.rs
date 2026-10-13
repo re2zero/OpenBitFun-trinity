@@ -10,14 +10,17 @@
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
-use gpui_kit::component::input::Input;
+use gpui_kit::component::group_box::GroupBoxVariant;
+use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::setting::{
-    NumberFieldOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
+    NumberFieldOptions, SelectIndex, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
 };
-use gpui_kit::component::{ActiveTheme, Sizable, StyledExt, WindowExt};
+use gpui_kit::component::sidebar::{Sidebar, SidebarFooter, SidebarItem};
+use gpui_kit::component::{ActiveTheme, Collapsible, Sizable, StyledExt, WindowExt};
 use gpui_kit::{
-    div, prelude::*, px, Anchor, App, Global, IntoElement, SharedString, Window, WindowAppearance,
+    div, prelude::*, px, Anchor, App, Entity, FontWeight, Global, IntoElement, SharedString,
+    StyleRefinement, WeakEntity, Window, WindowAppearance,
 };
 use openbitfun_core::service::config::get_global_config_service;
 use openbitfun_core::service::config::types::GlobalConfig;
@@ -82,6 +85,12 @@ pub(crate) const WEB_SEARCH_HTTP_HEADER_NAME_PATH: &str =
 /// Runtime log level (`app.logging.level`), applied live through the tracing
 /// reload handle.
 pub(crate) const LOGGING_LEVEL_PATH: &str = "app.logging.level";
+
+/// The measure a settings row's control column carries before the row's own
+/// label column would be squeezed; status sentences wrap inside it instead of
+/// running past the row (web `ConfigPageRow` bounds its control column the
+/// same way).
+const CONTROL_COLUMN_MAX_WIDTH: f32 = 280.;
 
 /// Inline export status for the diagnostics page as `(succeeded, message)`.
 /// A global because the page is rebuilt every frame from `cx` alone.
@@ -634,66 +643,515 @@ pub(crate) fn category_entries(category: SettingsCategory) -> &'static [Settings
     }
 }
 
+/// Every tree entry in nav order (category order, then each category's own
+/// entry order). One flat, fixed sequence: the settings nav lists it grouped,
+/// and the page indices the single-page renderer selects among come from it.
+pub(crate) fn settings_entries() -> impl Iterator<Item = SettingsEntry> {
+    SETTINGS_CATEGORIES
+        .iter()
+        .flat_map(|&category| category_entries(category).iter().copied())
+}
+
+/// The entry's index in [`settings_entries`] — also the gpui-kit page index
+/// its content renders at (see [`render_page`]).
+pub(crate) fn entry_index(entry: SettingsEntry) -> usize {
+    settings_entries()
+        .position(|candidate| candidate == entry)
+        .unwrap_or(0)
+}
+
+/// Stable element-id slug for a tree entry (page keys, debug selectors).
+pub(crate) fn entry_slug(entry: SettingsEntry) -> &'static str {
+    match entry {
+        SettingsEntry::General => "general",
+        SettingsEntry::Appearance => "appearance",
+        SettingsEntry::Terminal => "terminal",
+        SettingsEntry::Models => "models",
+        SettingsEntry::SessionSearch => "session",
+        SettingsEntry::WorktreesGit => "worktrees",
+        SettingsEntry::Permissions => "execution",
+        SettingsEntry::Automation => "automation",
+        SettingsEntry::WebSearch => "websearch",
+        SettingsEntry::Skills => "skills",
+        SettingsEntry::Agents => "agents",
+        SettingsEntry::Mcp => "mcp",
+        SettingsEntry::Usage => "usage",
+        SettingsEntry::Archived => "archived",
+        SettingsEntry::Diagnostics => "diagnostics",
+    }
+}
+
+/// The entry's nav and page title (web `navigation.pages.<id>.label`, the
+/// same string the group builders used to title their group).
+pub(crate) fn entry_label<'a>(entry: SettingsEntry, text: &'a ShellText) -> &'a str {
+    match entry {
+        SettingsEntry::General => &text.settings_general,
+        SettingsEntry::Appearance => &text.settings_appearance,
+        SettingsEntry::Terminal => &text.settings_terminal,
+        SettingsEntry::Models => &text.models_title,
+        SettingsEntry::SessionSearch => &text.settings_jump_session_label,
+        SettingsEntry::WorktreesGit => &text.settings_jump_worktrees_label,
+        SettingsEntry::Permissions => &text.settings_permissions,
+        SettingsEntry::Automation => &text.settings_automation,
+        SettingsEntry::WebSearch => &text.settings_websearch,
+        SettingsEntry::Skills => &text.manage_skills_title,
+        SettingsEntry::Agents => &text.manage_agents_title,
+        SettingsEntry::Mcp => &text.manage_mcp_title,
+        SettingsEntry::Usage => &text.settings_usage,
+        SettingsEntry::Archived => &text.settings_archived,
+        SettingsEntry::Diagnostics => &text.settings_diagnostics,
+    }
+}
+
+/// The entry's page-header subtitle (web `navigation.pages.<id>.description`).
+pub(crate) fn entry_description<'a>(entry: SettingsEntry, text: &'a ShellText) -> &'a str {
+    match entry {
+        SettingsEntry::General => &text.settings_page_general_description,
+        SettingsEntry::Appearance => &text.settings_page_appearance_description,
+        SettingsEntry::Terminal => &text.settings_page_terminal_description,
+        SettingsEntry::Models => &text.settings_page_models_description,
+        SettingsEntry::SessionSearch => &text.settings_page_session_description,
+        SettingsEntry::WorktreesGit => &text.settings_page_worktrees_description,
+        SettingsEntry::Permissions => &text.settings_page_execution_description,
+        SettingsEntry::Automation => &text.settings_page_automation_description,
+        SettingsEntry::WebSearch => &text.settings_page_websearch_description,
+        SettingsEntry::Skills => &text.settings_page_skills_description,
+        SettingsEntry::Agents => &text.settings_page_agents_description,
+        SettingsEntry::Mcp => &text.settings_page_mcp_description,
+        SettingsEntry::Usage => &text.settings_page_usage_description,
+        SettingsEntry::Archived => &text.settings_page_archived_description,
+        SettingsEntry::Diagnostics => &text.settings_page_diagnostics_description,
+    }
+}
+
+/// The entry's page content: the group the settings builders own for it.
+///
+/// The groups carry no title of their own any more — the nav item and the
+/// page header already name the page, and a second copy of the page name
+/// above the card is exactly the duplication the web page does not have
+/// (`ConfigPageSection` titles name sections *inside* a page, and every shell
+/// page has exactly one).
+pub(crate) fn entry_group(
+    entry: SettingsEntry,
+    text: &ShellText,
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    cx: &mut App,
+) -> SettingGroup {
+    match entry {
+        SettingsEntry::General => general_group(text, view, cx),
+        SettingsEntry::Appearance => appearance_group(text),
+        SettingsEntry::Terminal => terminal_group(text, view),
+        SettingsEntry::Models => models_group(text, cx),
+        SettingsEntry::SessionSearch => session_search_group(text, view),
+        SettingsEntry::WorktreesGit => worktrees_git_group(text, view),
+        SettingsEntry::Permissions => permissions_group(text, cx),
+        SettingsEntry::Automation => automation_group(text),
+        SettingsEntry::WebSearch => websearch_group(text, view, cx),
+        SettingsEntry::Skills => crate::manage::skills_group(text),
+        SettingsEntry::Agents => crate::manage::agents_group(text, view),
+        SettingsEntry::Mcp => crate::manage::mcp_group(text, view),
+        SettingsEntry::Usage => usage_group(text, view),
+        SettingsEntry::Archived => archived_group(text, view),
+        SettingsEntry::Diagnostics => diagnostics_group(text, view),
+    }
+}
+
+/// The settings page content for one tree entry.
+///
+/// The nav lives in the shell's own left column (web `SettingsNav` covers the
+/// sidebar), so the component's sidebar is collapsed to zero width and the
+/// page renders as the single visible page. Every entry still ships as a page
+/// — the component's page index picks the visible one, and a fixed page order
+/// is what keeps each page's internal scroll position its own.
 pub(crate) fn render_page(
     text: &ShellText,
     view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    entry: SettingsEntry,
     cx: &mut App,
 ) -> gpui_kit::AnyElement {
-    Settings::new("shell-settings")
-        .sidebar_width(gpui_kit::px(180.))
-        .pages(
-            SETTINGS_CATEGORIES
-                .iter()
-                .map(|&category| category_page(text, view.clone(), category, cx))
+    let header = page_header_style(cx);
+    let pages = settings_entries()
+        .map(|candidate| {
+            SettingPage::new(SharedString::from(entry_label(candidate, text).to_string()))
+                .description(SharedString::from(
+                    entry_description(candidate, text).to_string(),
+                ))
+                .resettable(false)
+                .header_style(&header)
+                .group(entry_group(candidate, text, view.clone(), cx))
+        })
+        .collect::<Vec<_>>();
+
+    Settings::new(SharedString::from(format!(
+        "shell-settings-{}",
+        entry_slug(entry)
+    )))
+    // The settings nav is the shell's nav column, not the component's own
+    // sidebar (web `SettingsNav` in `NavPanel`). Zero width and a zero-size
+    // range leave the content pane the whole column.
+    .sidebar_width(gpui_kit::px(0.))
+    .sidebar_size_range(gpui_kit::px(0.)..gpui_kit::px(0.))
+    .default_selected_index(SelectIndex {
+        page_ix: entry_index(entry),
+        group_ix: None,
+    })
+    // The component's own sidebar is off-screen here; drop its edge rule so
+    // nothing of it paints inside the content column.
+    .sidebar_style(&StyleRefinement::default().border_0())
+    .with_group_variant(GroupBoxVariant::Fill)
+    .pages(pages)
+    .into_any_element()
+}
+
+/// The page header refinement: the web `ConfigPageHeader` geometry — space-5
+/// above, no divider, the 24px bold page title — inside the centered column
+/// the shell hands the page.
+fn page_header_style(cx: &App) -> StyleRefinement {
+    StyleRefinement::default()
+        .border_0()
+        .pt_5()
+        .px_4()
+        .pb_0()
+        // The web stack: 36px between the header and the first section, minus
+        // the 16px the first group's own top padding already contributes.
+        .mb_5()
+        .gap_2()
+        .text_size(gpui_kit::px(24.))
+        .font_weight(FontWeight::BOLD)
+        .text_color(cx.theme().foreground)
+}
+
+/// One row of the settings nav. Pure data: the projection in [`nav_groups`]
+/// builds these from the locale copy and the active page, and the renderer
+/// attaches the view handle and the click path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SettingsNavRow {
+    /// A registry page (web `NavigationPanelItem`, active = `aria-current`).
+    Page {
+        entry: SettingsEntry,
+        label: String,
+        active: bool,
+    },
+    /// A search result (web `SettingsNav`'s result row: the category path over
+    /// the page description).
+    Result {
+        entry: SettingsEntry,
+        path: String,
+        description: String,
+        active: bool,
+    },
+    /// The search found nothing (web `navigation.search.empty`).
+    Empty(String),
+}
+
+/// One child of the nav's `Sidebar`: a category section (web
+/// `NavigationPanelSection`) or the flat search-results block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SettingsNavGroup {
+    /// The section heading; `None` for the search-results block.
+    heading: Option<String>,
+    rows: Vec<SettingsNavRow>,
+}
+
+/// The nav's content for one search query: the five category sections when
+/// the field is empty (web `SettingsNav`'s tree), else the flat list of pages
+/// whose title, description, category, or registry id matches the query.
+///
+/// The web index also carries each page's own copy phrases; the shell's pages
+/// hold their rows behind the settings component, so the honest subset is the
+/// page's own name, description, and category (a match the user can see in the
+/// list either way).
+pub(crate) fn nav_groups(
+    text: &ShellText,
+    active: SettingsEntry,
+    query: &str,
+) -> Vec<SettingsNavGroup> {
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
+        return SETTINGS_CATEGORIES
+            .iter()
+            .map(|&category| SettingsNavGroup {
+                heading: Some(category_label(category, text).to_string()),
+                rows: category_entries(category)
+                    .iter()
+                    .map(|&entry| SettingsNavRow::Page {
+                        entry,
+                        label: entry_label(entry, text).to_string(),
+                        active: entry == active,
+                    })
+                    .collect(),
+            })
+            .collect();
+    }
+
+    let rows = SETTINGS_CATEGORIES
+        .iter()
+        .flat_map(|&category| {
+            category_entries(category).iter().map(move |&entry| {
+                let label = entry_label(entry, text).to_string();
+                let description = entry_description(entry, text).to_string();
+                (
+                    category,
+                    entry,
+                    format!(
+                        "{} {} {} {}",
+                        category_label(category, text),
+                        label,
+                        description,
+                        entry_slug(entry)
+                    )
+                    .to_lowercase(),
+                    label,
+                    description,
+                )
+            })
+        })
+        .filter(|(_, _, haystack, _, _)| haystack.contains(&needle))
+        .map(
+            |(category, entry, _, label, description)| SettingsNavRow::Result {
+                entry,
+                path: format!("{} › {}", category_label(category, text), label),
+                description,
+                active: entry == active,
+            },
+        )
+        .collect::<Vec<_>>();
+
+    vec![SettingsNavGroup {
+        heading: None,
+        rows: if rows.is_empty() {
+            vec![SettingsNavRow::Empty(
+                text.settings_nav_search_empty.clone(),
+            )]
+        } else {
+            rows
+        },
+    }]
+}
+
+/// The category's heading copy (web `navigation.categories.<id>`).
+fn category_label(category: SettingsCategory, text: &ShellText) -> &str {
+    match category {
+        SettingsCategory::Application => &text.settings_category_application,
+        SettingsCategory::Ai => &text.settings_category_ai,
+        SettingsCategory::Workspace => &text.settings_category_workspace,
+        SettingsCategory::Tools => &text.settings_category_tools,
+        SettingsCategory::Data => &text.settings_category_data,
+    }
+}
+
+/// The settings nav column: the shell's sidebar slot while the settings scene
+/// is active (web `SettingsNav`, registered as the scene's `NavPanel`). The
+/// component's own sidebar stays collapsed to zero width inside the page, so
+/// this is the only settings tree on screen.
+pub(crate) fn render_nav(
+    text: &ShellText,
+    active: SettingsEntry,
+    search: &Entity<InputState>,
+    width: f32,
+    view: WeakEntity<crate::shell::ShellWindow>,
+    cx: &App,
+) -> gpui_kit::AnyElement {
+    let groups = nav_groups(text, active, &search.read(cx).value());
+    Sidebar::new(NAV_ID)
+        .w(px(width))
+        .collapsible(false)
+        .collapsed(false)
+        // Web `SettingsNav` insets the field inside the panel's own padding;
+        // the component's header slot only carries space-3 of its own.
+        .header(
+            div()
+                .w_full()
+                .px_3()
+                .pt_3()
+                .child(Input::new(search).prefix(IconName::Search)),
+        )
+        .children(
+            groups
+                .into_iter()
+                .enumerate()
+                .map(|(ix, group)| SettingsNavGroupElement {
+                    group,
+                    first: ix == 0,
+                    view: view.clone(),
+                    search: search.clone(),
+                })
                 .collect::<Vec<_>>(),
         )
+        .footer(SidebarFooter::new())
         .into_any_element()
 }
 
-/// One registry group as a settings page — the sidebar parent. Its titled
-/// groups are the tree entries; selecting one scrolls the combined page to
-/// that category (the component's native two-level pattern).
-fn category_page(
-    text: &ShellText,
-    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
-    category: SettingsCategory,
-    cx: &mut App,
-) -> SettingPage {
-    let (label, icon) = match category {
-        SettingsCategory::Application => (
-            text.settings_category_application.clone(),
-            IconName::Settings2,
-        ),
-        SettingsCategory::Ai => (text.settings_category_ai.clone(), IconName::Sparkles),
-        SettingsCategory::Workspace => (text.settings_category_workspace.clone(), IconName::Folder),
-        SettingsCategory::Tools => (text.settings_category_tools.clone(), IconName::Webhook),
-        SettingsCategory::Data => (text.settings_category_data.clone(), IconName::HardDrive),
-    };
-    let mut page = SettingPage::new(label)
-        .icon(icon)
-        .default_open(category == SettingsCategory::Application)
-        .resettable(false);
-    for &entry in category_entries(category) {
-        let group = match entry {
-            SettingsEntry::General => general_group(text, view.clone(), cx),
-            SettingsEntry::Appearance => appearance_group(text),
-            SettingsEntry::Terminal => terminal_group(text, view.clone()),
-            SettingsEntry::Models => models_group(text, cx),
-            SettingsEntry::SessionSearch => session_search_group(text, view.clone()),
-            SettingsEntry::WorktreesGit => worktrees_git_group(text, view.clone()),
-            SettingsEntry::Permissions => permissions_group(text, cx),
-            SettingsEntry::Automation => automation_group(text),
-            SettingsEntry::WebSearch => websearch_group(text, view.clone(), cx),
-            SettingsEntry::Skills => crate::manage::skills_group(text),
-            SettingsEntry::Agents => crate::manage::agents_group(text, view.clone()),
-            SettingsEntry::Mcp => crate::manage::mcp_group(text, view.clone()),
-            SettingsEntry::Usage => usage_group(text, view.clone()),
-            SettingsEntry::Archived => archived_group(text, view.clone()),
-            SettingsEntry::Diagnostics => diagnostics_group(text, view.clone()),
-        };
-        page = page.group(group);
+const NAV_ID: &str = "shell-settings-nav";
+
+/// A nav group as one `Sidebar` child, so the sidebar's own inter-child gap
+/// spaces the categories (the shell's session groups use the same shape).
+#[derive(Clone)]
+struct SettingsNavGroupElement {
+    group: SettingsNavGroup,
+    /// The first section sits right under the search field; the others carry
+    /// the web's extra gap above their heading.
+    first: bool,
+    view: WeakEntity<crate::shell::ShellWindow>,
+    search: Entity<InputState>,
+}
+
+impl Collapsible for SettingsNavGroupElement {
+    fn collapsed(self, _collapsed: bool) -> Self {
+        self
     }
-    page
+
+    fn is_collapsed(&self) -> bool {
+        false
+    }
+}
+
+impl SidebarItem for SettingsNavGroupElement {
+    fn render(
+        self,
+        id: impl Into<gpui_kit::ElementId>,
+        _window: &mut Window,
+        cx: &mut App,
+    ) -> impl IntoElement {
+        let _id = id.into();
+        div()
+            .flex()
+            .flex_col()
+            // Rows keep the desktop's indent past the column's own padding
+            // (`SettingsNav` indents items past the icon slot MainNav rows
+            // keep); the section gap above a heading matches the desktop's
+            // `NavigationPanelSection` rhythm.
+            .px_2()
+            .when(!self.first, |this| this.pt_3())
+            .gap_1()
+            .when_some(self.group.heading, |this, heading| {
+                this.child(
+                    div()
+                        .debug_selector(|| "settings-nav-category".to_string())
+                        // Web `NavigationPanelSection` heading: label-xs over a
+                        // 24px row, inset by the heading padding only.
+                        .h(px(24.))
+                        .px_2()
+                        .flex()
+                        .items_center()
+                        .text_size(px(11.))
+                        .font_medium()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(SharedString::from(heading)),
+                )
+            })
+            .child(
+                div().flex().flex_col().gap_0p5().children(
+                    self.group.rows.into_iter().map(|row| {
+                        settings_nav_row(row, self.view.clone(), self.search.clone(), cx)
+                    }),
+                ),
+            )
+    }
+}
+
+/// One nav row element. The row owns its click path: a page row selects the
+/// page, a result row selects the page and clears the search field (web
+/// `activate(destination, clear)`).
+fn settings_nav_row(
+    row: SettingsNavRow,
+    view: WeakEntity<crate::shell::ShellWindow>,
+    search: Entity<InputState>,
+    cx: &App,
+) -> gpui_kit::AnyElement {
+    match row {
+        SettingsNavRow::Page {
+            entry,
+            label,
+            active,
+        } => {
+            let id = SharedString::from(format!("settings-nav-page-{}", entry_slug(entry)));
+            let slug = entry_slug(entry);
+            nav_item_row(id, active, cx)
+                .debug_selector(move || format!("settings-nav-page-{slug}"))
+                .on_click(move |_, _, cx| {
+                    if let Some(shell) = view.upgrade() {
+                        shell.update(cx, |shell, cx| shell.set_settings_page(entry, cx));
+                    }
+                })
+                .child(SharedString::from(label))
+                .into_any_element()
+        }
+        SettingsNavRow::Result {
+            entry,
+            path,
+            description,
+            active,
+        } => {
+            let id = SharedString::from(format!("settings-nav-result-{}", entry_slug(entry)));
+            let slug = entry_slug(entry);
+            let click_view = view.clone();
+            let click_search = search.clone();
+            nav_item_row(id, active, cx)
+                .debug_selector(move || format!("settings-nav-result-{slug}"))
+                .h(px(44.))
+                .items_start()
+                .py_1()
+                .on_click(move |_, window, cx| {
+                    if let Some(shell) = click_view.upgrade() {
+                        shell.update(cx, |shell, cx| shell.set_settings_page(entry, cx));
+                    }
+                    click_search.update(cx, |state, cx| state.set_value("", window, cx));
+                })
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_0p5()
+                        .min_w_0()
+                        .child(div().truncate().child(SharedString::from(path)))
+                        .child(
+                            div()
+                                .truncate()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(SharedString::from(description)),
+                        ),
+                )
+                .into_any_element()
+        }
+        SettingsNavRow::Empty(message) => div()
+            .debug_selector(|| "settings-nav-empty".to_string())
+            .px_2()
+            .py_3()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .child(SharedString::from(message))
+            .into_any_element(),
+    }
+}
+
+/// The shared nav row frame: web item geometry (30px tall, 8px inline inset,
+/// the item radius, the quiet-pill hover/selection pair the shell's nav rows
+/// already use). The page rows indent their label past the icon slot the
+/// desktop's other nav rows keep (web `SettingsNav` does the same).
+fn nav_item_row(id: SharedString, active: bool, cx: &App) -> gpui_kit::Stateful<gpui_kit::Div> {
+    div()
+        .id(id)
+        .cursor_pointer()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_x_2()
+        .min_w_0()
+        .h(px(30.))
+        .pl(px(36.))
+        .pr_2()
+        .rounded(cx.theme().radius)
+        .text_sm()
+        .when(active, |this| {
+            this.font_medium()
+                .bg(cx.theme().selection)
+                .text_color(cx.theme().sidebar_accent_foreground)
+        })
+        .when(!active, |this| {
+            this.hover(|style| style.bg(cx.theme().muted))
+        })
 }
 
 /// The `workspace.session` entry (parity §2.1): the shell hosts no
@@ -719,12 +1177,10 @@ fn session_search_group(
             })
             .into_any_element()
     });
-    SettingGroup::new()
-        .title(text.settings_jump_session_label.clone())
-        .items(vec![SettingItem::new(
-            text.settings_jump_session_description.clone(),
-            open_field,
-        )])
+    SettingGroup::new().items(vec![SettingItem::new(
+        text.settings_jump_session_description.clone(),
+        open_field,
+    )])
 }
 
 /// The `workspace.worktrees` entry (parity §2.1): worktree management is
@@ -753,12 +1209,10 @@ fn worktrees_git_group(
             })
             .into_any_element()
     });
-    SettingGroup::new()
-        .title(text.settings_jump_worktrees_label.clone())
-        .items(vec![SettingItem::new(
-            text.settings_jump_worktrees_description.clone(),
-            open_field,
-        )])
+    SettingGroup::new().items(vec![SettingItem::new(
+        text.settings_jump_worktrees_description.clone(),
+        open_field,
+    )])
 }
 
 fn appearance_group(text: &ShellText) -> SettingGroup {
@@ -789,14 +1243,12 @@ fn appearance_group(text: &ShellText) -> SettingGroup {
         SettingField::render(move |_options, _window, cx| theme_button(&text, cx))
     };
 
-    SettingGroup::new()
-        .title(text.settings_appearance.clone())
-        .items(vec![
-            SettingItem::new(text.language.clone(), language_field)
-                .description(text.settings_language_description.clone()),
-            SettingItem::new(text.theme.clone(), theme_field)
-                .description(text.settings_theme_description.clone()),
-        ])
+    SettingGroup::new().items(vec![
+        SettingItem::new(text.language.clone(), language_field)
+            .description(text.settings_language_description.clone()),
+        SettingItem::new(text.theme.clone(), theme_field)
+            .description(text.settings_theme_description.clone()),
+    ])
 }
 
 /// General group (M22): launch-at-login, the close-button behavior, and the
@@ -890,23 +1342,21 @@ fn general_group(
         update_check_field(view.clone(), &owned_text, cx)
     });
 
-    SettingGroup::new()
-        .title(text.settings_general.clone())
-        .items(vec![
-            SettingItem::new(text.settings_version.clone(), version_field),
-            SettingItem::new(text.settings_launch_login.clone(), login_field)
-                .description(text.settings_launch_login_description.clone()),
-            SettingItem::new(text.settings_close_behavior.clone(), close_field)
-                .description(text.settings_close_behavior_description.clone()),
-            SettingItem::new(
-                text.settings_notify_turn_done.clone(),
-                notify_turn_done_field,
-            )
-            .description(text.settings_notify_turn_done_description.clone()),
-            SettingItem::new(text.settings_auto_update.clone(), auto_update_field)
-                .description(text.settings_auto_update_description.clone()),
-            SettingItem::new(text.settings_check_updates.clone(), update_field),
-        ])
+    SettingGroup::new().items(vec![
+        SettingItem::new(text.settings_version.clone(), version_field),
+        SettingItem::new(text.settings_launch_login.clone(), login_field)
+            .description(text.settings_launch_login_description.clone()),
+        SettingItem::new(text.settings_close_behavior.clone(), close_field)
+            .description(text.settings_close_behavior_description.clone()),
+        SettingItem::new(
+            text.settings_notify_turn_done.clone(),
+            notify_turn_done_field,
+        )
+        .description(text.settings_notify_turn_done_description.clone()),
+        SettingItem::new(text.settings_auto_update.clone(), auto_update_field)
+            .description(text.settings_auto_update_description.clone()),
+        SettingItem::new(text.settings_check_updates.clone(), update_field),
+    ])
 }
 
 /// Flips launch-at-login. The toggle is optimistic; a failed platform write
@@ -940,8 +1390,11 @@ fn update_check_field(
         .upgrade()
         .map(|shell| shell.read(cx).update_state.clone())
         .unwrap_or_default();
+    // The status line can carry a whole diagnostic sentence; bound it to the
+    // control column's measure so it wraps instead of running past the row.
     let note = |value: String, danger: bool| {
         div()
+            .max_w(px(CONTROL_COLUMN_MAX_WIDTH))
             .text_sm()
             .text_color(if danger {
                 cx.theme().danger
@@ -1131,13 +1584,11 @@ fn models_group(text: &ShellText, cx: &App) -> SettingGroup {
         text.models_default_description.clone()
     };
 
-    SettingGroup::new()
-        .title(text.models_title.clone())
-        .items(vec![
-            SettingItem::new(text.models_default.clone(), default_field)
-                .description(default_description),
-            SettingItem::new(text.models_configured.clone(), list_field),
-        ])
+    SettingGroup::new().items(vec![
+        SettingItem::new(text.models_default.clone(), default_field)
+            .description(default_description),
+        SettingItem::new(text.models_configured.clone(), list_field),
+    ])
 }
 
 /// Terminal preferences for the built-in terminal (M7 pane). The values are
@@ -1209,23 +1660,21 @@ fn terminal_group(
         terminal_profiles_field(view.clone(), &owned_text, window, cx)
     });
 
-    SettingGroup::new()
-        .title(text.settings_terminal.clone())
-        .items(vec![
-            SettingItem::new(text.settings_terminal_font_size.clone(), font_size_field)
-                .description(text.settings_terminal_font_size_description.clone()),
-            SettingItem::new(
-                text.settings_terminal_font_family.clone(),
-                font_family_field,
-            )
-            .description(text.settings_terminal_font_family_description.clone()),
-            SettingItem::new(text.settings_terminal_scrollback.clone(), scrollback_field)
-                .description(text.settings_terminal_scrollback_description.clone()),
-            SettingItem::new(text.settings_terminal_shell.clone(), shell_field)
-                .description(text.settings_terminal_shell_description.clone()),
-            SettingItem::new(text.settings_terminal_profiles.clone(), profiles_field)
-                .description(text.settings_terminal_profiles_description.clone()),
-        ])
+    SettingGroup::new().items(vec![
+        SettingItem::new(text.settings_terminal_font_size.clone(), font_size_field)
+            .description(text.settings_terminal_font_size_description.clone()),
+        SettingItem::new(
+            text.settings_terminal_font_family.clone(),
+            font_family_field,
+        )
+        .description(text.settings_terminal_font_family_description.clone()),
+        SettingItem::new(text.settings_terminal_scrollback.clone(), scrollback_field)
+            .description(text.settings_terminal_scrollback_description.clone()),
+        SettingItem::new(text.settings_terminal_shell.clone(), shell_field)
+            .description(text.settings_terminal_shell_description.clone()),
+        SettingItem::new(text.settings_terminal_profiles.clone(), profiles_field)
+            .description(text.settings_terminal_profiles_description.clone()),
+    ])
 }
 
 /// The terminal-profiles list (M17): one row per profile with edit/delete,
@@ -1243,6 +1692,7 @@ fn terminal_profiles_field(
     if profiles.is_empty() {
         column = column.child(
             div()
+                .max_w(px(CONTROL_COLUMN_MAX_WIDTH))
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
                 .child(text.terminal_profiles_empty.clone()),
@@ -1571,15 +2021,13 @@ fn permissions_group(text: &ShellText, cx: &App) -> SettingGroup {
     let auto_approve_disabled =
         ShellConfig::current(cx).permission_preset == PermissionPolicyPreset::FullAccess;
 
-    SettingGroup::new()
-        .title(text.settings_permissions.clone())
-        .items(vec![
-            SettingItem::new(text.settings_policy.clone(), preset_field)
-                .description(text.settings_policy_description.clone()),
-            SettingItem::new(text.settings_auto_approve.clone(), auto_approve_field)
-                .description(text.settings_auto_approve_description.clone())
-                .disabled(auto_approve_disabled),
-        ])
+    SettingGroup::new().items(vec![
+        SettingItem::new(text.settings_policy.clone(), preset_field)
+            .description(text.settings_policy_description.clone()),
+        SettingItem::new(text.settings_auto_approve.clone(), auto_approve_field)
+            .description(text.settings_auto_approve_description.clone())
+            .disabled(auto_approve_disabled),
+    ])
 }
 
 /// Automation group (M22): the native-hooks master switches and the commit
@@ -1611,16 +2059,14 @@ fn automation_group(text: &ShellText) -> SettingGroup {
         },
     );
 
-    SettingGroup::new()
-        .title(text.settings_automation.clone())
-        .items(vec![
-            SettingItem::new(text.settings_hooks.clone(), hooks_field)
-                .description(text.settings_hooks_description.clone()),
-            SettingItem::new(text.settings_hooks_project.clone(), project_hooks_field)
-                .description(text.settings_hooks_project_description.clone()),
-            SettingItem::new(text.settings_git_coauthor.clone(), coauthor_field)
-                .description(text.settings_git_coauthor_description.clone()),
-        ])
+    SettingGroup::new().items(vec![
+        SettingItem::new(text.settings_hooks.clone(), hooks_field)
+            .description(text.settings_hooks_description.clone()),
+        SettingItem::new(text.settings_hooks_project.clone(), project_hooks_field)
+            .description(text.settings_hooks_project_description.clone()),
+        SettingItem::new(text.settings_git_coauthor.clone(), coauthor_field)
+            .description(text.settings_git_coauthor_description.clone()),
+    ])
 }
 
 /// Whether the custom HTTP search service auth mode needs a device
@@ -1702,9 +2148,7 @@ fn websearch_group(
     if snapshot.web_search_provider == "openbitfun_search_http" {
         items.extend(websearch_http_items(text, view, &snapshot));
     }
-    SettingGroup::new()
-        .title(text.settings_websearch.clone())
-        .items(items)
+    SettingGroup::new().items(items)
 }
 
 /// The endpoint/auth rows for the custom HTTP search service: URL, auth
@@ -1922,13 +2366,11 @@ fn usage_group(
         usage_activity_field(activity_view.clone(), &activity_text, cx)
     });
 
-    SettingGroup::new()
-        .title(text.settings_usage.clone())
-        .items(vec![
-            SettingItem::new(text.settings_usage_range.clone(), range_field),
-            SettingItem::new(text.usage_activity_title.clone(), activity_field)
-                .description(text.usage_activity_description.clone()),
-        ])
+    SettingGroup::new().items(vec![
+        SettingItem::new(text.settings_usage_range.clone(), range_field),
+        SettingItem::new(text.usage_activity_title.clone(), activity_field)
+            .description(text.usage_activity_description.clone()),
+    ])
 }
 
 /// One selectable time range of the usage page; the values are the shared
@@ -2617,13 +3059,11 @@ fn archived_group(
         archived_sessions_field(view.clone(), &owned_text, window, cx)
     });
 
-    SettingGroup::new()
-        .title(text.settings_archived.clone())
-        .items(vec![SettingItem::new(
-            text.settings_archived_list.clone(),
-            list_field,
-        )
-        .description(text.settings_archived_description.clone())])
+    SettingGroup::new().items(vec![SettingItem::new(
+        text.settings_archived_list.clone(),
+        list_field,
+    )
+    .description(text.settings_archived_description.clone())])
 }
 
 /// The archived list body, exposed for the headless render test; the page
@@ -2985,16 +3425,14 @@ fn diagnostics_group(
         column.into_any_element()
     });
 
-    SettingGroup::new()
-        .title(text.settings_diagnostics.clone())
-        .items(vec![
-            SettingItem::new(text.settings_logging_level.clone(), level_field)
-                .description(text.settings_logging_level_description.clone()),
-            SettingItem::new(text.settings_logs_dir.clone(), logs_field)
-                .description(text.settings_diagnostics_note.clone()),
-            SettingItem::new(text.settings_diagnostics_export.clone(), export_field)
-                .description(text.settings_diagnostics_export_description.clone()),
-        ])
+    SettingGroup::new().items(vec![
+        SettingItem::new(text.settings_logging_level.clone(), level_field)
+            .description(text.settings_logging_level_description.clone()),
+        SettingItem::new(text.settings_logs_dir.clone(), logs_field)
+            .description(text.settings_diagnostics_note.clone()),
+        SettingItem::new(text.settings_diagnostics_export.clone(), export_field)
+            .description(text.settings_diagnostics_export_description.clone()),
+    ])
 }
 
 /// Opens the export confirmation; the bundle is written on confirm only, so
@@ -3218,6 +3656,79 @@ mod tests {
         "data.archived",
         "data.diagnostics",
     ];
+
+    /// Every entry carries the nav metadata the tree, the page header, and
+    /// the element ids read: a label, a description, and a unique slug.
+    #[test]
+    fn settings_entries_carry_unique_nav_metadata() {
+        let text = sample_text();
+        let entries = settings_entries().collect::<Vec<_>>();
+        assert_eq!(entries.len(), 15);
+        let mut slugs = entries
+            .iter()
+            .map(|&entry| entry_slug(entry))
+            .collect::<Vec<_>>();
+        assert_eq!(slugs.len(), 15);
+        slugs.sort_unstable();
+        slugs.dedup();
+        assert_eq!(slugs.len(), 15, "slugs key the page elements");
+        for (ix, &entry) in entries.iter().enumerate() {
+            assert!(!entry_label(entry, &text).is_empty(), "{entry:?}");
+            assert!(!entry_description(entry, &text).is_empty(), "{entry:?}");
+            assert_eq!(entry_index(entry), ix, "page index follows the nav order");
+        }
+    }
+
+    /// The nav projects the category tree while the search field is empty and
+    /// flattens to matching pages while it holds a query (web `SettingsNav`:
+    /// `NavigationPanelSection` per category, else the result list).
+    #[test]
+    fn settings_nav_projects_the_tree_and_the_search() {
+        let text = sample_text();
+
+        let tree = nav_groups(&text, SettingsEntry::General, "");
+        assert_eq!(tree.len(), SETTINGS_CATEGORIES.len());
+        assert_eq!(
+            tree[0].heading.as_deref(),
+            Some(text.settings_category_application.as_str())
+        );
+        assert_eq!(
+            tree.iter().map(|group| group.rows.len()).sum::<usize>(),
+            15,
+            "every tree entry is a row"
+        );
+        assert!(matches!(
+            &tree[0].rows[0],
+            SettingsNavRow::Page { entry: SettingsEntry::General, label, active: true }
+                if label == &text.settings_general
+        ));
+        assert!(matches!(
+            &tree[4].rows[2],
+            SettingsNavRow::Page {
+                entry: SettingsEntry::Diagnostics,
+                active: false,
+                ..
+            }
+        ));
+
+        // A query flattens the tree: one result block, matched pages only.
+        let searched = nav_groups(&text, SettingsEntry::Usage, "cache hit rate");
+        assert_eq!(searched.len(), 1);
+        assert!(searched[0].heading.is_none());
+        assert_eq!(searched[0].rows.len(), 1);
+        assert!(matches!(
+            &searched[0].rows[0],
+            SettingsNavRow::Result { entry: SettingsEntry::Usage, active: true, path, .. }
+                if path.ends_with(&text.settings_usage)
+        ));
+
+        // No match is stated, never a silent empty list.
+        let missing = nav_groups(&text, SettingsEntry::General, "no-such-setting");
+        assert!(matches!(
+            &missing[0].rows[..],
+            [SettingsNavRow::Empty(message)] if message == &text.settings_nav_search_empty
+        ));
+    }
 
     /// The tree covers the registry one-to-one: every registry page is
     /// either a tree entry (rendered or redirected) or explicitly hidden —

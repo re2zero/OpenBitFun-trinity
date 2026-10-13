@@ -803,3 +803,23 @@ gpui-shell-transcript-group-summary = { $count } exploration and execution steps
 gpui-shell-transcript-group-reads = Read { $count }
 gpui-shell-transcript-group-searches = Search { $count }
 gpui-shell-transcript-group-commands = Commands { $count }
+
+# --- Settings page header copy (shell settings nav / page header) ---
+
+gpui-shell-settings-nav-search-placeholder = Search settings…
+gpui-shell-settings-nav-search-empty = No matching settings
+gpui-shell-settings-page-general-description = Set startup, update, sleep, window, and notification behavior
+gpui-shell-settings-page-appearance-description = Choose the interface language, theme, and text size
+gpui-shell-settings-page-terminal-description = Choose the shell for new terminals and commands in local workspaces
+gpui-shell-settings-page-models-description = Connect model providers and choose models for each type of task
+gpui-shell-settings-page-session-description = Set the runtime for new sessions, title generation, and workspace search
+gpui-shell-settings-page-worktrees-description = Set session isolation defaults and manage workspace worktrees
+gpui-shell-settings-page-execution-description = Set tool approval rules, timeouts, and task concurrency
+gpui-shell-settings-page-automation-description = Set up reusable AI prompts and commands triggered by events
+gpui-shell-settings-page-websearch-description = Choose the service agents use to search the web
+gpui-shell-settings-page-skills-description = Review installed skills and control their global enabled state
+gpui-shell-settings-page-agents-description = Create and manage agents with a name, description, and system prompt
+gpui-shell-settings-page-mcp-description = Connect MCP servers to give agents access to external tools and data
+gpui-shell-settings-page-usage-description = See model request counts, token use, and cache hit rate
+gpui-shell-settings-page-archived-description = Review, restore, or permanently delete archived sessions
+gpui-shell-settings-page-diagnostics-description = Adjust logging and export troubleshooting information

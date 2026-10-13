@@ -773,3 +773,23 @@ gpui-shell-transcript-group-summary = { $count } 次探索與執行
 gpui-shell-transcript-group-reads = 讀取 { $count }
 gpui-shell-transcript-group-searches = 搜尋 { $count }
 gpui-shell-transcript-group-commands = 命令 { $count }
+
+# --- Settings page header copy (shell settings nav / page header) ---
+
+gpui-shell-settings-nav-search-placeholder = 搜尋設定…
+gpui-shell-settings-nav-search-empty = 沒有匹配的設定
+gpui-shell-settings-page-general-description = 調整啟動、更新、休眠、視窗與通知行為
+gpui-shell-settings-page-appearance-description = 調整介面語言、主題與字體大小
+gpui-shell-settings-page-terminal-description = 選擇新建終端機與本機工作區命令使用的 Shell
+gpui-shell-settings-page-models-description = 連線模型服務，並選擇各類任務使用的模型
+gpui-shell-settings-page-session-description = 設定新會話的執行框架、標題產生與工作區搜尋
+gpui-shell-settings-page-worktrees-description = 設定會話隔離的預設行為，管理工作區 Worktree
+gpui-shell-settings-page-execution-description = 設定工具確認規則、執行時限與任務並行方式
+gpui-shell-settings-page-automation-description = 設定常用 AI 指令與事件觸發的自動命令
+gpui-shell-settings-page-websearch-description = 選擇智能體上網查找資料時使用的搜尋服務
+gpui-shell-settings-page-skills-description = 檢視已安裝的技能，並控制全域啟用狀態
+gpui-shell-settings-page-agents-description = 建立及管理智能體，設定其名稱、描述與系統提示
+gpui-shell-settings-page-mcp-description = 連線 MCP 服務，為智能體提供外部工具與資料來源
+gpui-shell-settings-page-usage-description = 檢視模型請求數、Token 用量與快取命中率
+gpui-shell-settings-page-archived-description = 檢視、還原或永久刪除已封存的會話
+gpui-shell-settings-page-diagnostics-description = 調整日誌記錄，匯出疑難排解資訊
