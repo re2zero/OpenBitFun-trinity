@@ -1129,15 +1129,6 @@ impl SidebarItem for SidebarEntry {
 #[derive(Clone)]
 enum SidebarSection {
     Rows(Vec<SidebarEntry>),
-    /// The sessions section header (R1b): the three desktop header verbs —
-    /// new session, archive filter, list reload — plus the workspace menu
-    /// trigger (web `nav.tooltips.addSessionGroup`, FolderPlus).
-    SectionHeader {
-        label: SharedString,
-        tx: mpsc::UnboundedSender<RuntimeEvent>,
-        archived_on: bool,
-        view: WeakEntity<ShellWindow>,
-    },
     Item(SidebarEntry),
 }
 
@@ -1174,161 +1165,167 @@ impl SidebarItem for SidebarSection {
                     }))
                     .into_any_element()
             }
-            SidebarSection::SectionHeader {
-                label,
-                tx,
-                archived_on,
-                view,
-            } => {
-                let id = id.into();
-                // Session-header actions (R1b): the three desktop header
-                // verbs the shell has real semantics for — new session,
-                // archive filter, list reload — plus the workspace menu
-                // (R1c*) whose first two entries are 打开项目 / 新建项目. The
-                // view toggle and filter menu lead the cluster, the order the
-                // web section header uses (GroupingToggle, FilterMenu, then
-                // the workspace menu trigger).
-                let new_tx = tx.clone();
-                let reload_tx = tx.clone();
-                let archive_view = view.clone();
-                let add_project_view = view.clone();
-                let toggle_view = view.clone();
-                let filter_view = view.clone();
-                let session_list = view
-                    .upgrade()
-                    .map(|shell| shell.read(cx).session_list)
-                    .unwrap_or_default();
-                let text = i18n::current(cx);
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .gap_1()
-                    .pt_1()
-                    .h_8()
-                    .px_2()
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().sidebar_foreground.opacity(0.7))
-                            .child(label),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_0p5()
-                            // Grouping toggle (web WorkspaceSessionGroupingToggle):
-                            // grouped tree ↔ one flat list of every workspace.
-                            .child(
-                                Button::new(SharedString::from(format!("{}-view-toggle", id)))
-                                    .icon(if session_list.flat {
-                                        IconName::List
-                                    } else {
-                                        IconName::ListTree
-                                    })
-                                    .small()
-                                    .with_variant(ButtonVariant::Ghost)
-                                    .tooltip(if session_list.flat {
-                                        text.sessions_view_grouped_tooltip.clone()
-                                    } else {
-                                        text.sessions_view_all_tooltip.clone()
-                                    })
-                                    .on_click(move |_, _, cx| {
-                                        if let Some(view) = toggle_view.upgrade() {
-                                            view.update(cx, |this, cx| {
-                                                this.session_list.flat = !this.session_list.flat;
-                                                cx.notify();
-                                            });
-                                        }
-                                    }),
-                            )
-                            // Filter menu (web WorkspaceSessionFilterMenu), the
-                            // button marked while a filter narrows the list.
-                            .child(
-                                Button::new(SharedString::from(format!("{}-filter", id)))
-                                    .icon(IconName::Funnel)
-                                    .small()
-                                    .with_variant(if session_list.is_customized() {
-                                        ButtonVariant::Secondary
-                                    } else {
-                                        ButtonVariant::Ghost
-                                    })
-                                    .tooltip(text.sessions_filter_tooltip.clone())
-                                    .dropdown_menu_with_anchor(Anchor::BottomRight, {
-                                        let view = filter_view.clone();
-                                        move |menu, _window, cx| {
-                                            session_filter_menu_into(menu, view.clone(), cx)
-                                        }
-                                    }),
-                            )
-                            .child(
-                                Button::new(SharedString::from(format!("{}-new", id)))
-                                    .icon(IconName::Plus)
-                                    .small()
-                                    .with_variant(ButtonVariant::Ghost)
-                                    .tooltip(i18n::current(cx).sessions_new.clone())
-                                    .on_click(move |_, _, _| {
-                                        if let Some(handle) = runtime::runtime_handle() {
-                                            handle.create_session(new_tx.clone());
-                                        }
-                                    }),
-                            )
-                            .child(
-                                Button::new(SharedString::from(format!("{}-archived", id)))
-                                    .icon(IconName::Archive)
-                                    .small()
-                                    .with_variant(if archived_on {
-                                        ButtonVariant::Secondary
-                                    } else {
-                                        ButtonVariant::Ghost
-                                    })
-                                    .tooltip(i18n::current(cx).sessions_show_archived.clone())
-                                    .on_click(move |_, _, cx| {
-                                        if let Some(view) = archive_view.upgrade() {
-                                            view.update(cx, |this, cx| {
-                                                this.show_archived = !this.show_archived;
-                                                cx.notify();
-                                            });
-                                        }
-                                    }),
-                            )
-                            .child(
-                                Button::new(SharedString::from(format!("{}-reload", id)))
-                                    .icon(IconName::RefreshCw)
-                                    .small()
-                                    .with_variant(ButtonVariant::Ghost)
-                                    .tooltip(i18n::current(cx).sessions_reload.clone())
-                                    .on_click(move |_, _, _| {
-                                        if let Some(handle) = runtime::runtime_handle() {
-                                            handle.reload_sessions(reload_tx.clone());
-                                        }
-                                    }),
-                            )
-                            // The workspace menu trigger (web MainNav: the
-                            // sessions header's last action opens 打开项目 /
-                            // 新建项目 / the recent workspace list). Same
-                            // builder as the nav top bar and composer pill.
-                            .child(
-                                Button::new(SharedString::from(format!("{}-add-project", id)))
-                                    .icon(IconName::FolderPlus)
-                                    .small()
-                                    .with_variant(ButtonVariant::Ghost)
-                                    .tooltip(i18n::current(cx).sessions_add_group.clone())
-                                    .dropdown_menu_with_anchor(Anchor::BottomRight, {
-                                        let view = add_project_view.clone();
-                                        move |menu, _window, cx| {
-                                            workspace_menu_into(menu, view.clone(), cx)
-                                        }
-                                    }),
-                            ),
-                    )
-                    .into_any_element()
-            }
             SidebarSection::Item(entry) => entry.render(id, window, cx).into_any_element(),
         }
     }
+}
+
+/// The sessions section header row: the "Sessions" label plus the action
+/// cluster (view toggle, filter menu, new session, archive filter, reload,
+/// workspace menu; web MainNav's SectionHeader order). It lives in the
+/// sidebar's fixed header slot — see `render_sidebar` for why the shell pins
+/// it instead of the web's CSS-sticky row.
+fn session_section_header_row(
+    id_prefix: SharedString,
+    label: SharedString,
+    tx: mpsc::UnboundedSender<RuntimeEvent>,
+    archived_on: bool,
+    // The list projection state is passed in rather than read back off the
+    // window: the row is now rendered eagerly inside the shell's own render
+    // pass, where reading the `ShellWindow` entity would panic (gpui forbids
+    // read-while-updated).
+    session_list: SessionListFilters,
+    view: WeakEntity<ShellWindow>,
+    cx: &mut App,
+) -> gpui_kit::AnyElement {
+    // Session-header actions (R1b): the three desktop header verbs the shell
+    // has real semantics for — new session, archive filter, list reload — plus
+    // the workspace menu (R1c*) whose first two entries are 打开项目 /
+    // 新建项目. The view toggle and filter menu lead the cluster, the order
+    // the web section header uses (GroupingToggle, FilterMenu, then the
+    // workspace menu trigger).
+    let id = id_prefix;
+    let new_tx = tx.clone();
+    let reload_tx = tx.clone();
+    let archive_view = view.clone();
+    let add_project_view = view.clone();
+    let toggle_view = view.clone();
+    let filter_view = view.clone();
+    let text = i18n::current(cx);
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap_1()
+        .pt_1()
+        .h_8()
+        .px_2()
+        .child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().sidebar_foreground.opacity(0.7))
+                .child(label),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap_0p5()
+                // Grouping toggle (web WorkspaceSessionGroupingToggle):
+                // grouped tree ↔ one flat list of every workspace.
+                .child(
+                    Button::new(SharedString::from(format!("{}-view-toggle", id)))
+                        .icon(if session_list.flat {
+                            IconName::List
+                        } else {
+                            IconName::ListTree
+                        })
+                        .small()
+                        .with_variant(ButtonVariant::Ghost)
+                        .tooltip(if session_list.flat {
+                            text.sessions_view_grouped_tooltip.clone()
+                        } else {
+                            text.sessions_view_all_tooltip.clone()
+                        })
+                        .on_click(move |_, _, cx| {
+                            if let Some(view) = toggle_view.upgrade() {
+                                view.update(cx, |this, cx| {
+                                    this.session_list.flat = !this.session_list.flat;
+                                    cx.notify();
+                                });
+                            }
+                        }),
+                )
+                // Filter menu (web WorkspaceSessionFilterMenu), the
+                // button marked while a filter narrows the list.
+                .child(
+                    Button::new(SharedString::from(format!("{}-filter", id)))
+                        .icon(IconName::Funnel)
+                        .small()
+                        .with_variant(if session_list.is_customized() {
+                            ButtonVariant::Secondary
+                        } else {
+                            ButtonVariant::Ghost
+                        })
+                        .tooltip(text.sessions_filter_tooltip.clone())
+                        .dropdown_menu_with_anchor(Anchor::BottomRight, {
+                            let view = filter_view.clone();
+                            move |menu, _window, cx| {
+                                session_filter_menu_into(menu, view.clone(), cx)
+                            }
+                        }),
+                )
+                .child(
+                    Button::new(SharedString::from(format!("{}-new", id)))
+                        .icon(IconName::Plus)
+                        .small()
+                        .with_variant(ButtonVariant::Ghost)
+                        .tooltip(i18n::current(cx).sessions_new.clone())
+                        .on_click(move |_, _, _| {
+                            if let Some(handle) = runtime::runtime_handle() {
+                                handle.create_session(new_tx.clone());
+                            }
+                        }),
+                )
+                .child(
+                    Button::new(SharedString::from(format!("{}-archived", id)))
+                        .icon(IconName::Archive)
+                        .small()
+                        .with_variant(if archived_on {
+                            ButtonVariant::Secondary
+                        } else {
+                            ButtonVariant::Ghost
+                        })
+                        .tooltip(i18n::current(cx).sessions_show_archived.clone())
+                        .on_click(move |_, _, cx| {
+                            if let Some(view) = archive_view.upgrade() {
+                                view.update(cx, |this, cx| {
+                                    this.show_archived = !this.show_archived;
+                                    cx.notify();
+                                });
+                            }
+                        }),
+                )
+                .child(
+                    Button::new(SharedString::from(format!("{}-reload", id)))
+                        .icon(IconName::RefreshCw)
+                        .small()
+                        .with_variant(ButtonVariant::Ghost)
+                        .tooltip(i18n::current(cx).sessions_reload.clone())
+                        .on_click(move |_, _, _| {
+                            if let Some(handle) = runtime::runtime_handle() {
+                                handle.reload_sessions(reload_tx.clone());
+                            }
+                        }),
+                )
+                // The workspace menu trigger (web MainNav: the
+                // sessions header's last action opens 打开项目 /
+                // 新建项目 / the recent workspace list). Same
+                // builder as the nav top bar and composer pill.
+                .child(
+                    Button::new(SharedString::from(format!("{}-add-project", id)))
+                        .icon(IconName::FolderPlus)
+                        .small()
+                        .with_variant(ButtonVariant::Ghost)
+                        .tooltip(i18n::current(cx).sessions_add_group.clone())
+                        .dropdown_menu_with_anchor(Anchor::BottomRight, {
+                            let view = add_project_view.clone();
+                            move |menu, _window, cx| workspace_menu_into(menu, view.clone(), cx)
+                        }),
+                ),
+        )
+        .into_any_element()
 }
 
 /// Per-row actions menu: rename, fork, compact (open session only), export,
@@ -4386,8 +4383,23 @@ impl ShellWindow {
     /// status bar. Each workspace group is one child of the sidebar list (see
     /// [`Self::group_entries`]); only the group count moves that list's item
     /// count, so nothing a click can fold resets the scroll position.
-    fn render_sidebar(&self, text: &ShellText, cx: &mut Context<Self>) -> Sidebar<SidebarSection> {
-        let header = div().w_full().child(
+    fn render_sidebar(
+        &self,
+        text: &ShellText,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Sidebar<SidebarSection> {
+        // Fixed sidebar chrome: the search trigger, the scene navigation
+        // rows, and the sessions section header all live in the component's
+        // header slot, so only the workspace groups scroll. The web keeps the
+        // same header reachable with `position: sticky` inside its scroll
+        // container (`StickySectionHeader`) and lets the navigation rows
+        // scroll away above it; gpui has no sticky positioning and the
+        // component exposes no scroll accessor (its `ListState` is keyed by
+        // the full element-id stack, so it cannot be read from outside), so
+        // the shell pins this block instead — the header and its actions stay
+        // reachable, the scroll-away navigation is the recorded divergence.
+        let header = div().w_full().v_flex().child(
             div()
                 .id("search-everything")
                 .debug_selector(|| "search-everything".to_string())
@@ -4417,10 +4429,9 @@ impl ShellWindow {
                         .child("Ctrl K"),
                 ),
         );
-
-        // Nav rows first (web-ui NavPanel order: top scenes above the session
-        // list), then the sessions section with the live list.
-        let nav_rows: Vec<SidebarEntry> = nav_actions()
+        // Nav rows above the sessions section (web-ui NavPanel order: top
+        // scenes above the session list), rendered in place of the list.
+        let nav_entries: Vec<SidebarEntry> = nav_actions()
             .into_iter()
             .map(|action| SidebarEntry::Nav {
                 action,
@@ -4429,17 +4440,25 @@ impl ShellWindow {
                 view: cx.entity().downgrade(),
             })
             .collect();
+        let mut nav_rows: Vec<gpui_kit::AnyElement> = Vec::with_capacity(nav_entries.len());
+        for (ix, entry) in nav_entries.into_iter().enumerate() {
+            // Per-row id: gpui rejects duplicate ids inside one frame.
+            let id = ElementId::Name(SharedString::from(format!("nav-row-{ix}")));
+            nav_rows.push(entry.render(id, window, cx).into_any_element());
+        }
+        let header = header.children(nav_rows).child(session_section_header_row(
+            SharedString::from("shell-sidebar-sessions-header"),
+            SharedString::from(text.sessions_title.clone()),
+            self.event_tx.clone(),
+            self.show_archived,
+            self.session_list,
+            cx.entity().downgrade(),
+            cx,
+        ));
 
-        Sidebar::new("shell-sidebar")
+        Sidebar::new(SIDEBAR_ID)
             .w(px(SESSION_PANE_WIDTH))
             .header(header)
-            .child(SidebarSection::Rows(nav_rows))
-            .child(SidebarSection::SectionHeader {
-                label: SharedString::from(text.sessions_title.clone()),
-                tx: self.event_tx.clone(),
-                archived_on: self.show_archived,
-                view: cx.entity().downgrade(),
-            })
             .children(self.render_session_entries(text, cx))
             // No component footer: the runtime status line and the tool
             // buttons moved to the nav column's own footer row (the web
@@ -7378,6 +7397,9 @@ fn compare_session_rows(
         .then_with(|| left.id.cmp(&right.id))
 }
 
+/// The sidebar component's element id.
+const SIDEBAR_ID: &str = "shell-sidebar";
+
 /// What a sidebar group action should do, given its workspace group
 /// (`None` = the active workspace) and the active workspace's root.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -8012,7 +8034,7 @@ impl Render for ShellWindow {
                     .debug_selector(|| "shell-body-sidebar".to_string())
                     .flex_1()
                     .min_h_0()
-                    .child(self.render_sidebar(&text, cx)),
+                    .child(self.render_sidebar(&text, window, cx)),
             )
             .child(self.render_sidebar_footer(&text, cx));
 
@@ -10903,7 +10925,6 @@ mod tests {
                     let entries = match section {
                         SidebarSection::Rows(entries) => entries,
                         SidebarSection::Item(entry) => vec![entry],
-                        SidebarSection::SectionHeader { .. } => continue,
                     };
                     for entry in entries {
                         match entry {
@@ -11846,7 +11867,6 @@ mod tests {
                     .flat_map(|section| match section {
                         SidebarSection::Rows(entries) => entries,
                         SidebarSection::Item(entry) => vec![entry],
-                        SidebarSection::SectionHeader { .. } => Vec::new(),
                     })
                     .filter(|entry| matches!(entry, SidebarEntry::Session { depth: 0, .. }))
                     .count()
