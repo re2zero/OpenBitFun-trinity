@@ -137,7 +137,6 @@ time-months-ago = { $count } 月前
 time-years-ago = { $count } 年前
 
 # ==================== GPUI Shell ====================
-gpui-shell-subtitle = GPUI 原生前端
 gpui-shell-theme = 主题
 gpui-shell-language = 语言
 gpui-shell-status-starting = 正在启动 OpenBitFun 运行时…
@@ -226,6 +225,8 @@ gpui-shell-tasks-calendar-note = 仅标记下次计划与最近一次运行；�
 gpui-shell-tasks-list-title = 全部任务
 gpui-shell-panel-pop-out = 弹出为主标签页
 gpui-shell-panel-close = 收起面板
+gpui-shell-panel-open = 展开面板
+gpui-shell-sidebar-toggle = 切换侧栏
 gpui-shell-files-title = 文件
 gpui-shell-files-loading = 正在加载工作区文件…
 gpui-shell-files-empty = 工作区没有文件。
@@ -276,7 +277,7 @@ gpui-shell-chat-empty = 选择左侧会话，或新建会话开始对话。
 gpui-shell-chat-empty-title = 开始对话
 gpui-shell-welcome-title = OpenBitFun，
 gpui-shell-welcome-slogan = 把如果变成真。
-gpui-shell-chat-input-placeholder = 输入消息，发送给 Agent…
+gpui-shell-chat-input-placeholder = 有什么可以帮您...
 gpui-shell-chat-send = 发送
 gpui-shell-chat-stop = 停止
 gpui-shell-chat-busy = 回复中…

@@ -36,9 +36,57 @@ impl ThemePreset {
             }
         }
         Theme::change(mode, None, cx);
+        install_text_view_style(cx);
         cx.refresh_windows();
         tracing::info!("Theme preset applied: {}", self.id);
     }
+}
+
+/// Re-installs the shell's rich-text defaults after a theme change. The
+/// component's own install (via `Theme::change` → `sync_base`) paints inline
+/// code with the accent color — a loud highlight over every backticked path
+/// in the transcript. The desktop markdown renders inline code as a quiet
+/// tertiary surface with the inherited foreground (`Markdown.scss`), so this
+/// recipe mirrors the component's `base_text_view_style` shape with the
+/// inline-code highlight swapped to the neutral surface token. Safe to
+/// reinstall: the shell builds gpui-component without tree-sitter, so the
+/// defaults carry no code-block highlighter to lose.
+pub(crate) fn install_text_view_style(cx: &mut App) {
+    use gpui_kit::base::{TextViewDefaults, TextViewStyle};
+    use gpui_kit::component::ActiveTheme;
+    use gpui_kit::{HighlightStyle, StyleRefinement, Styled as _};
+
+    let theme = cx.theme();
+    let radius = theme.semantic_tokens().radius.md;
+    let mut table = StyleRefinement::default();
+    table.corner_radii.top_left = Some(radius.into());
+    table.corner_radii.top_right = Some(radius.into());
+    table.corner_radii.bottom_left = Some(radius.into());
+    table.corner_radii.bottom_right = Some(radius.into());
+    let mut code_block = StyleRefinement::default();
+    code_block.corner_radii = table.corner_radii.clone();
+    let table_head = StyleRefinement::default()
+        .bg(theme.table_head)
+        .text_color(theme.table_head_foreground);
+
+    let style = TextViewStyle::default()
+        .with_foreground(theme.foreground)
+        .with_muted_foreground(theme.muted_foreground)
+        .with_link(theme.link)
+        .with_selection(theme.selection)
+        .with_code_background(theme.muted)
+        .with_border(theme.border)
+        .with_code_block(code_block)
+        .with_table(table)
+        .with_table_head(table_head)
+        .with_inline_code(HighlightStyle {
+            background_color: Some(theme.muted),
+            ..Default::default()
+        });
+    TextViewDefaults::new()
+        .with_style(style)
+        .with_inherit_text_color(true)
+        .install(cx);
 }
 
 /// Preset applied on the first frame: the design-system dark palette, with

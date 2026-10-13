@@ -4,6 +4,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::resizable::{h_resizable, resizable_panel, v_resizable, ResizableState};
+use gpui_kit::component::InteractiveElementExt as _;
 use gpui_kit::component::{
     bubble::{Bubble, BubbleContent, BubbleVariant},
     button::{Button, ButtonCustomVariant, ButtonRounded, ButtonVariant, ButtonVariants},
@@ -18,11 +19,12 @@ use gpui_kit::component::{
     ActiveTheme, Collapsible, Disableable, Icon, Sizable, StyledExt, TitleBar, WindowExt,
 };
 use gpui_kit::InteractiveElement as _;
+use gpui_kit::StatefulInteractiveElement as _;
 use gpui_kit::{
     div, img, point, prelude::*, px, size, Anchor, App, Bounds, ClipboardEntry, ClipboardItem,
     Context, ElementId, Entity, ExternalPaths, FontWeight, Image, ImageFormat, KeyBinding, Pixels,
     SharedString, StyleRefinement, SystemNotification, TitlebarOptions, WeakEntity, Window,
-    WindowBackgroundAppearance, WindowBounds, WindowOptions,
+    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowOptions,
 };
 use openbitfun_agent_runtime::sdk::{PendingUserQuestion, PermissionReply, PermissionRequest};
 use openbitfun_runtime_ports::{AgentInputAttachment, AgentSessionLineageSnapshot};
@@ -41,6 +43,15 @@ use crate::theme::{ShellState, DEFAULT_PRESET_ID};
 
 /// Width of the navigation sidebar, matching the web-ui desktop shell.
 const SESSION_PANE_WIDTH: f32 = 300.;
+/// Height of the two top chrome bars (nav top bar over the sidebar column,
+/// scene top bar over the scene face). Web parity: the 45px
+/// `--openbitfun-layout-toolbar-md-height` both `NavBar` and `SceneTopBar`
+/// use after the desktop removed its standalone title bar (`92ce04f8d`).
+const TOP_BAR_HEIGHT: f32 = 45.;
+/// Width of the floating collapsed-nav strip (web `$_nav-collapsed-width`):
+/// the small opener that survives at the window's top-left corner while the
+/// sidebar column is folded away.
+const NAV_COLLAPSED_STRIP_WIDTH: f32 = 76.;
 /// Root sessions shown before the show-more fold (R1c); the web nav's
 /// collapsed level-0 page. Expanding reveals the rest, virtualized.
 const SESSIONS_COLLAPSED_VISIBLE: usize = 5;
@@ -81,7 +92,7 @@ const DEFAULT_RESOURCE_PANEL_WIDTH: f32 = 360.;
 /// `SceneBar`); the tab model lives in [`crate::tabs`].
 use crate::tabs::{ResourcePanelKind, SceneId, TabKind, TabsState};
 
-gpui_kit::actions!(openbitfun_gpui_shell, [OpenGlobalSearch]);
+gpui_kit::actions!(openbitfun_gpui_shell, [OpenGlobalSearch, ToggleSidebar]);
 
 /// One terminal panel tab (M17): a pane owning its PTY plus the fallback
 /// tab label (a profile's name, or the localized default-shell label; the
@@ -657,40 +668,41 @@ impl SidebarItem for SidebarEntry {
                     .items_center()
                     .gap_1()
                     .min_w_0()
-                    .p_2()
+                    .px_2()
+                    .h(px(30.))
                     // Subagent children (R1c) indent one step under their
                     // root; the web nav nests one level the same way.
                     .when(depth > 0, |this| this.ml_4())
                     .rounded(cx.theme().radius)
-                    .when(open, |this| this.bg(cx.theme().sidebar_accent))
-                    .when(!open, |this| {
-                        this.hover(|style| style.bg(cx.theme().sidebar_accent))
-                    })
+                    // Web SessionsSection final layer: hover lights the
+                    // neutral surface, the open row the selection surface —
+                    // two different tokens, so a hovered row next to the open
+                    // one never reads as two selections.
+                    .when(open, |this| this.bg(cx.theme().selection))
+                    .when(!open, |this| this.hover(|style| style.bg(cx.theme().muted)))
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
-                            .v_flex()
-                            .gap_0p5()
+                            .text_color(cx.theme().sidebar_foreground)
+                            .truncate()
                             .when(archived, |this| this.opacity(0.6))
-                            .child(
-                                div()
-                                    .text_color(cx.theme().sidebar_foreground)
-                                    .truncate()
-                                    .child(name),
-                            )
-                            // Children carry no workspace metadata line; the
-                            // subagent type rides in its place when known.
-                            .when(!metadata.is_empty(), |this| {
-                                this.child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .truncate()
-                                        .child(metadata),
-                                )
-                            }),
+                            .child(name),
                     )
+                    // Subagent children keep their kind as an inline badge
+                    // (the web row's StatusPill); top-level workspace meta
+                    // stays off the row — the desktop list is single-line.
+                    .when(depth > 0 && !metadata.is_empty(), |this| {
+                        this.child(
+                            div()
+                                .flex_shrink_0()
+                                .px_1()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(metadata),
+                        )
+                    })
+                    .child(activity_badges)
                     .when(running, |this| {
                         this.child(
                             div()
@@ -700,7 +712,6 @@ impl SidebarItem for SidebarEntry {
                                 .bg(cx.theme().success),
                         )
                     })
-                    .child(activity_badges)
                     .child(menu)
                     .into_any_element()
             }
@@ -729,11 +740,11 @@ impl SidebarItem for SidebarEntry {
                     .text_sm()
                     .when(active, |this| {
                         this.font_medium()
-                            .bg(cx.theme().sidebar_accent)
+                            .bg(cx.theme().selection)
                             .text_color(cx.theme().sidebar_accent_foreground)
                     })
                     .when(!active, |this| {
-                        this.hover(|style| style.bg(cx.theme().sidebar_accent))
+                        this.hover(|style| style.bg(cx.theme().muted))
                     })
                     .child(Icon::new(action.icon()))
                     .child(div().truncate().child(label))
@@ -1238,6 +1249,10 @@ pub(crate) struct ShellWindow {
     /// Global search palette (R1b): one boolean, because the query state and
     /// the input entity live on the window already (`search`/`search_input`).
     search_overlay_open: bool,
+    /// Drawer state of the nav sidebar column (web WorkspaceBody): folded,
+    /// the column leaves the layout entirely and a floating strip keeps an
+    /// opener at the window's top-left corner (Ctrl B toggles, like the web).
+    sidebar_open: bool,
     /// The resting focus target: gpui dispatches keystroke bindings along the
     /// focus chain, so with nothing focused Ctrl K would be dropped. The root
     /// takes focus whenever nothing else holds it (fresh window, after the
@@ -1476,6 +1491,7 @@ impl ShellWindow {
             sessions_group_collapsed: false,
             sessions_expanded: false,
             search_overlay_open: false,
+            sidebar_open: true,
             root_focus: cx.focus_handle(),
             rename_input,
             rename_target: None,
@@ -3307,30 +3323,6 @@ impl ShellWindow {
         }
     }
 
-    fn render_status_line(&self, text: &ShellText, cx: &mut Context<Self>) -> gpui_kit::Div {
-        match &self.phase {
-            RuntimePhase::Starting => div()
-                .text_color(cx.theme().muted_foreground)
-                .child(text.status_starting.clone()),
-            RuntimePhase::Ready => {
-                let workspace = runtime::runtime_handle()
-                    .map(|handle| handle.workspace().name)
-                    .unwrap_or_default();
-                let line = div()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(format!("{} · {}", text.status_ready, workspace));
-                match &self.workspace_error {
-                    Some(error) => line
-                        .v_flex()
-                        .gap_1()
-                        .child(div().text_color(cx.theme().danger).child(error.clone())),
-                    None => line,
-                }
-            }
-            RuntimePhase::Failed(error) => div().text_color(cx.theme().danger).child(error.clone()),
-        }
-    }
-
     /// The sessions tree flattened into sidebar children (R1c): the workspace
     /// group row, then one entry per row — top-level sessions with their
     /// subagent children indented beneath them, the running dot on live rows,
@@ -3515,25 +3507,21 @@ impl ShellWindow {
                 view: cx.entity().downgrade(),
             })
             .children(self.render_session_entries(text, cx))
-            .footer(
-                // R1d: only the runtime status line stays here — the tool
-                // buttons moved to the window-bottom global status bar.
-                SidebarFooter::new().child(
-                    div()
-                        .w_full()
-                        .min_w_0()
-                        .child(self.render_status_line(text, cx)),
-                ),
-            )
+            // No component footer: the runtime status line and the tool
+            // buttons moved to the nav column's own footer row (the web
+            // PersistentFooterActions shape), which the collapse folds away
+            // together with the column.
+            .footer(SidebarFooter::new())
     }
 
-    /// The global status bar (R1d): a full-width strip under the body. Left
-    /// cluster: the user slot — the trinity daemon's name for the user while
-    /// connected, the OS login otherwise — and the trinity lamp chip (the
-    /// web footer lamp: spark + emotion dot while awake); clicking opens the
-    /// console page. Right cluster: the tool buttons that left the sidebar
-    /// footer — terminal dock toggle, workspace switcher, settings.
-    fn render_status_bar(&self, text: &ShellText, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The sidebar footer (web `PersistentFooterActions`): the user slot and
+    /// the trinity lamp chip on the left, the tool buttons on the right —
+    /// terminal dock toggle, workspace switcher, settings. The runtime status
+    /// line rides above the row only while it has something to say (starting,
+    /// failed, or a workspace error); the all-clear "ready" line the old
+    /// window-bottom status bar carried is ambient noise the desktop footer
+    /// does not repeat.
+    fn render_sidebar_footer(&self, text: &ShellText, cx: &mut Context<Self>) -> impl IntoElement {
         let phase = crate::trinity::chip_phase(
             self.trinity
                 .status
@@ -3620,38 +3608,64 @@ impl ShellWindow {
         } else {
             ButtonVariant::Ghost
         };
+        let status_line = match &self.phase {
+            RuntimePhase::Starting => {
+                Some((text.status_starting.clone(), cx.theme().muted_foreground))
+            }
+            RuntimePhase::Failed(error) => Some((error.clone(), cx.theme().danger)),
+            RuntimePhase::Ready => self
+                .workspace_error
+                .clone()
+                .map(|error| (error, cx.theme().danger)),
+        };
         div()
-            .id("shell-status-bar")
-            .debug_selector(|| "shell-status-bar".to_string())
+            .id("shell-sidebar-footer")
+            .debug_selector(|| "shell-sidebar-footer".to_string())
             .w_full()
-            .h_7()
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap_2()
-            .px_3()
+            .flex_none()
+            .v_flex()
+            .gap_1()
+            .px_2()
+            .py_1()
             .border_t_1()
             .border_color(cx.theme().border)
-            .bg(cx.theme().background)
-            .child(left)
+            .when_some(status_line, |this, (line, color)| {
+                this.child(
+                    div()
+                        .text_xs()
+                        .text_color(color)
+                        .min_w_0()
+                        .truncate()
+                        .child(line),
+                )
+            })
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap_1()
+                    .justify_between()
+                    .gap_2()
+                    .min_w_0()
+                    .child(left)
                     .child(
-                        Button::new("status-terminal")
-                            .icon(IconName::SquareTerminal)
-                            .small()
-                            .with_variant(terminal_variant)
-                            .tooltip(text.terminal_title.clone())
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.toggle_terminal_panel(window, cx)
-                            })),
-                    )
-                    .child(self.render_workspace_button(text, cx))
-                    .child(self.render_settings_button(text, cx)),
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .flex_shrink_0()
+                            .child(
+                                Button::new("status-terminal")
+                                    .icon(IconName::SquareTerminal)
+                                    .small()
+                                    .with_variant(terminal_variant)
+                                    .tooltip(text.terminal_title.clone())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.toggle_terminal_panel(window, cx)
+                                    })),
+                            )
+                            .child(self.render_workspace_button(text, cx))
+                            .child(self.render_settings_button(text, cx)),
+                    ),
             )
     }
 
@@ -4311,9 +4325,12 @@ impl ShellWindow {
                 .filter(|child| child.kind == ChildKind::Btw)
                 .and_then(|child| child.btw_turn_id.clone())
                 .map(|turn_id| (session_id.clone(), turn_id));
+            // Web cancel shape: a round button holding a small square.
             Button::new("chat-stop")
-                .label(text.chat_stop.clone())
+                .icon(IconName::Square)
                 .with_variant(ButtonVariant::Danger)
+                .rounded(ButtonRounded::Size(px(999.)))
+                .tooltip(text.chat_stop.clone())
                 .on_click(move |_, _, _| {
                     if let Some(handle) = runtime::runtime_handle() {
                         match &btw_cancel {
@@ -4325,9 +4342,11 @@ impl ShellWindow {
                     }
                 })
         } else {
+            // Web send shape: a round primary button holding an up arrow.
             Button::new("chat-send")
-                .label(text.chat_send.clone())
+                .icon(IconName::ArrowUp)
                 .with_variant(ButtonVariant::Primary)
+                .rounded(ButtonRounded::Size(px(999.)))
                 .disabled(submitting || (draft_value.trim().is_empty() && !has_attachments))
                 .on_click(move |_, window, cx| {
                     let body = draft_for_send.read(cx).value().to_string();
@@ -4444,22 +4463,30 @@ impl ShellWindow {
                                 }),
                         ),
                     )
-                    // Action row under the input (web expanded layout):
-                    // model picker and send share the right cluster.
+                    // Action row under the input (web expanded layout): the
+                    // boost cluster on the left, the model picker and the
+                    // round send button share the right cluster.
                     .child(
                         div()
                             .debug_selector(|| "composer-actions-row".to_string())
                             .flex()
                             .flex_row()
                             .items_center()
-                            .justify_end()
+                            .justify_between()
                             .gap_2()
+                            .child(self.render_composer_boost_menu(text, cx))
                             .child(
                                 div()
-                                    .debug_selector(|| "composer-model-picker".to_string())
-                                    .child(self.render_model_picker(text, cx)),
-                            )
-                            .child(action_button),
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .debug_selector(|| "composer-model-picker".to_string())
+                                            .child(self.render_model_picker(text, cx)),
+                                    )
+                                    .child(action_button),
+                            ),
                     ),
             )
             .into_any_element()
@@ -5730,63 +5757,48 @@ impl Render for ShellWindow {
             window.focus(&self.root_focus, cx);
         }
 
-        // No root background: the glass sidebar paints a 90% chrome tint over
-        // the window surface (compositor blur shows through), so only the
-        // main area and the docked terminal lay an opaque canvas below their
-        // content. Every other surface paints its own background.
-        div()
-            .id("shell-root")
-            .relative()
-            .track_focus(&self.root_focus)
-            .size_full()
+        // Body: two full-height columns, the desktop WorkspaceBody shape —
+        // the nav column (its own 45px top bar, the sidebar, the footer with
+        // the user/trinity cluster and the tool buttons) and the scene face
+        // (a 45px top bar with the tab strip, the session actions, and the
+        // window controls, over the dock frame). No standalone title bar and
+        // no full-width bottom status bar: the desktop dropped both when it
+        // simplified its shell (`92ce04f8d`), and the drawer fold takes the
+        // whole nav column out of the layout.
+        let nav_column = div()
+            .id("shell-nav-column")
+            .debug_selector(|| "shell-nav-column".to_string())
+            .h_full()
+            .flex_none()
             .v_flex()
-            .text_color(cx.theme().foreground)
-            // Ctrl K opens the global search palette from wherever the focus
-            // sits (the terminal pane and text editors consume keys first —
-            // same as the desktop, where the shortcut is also not global over
-            // inputs that eat it).
-            .on_action(cx.listener(|this, _: &OpenGlobalSearch, window, cx| {
-                this.open_search_overlay(window, cx);
-            }))
+            .child(self.render_nav_top_bar(&text, cx))
             .child(
-                TitleBar::new().child(
-                    div()
-                        .flex_1()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .child(
-                            div()
-                                .flex()
-                                .items_baseline()
-                                .gap_2()
-                                .child(div().text_sm().child("OpenBitFun GPUI Shell"))
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(text.subtitle.clone()),
-                                ),
-                        ),
-                ),
+                div()
+                    .id("shell-body-sidebar")
+                    .debug_selector(|| "shell-body-sidebar".to_string())
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.render_sidebar(&text, cx)),
             )
-            // The top tab bar sits below the title bar and above the body —
-            // deliberately NOT inside the `TitleBar` children: the component's
-            // right-click window-menu overlay swallows clicks on anything
-            // placed there (gpui-kit 0.7.1, M8 reproduction), and tabs must
-            // stay clickable. Empty bar = no tab row at all.
-            .when(!self.tabs.kinds().is_empty(), |this| {
-                this.child(self.render_top_tab_bar(&text, cx))
-            })
-            // The body and the docked terminal are one vertical split: the
-            // divider above the terminal drags its height, and the body keeps
-            // the rest. Closed, the terminal panel is simply absent, so the
-            // body takes the whole split.
+            .child(self.render_sidebar_footer(&text, cx));
+
+        let scene_column = div()
+            .id("shell-scene-column")
+            .debug_selector(|| "shell-scene-column".to_string())
+            .h_full()
+            .flex_1()
+            .min_w_0()
+            .min_h_0()
+            .v_flex()
+            .child(self.render_scene_top_bar(window, &text, cx))
+            // The scene body and the docked terminal are one vertical split:
+            // the divider above the terminal drags its height, and the scene
+            // keeps the rest. Closed, the terminal panel is simply absent.
             .child(
                 div()
                     .id("shell-dock-frame")
                     .debug_selector(|| "shell-dock-frame".to_string())
-                    .size_full()
+                    .w_full()
                     .flex_1()
                     .min_h_0()
                     .overflow_hidden()
@@ -5802,13 +5814,6 @@ impl Render for ShellWindow {
                                 .flex_row()
                                 .min_w_0()
                                 .min_h_0()
-                                .child(
-                                    div()
-                                        .id("shell-body-sidebar")
-                                        .debug_selector(|| "shell-body-sidebar".to_string())
-                                        .h_full()
-                                        .child(self.render_sidebar(&text, cx)),
-                                )
                                 .child(
                                     div()
                                         .flex_1()
@@ -5832,11 +5837,58 @@ impl Render for ShellWindow {
                             .with_state(&self.dock)
                             .children(panels)
                     }),
-            )
-            // The global status bar (R1d) closes the window: the user slot,
-            // the trinity lamp, and the tool buttons that left the sidebar
-            // footer, across the full width under the body.
-            .child(self.render_status_bar(&text, cx))
+            );
+
+        div()
+            .id("shell-root")
+            .relative()
+            .track_focus(&self.root_focus)
+            .size_full()
+            .flex()
+            .flex_row()
+            .text_color(cx.theme().foreground)
+            // Ctrl K opens the global search palette from wherever the focus
+            // sits (the terminal pane and text editors consume keys first —
+            // same as the desktop, where the shortcut is also not global over
+            // inputs that eat it). Ctrl B folds/unfolds the nav column.
+            .on_action(cx.listener(|this, _: &OpenGlobalSearch, window, cx| {
+                this.open_search_overlay(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| {
+                this.sidebar_open = !this.sidebar_open;
+                cx.notify();
+            }))
+            .when(self.sidebar_open, |this| this.child(nav_column))
+            .child(scene_column)
+            .when(!self.sidebar_open, |this| {
+                // The floating collapsed-nav strip (web WorkspaceBody): a
+                // small opener pinned to the window's top-left corner while
+                // the column is folded away.
+                this.child(
+                    div()
+                        .id("shell-collapsed-nav")
+                        .debug_selector(|| "shell-collapsed-nav".to_string())
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .w(px(NAV_COLLAPSED_STRIP_WIDTH))
+                        .h(px(TOP_BAR_HEIGHT))
+                        .flex()
+                        .items_center()
+                        .px(px(7.))
+                        .child(
+                            Button::new("sidebar-expand")
+                                .icon(IconName::PanelLeft)
+                                .small()
+                                .with_variant(ButtonVariant::Ghost)
+                                .tooltip(text.sidebar_toggle.clone())
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.sidebar_open = true;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+            })
             // The global search palette (R1b) paints last so it overlays the
             // sidebar, main area, and docked terminal alike.
             .when(self.search_overlay_open, |this| {
@@ -5853,23 +5905,27 @@ impl Render for ShellWindow {
 }
 
 impl ShellWindow {
-    /// The top tab bar (R1a): one chip per open tab — session tabs show the
-    /// session name, scene tabs their registry title (resolved through the
-    /// [`crate::tabs`] scene table, the same seam plugin scenes will use).
-    /// Click activates; the inner × closes. Placed below the title bar: the
-    /// component `TitleBar`'s overlay swallows clicks (M8 reproduction).
-    fn render_top_tab_bar(&self, text: &ShellText, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut bar = div()
+    /// The scene top bar (web `SceneTopBar`, the desktop's right 45px chrome
+    /// row): the tab strip leads — horizontally scrollable, so a full strip
+    /// never covers the trailing actions — then the active session's chrome
+    /// (usage, quick actions, the right resource panel toggle), then the
+    /// window controls. The empty stretch between tabs and actions drags the
+    /// window; double-click zooms, the contract the removed component
+    /// `TitleBar` used to honor.
+    fn render_scene_top_bar(
+        &self,
+        window: &mut Window,
+        text: &ShellText,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let mut tabs = div()
             .id("shell-top-tabs")
             .debug_selector(|| "shell-top-tabs".to_string())
+            .flex_1()
+            .min_w_0()
             .flex()
             .items_center()
             .gap_1()
-            .px_2()
-            .py_1()
-            .border_b_1()
-            .border_color(cx.theme().title_bar_border)
-            .bg(cx.theme().background)
             .overflow_x_scroll();
         for (index, kind) in self.tabs.kinds().iter().enumerate() {
             let active = self.tabs.active_index() == Some(index);
@@ -5910,7 +5966,7 @@ impl ShellWindow {
                 }
             };
             let close_label = text.tab_close.clone();
-            bar = bar.child(
+            tabs = tabs.child(
                 div()
                     .id(tab_id)
                     .flex()
@@ -5922,6 +5978,7 @@ impl ShellWindow {
                     .rounded(cx.theme().radius)
                     .text_sm()
                     .flex_shrink_0()
+                    .max_w(px(220.))
                     .when(active, |chip| {
                         chip.bg(cx.theme().secondary)
                             .text_color(cx.theme().secondary_foreground)
@@ -5955,7 +6012,172 @@ impl ShellWindow {
                     ),
             );
         }
-        bar
+
+        // Session chrome rides the top bar only while a session tab is the
+        // active one (web SceneChromeHost: the active scene contributes).
+        let session_active = matches!(self.tabs.active_kind(), Some(TabKind::Session(_)));
+        let panel_icon = if self.resource_panel.is_some() {
+            IconName::PanelRightClose
+        } else {
+            IconName::PanelRightOpen
+        };
+        let panel_label = if self.resource_panel.is_some() {
+            text.panel_close.clone()
+        } else {
+            text.panel_open.clone()
+        };
+
+        // Window controls: the same gating the component TitleBar applies —
+        // none on macOS (traffic lights), none under server-side decorations
+        // on Linux, and only the buttons the window manager can honor. The
+        // cluster renders at the end of the bar; the divider is painted only
+        // when the cluster exists, so it is folded into the element itself.
+
+        div()
+            .id("shell-scene-top-bar")
+            .debug_selector(|| "shell-scene-top-bar".to_string())
+            .h(px(TOP_BAR_HEIGHT))
+            .flex_none()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .border_b_1()
+            .border_color(cx.theme().title_bar_border)
+            .bg(cx.theme().background)
+            // The folded-nav floating strip owns the corner; keep the tabs
+            // clear of it.
+            .when(!self.sidebar_open, |bar| {
+                bar.pl(px(NAV_COLLAPSED_STRIP_WIDTH))
+            })
+            .on_double_click(|_, window, _| window.zoom_window())
+            .child(tabs)
+            .child(
+                div()
+                    .flex_1()
+                    .h_full()
+                    .window_control_area(WindowControlArea::Drag),
+            )
+            .when(session_active, |bar| {
+                bar.child(self.render_usage_button(cx))
+                    .child(self.render_quick_actions_menu(text, cx))
+                    .child(
+                        Button::new("top-bar-resource-panel")
+                            .icon(panel_icon)
+                            .small()
+                            .with_variant(ButtonVariant::Ghost)
+                            .tooltip(panel_label)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if this.resource_panel.is_some() {
+                                    this.close_resource_panel(cx);
+                                } else {
+                                    this.dock_resource_panel(ResourcePanelKind::Files, cx);
+                                }
+                            })),
+                    )
+            })
+            .children(self.render_window_controls(window))
+    }
+
+    /// The window control cluster (minimize / zoom / close), shaped after the
+    /// component `TitleBar`'s private `WindowControls`: client-side
+    /// decorations only, and only the buttons the platform supports. Close
+    /// keeps the M22 semantics — quit goes through the event pump so the
+    /// terminal PTYs shut down first, otherwise the window minimizes to the
+    /// tray.
+    fn render_window_controls(&self, window: &mut Window) -> Option<gpui_kit::AnyElement> {
+        if cfg!(target_os = "macos") || cfg!(target_family = "wasm") {
+            return None;
+        }
+        #[cfg(target_os = "linux")]
+        if !matches!(
+            window.window_decorations(),
+            gpui_kit::Decorations::Client { .. }
+        ) {
+            return None;
+        }
+        let supported = window.window_controls();
+        let maximized = window.is_maximized();
+        let quit_tx = self.event_tx.clone();
+        Some(
+            div()
+                .id("window-controls")
+                .flex()
+                .items_center()
+                .flex_shrink_0()
+                .when(supported.minimize, |this| {
+                    this.child(
+                        Button::new("window-minimize")
+                            .icon(IconName::Minus)
+                            .small()
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(|_, window, _| window.minimize_window()),
+                    )
+                })
+                .when(supported.maximize, |this| {
+                    this.child(
+                        Button::new("window-zoom")
+                            .icon(if maximized {
+                                IconName::Copy
+                            } else {
+                                IconName::Square
+                            })
+                            .small()
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(|_, window, _| window.zoom_window()),
+                    )
+                })
+                .child(
+                    Button::new("window-close")
+                        .icon(IconName::X)
+                        .small()
+                        .with_variant(ButtonVariant::Ghost)
+                        .on_click(move |_, window, _| {
+                            if CLOSE_QUITS.load(std::sync::atomic::Ordering::Relaxed) {
+                                let _ = quit_tx.send(RuntimeEvent::QuitRequested);
+                            } else {
+                                window.minimize_window();
+                            }
+                        }),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// The nav column's top bar (web `NavBar`): the sidebar drawer toggle and
+    /// the brand at the left, the rest a native drag area. The window
+    /// controls sit on the scene top bar, matching the desktop split.
+    fn render_nav_top_bar(&self, text: &ShellText, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("shell-nav-top-bar")
+            .debug_selector(|| "shell-nav-top-bar".to_string())
+            .h(px(TOP_BAR_HEIGHT))
+            .flex_none()
+            .w_full()
+            .flex()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .on_double_click(|_, window, _| window.zoom_window())
+            .child(
+                Button::new("sidebar-toggle")
+                    .icon(IconName::PanelLeftClose)
+                    .small()
+                    .with_variant(ButtonVariant::Ghost)
+                    .tooltip(text.sidebar_toggle.clone())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.sidebar_open = false;
+                        cx.notify();
+                    })),
+            )
+            .child(div().text_sm().font_medium().child("OpenBitFun"))
+            .child(
+                div()
+                    .flex_1()
+                    .h_full()
+                    .window_control_area(WindowControlArea::Drag),
+            )
     }
 
     /// The docked terminal panel: header (new-tab menu, one chip per tab,
@@ -6314,9 +6536,12 @@ impl ShellWindow {
         let draft_value = self.draft.read(cx).value().to_string();
         let draft = self.draft.clone();
         let tx = self.event_tx.clone();
+        // The welcome card shares the session composer's round send button
+        // (web WelcomeScene: one primary circle with an up arrow).
         let send = Button::new("welcome-send")
-            .label(text.chat_send.clone())
+            .icon(IconName::ArrowUp)
             .with_variant(ButtonVariant::Primary)
+            .rounded(ButtonRounded::Size(px(999.)))
             .disabled(draft_value.trim().is_empty())
             .on_click(move |_, window, cx| {
                 let body = draft.read(cx).value().to_string();
@@ -6385,100 +6610,61 @@ impl ShellWindow {
 
     fn render_chat_header(&self, text: &ShellText, cx: &mut Context<Self>) -> gpui_kit::Div {
         match self.active_chat() {
-            Some(chat) => div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .px_4()
-                .py_2()
-                .border_b_1()
-                .border_color(cx.theme().title_bar_border)
-                .gap_2()
-                .child(
-                    div()
-                        .v_flex()
-                        .gap_0p5()
-                        .min_w_0()
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().foreground)
-                                .truncate()
-                                .child(chat.name.clone()),
-                        )
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(chat.agent_type.clone()),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        // Hidden child view (M20): the badge names what the
-                        // pane shows and "back" returns to the parent.
-                        .when_some(chat.child_context.as_ref(), |this, child| {
-                            // A review-family run carries the review label
-                            // (T2-6, the web child-session badge), not the
-                            // generic subagent one.
-                            let review_label = child
-                                .agent_type
-                                .as_deref()
-                                .and_then(review_activity_kind)
-                                .map(|_| text.sidebar_review_running.clone());
-                            let label = match (child.kind, child.agent_type.as_deref()) {
-                                (ChildKind::Subagent, Some(agent_type)) => {
-                                    let kind_label =
-                                        review_label.unwrap_or_else(|| text.subagent_badge.clone());
-                                    format!("{kind_label} · {agent_type}")
-                                }
-                                (ChildKind::Subagent, None) => text.subagent_badge.clone(),
-                                (ChildKind::Btw, _) => text.btw_badge.clone(),
-                            };
-                            let back_label = text.child_back.clone();
-                            this.child(
-                                div()
-                                    .px_2()
-                                    .py_0p5()
-                                    .rounded(cx.theme().radius)
-                                    .bg(cx.theme().sidebar_accent)
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(label),
-                            )
-                            .child(
-                                Button::new("chat-child-back")
-                                    .label(back_label)
-                                    .small()
-                                    .with_variant(ButtonVariant::Ghost)
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.return_from_child(cx);
-                                    })),
-                            )
-                        })
-                        .child(self.render_quick_actions_menu(text, cx))
-                        .child(self.render_usage_button(cx))
-                        // The model picker lives in the composer's action row
-                        // now (R2a, the web end-actions cluster); the header
-                        // keeps only the usage history entry and quick
-                        // actions.
-                        .child({
-                            let active = chat.busy || chat.submitting;
-                            let label = if chat.submitting {
-                                text.chat_submitting.clone()
-                            } else {
-                                text.chat_busy.clone()
-                            };
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .when(active, |this| this.child(label))
-                        }),
-                ),
+            Some(chat) => {
+                // The tab strip names the session and the top bar carries the
+                // session chrome (usage, quick actions, right panel), so the
+                // in-content header only exists while a hidden child view is
+                // shown — the badge names what the pane shows and "back"
+                // returns to the parent (M20). The busy label lives above the
+                // composer (the shimmer line), not here.
+                let Some(child) = chat.child_context.as_ref() else {
+                    return div();
+                };
+                let review_label = child
+                    .agent_type
+                    .as_deref()
+                    .and_then(review_activity_kind)
+                    .map(|_| text.sidebar_review_running.clone());
+                let label = match (child.kind, child.agent_type.as_deref()) {
+                    (ChildKind::Subagent, Some(agent_type)) => {
+                        let kind_label =
+                            review_label.unwrap_or_else(|| text.subagent_badge.clone());
+                        format!("{kind_label} · {agent_type}")
+                    }
+                    (ChildKind::Subagent, None) => text.subagent_badge.clone(),
+                    (ChildKind::Btw, _) => text.btw_badge.clone(),
+                };
+                let back_label = text.child_back.clone();
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .px_4()
+                    .py_1()
+                    .border_b_1()
+                    .border_color(cx.theme().title_bar_border)
+                    .gap_2()
+                    .child(
+                        div()
+                            .px_2()
+                            .py_0p5()
+                            .rounded(cx.theme().radius)
+                            .bg(cx.theme().selection)
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(label),
+                    )
+                    .child(
+                        Button::new("chat-child-back")
+                            .label(back_label)
+                            .small()
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.return_from_child(cx);
+                            })),
+                    )
+            }
             None => div(),
         }
     }
@@ -6546,6 +6732,57 @@ impl ShellWindow {
                     );
                 }
                 menu
+            })
+            .into_any_element()
+    }
+
+    /// The composer boost button (web "+" boost): a round ghost button whose
+    /// menu carries the shell-capable subset of the web boost items — a new
+    /// session and the global search palette. Image and file context keep
+    /// their existing entrances (paste, drag, drop): the shell has no native
+    /// file picker to back a menu entry, and a dead entry would be a fake.
+    fn render_composer_boost_menu(
+        &self,
+        text: &ShellText,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        let tx = self.event_tx.clone();
+        let view = cx.entity().downgrade();
+        let new_session_label = text.sessions_new.clone();
+        let search_label = text.search_trigger.clone();
+        Button::new("composer-boost")
+            .icon(IconName::Plus)
+            .small()
+            .with_variant(ButtonVariant::Ghost)
+            .rounded(ButtonRounded::Size(px(999.)))
+            .tooltip(text.sessions_new.clone())
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _window, _cx| {
+                menu.item(
+                    PopupMenuItem::new(new_session_label.clone())
+                        .icon(IconName::Plus)
+                        .on_click({
+                            let tx = tx.clone();
+                            move |_, _, _| {
+                                if let Some(handle) = runtime::runtime_handle() {
+                                    handle.create_session(tx.clone());
+                                }
+                            }
+                        }),
+                )
+                .item(
+                    PopupMenuItem::new(search_label.clone())
+                        .icon(IconName::Search)
+                        .on_click({
+                            let view = view.clone();
+                            move |_, window, cx| {
+                                if let Some(view) = view.upgrade() {
+                                    view.update(cx, |shell, cx| {
+                                        shell.open_search_overlay(window, cx)
+                                    });
+                                }
+                            }
+                        }),
+                )
             })
             .into_any_element()
     }
@@ -6761,9 +6998,13 @@ pub fn launch_main_window(tokio_handle: tokio::runtime::Handle) {
             gpui_kit::init(cx);
 
             // Global search palette shortcut (R1b), matching the desktop's
-            // Ctrl K. No key context: the binding matches wherever no focused
-            // view consumes the keystroke first.
-            cx.bind_keys([KeyBinding::new("ctrl-k", OpenGlobalSearch, None)]);
+            // Ctrl K, plus the sidebar drawer toggle (web Ctrl B). No key
+            // context: the bindings match wherever no focused view consumes
+            // the keystroke first.
+            cx.bind_keys([
+                KeyBinding::new("ctrl-k", OpenGlobalSearch, None),
+                KeyBinding::new("ctrl-b", ToggleSidebar, None),
+            ]);
 
             let presets = theme::load_presets();
             let active_preset = presets
@@ -7876,31 +8117,50 @@ mod tests {
             move |_, _| shell.into_any_element()
         });
         window.run_until_parked();
-        let frame = window
-            .debug_bounds("shell-dock-frame")
-            .expect("dock frame lays out");
-        let bar = window
-            .debug_bounds("shell-status-bar")
-            .expect("status bar lays out");
+        // The desktop removed the full-width window-bottom status bar
+        // (`92ce04f8d`): the user/trinity cluster and the tool buttons live in
+        // the nav column's footer now — column-wide, hugging the window
+        // bottom under the sidebar — while the scene face's top bar carries
+        // the tab strip and fills the rest of the window width.
+        let nav = window
+            .debug_bounds("shell-nav-column")
+            .expect("nav column lays out");
+        let footer = window
+            .debug_bounds("shell-sidebar-footer")
+            .expect("sidebar footer lays out");
         assert_eq!(
-            bar.size.width, frame.size.width,
-            "the bar spans the full window width"
+            footer.size.width, nav.size.width,
+            "the footer spans the nav column, not the window"
         );
         assert!(
-            (bar.origin.y - frame.origin.y).abs() > px(1.),
-            "the bar sits below the body, not inside it: bar {:?} frame {:?}",
-            bar,
-            frame
+            (footer.bottom() - nav.bottom()).abs() < px(1.),
+            "the footer hugs the window bottom inside the nav column: footer {:?} nav {:?}",
+            footer,
+            nav
         );
+        let sidebar = window
+            .debug_bounds("shell-body-sidebar")
+            .expect("sidebar lays out");
         assert!(
-            (bar.bottom() - frame.bottom()).abs() < px(40.),
-            "the bar hugs the window bottom: bar {:?} frame {:?}",
-            bar,
-            frame
+            sidebar.bottom() <= footer.origin.y + px(1.),
+            "the footer sits below the sidebar, not beside it"
         );
         assert!(
             window.debug_bounds("status-trinity-chip").is_some(),
-            "the trinity lamp chip renders inside the bar"
+            "the trinity lamp chip renders inside the footer"
+        );
+        let top_bar = window
+            .debug_bounds("shell-scene-top-bar")
+            .expect("scene top bar lays out");
+        assert!(
+            (top_bar.size.width + nav.size.width - px(1200.)).abs() < px(1.),
+            "the scene top bar fills the width the nav column leaves: bar {:?} nav {:?}",
+            top_bar,
+            nav
+        );
+        assert!(
+            (top_bar.size.height - px(TOP_BAR_HEIGHT)).abs() < px(1.),
+            "the scene top bar keeps the desktop 45px chrome height"
         );
     }
 

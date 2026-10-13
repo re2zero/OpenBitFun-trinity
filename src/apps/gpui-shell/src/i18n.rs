@@ -14,7 +14,6 @@ use openbitfun_core::service::i18n::{
 #[derive(Debug, Clone)]
 pub(crate) struct ShellText {
     pub locale: LocaleId,
-    pub subtitle: String,
     pub theme: String,
     pub language: String,
     pub status_starting: String,
@@ -99,6 +98,10 @@ pub(crate) struct ShellText {
     /// R2c docked resource panel chrome.
     pub panel_pop_out: String,
     pub panel_close: String,
+    /// Top-bar resource panel toggle (opens the panel when none is docked).
+    pub panel_open: String,
+    /// Sidebar drawer toggle (nav top bar + collapsed strip).
+    pub sidebar_toggle: String,
     pub files_title: String,
     pub files_loading: String,
     pub files_empty: String,
@@ -790,7 +793,6 @@ fn resolve_with(key: &str, args: TranslationArgs, cx: &App) -> String {
 pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
     ShellText {
         locale,
-        subtitle: "GPUI native frontend".to_string(),
         theme: "Theme".to_string(),
         language: "Language".to_string(),
         status_starting: "Starting OpenBitFun runtime…".to_string(),
@@ -872,6 +874,8 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         tasks_list_title: "All jobs".to_string(),
         panel_pop_out: "Pop out to a tab".to_string(),
         panel_close: "Hide panel".to_string(),
+        panel_open: "Show panel".to_string(),
+        sidebar_toggle: "Toggle sidebar".to_string(),
         files_title: "Files".to_string(),
         files_loading: "Loading workspace files…".to_string(),
         files_empty: "No files in this workspace.".to_string(),
@@ -1410,7 +1414,6 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
 
     ShellText {
         locale,
-        subtitle: service.t("gpui-shell-subtitle").await,
         theme: service.t("gpui-shell-theme").await,
         language: service.t("gpui-shell-language").await,
         status_starting: service.t("gpui-shell-status-starting").await,
@@ -1490,6 +1493,8 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         tasks_list_title: service.t("gpui-shell-tasks-list-title").await,
         panel_pop_out: service.t("gpui-shell-panel-pop-out").await,
         panel_close: service.t("gpui-shell-panel-close").await,
+        panel_open: service.t("gpui-shell-panel-open").await,
+        sidebar_toggle: service.t("gpui-shell-sidebar-toggle").await,
         files_title: service.t("gpui-shell-files-title").await,
         files_loading: service.t("gpui-shell-files-loading").await,
         files_empty: service.t("gpui-shell-files-empty").await,

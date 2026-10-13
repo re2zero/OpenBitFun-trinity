@@ -158,7 +158,6 @@ time-years-ago = { $count } { $count ->
 } ago
 
 # ==================== GPUI Shell ====================
-gpui-shell-subtitle = Native GPUI frontend
 gpui-shell-theme = Theme
 gpui-shell-language = Language
 gpui-shell-status-starting = Starting OpenBitFun runtime…
@@ -247,6 +246,8 @@ gpui-shell-tasks-calendar-note = Marks the next scheduled run and the latest run
 gpui-shell-tasks-list-title = All jobs
 gpui-shell-panel-pop-out = Pop out to a tab
 gpui-shell-panel-close = Hide panel
+gpui-shell-panel-open = Show panel
+gpui-shell-sidebar-toggle = Toggle sidebar
 gpui-shell-files-title = Files
 gpui-shell-files-loading = Loading workspace files…
 gpui-shell-files-empty = No files in this workspace.
@@ -297,7 +298,7 @@ gpui-shell-chat-empty = Pick a session on the left, or create a new one.
 gpui-shell-chat-empty-title = Start a conversation
 gpui-shell-welcome-title = OpenBitFun,
 gpui-shell-welcome-slogan = Make it real.
-gpui-shell-chat-input-placeholder = Type a message to send to the agent…
+gpui-shell-chat-input-placeholder = What can I do for you...
 gpui-shell-chat-send = Send
 gpui-shell-chat-stop = Stop
 gpui-shell-chat-busy = Responding…
