@@ -161,6 +161,8 @@ R3 `34a3effef` / R4 `006cc8063` / R5 `5da468203`（gpui-frontend 分支）。
 | 12 | 技能页 facet 左栏 + 右列表卡 | `SkillsFacetState` + 200px facet 栏（库/来源/探索 + 计数）+ 右列表卡（R4） | `SkillsScene` facet 左栏 + 右列表卡 | 同构 | 市场 = 显式降级卡（T3-17）；用户分组壳未接配置，不伪造 |
 | 13 | 视觉语言（radius/选中/hover） | radius 全 token 化（卡片 `theme().radius`、小件 `radius_tokens().sm`）；侧栏选中 = 中性 quiet 药丸 + 主文字（R5） | token 体系同源 + `NavPanel` 行 quiet hover 语言 | 同构 | 内容密度（桌面大标题+卡片 vs 壳密行）为 R3/R4 已签壳自语言；`rounded_full` 装饰圆点不 token 化（壳无 radius=0 场景） |
 | 14 | 富转写（工具行/折叠组/子代理身份） | `transcript.rs` 事实解析（族标签 + meta 计数）+ 连续读写执行折叠为「N 次探索与执行」chip（点开可展）+ `subagent_identity.rs`（FNV-1a 同 web 池：20 头像 / 30 昵称）+ 子代理身份卡与 wait/list 名册（M24） | `tool-cards/**` 各族卡面 + `grouping/policies.ts` explore 组（`workspaceGroup.summary`）+ `subagent-identity/**` 与 `assets/subagent-avatars` | 同构 | 身份种子 = 子会话 id（缺链接时退化为 agent 别名），与 web 同解；「运行中」仅在子会话本当跑（`live_sessions`），历史不假活；chip 折叠 = 成员行渲染为空 div（列表项数不变），点击 toggle 后 remeasure 该段 |
+| 15 | 会话列表投影（分组切换 + 过滤菜单） | 会话区头前簇 = 分组切换（`ListTree` 分组树 ↔ `List` 全平铺）+ 过滤菜单（排序 最近更新/最新创建/名称 · 显示 全部/未读 · 筛选 运行中 · 重置 · 分区标签平铺一菜单）+ 尾部「全部折叠」（分组态）/「全部标为已读」；全平铺投影 = 跨工作区全局排序、行首带工作区名、行内 menu 原样，无分组头、无「显示更多」上限（`SessionListFilters` + `visible_rows`/`flat_entries`） | `WorkspaceSessionGroupingToggle` + `WorkspaceSessionFilterMenu` + `workspaceSessionView.ts`（六段 + `matchesWorkspaceSessionView` + `compareWorkspaceNavSessions`）+ `WorkspaceListSection layout="flat"` + `SessionsSection workspaceScopes` | 同构（诚实子集） | 刻意分歧：① 排序「状态」不做（壳无 error/attention/completed 会话状态数据）；② 显示「需要处理」不做（`needs_user_attention` 不在 `AgentSessionSummary`）；③ 筛选 工作树/环境/来源 三段不做（壳无 worktree/remote/detached/agentType 数据）；④ web per-workspace localStorage 持久化 → 壳窗口态（关窗即忘）；⑤ web 二级子菜单 → 壳平铺一菜单；⑥ 名称排序按大小写折叠比较（无 locale/numeric collation）；⑦ 全平铺保留子会话缩进（web 平铺流式展开）。**子项数不变量**：两态在同一子项数内换内容（全平铺 = 首子项 + 空占位子项），折叠/过滤/换视图都不动滚动锚点 |
+| 16 | 工作区组头操作（卡片动作） | 组头行尾 = ＋新建会话 + ⋯菜单（新建会话 / 文件面板 / 复制路径 / 在文件管理器中打开）；异工作区组先切工作区再动手（`run_group_action` = `workspace_group_plan` + `pending_group_action`，在 `WorkspaceSwitched` 落地） | `WorkspaceItem.tsx` 卡片 hover 簇 `[＋新建会话][文件夹][⋯]` + ⋯ 菜单（新建会话/计划任务/项目权限/端口转发(仅远程)/复制路径/在文件管理器打开/批量管理/重置·删除助理） | 同构（诚实子集） | 刻意分歧：① web hover 显隐 → 壳常显（本 gpui 无父 hover 门控子元素；与会话行 menu 常显同惯例）；②「文件夹」动作移入 ⋯ 菜单（同一动作，省一枚常显钮）；③ 计划任务/项目权限/端口转发/批量管理会话/重置·删除助理 不做（壳无对应面，宁缺勿假）；④ 复制路径走载入的根路径 + 壳剪贴板，在文件管理器打开走 `process_manager` + `xdg-open`（与设置页日志目录同一实现） |
 
 **双端对照截图归档**（本目录 `assets/gpui-shell-layout-parity/`，sha256 见文件名旁注；/tmp
 会清，以此为准）。拍摄配方：壳 `DISPLAY=:97`（Xvfb），桌面 dev `DISPLAY=:98 pnpm run
@@ -176,6 +178,23 @@ desktop:dev`（窗口 1200×800@200,50，:98 屏 1600×900），两端同选 `op
 | `r4-02-tasks-board.png` | R4 交付帧：看板真实 cron 数据（打点/today 描边） | `225c60fd38ecf828` |
 | `r4-07-skills-all.png` | R4 交付帧：facet 全列表 + 徽标 | `012d3cccb39ad527` |
 | `r4-13-builtin-fixed.png` | R4 交付帧：内置过滤 facet 选中 | `0f96b4d70529309c` |
+
+**R8 侧栏尾项证据**（2026-10-13，Xvfb :91，私有显示号；两轮冒烟：修复前 / 修复后各一次，
+`/tmp/r8-smoke/`）：组头 ⋯ 菜单（`r8-01-group-menu.png` `0c47ecf6c57b9f9b`：新建会话/文件/
+复制路径/在资源管理器中打开，刻意子集）；文件面板动作（`r8-02-files-panel.png`
+`8e9798311b99a959`：停靠右面板 + 路径）；全平铺视图（`r8-03-flat-all.png`
+`20a80dbc86a82e12`：跨工作区全局排序 + 行首工作区别名 + 无分组头/无上限）；未读过滤空态
+（`r8-04-unread-empty.png` `34dd6d6aaec58cd9`：诚实「没有符合当前筛选条件的会话」+ 过滤钮点亮）；
+全部折叠（`r8-05-collapse-all.png` `12e81e4a14360829`）；滚动锚点（`r8-06-scroll-anchor.png`
+`72f19b27f6a55720`：滚到底后折叠组，前四行 y 坐标不变 = 未跳顶）；异工作区先切后动
+（`r8-07-foreign-switch-files.png` `8b926b90dfc7d976`：日志链 `Group action for workspace …:
+switching before acting` → `Active workspace switched` → `Opening the files panel of the
+switched workspace`，面板标题即切换后工作区路径）；＋新建会话不带折叠副作用
+（`r8-08-plus-no-fold.png` `fec1113b9e22b935`：修 `cx.stop_propagation()` 后复测）；名称排序
+（`r8-09-order-name.png` `7e6622fd1c824c17`）。复制路径实测 `xclip -o` 回读剪贴板 = 触发组
+工作区根路径；两轮 0 panic、0 missing asset；冒烟建的两个临时工作区（`pm-a`/`pm-b`）与
+工作区注册表条目、会话存储目录均已清理；「全部标为已读」已接线
+（`RuntimeEvent::TrayMarkAllRead`）但本轮无后台未读可验，留待真机。
 
 **M24 富转写证据**（2026-10-13，Xvfb :81，真会话 `3261d9fc`「接力 M3」autoopen 渲染；归档帧
 `m24-01-transcript-top.png` `ed3cd856dba0736d` / `m24-02-group-open.png` `3ba4bed7dcec1009` /
@@ -276,3 +295,4 @@ AgentList（3 个子代理 · 0 个运行中）全部渲染，展开/收起往�
 | 2026-10-11 | **§2 矩阵整轮刷新（T2-14，接力清单项）**：逐行刷到 2026-10-11 真相（M11-M23 + 后置接力 T1-1..5 / T2-6..13 落地后）。已支持/子集：会话管理（2）、模型（3）、附件（4）、ask_user（5）、子代理投影/BTW（6，近似口径 D67）、文件树/查看器（9，pdf 缺）、全局搜索（11，files/sessions）、终端（13）、Git（14，graph/branches 缺）、worktree（15）、定时任务（17）、洞察/用量（18）、技能/智能体/MCP 管理（19/20/21，市场/编辑器/OAuth 缺）、系统集成（32）、更新 UI（33）、快照（39）；设置页 3/21 → 13/21（§2.1 改写，含 T2-13 诊断包导出与 include_sensitive_diagnostics 假开关不复制注记）。§1 基线表未动（M10 交付物口径不变）；残余缺口：git graph/branches、搜索 actions/entities、content 标签、生态导入、Trinity（T2-15）、托盘未读角标（T2-16）等 |
 | 2026-10-12 | **§2.3 布局 parity 矩阵新增（Phase 3 R6 收口）**：布局/信息架构逐行锚点矩阵 13 行（R1a-R5 全部锚点 × 桌面对应物 × 同构/刻意分歧+理由）；双端对照签字截图 7 张归档 `assets/gpui-shell-layout-parity/`（含拍摄配方与 sha256）。Phase 3 R1-R6 主线收官；R7（插件功能+UI 一体架构）与 T3 大项维持「点名才动」；默认切换终审（§4.3）待公子重开 |
 | 2026-10-13 | **真机 parity 修正四项（公子看真机后点名）**：桌面 `92ce04f8d`（simplify desktop shell UI）后拓扑已变——无独立 TitleBar/横贯底栏、侧栏 NavBar+footer 贯穿左列、SceneTopBar 带 tabs+场景动作+窗口钮。壳随之重排：分列式 45px 双顶栏、侧栏抽屉折叠（Ctrl B + 左上悬浮条）、tab 移右顶栏（横向滚动不覆盖动作区）、会话列表单行 30px、选中(selection)/hover(muted) token 分离、inline code 高亮 accent→neutral 弱底（`theme.rs::install_text_view_style` 随主题应用重装 TextViewDefaults）、composer 圆形发送钮 + placeholder「有什么可以帮您...」+「+」boost 菜单。壳 251 测绿，Xvfb :73 截图对照 0 panic |
+| 2026-10-13 | **§2.3 矩阵 R8 两行（会话列表投影 + 工作区组头操作）**：侧栏 1:1 尾项落地——分组切换 grouped/all（全平铺跨工作区全局排序 + 行首工作区名 + 无折叠上限）、过滤菜单（排序/显示/筛选 运行中/重置/全部折叠/全部标为已读）、组头 ＋/⋯（新建会话/文件面板/复制路径/在文件管理器打开，异工作区先切后动）。刻意分歧按矩阵各行「理由」栏在案（web-only 段：状态排序、需要处理、工作树/环境/来源、计划任务/项目权限/端口转发/批量管理/助理重置删除）。子项数不变量跨视图保持（平铺 = 首子项 + 空占位子项）；Xvfb 冒烟见 §6 次行 |

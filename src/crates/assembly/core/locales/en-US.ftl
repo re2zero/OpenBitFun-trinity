@@ -178,6 +178,29 @@ gpui-shell-miniapps-empty = The desktop hosts MiniApps here; the shell has no Mi
 gpui-shell-extensions-title = Extensions & Compatibility
 gpui-shell-extensions-empty = The desktop hosts ecosystem import, ACP, and external hooks here; that capability is not yet scoped for the shell.
 gpui-shell-sessions-show-less = Show less
+# Sessions list projection (web nav.sessions.viewToggle / nav.sessions.viewMenu;
+# the honest shell subset: ordering updated/created/name, show unread, status
+# running). Items the shell has no data for (worktree/environment/source,
+# needs-attention) stay out — see the parity doc's deliberate divergences.
+gpui-shell-sessions-view-all-tooltip = Show every session in one list
+gpui-shell-sessions-view-grouped-tooltip = Organize sessions by project and assistant
+gpui-shell-sessions-filter-tooltip = Organize and filter sessions
+gpui-shell-sessions-ordering = Ordering
+gpui-shell-sessions-order-updated = Recently updated
+gpui-shell-sessions-order-created = Recently created
+gpui-shell-sessions-order-name = Name
+gpui-shell-sessions-show = Show
+gpui-shell-sessions-show-all = All sessions
+gpui-shell-sessions-show-unread = Unread sessions
+gpui-shell-sessions-filters = Filters
+gpui-shell-sessions-reset-filters = Reset
+gpui-shell-sessions-no-matches = No sessions match the current filters
+gpui-shell-sessions-collapse-all = Collapse All
+gpui-shell-sessions-mark-all-read = Mark All as Read
+# Workspace group header actions (web nav.workspaces.actions subset: the two
+# entries the shell has real semantics for).
+gpui-shell-sessions-copy-path = Copy path
+gpui-shell-sessions-reveal = Reveal in explorer
 gpui-shell-session-rename = Rename
 gpui-shell-session-rename-title = Rename session
 gpui-shell-session-archive = Archive

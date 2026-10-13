@@ -29,15 +29,20 @@ gpui_kit::assets::icon_assets!(
     // Puzzle is the extensions nav row (the desktop 扩展与兼容 scene).
     // FilePlus/Pencil/Wrench/Users/Route are the rich transcript's tool-family
     // and group glyphs (M24). FolderPlus is the sessions header's workspace
-    // menu trigger (打开项目 / 新建项目).
+    // menu trigger (打开项目 / 新建项目). ListTree/List are the sessions view
+    // toggle's grouped/all glyphs and Funnel the session filter menu trigger
+    // (web nav.sessions.viewToggle + viewMenu), all outside the default set.
     [
         Activity,
         Archive,
         BrainCircuit,
         ChartColumn,
+        Funnel,
         FolderPlus,
         LayoutDashboard,
+        List,
         ListTodo,
+        ListTree,
         Check,
         Circle,
         CircleDot,

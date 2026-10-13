@@ -123,6 +123,12 @@ pub(crate) struct SessionRow {
     /// Persisted archive state (from the session metadata store, not a local
     /// flag): archived rows are hidden until the "show archived" toggle is on.
     pub(crate) archived: bool,
+    /// Ordering keys for the sessions list projection (the web
+    /// `compareWorkspaceNavSessions` reads the same two timestamps off the
+    /// session record). Lineage children carry 0: they render under their
+    /// parent, never in the ordering.
+    pub(crate) created_at_ms: u64,
+    pub(crate) last_active_at_ms: u64,
 }
 
 /// One other-workspace session group in the sidebar (web SessionsSection
@@ -633,6 +639,10 @@ enum SidebarEntry {
         /// activates the session's owning workspace), because the runtime
         /// restores a transcript from the *active* workspace's store.
         group: Option<String>,
+        /// The owning workspace's name while the flat projection is on (web
+        /// flat rows carry their `workspaceScopes` name); `None` in the
+        /// grouped tree, where the group header above the row says it.
+        scope: Option<SharedString>,
         tx: mpsc::UnboundedSender<RuntimeEvent>,
         /// The shell view, so the row menu can drive dialogs and actions
         /// (row rendering runs outside the view's own context).
@@ -703,6 +713,7 @@ impl SidebarItem for SidebarEntry {
                 depth,
                 running,
                 group,
+                scope,
                 tx,
                 view,
             } => {
@@ -711,6 +722,7 @@ impl SidebarItem for SidebarEntry {
                     name,
                     metadata,
                     archived,
+                    ..
                 } = row;
                 let open_id = id.clone();
                 let open_group = group.clone();
@@ -761,7 +773,7 @@ impl SidebarItem for SidebarEntry {
                     });
                 div()
                     .id(SharedString::from(format!("session-{id}")))
-                    .on_click(move |_, _, cx| {
+                    .on_click(move |_, window, cx| {
                         // The click lands on the window (not on a bare
                         // runtime call) so a foreign-group row can switch the
                         // workspace and open afterwards.
@@ -769,7 +781,7 @@ impl SidebarItem for SidebarEntry {
                             let session_id = open_id.clone();
                             let group = open_group.clone();
                             view.update(cx, |this, cx| {
-                                this.open_session_row(session_id, group, cx);
+                                this.open_session_row(session_id, group, window, cx);
                             });
                         }
                     })
@@ -793,6 +805,20 @@ impl SidebarItem for SidebarEntry {
                     .when(active, |this| this.bg(cx.theme().selection))
                     .when(!active, |this| {
                         this.hover(|style| style.bg(cx.theme().muted))
+                    })
+                    // While the flat projection is on, each root row says
+                    // which workspace it belongs to (web flat rows render the
+                    // same name inline), because no group header is above it.
+                    .when_some(scope, |this, scope| {
+                        this.child(
+                            div()
+                                .flex_shrink_0()
+                                .max_w(px(96.))
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .truncate()
+                                .child(scope),
+                        )
                     })
                     .child(
                         div()
@@ -835,58 +861,101 @@ impl SidebarItem for SidebarEntry {
                 running,
                 group,
                 view,
-            } => div()
-                .id(SharedString::from(format!(
-                    "session-group-{}",
-                    group.clone().unwrap_or_else(|| "current".to_string())
-                )))
-                .on_click(move |_, _, cx| {
-                    if let Some(view) = view.upgrade() {
-                        view.update(cx, |this, cx| {
-                            this.toggle_session_group(group.as_deref(), cx);
-                        });
-                    }
-                })
-                .cursor_pointer()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap_1()
-                .min_w_0()
-                .p_2()
-                .rounded(cx.theme().radius)
-                .text_sm()
-                .hover(|style| style.bg(cx.theme().muted))
-                .child(
-                    Icon::new(if collapsed {
-                        IconName::ChevronRight
-                    } else {
-                        IconName::ChevronDown
+            } => {
+                let text = i18n::current(cx);
+                let new_view = view.clone();
+                let new_group = group.clone();
+                let menu = workspace_group_menu(group.clone(), view.clone());
+                let fold_view = view.clone();
+                let fold_group = group.clone();
+                div()
+                    .id(SharedString::from(format!(
+                        "session-group-{}",
+                        group.clone().unwrap_or_else(|| "current".to_string())
+                    )))
+                    .on_click(move |_, _, cx| {
+                        if let Some(view) = fold_view.upgrade() {
+                            view.update(cx, |this, cx| {
+                                this.toggle_session_group(fold_group.as_deref(), cx);
+                            });
+                        }
                     })
-                    .small(),
-                )
-                // The desktop workspace group carries a folder glyph (the
-                // person icon is the standalone-agent group, which the shell
-                // has no data for).
-                .child(Icon::new(IconName::Folder).small())
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .font_medium()
-                        .truncate()
-                        .child(name),
-                )
-                .when(running, |this| {
-                    this.child(
-                        div()
-                            .size_1p5()
-                            .flex_shrink_0()
-                            .rounded_full()
-                            .bg(cx.theme().success),
+                    .cursor_pointer()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_1()
+                    .min_w_0()
+                    .p_2()
+                    .rounded(cx.theme().radius)
+                    .text_sm()
+                    .hover(|style| style.bg(cx.theme().muted))
+                    .child(
+                        Icon::new(if collapsed {
+                            IconName::ChevronRight
+                        } else {
+                            IconName::ChevronDown
+                        })
+                        .small(),
                     )
-                })
-                .into_any_element(),
+                    // The desktop workspace group carries a folder glyph (the
+                    // person icon is the standalone-agent group, which the shell
+                    // has no data for).
+                    .child(Icon::new(IconName::Folder).small())
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .font_medium()
+                            .truncate()
+                            .child(name),
+                    )
+                    .when(running, |this| {
+                        this.child(
+                            div()
+                                .size_1p5()
+                                .flex_shrink_0()
+                                .rounded_full()
+                                .bg(cx.theme().success),
+                        )
+                    })
+                    // Group actions (web `WorkspaceItem`'s hover cluster: + new
+                    // session, folder, ⋯). The web reveals them on hover; the
+                    // shell keeps them visible like the session rows' menu button
+                    // (this gpui has no parent-hover-gated children). Button
+                    // presses stop propagation, so neither triggers the fold.
+                    .child(
+                        Button::new(SharedString::from(format!(
+                            "session-group-new-{}",
+                            group.clone().unwrap_or_else(|| "current".to_string())
+                        )))
+                        .icon(IconName::Plus)
+                        .small()
+                        .with_variant(ButtonVariant::Ghost)
+                        .tooltip(text.sessions_new.clone())
+                        .on_click(move |_, window, cx| {
+                            // The header's own click folds the group. A plain
+                            // Button does not stop the click (only an open
+                            // dropdown trigger does), so the action stops it
+                            // here — otherwise every new session would fold
+                            // the group it was started from.
+                            cx.stop_propagation();
+                            if let Some(view) = new_view.upgrade() {
+                                let group = new_group.clone();
+                                view.update(cx, |this, cx| {
+                                    this.run_group_action(
+                                        group,
+                                        PendingGroupAction::NewSession,
+                                        window,
+                                        cx,
+                                    );
+                                });
+                            }
+                        }),
+                    )
+                    .child(menu)
+                    .into_any_element()
+            }
             SidebarEntry::Nav {
                 action,
                 label,
@@ -1115,11 +1184,21 @@ impl SidebarItem for SidebarSection {
                 // Session-header actions (R1b): the three desktop header
                 // verbs the shell has real semantics for — new session,
                 // archive filter, list reload — plus the workspace menu
-                // (R1c*) whose first two entries are 打开项目 / 新建项目.
+                // (R1c*) whose first two entries are 打开项目 / 新建项目. The
+                // view toggle and filter menu lead the cluster, the order the
+                // web section header uses (GroupingToggle, FilterMenu, then
+                // the workspace menu trigger).
                 let new_tx = tx.clone();
                 let reload_tx = tx.clone();
                 let archive_view = view.clone();
                 let add_project_view = view.clone();
+                let toggle_view = view.clone();
+                let filter_view = view.clone();
+                let session_list = view
+                    .upgrade()
+                    .map(|shell| shell.read(cx).session_list)
+                    .unwrap_or_default();
+                let text = i18n::current(cx);
                 div()
                     .flex()
                     .flex_row()
@@ -1140,6 +1219,50 @@ impl SidebarItem for SidebarSection {
                             .flex()
                             .items_center()
                             .gap_0p5()
+                            // Grouping toggle (web WorkspaceSessionGroupingToggle):
+                            // grouped tree ↔ one flat list of every workspace.
+                            .child(
+                                Button::new(SharedString::from(format!("{}-view-toggle", id)))
+                                    .icon(if session_list.flat {
+                                        IconName::List
+                                    } else {
+                                        IconName::ListTree
+                                    })
+                                    .small()
+                                    .with_variant(ButtonVariant::Ghost)
+                                    .tooltip(if session_list.flat {
+                                        text.sessions_view_grouped_tooltip.clone()
+                                    } else {
+                                        text.sessions_view_all_tooltip.clone()
+                                    })
+                                    .on_click(move |_, _, cx| {
+                                        if let Some(view) = toggle_view.upgrade() {
+                                            view.update(cx, |this, cx| {
+                                                this.session_list.flat = !this.session_list.flat;
+                                                cx.notify();
+                                            });
+                                        }
+                                    }),
+                            )
+                            // Filter menu (web WorkspaceSessionFilterMenu), the
+                            // button marked while a filter narrows the list.
+                            .child(
+                                Button::new(SharedString::from(format!("{}-filter", id)))
+                                    .icon(IconName::Funnel)
+                                    .small()
+                                    .with_variant(if session_list.is_customized() {
+                                        ButtonVariant::Secondary
+                                    } else {
+                                        ButtonVariant::Ghost
+                                    })
+                                    .tooltip(text.sessions_filter_tooltip.clone())
+                                    .dropdown_menu_with_anchor(Anchor::BottomRight, {
+                                        let view = filter_view.clone();
+                                        move |menu, _window, cx| {
+                                            session_filter_menu_into(menu, view.clone(), cx)
+                                        }
+                                    }),
+                            )
                             .child(
                                 Button::new(SharedString::from(format!("{}-new", id)))
                                     .icon(IconName::Plus)
@@ -1303,6 +1426,90 @@ fn session_row_menu(
         .into_any_element()
 }
 
+/// The workspace-group header's menu (web `WorkspaceItem`'s ⋯ popover, honest
+/// subset): new session, the workspace's Files panel, copy path, reveal in the
+/// file manager. Web's scheduled-jobs, project-permissions, port-forwarding,
+/// batch session management and assistant reset/delete entries have no shell
+/// surface and stay out — the parity doc records each as a deliberate
+/// divergence. Both this menu and the header's ＋ follow the same
+/// switch-then-act rule for another workspace's group.
+fn workspace_group_menu(
+    group: Option<String>,
+    view: WeakEntity<ShellWindow>,
+) -> gpui_kit::AnyElement {
+    let key = group.clone().unwrap_or_else(|| "current".to_string());
+    let new_view = view.clone();
+    let new_group = group.clone();
+    let files_view = view.clone();
+    let files_group = group.clone();
+    let copy_view = view.clone();
+    let copy_group = group.clone();
+    let reveal_view = view.clone();
+    let reveal_group = group.clone();
+    Button::new(SharedString::from(format!("session-group-menu-{key}")))
+        .icon(IconName::Ellipsis)
+        .small()
+        .with_variant(ButtonVariant::Ghost)
+        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _window, cx| {
+            let text = i18n::current(cx);
+            // The menu builder runs as `Fn`: each handler gets its own owned
+            // clone of what it needs, never the closure's capture itself.
+            let new_view = new_view.clone();
+            let new_group = new_group.clone();
+            let files_view = files_view.clone();
+            let files_group = files_group.clone();
+            let copy_view = copy_view.clone();
+            let copy_group = copy_group.clone();
+            let reveal_view = reveal_view.clone();
+            let reveal_group = reveal_group.clone();
+            menu.item(PopupMenuItem::new(text.sessions_new.clone()).on_click(
+                move |_, window, cx| {
+                    if let Some(view) = new_view.upgrade() {
+                        let group = new_group.clone();
+                        view.update(cx, |this, cx| {
+                            this.run_group_action(
+                                group,
+                                PendingGroupAction::NewSession,
+                                window,
+                                cx,
+                            );
+                        });
+                    }
+                },
+            ))
+            .item(
+                PopupMenuItem::new(text.files_title.clone()).on_click(move |_, window, cx| {
+                    if let Some(view) = files_view.upgrade() {
+                        let group = files_group.clone();
+                        view.update(cx, |this, cx| {
+                            this.run_group_action(group, PendingGroupAction::OpenFiles, window, cx);
+                        });
+                    }
+                }),
+            )
+            .separator()
+            .item(
+                PopupMenuItem::new(text.sessions_copy_path.clone()).on_click(move |_, _, cx| {
+                    if let Some(view) = copy_view.upgrade() {
+                        view.update(cx, |this, cx| {
+                            this.copy_group_path(copy_group.as_deref(), cx)
+                        });
+                    }
+                }),
+            )
+            .item(
+                PopupMenuItem::new(text.sessions_reveal.clone()).on_click(move |_, _, cx| {
+                    if let Some(view) = reveal_view.upgrade() {
+                        view.update(cx, |this, _cx| {
+                            this.reveal_group_path(reveal_group.as_deref())
+                        });
+                    }
+                }),
+            )
+        })
+        .into_any_element()
+}
+
 /// Image formats the turn pipeline can decode reliably; anything else a
 /// clipboard or drag offers is refused with a visible notice instead of
 /// failing the turn later.
@@ -1441,6 +1648,9 @@ pub(crate) struct ShellWindow {
     /// level-0 page).
     sessions_group_collapsed: bool,
     sessions_expanded: bool,
+    /// Sessions list projection (grouping, ordering, show/status filters) —
+    /// the web `workspaceSessionView` preferences the shell has data for.
+    session_list: SessionListFilters,
     /// Sidebar session groups beyond the current workspace (web
     /// SessionsSection): one entry per recent workspace that reported rows.
     other_groups: Vec<OtherWorkspaceGroup>,
@@ -1507,10 +1717,10 @@ pub(crate) struct ShellWindow {
     /// Inline validation/create failure of the new-project dialog; cleared
     /// when the dialog opens.
     new_project_error: Option<String>,
-    /// Session id waiting for its owning workspace to become active (clicked
-    /// in another workspace's sidebar group): opened on
+    /// The action waiting for its owning workspace to become active (taken
+    /// from another workspace's sidebar group): settled on
     /// [`RuntimeEvent::WorkspaceSwitched`], dropped on a failed switch.
-    pending_open_session: Option<String>,
+    pending_group_action: Option<PendingGroupAction>,
     /// Last session-transcript load failure, shown in the sidebar footer
     /// status line (a failed open would otherwise only surface inside an
     /// active chat tab). Cleared by a successful open or a switch.
@@ -1729,6 +1939,7 @@ impl ShellWindow {
             lineages: Vec::new(),
             sessions_group_collapsed: false,
             sessions_expanded: false,
+            session_list: SessionListFilters::default(),
             other_groups: Vec::new(),
             search_overlay_open: false,
             sidebar_open: true,
@@ -1749,7 +1960,7 @@ impl ShellWindow {
             workspace_new_parent_input,
             workspace_new_name_input,
             new_project_error: None,
-            pending_open_session: None,
+            pending_group_action: None,
             session_open_error: None,
             workspace_error: None,
             pending_attachments: Vec::new(),
@@ -1891,6 +2102,8 @@ impl ShellWindow {
                 .collect::<Vec<_>>()
                 .join(" · "),
             archived: row.archived,
+            created_at_ms: session.created_at_ms,
+            last_active_at_ms: session.last_active_at_ms,
         }
     }
 
@@ -2649,22 +2862,37 @@ impl ShellWindow {
                 self.workspace_error = None;
                 self.session_open_error = None;
                 self.apply_workspace_reset(cx);
-                // A session clicked in another workspace's group opens now
-                // that its owning workspace is active (the restore reads the
-                // active workspace's store).
-                if let Some(session_id) = self.pending_open_session.take() {
-                    if let Some(handle) = runtime::runtime_handle() {
-                        tracing::info!("Opening pending session {session_id} after switch");
-                        handle.open_session(session_id, self.event_tx.clone());
+                // An action taken in another workspace's group runs now that
+                // its owning workspace is active: a session row opens (the
+                // restore reads the active workspace's store), a new session
+                // is created there, or the Files panel is opened for it.
+                if let Some(pending) = self.pending_group_action.take() {
+                    match pending {
+                        PendingGroupAction::OpenSession(session_id) => {
+                            if let Some(handle) = runtime::runtime_handle() {
+                                tracing::info!("Opening pending session {session_id} after switch");
+                                handle.open_session(session_id, self.event_tx.clone());
+                            }
+                        }
+                        PendingGroupAction::NewSession => {
+                            if let Some(handle) = runtime::runtime_handle() {
+                                tracing::info!("Creating a session in the switched workspace");
+                                handle.create_session(self.event_tx.clone());
+                            }
+                        }
+                        PendingGroupAction::OpenFiles => {
+                            tracing::info!("Opening the files panel of the switched workspace");
+                            self.toggle_files_view(window, cx);
+                        }
                     }
                 }
             }
             RuntimeEvent::WorkspaceSwitchFailed(message) => {
                 tracing::warn!("Workspace switch failed: {message}");
-                // The switch that was going to carry a pending open never
-                // happened; opening against the old workspace would fail for
-                // a second, more confusing reason.
-                self.pending_open_session = None;
+                // The switch that was going to carry a pending action never
+                // happened; running the action against the old workspace would
+                // fail for a second, more confusing reason.
+                self.pending_group_action = None;
                 self.workspace_error = Some(message);
             }
             RuntimeEvent::SessionRenamed { session_id, name } => {
@@ -3779,10 +4007,21 @@ impl ShellWindow {
         // One section per workspace group: the current workspace first (its
         // fold state lives on the window), then every other recent workspace
         // that reported sessions (web SessionsSection renders the same
-        // per-workspace groups side by side).
+        // per-workspace groups side by side). The flat projection is the web
+        // `layout="flat"` swap (grouping `all`): every workspace's sessions in
+        // the first child, the other group slots left as empty children so the
+        // child count — and with it the sidebar list's scroll anchor — is the
+        // same in both views.
         let current_name = runtime::runtime_handle()
             .map(|handle| handle.workspace().name)
             .unwrap_or_default();
+        if self.session_list.flat {
+            sections.push(SidebarSection::Rows(self.flat_entries(&current_name, cx)));
+            for _ in &self.other_groups {
+                sections.push(SidebarSection::Rows(Vec::new()));
+            }
+            return sections;
+        }
         sections.push(SidebarSection::Rows(self.group_entries(
             &current_name,
             None,
@@ -3809,12 +4048,38 @@ impl ShellWindow {
         sections
     }
 
+    /// The per-row facts the list projection reads (archive state, live turn,
+    /// unread completion) — one place so the grouped and flat projections
+    /// filter identically.
+    fn row_facts(&self, row: &SessionRow) -> SessionRowFacts {
+        SessionRowFacts {
+            archived: row.archived,
+            running: self.session_is_running(&row.id),
+            unread: self.unread_turns.contains_key(&row.id),
+        }
+    }
+
+    /// One workspace's rows after the show/status filters, sorted by the
+    /// active ordering (web `matchesWorkspaceSessionView` →
+    /// `compareWorkspaceNavSessions`).
+    fn visible_rows<'a>(&self, rows: &'a [SessionRow]) -> Vec<&'a SessionRow> {
+        let mut visible: Vec<&SessionRow> = rows
+            .iter()
+            .filter(|row| {
+                session_row_matches(self.row_facts(row), &self.session_list, self.show_archived)
+            })
+            .collect();
+        visible
+            .sort_by(|left, right| compare_session_rows(left, right, self.session_list.ordering));
+        visible
+    }
+
     /// One workspace group's entries, in render order: the group header
-    /// (folder glyph, fold chevron, running dot), the single-line session
-    /// rows with their lineage children, the show-more fold, and the desktop
-    /// group-tail collapse row. `group` routes fold toggles: `None` mutates
-    /// the window's current-workspace state, `Some(root_path)` the matching
-    /// other group.
+    /// (folder glyph, fold chevron, running dot, its action pair), the
+    /// single-line session rows with their lineage children, the show-more
+    /// fold, and the desktop group-tail collapse row. `group` routes fold
+    /// toggles and group actions: `None` mutates the window's
+    /// current-workspace state, `Some(root_path)` the matching other group.
     fn group_entries(
         &self,
         name: &str,
@@ -3825,10 +4090,7 @@ impl ShellWindow {
         cx: &mut Context<Self>,
     ) -> Vec<SidebarEntry> {
         let view = cx.entity().downgrade();
-        let visible: Vec<&SessionRow> = rows
-            .iter()
-            .filter(|row| self.show_archived || !row.archived)
-            .collect();
+        let visible = self.visible_rows(rows);
         let group_running = visible.iter().any(|row| self.session_is_running(&row.id));
         let mut entries = vec![SidebarEntry::GroupHeader {
             name: SharedString::from(name.to_string()),
@@ -3838,6 +4100,16 @@ impl ShellWindow {
             view: view.clone(),
         }];
         if collapsed {
+            return entries;
+        }
+        // A filter that hides every row says so instead of leaving a blank
+        // group (web `nav.sessions.viewMenu.noMatches`); with no filter active
+        // an empty group is just an empty workspace and stays silent.
+        if visible.is_empty() && self.session_list.is_customized() {
+            entries.push(SidebarEntry::Empty(
+                i18n::current(cx).sessions_no_matches.clone().into(),
+            ));
+            entries.push(SidebarEntry::Collapse { group, view });
             return entries;
         }
 
@@ -3864,6 +4136,7 @@ impl ShellWindow {
                 depth,
                 running,
                 group: group.clone(),
+                scope: None,
                 tx: self.event_tx.clone(),
                 view: view.clone(),
             });
@@ -3890,6 +4163,76 @@ impl ShellWindow {
         entries
     }
 
+    /// The flat projection (web `layout="flat"` + `workspaceScopes`): every
+    /// workspace's sessions in one list, ordered globally, each root row
+    /// carrying its workspace name — the same swap the web makes for grouping
+    /// `all`. The display cap does not apply (the web comment: the flat
+    /// aggregate "bypasses this display cap and streams every page in"), and
+    /// rows keep their group so opening a foreign one still switches the
+    /// workspace first.
+    fn flat_entries(&self, current_name: &str, cx: &mut Context<Self>) -> Vec<SidebarEntry> {
+        let view = cx.entity().downgrade();
+        let mut rows: Vec<(Option<String>, SharedString, SessionRow)> = self
+            .sessions
+            .iter()
+            .map(|row| {
+                (
+                    None,
+                    SharedString::from(current_name.to_string()),
+                    row.clone(),
+                )
+            })
+            .collect();
+        for group in &self.other_groups {
+            for row in &group.rows {
+                rows.push((
+                    Some(group.root_path.clone()),
+                    SharedString::from(group.name.clone()),
+                    row.clone(),
+                ));
+            }
+        }
+        rows.retain(|(_, _, row)| {
+            session_row_matches(self.row_facts(row), &self.session_list, self.show_archived)
+        });
+        rows.sort_by(|left, right| {
+            compare_session_rows(&left.2, &right.2, self.session_list.ordering)
+        });
+        if rows.is_empty() {
+            return vec![SidebarEntry::Empty(
+                i18n::current(cx).sessions_no_matches.clone().into(),
+            )];
+        }
+        let mut entries = Vec::new();
+        let mut push_row =
+            |row: SessionRow, depth: u8, group: Option<String>, scope: Option<SharedString>| {
+                let open = self.chats.iter().any(|chat| chat.matches(&row.id));
+                let active = self.tabs.active_kind() == Some(&TabKind::Session(row.id.clone()));
+                let running = self.session_is_running(&row.id);
+                entries.push(SidebarEntry::Session {
+                    row,
+                    open,
+                    active,
+                    depth,
+                    running,
+                    group,
+                    // The web flat row shows its workspace name; subagent
+                    // children inherit their parent's position instead.
+                    scope: if depth == 0 { scope } else { None },
+                    tx: self.event_tx.clone(),
+                    view: view.clone(),
+                });
+            };
+        for (group, workspace_name, row) in rows {
+            let children = self.lineage_children(&row.id);
+            push_row(row, 0, group.clone(), Some(workspace_name));
+            for child in children {
+                push_row(child, 1, group.clone(), None);
+            }
+        }
+        entries
+    }
+
     /// Flips one workspace group's fold. `None` is the active workspace (the
     /// window's own flag), `Some(root_path)` one of the other groups.
     fn toggle_session_group(&mut self, group: Option<&str>, cx: &mut Context<Self>) {
@@ -3908,17 +4251,18 @@ impl ShellWindow {
         cx.notify();
     }
 
-    /// Opens one sidebar session row. A row under the active workspace opens
-    /// directly; a row that belongs to another workspace's group switches
-    /// that workspace first and opens once the switch lands
-    /// ([`RuntimeEvent::WorkspaceSwitched`]), because the runtime restores a
-    /// transcript from the active workspace's own store — the same order the
-    /// web UI uses (`openMainSession` activates the owning workspace, then
-    /// switches the chat session).
-    fn open_session_row(
+    /// Runs one action from a sidebar workspace group. A group that is the
+    /// active workspace acts directly; a group that belongs to another
+    /// workspace switches there first and leaves the action pending
+    /// ([`PendingGroupAction`], settled by [`RuntimeEvent::WorkspaceSwitched`])
+    /// — the order the web UI uses (`openMainSession` / `WorkspaceItem`
+    /// activate the owning workspace, then act), and the reason a transcript
+    /// is restored from the *active* workspace's store.
+    fn run_group_action(
         &mut self,
-        session_id: String,
         group: Option<String>,
+        action: PendingGroupAction,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(handle) = runtime::runtime_handle() else {
@@ -3928,16 +4272,73 @@ impl ShellWindow {
             let workspace = handle.workspace();
             workspace.root_path.to_string_lossy().to_string()
         };
-        match session_open_plan(group.as_deref(), &current_root) {
-            SessionOpenPlan::Open => handle.open_session(session_id, self.event_tx.clone()),
-            SessionOpenPlan::SwitchThenOpen { root } => {
-                tracing::info!(
-                    "Session {session_id} belongs to workspace {root}: switching before opening"
-                );
-                self.pending_open_session = Some(session_id);
+        match workspace_group_plan(group.as_deref(), &current_root) {
+            WorkspaceGroupPlan::Act => match action {
+                PendingGroupAction::OpenSession(session_id) => {
+                    handle.open_session(session_id, self.event_tx.clone())
+                }
+                PendingGroupAction::NewSession => handle.create_session(self.event_tx.clone()),
+                PendingGroupAction::OpenFiles => self.toggle_files_view(window, cx),
+            },
+            WorkspaceGroupPlan::SwitchThenAct { root } => {
+                tracing::info!("Group action for workspace {root}: switching before acting");
+                self.pending_group_action = Some(action);
                 self.session_open_error = None;
                 handle.switch_workspace(std::path::PathBuf::from(root), self.event_tx.clone());
             }
+        }
+        cx.notify();
+    }
+
+    /// Opens one sidebar session row (the row click's group action).
+    fn open_session_row(
+        &mut self,
+        session_id: String,
+        group: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.run_group_action(
+            group,
+            PendingGroupAction::OpenSession(session_id),
+            window,
+            cx,
+        );
+    }
+
+    /// One group's workspace root: the active workspace's for `None`, the
+    /// recorded path for another group. `None` before the runtime is up.
+    fn group_root(&self, group: Option<&str>) -> Option<String> {
+        match group {
+            Some(root) => Some(root.to_string()),
+            None => runtime::runtime_handle()
+                .map(|handle| handle.workspace().root_path.to_string_lossy().to_string()),
+        }
+    }
+
+    /// Copies one group's workspace root (web `nav.workspaces.actions.copyPath`).
+    fn copy_group_path(&self, group: Option<&str>, cx: &mut Context<Self>) {
+        if let Some(root) = self.group_root(group) {
+            cx.write_to_clipboard(ClipboardItem::new_string(root.clone()));
+            tracing::info!("Copied workspace path {root}");
+        }
+    }
+
+    /// Reveals one group's workspace root in the platform file manager (web
+    /// `nav.workspaces.actions.reveal`; the web disables it for remote
+    /// workspaces, which the shell does not have yet).
+    fn reveal_group_path(&self, group: Option<&str>) {
+        if let Some(root) = self.group_root(group) {
+            crate::settings::open_path_in_file_manager(std::path::Path::new(&root));
+        }
+    }
+
+    /// Folds every workspace group and the current one (web
+    /// `nav.sessions.viewMenu.collapseAll`, offered while grouped).
+    fn collapse_all_groups(&mut self, cx: &mut Context<Self>) {
+        self.sessions_group_collapsed = true;
+        for group in &mut self.other_groups {
+            group.collapsed = true;
         }
         cx.notify();
     }
@@ -3969,6 +4370,10 @@ impl ShellWindow {
                 name: entry.session_name.clone(),
                 metadata: entry.subagent_type.clone().unwrap_or_default(),
                 archived: false,
+                // Children follow their parent's row; they never take part in
+                // the list ordering.
+                created_at_ms: 0,
+                last_active_at_ms: 0,
             })
             .collect()
     }
@@ -4254,6 +4659,133 @@ fn workspace_menu_into(
         }));
     }
     menu
+}
+
+/// The sessions header's filter menu (web `WorkspaceSessionFilterMenu`
+/// restricted to the segments the shell has data for): ordering
+/// updated/created/name, show all/unread, the running status filter, reset,
+/// and the two whole-list verbs (collapse all while grouped, mark all read).
+/// Web's worktree/environment/source segments, its needs-attention value and
+/// its per-segment submenus stay out — one flat menu with section labels
+/// instead; the parity doc records the divergences.
+fn session_filter_menu_into(
+    menu: gpui_kit::component::menu::PopupMenu,
+    view: WeakEntity<ShellWindow>,
+    cx: &mut App,
+) -> gpui_kit::component::menu::PopupMenu {
+    let Some(shell) = view.upgrade() else {
+        return menu;
+    };
+    let (filters, tx) = {
+        let shell = shell.read(cx);
+        (shell.session_list, shell.event_tx.clone())
+    };
+    let text = i18n::current(cx);
+    let mut menu = menu;
+
+    // Ordering: radio semantics — one ordering is active at a time.
+    menu = menu.item(PopupMenuItem::label(text.sessions_ordering.clone()));
+    for (ordering, label) in [
+        (
+            SessionOrdering::Updated,
+            text.sessions_order_updated.clone(),
+        ),
+        (
+            SessionOrdering::Created,
+            text.sessions_order_created.clone(),
+        ),
+        (SessionOrdering::Name, text.sessions_order_name.clone()),
+    ] {
+        let view = view.clone();
+        menu = menu.item(
+            PopupMenuItem::new(label)
+                .checked(filters.ordering == ordering)
+                .on_click(move |_, _, cx| {
+                    if let Some(shell) = view.upgrade() {
+                        shell.update(cx, |this, cx| {
+                            this.session_list.ordering = ordering;
+                            cx.notify();
+                        });
+                    }
+                }),
+        );
+    }
+
+    // Show: all / unread (the window's unread-completion map).
+    menu = menu.item(PopupMenuItem::label(text.sessions_show.clone()));
+    for (unread_only, label) in [
+        (false, text.sessions_show_all.clone()),
+        (true, text.sessions_show_unread.clone()),
+    ] {
+        let view = view.clone();
+        menu = menu.item(
+            PopupMenuItem::new(label)
+                .checked(filters.unread_only == unread_only)
+                .on_click(move |_, _, cx| {
+                    if let Some(shell) = view.upgrade() {
+                        shell.update(cx, |this, cx| {
+                            this.session_list.unread_only = unread_only;
+                            cx.notify();
+                        });
+                    }
+                }),
+        );
+    }
+
+    // Filters: the one status the shell can derive is `running` (checked =
+    // shown, the web multi-select's semantics).
+    menu = menu.item(PopupMenuItem::label(text.sessions_filters.clone()));
+    menu = menu.item(
+        PopupMenuItem::new(text.sessions_status_running.clone())
+            .checked(!filters.hide_running)
+            .on_click({
+                let view = view.clone();
+                move |_, _, cx| {
+                    if let Some(shell) = view.upgrade() {
+                        shell.update(cx, |this, cx| {
+                            this.session_list.hide_running = !this.session_list.hide_running;
+                            cx.notify();
+                        });
+                    }
+                }
+            }),
+    );
+    menu = menu.item(
+        PopupMenuItem::new(text.sessions_reset_filters.clone()).on_click({
+            let view = view.clone();
+            move |_, _, cx| {
+                if let Some(shell) = view.upgrade() {
+                    shell.update(cx, |this, cx| {
+                        // Web `resetFilters` restores the filter section only,
+                        // not ordering or show: the running filter clears and
+                        // archived sessions hide again.
+                        this.session_list.hide_running = false;
+                        this.show_archived = false;
+                        cx.notify();
+                    });
+                }
+            }
+        }),
+    );
+
+    menu = menu.separator();
+    if !filters.flat {
+        menu = menu.item(
+            PopupMenuItem::new(text.sessions_collapse_all.clone()).on_click({
+                let view = view.clone();
+                move |_, _, cx| {
+                    if let Some(shell) = view.upgrade() {
+                        shell.update(cx, |this, cx| this.collapse_all_groups(cx));
+                    }
+                }
+            }),
+        );
+    }
+    menu.item(
+        PopupMenuItem::new(text.sessions_mark_all_read.clone()).on_click(move |_, _, _| {
+            let _ = tx.send(RuntimeEvent::TrayMarkAllRead);
+        }),
+    )
 }
 
 /// The settings button keeps a raised variant while its page is showing.
@@ -6751,23 +7283,133 @@ fn check_project_path(path: &str) -> ProjectPathCheck {
     ProjectPathCheck::Ok
 }
 
-/// What clicking one sidebar session row should do, given the row's workspace
-/// group (`None` = the active workspace) and the active workspace's root.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum SessionOpenPlan {
-    /// The row belongs to the active workspace: restore it straight away.
-    Open,
-    /// The row belongs to another workspace: switch there first, then open.
-    SwitchThenOpen { root: String },
+/// Ordering choices the sessions list offers (web `WorkspaceSessionOrdering`
+/// minus `status`: the shell has no error/attention/completed session state to
+/// order by — see the parity doc's deliberate divergences).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionOrdering {
+    Updated,
+    Created,
+    Name,
 }
 
-fn session_open_plan(group: Option<&str>, current_root: &str) -> SessionOpenPlan {
+/// The sessions list projection (web `WorkspaceSessionViewPreferences` for the
+/// segments the shell has real data for). Window state: web persists the same
+/// preferences per workspace in localStorage, the shell keeps them for the
+/// window (parity doc §2.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SessionListFilters {
+    /// grouping: `false` = the grouped workspace tree, `true` = one flat list
+    /// of every workspace's sessions (web `grouped` / `all`).
+    flat: bool,
+    ordering: SessionOrdering,
+    /// show: only sessions with unread completions (the window's unread map).
+    unread_only: bool,
+    /// status: hide the sessions with a live turn.
+    hide_running: bool,
+}
+
+impl Default for SessionListFilters {
+    fn default() -> Self {
+        Self {
+            flat: false,
+            ordering: SessionOrdering::Updated,
+            unread_only: false,
+            hide_running: false,
+        }
+    }
+}
+
+impl SessionListFilters {
+    /// The filter button marks itself active while anything narrows the list
+    /// (web `isCustomized`); grouping alone does not count.
+    fn is_customized(&self) -> bool {
+        self.unread_only || self.hide_running
+    }
+}
+
+/// Per-row facts the projection reads beyond the row record itself, built by
+/// the window so the pipeline below stays a pure function.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct SessionRowFacts {
+    archived: bool,
+    running: bool,
+    unread: bool,
+}
+
+/// Web `matchesWorkspaceSessionView` restricted to the segments the shell has
+/// data for: the archive toggle, show-unread, and the running status filter.
+fn session_row_matches(
+    facts: SessionRowFacts,
+    filters: &SessionListFilters,
+    show_archived: bool,
+) -> bool {
+    if facts.archived && !show_archived {
+        return false;
+    }
+    if filters.unread_only && !facts.unread {
+        return false;
+    }
+    if filters.hide_running && facts.running {
+        return false;
+    }
+    true
+}
+
+/// Web `compareWorkspaceNavSessions` for the orderings the shell supports.
+/// Ties fall back to created-desc then session id, so the order is total and
+/// stable across reloads.
+fn compare_session_rows(
+    left: &SessionRow,
+    right: &SessionRow,
+    ordering: SessionOrdering,
+) -> std::cmp::Ordering {
+    let primary = match ordering {
+        SessionOrdering::Updated => right.last_active_at_ms.cmp(&left.last_active_at_ms),
+        SessionOrdering::Created => right.created_at_ms.cmp(&left.created_at_ms),
+        // The web compare is locale- and number-aware
+        // (`localeCompare(..., { numeric, sensitivity: 'base' })`); the shell
+        // compares case-folded names — same ordering for ASCII/Latin titles,
+        // no numeric collation.
+        SessionOrdering::Name => left.name.to_lowercase().cmp(&right.name.to_lowercase()),
+    };
+    primary
+        .then_with(|| right.created_at_ms.cmp(&left.created_at_ms))
+        .then_with(|| left.id.cmp(&right.id))
+}
+
+/// What a sidebar group action should do, given its workspace group
+/// (`None` = the active workspace) and the active workspace's root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum WorkspaceGroupPlan {
+    /// The group is the active workspace: act straight away.
+    Act,
+    /// Another workspace: switch there first, then act.
+    SwitchThenAct { root: String },
+}
+
+fn workspace_group_plan(group: Option<&str>, current_root: &str) -> WorkspaceGroupPlan {
     match group {
-        Some(root) if root != current_root => SessionOpenPlan::SwitchThenOpen {
+        Some(root) if root != current_root => WorkspaceGroupPlan::SwitchThenAct {
             root: root.to_string(),
         },
-        _ => SessionOpenPlan::Open,
+        _ => WorkspaceGroupPlan::Act,
     }
+}
+
+/// One sidebar group action waiting for its workspace to become active — the
+/// switch-then-act rule, settled on [`RuntimeEvent::WorkspaceSwitched`].
+/// Session rows carry [`PendingGroupAction::OpenSession`]; the group header's
+/// new-session and files actions carry the other two. All three follow the
+/// web, which activates a workspace before acting inside it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PendingGroupAction {
+    /// Open this session (the row click's switch-then-open).
+    OpenSession(String),
+    /// Create a session in the workspace (web `nav.workspaces.actions.newSession`).
+    NewSession,
+    /// Show the workspace's Files panel (the group card's folder action).
+    OpenFiles,
 }
 
 /// Creates the new project directory (the web `workspaceAPI.createDirectory`
@@ -10521,6 +11163,264 @@ mod tests {
         );
     }
 
+    /// Toggling the flat view or switching a filter must not move the child
+    /// count either — the flat projection fills the current group's child and
+    /// leaves every other workspace's slot empty — because a changed count
+    /// resets the sidebar list's scroll anchor (the same rule group folds
+    /// follow; the web swaps its whole projection here, the shell cannot).
+    #[gpui_kit::test]
+    fn sidebar_child_count_holds_across_view_and_filters(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+        let text = sample_shell_text();
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                let rows = (0..7)
+                    .map(|ix| crate::runtime::SessionListRow {
+                        summary: sample_summary_at(
+                            &format!("s-{ix}"),
+                            &format!("Session {ix}"),
+                            ix,
+                        ),
+                        archived: false,
+                    })
+                    .collect();
+                shell.apply_runtime_event(RuntimeEvent::Sessions(rows), window, cx);
+                shell.apply_runtime_event(
+                    RuntimeEvent::OtherWorkspaceSessions {
+                        name: "zenix".into(),
+                        root_path: "/home/zero/zenix".into(),
+                        rows: vec![crate::runtime::SessionListRow {
+                            summary: sample_summary_at("m-3", "M3", 100),
+                            archived: false,
+                        }],
+                    },
+                    window,
+                    cx,
+                );
+            });
+        });
+
+        let children = |window: &mut gpui_kit::VisualTestContext| {
+            let text = text.clone();
+            window.update(|_, cx| {
+                shell.update(cx, |shell, cx| {
+                    shell
+                        .render_session_entries(&text, cx)
+                        .into_iter()
+                        .map(|section| match section {
+                            SidebarSection::Rows(rows) => rows.len(),
+                            _ => 1,
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+        };
+        let grouped = children(&mut window);
+        assert_eq!(grouped, vec![8, 3], "current group + zenix group");
+
+        // Flat: every workspace's sessions land in the first child (uncapped:
+        // 8 roots, not the folded page of 5), the zenix slot goes empty.
+        window.update(|_, cx| {
+            shell.update(cx, |shell, _cx| shell.session_list.flat = true);
+        });
+        let flat = children(&mut window);
+        assert_eq!(
+            flat.len(),
+            grouped.len(),
+            "switching the view must not change the number of sidebar children"
+        );
+        assert_eq!(flat, vec![8, 0]);
+
+        // A filter narrows the rows inside the children, never their count —
+        // including the honest no-match line when it hides everything.
+        window.update(|_, cx| {
+            shell.update(cx, |shell, _cx| {
+                shell.session_list.unread_only = true;
+                shell.session_list.flat = false;
+            });
+        });
+        let filtered = children(&mut window);
+        assert_eq!(filtered.len(), grouped.len());
+        assert_eq!(
+            filtered,
+            vec![3, 3],
+            "an empty group shows its no-match line inside its own child"
+        );
+    }
+
+    /// The flat projection (web `grouping: all`) orders every workspace's
+    /// rows by one key, labels each root row with its workspace, and keeps the
+    /// rows' group so opening a foreign session still switches first.
+    #[gpui_kit::test]
+    fn flat_projection_orders_every_workspace_and_scopes_rows(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+        let text = sample_shell_text();
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                let rows = (0..7)
+                    .map(|ix| crate::runtime::SessionListRow {
+                        summary: sample_summary_at(
+                            &format!("s-{ix}"),
+                            &format!("Session {ix}"),
+                            ix,
+                        ),
+                        archived: false,
+                    })
+                    .collect();
+                shell.apply_runtime_event(RuntimeEvent::Sessions(rows), window, cx);
+                shell.apply_runtime_event(
+                    RuntimeEvent::OtherWorkspaceSessions {
+                        name: "zenix".into(),
+                        root_path: "/home/zero/zenix".into(),
+                        rows: vec![crate::runtime::SessionListRow {
+                            summary: sample_summary_at("m-3", "M3", 100),
+                            archived: false,
+                        }],
+                    },
+                    window,
+                    cx,
+                );
+                shell.session_list.flat = true;
+            });
+        });
+
+        let entries =
+            window.update(|_, cx| shell.update(cx, |shell, cx| shell.flat_entries("current", cx)));
+        let rows: Vec<(String, u8, Option<String>, Option<String>)> = entries
+            .iter()
+            .filter_map(|entry| match entry {
+                SidebarEntry::Session {
+                    row,
+                    depth,
+                    group,
+                    scope,
+                    ..
+                } => Some((
+                    row.id.clone(),
+                    *depth,
+                    group.clone(),
+                    scope.as_ref().map(|scope| scope.to_string()),
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            rows.len(),
+            8,
+            "the flat list is not capped at the folded page"
+        );
+        assert_eq!(
+            rows[0],
+            (
+                "m-3".to_string(),
+                0,
+                Some("/home/zero/zenix".to_string()),
+                Some("zenix".to_string())
+            ),
+            "the newest row across every workspace leads and keeps its group"
+        );
+        assert_eq!(
+            rows[1].0, "s-6",
+            "the current workspace's rows follow in the same global ordering"
+        );
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| matches!(entry, SidebarEntry::GroupHeader { .. })),
+            "the flat projection has no group headers"
+        );
+    }
+
+    /// The projection pipeline (web `compareWorkspaceNavSessions` +
+    /// `matchesWorkspaceSessionView` subset): each ordering is total and
+    /// stable, and the row predicate hides exactly the archived, non-unread
+    /// and running rows the shell's filters can derive.
+    #[test]
+    fn session_list_pipeline_matches_the_web_subset() {
+        let row = |id: &str, name: &str, created: u64, active: u64| SessionRow {
+            id: id.into(),
+            name: name.into(),
+            metadata: String::new(),
+            archived: false,
+            created_at_ms: created,
+            last_active_at_ms: active,
+        };
+        let ids = |rows: &[SessionRow]| rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
+
+        let mut rows = vec![
+            row("a", "beta", 300, 10),
+            row("b", "Alpha", 100, 30),
+            row("c", "gamma", 200, 20),
+        ];
+        rows.sort_by(|left, right| compare_session_rows(left, right, SessionOrdering::Updated));
+        assert_eq!(ids(&rows), ["b", "c", "a"]);
+        rows.sort_by(|left, right| compare_session_rows(left, right, SessionOrdering::Created));
+        assert_eq!(ids(&rows), ["a", "c", "b"]);
+        // Case-folded names: Alpha < beta < gamma.
+        rows.sort_by(|left, right| compare_session_rows(left, right, SessionOrdering::Name));
+        assert_eq!(ids(&rows), ["b", "a", "c"]);
+
+        // Equal activity falls back to created-desc, then to the session id.
+        let mut ties = vec![row("z", "z", 50, 100), row("y", "y", 90, 100)];
+        ties.sort_by(|left, right| compare_session_rows(left, right, SessionOrdering::Updated));
+        assert_eq!(ids(&ties), ["y", "z"], "created-desc breaks the tie");
+
+        let defaults = SessionListFilters::default();
+        assert!(session_row_matches(
+            SessionRowFacts::default(),
+            &defaults,
+            false
+        ));
+        let archived = SessionRowFacts {
+            archived: true,
+            ..Default::default()
+        };
+        assert!(!session_row_matches(archived, &defaults, false));
+        assert!(session_row_matches(archived, &defaults, true));
+        let unread_only = SessionListFilters {
+            unread_only: true,
+            ..SessionListFilters::default()
+        };
+        assert!(!session_row_matches(
+            SessionRowFacts::default(),
+            &unread_only,
+            true
+        ));
+        assert!(session_row_matches(
+            SessionRowFacts {
+                unread: true,
+                ..Default::default()
+            },
+            &unread_only,
+            true
+        ));
+        let no_running = SessionListFilters {
+            hide_running: true,
+            ..SessionListFilters::default()
+        };
+        assert!(!session_row_matches(
+            SessionRowFacts {
+                running: true,
+                ..Default::default()
+            },
+            &no_running,
+            true
+        ));
+        // Only show/status narrow the list; grouping and ordering do not mark
+        // the filter button.
+        assert!(!defaults.is_customized());
+        assert!(no_running.is_customized());
+        assert!(unread_only.is_customized());
+    }
+
     /// Rows under another workspace's group carry that workspace's root — the
     /// click handler needs it to switch before opening — while the active
     /// workspace's rows stay ungrouped.
@@ -10583,24 +11483,24 @@ mod tests {
         );
     }
 
-    /// The open plan switches only for rows whose group is not the active
-    /// workspace; a row of the active workspace (or one without a group)
-    /// restores straight away.
+    /// The group plan switches only for a group that is not the active
+    /// workspace; the active workspace's group (or no group at all) acts
+    /// straight away.
     #[test]
-    fn session_open_plan_switches_foreign_workspaces_only() {
+    fn workspace_group_plan_switches_foreign_workspaces_only() {
         assert_eq!(
-            session_open_plan(Some("/home/zero/zenix"), "/home/zero/BitFun"),
-            SessionOpenPlan::SwitchThenOpen {
-                root: "/home/zero/zenix".to_string()
+            workspace_group_plan(Some("/home/zero/proj-b"), "/home/zero/proj-a"),
+            WorkspaceGroupPlan::SwitchThenAct {
+                root: "/home/zero/proj-b".to_string()
             }
         );
         assert_eq!(
-            session_open_plan(Some("/home/zero/BitFun"), "/home/zero/BitFun"),
-            SessionOpenPlan::Open
+            workspace_group_plan(Some("/home/zero/proj-a"), "/home/zero/proj-a"),
+            WorkspaceGroupPlan::Act
         );
         assert_eq!(
-            session_open_plan(None, "/home/zero/BitFun"),
-            SessionOpenPlan::Open
+            workspace_group_plan(None, "/home/zero/proj-a"),
+            WorkspaceGroupPlan::Act
         );
     }
 
@@ -10972,6 +11872,19 @@ mod tests {
             cx.set_global(settings::ShellConfig::startup_default(LocaleId::ZhCN));
             cx.set_global(sample_shell_text());
         });
+    }
+
+    /// A list-projections fixture summary: both ordering keys carry `at_ms`,
+    /// so a test can script the `updated` and `created` orderings.
+    fn sample_summary_at(
+        id: &str,
+        name: &str,
+        at_ms: u64,
+    ) -> openbitfun_runtime_ports::AgentSessionSummary {
+        let mut summary = sample_summary(id, name);
+        summary.created_at_ms = at_ms;
+        summary.last_active_at_ms = at_ms;
+        summary
     }
 
     fn sample_summary(id: &str, name: &str) -> openbitfun_runtime_ports::AgentSessionSummary {

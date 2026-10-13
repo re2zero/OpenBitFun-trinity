@@ -3074,8 +3074,9 @@ fn open_logs_directory() {
 }
 
 /// Opens a directory in the platform file manager. Failures are logged;
-/// there is nothing to show in the window for them.
-fn open_path_in_file_manager(dir: &std::path::Path) {
+/// there is nothing to show in the window for them. Shared with the sidebar's
+/// workspace-group "reveal" action (web `nav.workspaces.actions.reveal`).
+pub(crate) fn open_path_in_file_manager(dir: &std::path::Path) {
     match openbitfun_services_core::process_manager::create_command("xdg-open")
         .arg(dir)
         .stdin(std::process::Stdio::null())
