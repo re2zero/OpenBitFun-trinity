@@ -45,7 +45,7 @@
 
 | # | 能力域 / 场景 | 桌面命令域（命令数） | 状态 | 缺口与备注 |
 |---|---|---|---|---|
-| 1 | 会话对话闭环 | agentic_api(58) 的 turn/session 子集 | 已支持 | 会话级事件流、工具卡、停止、标题齐备 |
+| 1 | 会话对话闭环 | agentic_api(58) 的 turn/session 子集 | 已支持 | 会话级事件流、工具卡、停止、标题齐备；富转写（M24）：工具行语义摘要 + 探索/执行折叠组 + 子代理身份卡（见 §2.3 第 14 行） |
 | 2 | 会话管理操作（重命名/删除/归档/导出/fork/压缩） | session_api(19)、agentic_api | 已支持 | M13 起全量落地：重命名 / 删除 / 归档+恢复 / fork / 压缩 / 导出转写（`runtime.rs` 直调 SDK 全族；T1-4 归档页批量删除；导出走 `read_session_transcript`） |
 | 3 | 模型 / Provider 选择 | `get_ai_model_catalog` + config 模型档案 | 已支持 | 模型设置页（`settings.rs::models_page`：provider/key/模型选择）+ 会话级 mode/model 切换（`update_session_mode` / `update_session_model`，composer 选择器） |
 | 4 | 附件 / 图片上下文（粘贴图片、拖文件、上传） | clipboard_file_api(3)、context_upload_api(1)、file_drop_preview_api(1) | 已支持 | composer 附件区 + turn 请求 `attachments: Vec<AgentInputAttachment>`；拖放/剪贴板走 gpui-pre 原生（XDND / wl_data_device / `ClipboardItem`） |
@@ -160,6 +160,7 @@ R3 `34a3effef` / R4 `006cc8063` / R5 `5da468203`（gpui-frontend 分支）。
 | 11 | 任务看板 = 概览卡 + 月历 | `tasks.rs`：四计数概览卡 + 周一首 7 列自绘月历（next_run/last_run 打点，today 描边）+「全部任务」分节（R4） | 计划概览卡 + 月历 | 同构 | 月历数据源 = cron 现有字段（不做新聚合查询）；图例带「壳内无历史运行日志」诚实注记 |
 | 12 | 技能页 facet 左栏 + 右列表卡 | `SkillsFacetState` + 200px facet 栏（库/来源/探索 + 计数）+ 右列表卡（R4） | `SkillsScene` facet 左栏 + 右列表卡 | 同构 | 市场 = 显式降级卡（T3-17）；用户分组壳未接配置，不伪造 |
 | 13 | 视觉语言（radius/选中/hover） | radius 全 token 化（卡片 `theme().radius`、小件 `radius_tokens().sm`）；侧栏选中 = 中性 quiet 药丸 + 主文字（R5） | token 体系同源 + `NavPanel` 行 quiet hover 语言 | 同构 | 内容密度（桌面大标题+卡片 vs 壳密行）为 R3/R4 已签壳自语言；`rounded_full` 装饰圆点不 token 化（壳无 radius=0 场景） |
+| 14 | 富转写（工具行/折叠组/子代理身份） | `transcript.rs` 事实解析（族标签 + meta 计数）+ 连续读写执行折叠为「N 次探索与执行」chip（点开可展）+ `subagent_identity.rs`（FNV-1a 同 web 池：20 头像 / 30 昵称）+ 子代理身份卡与 wait/list 名册（M24） | `tool-cards/**` 各族卡面 + `grouping/policies.ts` explore 组（`workspaceGroup.summary`）+ `subagent-identity/**` 与 `assets/subagent-avatars` | 同构 | 身份种子 = 子会话 id（缺链接时退化为 agent 别名），与 web 同解；「运行中」仅在子会话本当跑（`live_sessions`），历史不假活；chip 折叠 = 成员行渲染为空 div（列表项数不变），点击 toggle 后 remeasure 该段 |
 
 **双端对照截图归档**（本目录 `assets/gpui-shell-layout-parity/`，sha256 见文件名旁注；/tmp
 会清，以此为准）。拍摄配方：壳 `DISPLAY=:97`（Xvfb），桌面 dev `DISPLAY=:98 pnpm run
@@ -175,6 +176,15 @@ desktop:dev`（窗口 1200×800@200,50，:98 屏 1600×900），两端同选 `op
 | `r4-02-tasks-board.png` | R4 交付帧：看板真实 cron 数据（打点/today 描边） | `225c60fd38ecf828` |
 | `r4-07-skills-all.png` | R4 交付帧：facet 全列表 + 徽标 | `012d3cccb39ad527` |
 | `r4-13-builtin-fixed.png` | R4 交付帧：内置过滤 facet 选中 | `0f96b4d70529309c` |
+
+**M24 富转写证据**（2026-10-13，Xvfb :81，真会话 `3261d9fc`「接力 M3」autoopen 渲染；归档帧
+`m24-01-transcript-top.png` `ed3cd856dba0736d` / `m24-02-group-open.png` `3ba4bed7dcec1009` /
+`m24-03-agent-rows.png` `0a2b2c1080cd7556`）：
+壳 `OPENBITFUN_GPUI_AUTOOPEN_SESSION=<id>` 直开该会话，折叠 chip（8/48/3/1 次探索与执行 +
+读取/命令计数）、点开后的语义工具行（运行命令/读取文件/退出码/行数）、子代理卡（鸭鸭
+zigzag-duck · 阿 view-input · SwarmWorker）、AgentWait 失败名册（3 个失败 + 三头像）、
+AgentList（3 个子代理 · 0 个运行中）全部渲染，展开/收起往返一次，0 panic（唯一 ERROR 为
+会话内失效图片资源 + 启动期 wgpu 一次重试）。截图 `/tmp/gpui-m24/03-top.png`…`08-collapse-single.png`。
 
 ## 3. 缺口分级（已拍板，2026-10-09：P0 立项为里程碑 M11）
 

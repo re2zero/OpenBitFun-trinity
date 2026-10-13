@@ -273,6 +273,25 @@ pub(crate) struct ShellText {
     pub turn_copy_user_label: String,
     pub subagent_badge: String,
     pub subagent_open: String,
+    /// Subagent display names, in the web pool's order
+    /// (`subagentIdentity.names.*`); the index comes from
+    /// [`crate::subagent_identity::name_index`].
+    pub subagent_names: Vec<String>,
+    /// Transcript tool rows: the action label each tool family renders before
+    /// its payload (M24 rich transcript).
+    pub tool_action_command: String,
+    pub tool_action_read: String,
+    pub tool_action_search: String,
+    pub tool_action_web: String,
+    pub tool_action_write: String,
+    pub tool_action_edit: String,
+    pub tool_action_tool_spec: String,
+    pub tool_action_tool_call: String,
+    pub tool_action_agent_spawn: String,
+    pub tool_action_agent_wait: String,
+    pub tool_action_agent_list: String,
+    pub tool_action_agent_send: String,
+    pub tool_action_agent_delete: String,
     pub btw_badge: String,
     pub sidebar_review_running: String,
     pub child_back: String,
@@ -773,6 +792,92 @@ pub(crate) fn archived_delete_all_confirm_message(count: usize, cx: &App) -> Str
     )
 }
 
+/// Tool-row chips that take their number at render time (the pattern lives in
+/// the locale file, so word order stays locale-owned).
+pub(crate) fn tool_meta_exit_code(code: i64, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-tool-meta-exit-code",
+        TranslationArgs::new().with_number("code", code as f64),
+        cx,
+    )
+}
+
+pub(crate) fn tool_meta_lines(count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-tool-meta-lines",
+        TranslationArgs::new().with_number("count", count as f64),
+        cx,
+    )
+}
+
+pub(crate) fn tool_meta_replacements(count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-tool-meta-replacements",
+        TranslationArgs::new().with_number("count", count as f64),
+        cx,
+    )
+}
+
+pub(crate) fn tool_meta_matches(count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-tool-meta-matches",
+        TranslationArgs::new().with_number("count", count as f64),
+        cx,
+    )
+}
+
+pub(crate) fn tool_meta_agents(total: usize, running: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-tool-meta-agents",
+        TranslationArgs::new()
+            .with_number("total", total as f64)
+            .with_number("running", running as f64),
+        cx,
+    )
+}
+
+pub(crate) fn tool_meta_failed(count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-tool-meta-failed",
+        TranslationArgs::new().with_number("count", count as f64),
+        cx,
+    )
+}
+
+/// The exploration/execution group chip (web `workspaceGroup.summary`) and
+/// the category counts its description lists.
+pub(crate) fn transcript_group_summary(count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-transcript-group-summary",
+        TranslationArgs::new().with_number("count", count as f64),
+        cx,
+    )
+}
+
+pub(crate) fn transcript_group_reads(count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-transcript-group-reads",
+        TranslationArgs::new().with_number("count", count as f64),
+        cx,
+    )
+}
+
+pub(crate) fn transcript_group_searches(count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-transcript-group-searches",
+        TranslationArgs::new().with_number("count", count as f64),
+        cx,
+    )
+}
+
+pub(crate) fn transcript_group_commands(count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-transcript-group-commands",
+        TranslationArgs::new().with_number("count", count as f64),
+        cx,
+    )
+}
+
 /// Resolves the localized "question n of m" heading for one question of an
 /// `ask_user` batch.
 pub(crate) fn question_progress(index: usize, total: usize, cx: &App) -> String {
@@ -1061,6 +1166,23 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         turn_copy_user_label: "\u{1f464} User:".to_string(),
         subagent_badge: "Subagent run".to_string(),
         subagent_open: "View run".to_string(),
+        subagent_names: crate::subagent_identity::ENGLISH_NAMES
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect(),
+        tool_action_command: "Run command".to_string(),
+        tool_action_read: "Read file".to_string(),
+        tool_action_search: "Search".to_string(),
+        tool_action_web: "Open page".to_string(),
+        tool_action_write: "Write file".to_string(),
+        tool_action_edit: "Edit file".to_string(),
+        tool_action_tool_spec: "Read tool spec".to_string(),
+        tool_action_tool_call: "Call tool".to_string(),
+        tool_action_agent_spawn: "Start subagent".to_string(),
+        tool_action_agent_wait: "Wait for subagents".to_string(),
+        tool_action_agent_list: "View subagents".to_string(),
+        tool_action_agent_send: "Send instruction".to_string(),
+        tool_action_agent_delete: "Delete subagent".to_string(),
         btw_badge: "Side question (/btw)".to_string(),
         sidebar_review_running: "Reviewing".to_string(),
         child_back: "Back".to_string(),
@@ -1411,6 +1533,19 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
     }
 }
 
+/// Resolves the subagent name pool in pool order: the web client hashes a run
+/// identity to an index into this list, so the shell keeps the same order and
+/// reads the localized copy out of the locale files.
+async fn fetch_subagent_names(
+    service: &openbitfun_core::service::i18n::I18nService,
+) -> Vec<String> {
+    let mut names = Vec::with_capacity(crate::subagent_identity::NAME_KEYS.len());
+    for key in crate::subagent_identity::NAME_KEYS {
+        names.push(service.t(&format!("gpui-shell-subagent-name-{key}")).await);
+    }
+    names
+}
+
 async fn fetch_text(locale: LocaleId) -> ShellText {
     let Some(service) = get_global_i18n_service().await else {
         tracing::warn!("i18n service unavailable, keeping English fallback copy");
@@ -1679,6 +1814,20 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         turn_copy_user_label: service.t("gpui-shell-turn-copy-user-label").await,
         subagent_badge: service.t("gpui-shell-subagent-badge").await,
         subagent_open: service.t("gpui-shell-subagent-open").await,
+        subagent_names: fetch_subagent_names(&service).await,
+        tool_action_command: service.t("gpui-shell-tool-action-command").await,
+        tool_action_read: service.t("gpui-shell-tool-action-read").await,
+        tool_action_search: service.t("gpui-shell-tool-action-search").await,
+        tool_action_web: service.t("gpui-shell-tool-action-web").await,
+        tool_action_write: service.t("gpui-shell-tool-action-write").await,
+        tool_action_edit: service.t("gpui-shell-tool-action-edit").await,
+        tool_action_tool_spec: service.t("gpui-shell-tool-action-tool-spec").await,
+        tool_action_tool_call: service.t("gpui-shell-tool-action-tool-call").await,
+        tool_action_agent_spawn: service.t("gpui-shell-tool-action-agent-spawn").await,
+        tool_action_agent_wait: service.t("gpui-shell-tool-action-agent-wait").await,
+        tool_action_agent_list: service.t("gpui-shell-tool-action-agent-list").await,
+        tool_action_agent_send: service.t("gpui-shell-tool-action-agent-send").await,
+        tool_action_agent_delete: service.t("gpui-shell-tool-action-agent-delete").await,
         btw_badge: service.t("gpui-shell-btw-badge").await,
         sidebar_review_running: service.t("gpui-shell-sidebar-review-running").await,
         child_back: service.t("gpui-shell-child-back").await,

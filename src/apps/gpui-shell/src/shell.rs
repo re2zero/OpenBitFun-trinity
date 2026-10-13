@@ -28,7 +28,7 @@ use gpui_kit::{
 };
 use openbitfun_agent_runtime::sdk::{PendingUserQuestion, PermissionReply, PermissionRequest};
 use openbitfun_runtime_ports::{AgentInputAttachment, AgentSessionLineageSnapshot};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -38,8 +38,10 @@ use crate::files::FilesPage;
 use crate::git::GitPanel;
 use crate::i18n::ShellText;
 use crate::runtime::{ChatEntry, RuntimeEvent, ToolCard, ToolStatus, WorkspaceChoice};
+use crate::subagent_identity;
 use crate::terminal::pane::TerminalPane;
 use crate::theme::{ShellState, DEFAULT_PRESET_ID};
+use crate::transcript::{self, ToolKind};
 
 /// Width of the navigation sidebar, matching the web-ui desktop shell.
 const SESSION_PANE_WIDTH: f32 = 300.;
@@ -161,6 +163,10 @@ struct ChatView {
     /// content hash (`markdown_id_key`) so the flag survives transcript
     /// reloads that re-index entries.
     expanded_user_texts: BTreeSet<u64>,
+    /// Explicit open/closed choices for work runs (M24), keyed by the run's
+    /// head tool key hash — same stability rule as the user bubbles. Absent
+    /// means automatic: a collecting run stays open, a settled one folds.
+    expanded_groups: BTreeMap<u64, bool>,
 }
 
 /// Why the chat pane is showing a hidden child session (M20).
@@ -193,6 +199,9 @@ pub(crate) struct SubagentLink {
     pub tool_call_id: String,
     pub subagent_session_id: String,
     pub agent_type: Option<String>,
+    /// Parent-scoped alias the run was launched with (`agent_id`), when the
+    /// source reported one. Identity falls back to the child session id.
+    pub agent_id: Option<String>,
 }
 
 /// Which review flavor a linked subagent belongs to (T2-6, the web review
@@ -431,6 +440,7 @@ impl ChatView {
             submitting: false,
             child_context: None,
             expanded_user_texts: BTreeSet::new(),
+            expanded_groups: BTreeMap::new(),
         }
     }
 
@@ -460,10 +470,30 @@ impl ChatView {
         true
     }
 
-    /// Upserts the tool card keyed by tool id; empty details never overwrite
-    /// collected ones (lifecycle events carry them unevenly). Returns the
-    /// index of an existing card that changed in place, or `None` when the
-    /// card was appended.
+    /// Whether one work run is open. An explicit reader choice wins; without
+    /// one a run that is still collecting stays open and folds by itself when
+    /// the turn settles (web `getFlowGroupDisclosureChoice`).
+    fn group_expanded(&self, group: &transcript::ExploreGroup) -> bool {
+        let key = group_head_key(&self.entries, group.head);
+        self.expanded_groups.get(&key).copied().unwrap_or_else(|| {
+            (self.busy || self.submitting) && group.head + group.len >= self.entries.len()
+        })
+    }
+
+    /// Flips one run open or closed, returning its span so the caller can
+    /// remeasure exactly those rows.
+    fn toggle_group(&mut self, group: &transcript::ExploreGroup) -> (usize, usize) {
+        let key = group_head_key(&self.entries, group.head);
+        let expanded = self.group_expanded(group);
+        self.expanded_groups.insert(key, !expanded);
+        (group.head, group.len)
+    }
+
+    /// Upserts the tool card keyed by tool id. Lifecycle events carry the
+    /// facts unevenly — input on `Started`, counts on `Completed` — so an
+    /// update merges into what the row already knows instead of replacing it.
+    /// Returns the index of an existing card that changed in place, or `None`
+    /// when the card was appended.
     fn upsert_tool(&mut self, card: ToolCard) -> Option<usize> {
         let existing = self.entries.iter_mut().enumerate().find(
             |(_, entry)| matches!(entry, ChatEntry::Tool(existing) if existing.key == card.key),
@@ -472,10 +502,18 @@ impl ChatView {
             let ChatEntry::Tool(existing) = entry else {
                 unreachable!("find matched a tool entry");
             };
-            existing.status = card.status;
-            if !card.detail.is_empty() {
-                existing.detail = card.detail;
+            if !card.tool_name.is_empty() {
+                existing.tool_name = card.tool_name;
             }
+            existing.status = card.status;
+            existing.facts = transcript::merge_facts(&existing.facts, &card.facts);
+            if card.result_success.is_some() {
+                existing.result_success = card.result_success;
+            }
+            if card.subagent_session.is_some() {
+                existing.subagent_session = card.subagent_session;
+            }
+            existing.background = existing.background || card.background;
             Some(index)
         } else {
             self.entries.push(ChatEntry::Tool(card));
@@ -1363,6 +1401,10 @@ pub(crate) struct ShellWindow {
     /// mirroring `OPENBITFUN_GPUI_TERMINAL_AUTOOPEN`.
     settings_auto_open: bool,
     git_auto_open: bool,
+    /// One-shot automation hook (`OPENBITFUN_GPUI_AUTOOPEN_SESSION`): opens a
+    /// named session once the runtime is ready, so a screenshot run can
+    /// inspect a real transcript without synthesizing sidebar clicks.
+    session_auto_open: Option<String>,
     /// Sidebar filter: archived sessions stay hidden until this is on.
     show_archived: bool,
     /// Per-root session lineage snapshots (R1c): the subagent children shown
@@ -1617,6 +1659,10 @@ impl ShellWindow {
             panel_width: px(DEFAULT_RESOURCE_PANEL_WIDTH),
             settings_auto_open: std::env::var_os("OPENBITFUN_GPUI_SETTINGS_AUTOOPEN").is_some(),
             git_auto_open: std::env::var_os("OPENBITFUN_GPUI_GIT_AUTOOPEN").is_some(),
+            session_auto_open: std::env::var("OPENBITFUN_GPUI_AUTOOPEN_SESSION")
+                .ok()
+                .map(|id| id.trim().to_string())
+                .filter(|id| !id.is_empty()),
             show_archived: false,
             lineages: Vec::new(),
             sessions_group_collapsed: false,
@@ -1898,6 +1944,7 @@ impl ShellWindow {
             }
             RuntimeEvent::SessionLineages(lineages) => {
                 self.lineages = lineages;
+                self.apply_subagent_links();
             }
             RuntimeEvent::Failed(error) => {
                 self.phase = RuntimePhase::Failed(i18n::failed_status(&error, cx));
@@ -1972,6 +2019,7 @@ impl ShellWindow {
                     tool_call_id: parent_tool_call_id,
                     subagent_session_id,
                     agent_type,
+                    agent_id: None,
                 });
                 self.apply_subagent_links();
             }
@@ -2946,7 +2994,146 @@ impl ShellWindow {
     /// map (M20). Called on every transcript load and on each new link, so
     /// reloads never lose the "view run" entry points; session tabs all show
     /// links of their parent, so each open chat re-derives its own.
+    /// Adds the missing links a restored transcript cannot carry: lineage
+    /// entries record `parent_tool_call_id` for every subagent child, so the
+    /// chat can resolve a spawn card to its child session (and therefore to
+    /// the identity the run shows on the web UI). Live links win for a
+    /// repeated call id — they also carry the link event's agent type.
+    fn seed_links_from_lineages(&mut self) {
+        let mut additions: Vec<SubagentLink> = Vec::new();
+        for chat in &self.chats {
+            let Some(snapshot) = self
+                .lineages
+                .iter()
+                .find(|snapshot| snapshot.root_session_id == chat.session_id)
+            else {
+                continue;
+            };
+            for entry in &snapshot.sessions {
+                let (Some(parent), Some(tool_call_id)) = (
+                    entry.parent_session_id.as_deref(),
+                    entry.parent_tool_call_id.as_deref(),
+                ) else {
+                    continue;
+                };
+                if parent != chat.session_id || tool_call_id.is_empty() {
+                    continue;
+                }
+                let known = self.subagent_links.iter().any(|link| {
+                    link.parent_session_id == parent && link.tool_call_id == tool_call_id
+                }) || additions.iter().any(|link| {
+                    link.parent_session_id == parent && link.tool_call_id == tool_call_id
+                });
+                if known {
+                    continue;
+                }
+                additions.push(SubagentLink {
+                    parent_session_id: parent.to_string(),
+                    tool_call_id: tool_call_id.to_string(),
+                    subagent_session_id: entry.session_id.clone(),
+                    agent_type: entry.subagent_type.clone(),
+                    agent_id: entry.agent_id.clone(),
+                });
+            }
+        }
+        self.subagent_links.extend(additions);
+    }
+
+    /// The identity seed and run chips for one agent-family tool card: the
+    /// linked child session id when known (live link or lineage), else the
+    /// alias the call itself named. Same seeding rule as the web UI, so a run
+    /// keeps one name and avatar across surfaces.
+    fn subagent_identity_for(&self, card: &ToolCard) -> Option<SubagentIdentity> {
+        let alias = card.facts.agents.first().map(|agent| agent.alias.clone());
+        let link = self
+            .subagent_links
+            .iter()
+            .find(|link| link.tool_call_id == card.call_id);
+        let seed = link
+            .map(|link| link.subagent_session_id.clone())
+            .filter(|seed| !seed.is_empty())
+            .or_else(|| alias.clone())
+            .filter(|seed| !seed.is_empty())?;
+        let agent = card.facts.agents.first();
+        let subagent_session = link.map(|link| link.subagent_session_id.clone());
+        Some(SubagentIdentity {
+            seed,
+            alias: alias.filter(|alias| !alias.is_empty()),
+            agent_type: agent
+                .and_then(|agent| agent.agent_type.clone())
+                .or_else(|| link.and_then(|link| link.agent_type.clone())),
+            model: agent.and_then(|agent| agent.model.clone()),
+            status: agent.and_then(|agent| agent.status.clone()),
+            running: subagent_session
+                .as_deref()
+                .is_some_and(|session_id| self.live_sessions.contains(session_id)),
+            subagent_session,
+        })
+    }
+
+    /// Indexes the transcript's subagent launches by background task id and
+    /// by alias, so wait/list rows can show the same identity their spawn did.
+    fn agent_index(&self, session_id: &str, entries: &[ChatEntry]) -> AgentIndex {
+        let mut index = AgentIndex {
+            by_task: Vec::new(),
+            by_alias: Vec::new(),
+        };
+        // The link map knows every run this session launched, spawn card in
+        // the loaded window or not: the alias resolves to the child session.
+        for link in self
+            .subagent_links
+            .iter()
+            .filter(|link| link.parent_session_id == session_id)
+        {
+            let Some(alias) = link.agent_id.clone().filter(|alias| !alias.is_empty()) else {
+                continue;
+            };
+            if index.by_alias.iter().any(|(known, _)| *known == alias) {
+                continue;
+            }
+            index.by_alias.push((
+                alias.clone(),
+                SubagentIdentity {
+                    seed: link.subagent_session_id.clone(),
+                    alias: Some(alias),
+                    agent_type: link.agent_type.clone(),
+                    model: None,
+                    status: None,
+                    running: self.live_sessions.contains(&link.subagent_session_id),
+                    subagent_session: Some(link.subagent_session_id.clone()),
+                },
+            ));
+        }
+        for entry in entries {
+            let ChatEntry::Tool(card) = entry else {
+                continue;
+            };
+            if card.facts.kind != ToolKind::AgentSpawn {
+                continue;
+            }
+            let Some(identity) = self.subagent_identity_for(card) else {
+                continue;
+            };
+            let Some(agent) = card.facts.agents.first() else {
+                continue;
+            };
+            if let Some(task_id) = agent.task_id.as_ref().filter(|id| !id.is_empty()) {
+                index.by_task.push((task_id.clone(), identity.clone()));
+            }
+            if !agent.alias.is_empty() {
+                index.by_alias.push((agent.alias.clone(), identity));
+            }
+        }
+        index
+    }
+
     fn apply_subagent_links(&mut self) {
+        // A restored transcript has no live link events: lineage entries carry
+        // `parent_tool_call_id`, the same mapping and the only source of a
+        // subagent's identity seed (its child session id). Seeding here (not
+        // only on the lineage event) covers the ordering where a session opens
+        // after its lineage snapshot already landed.
+        self.seed_links_from_lineages();
         for chat in &mut self.chats {
             for link in self
                 .subagent_links
@@ -3974,10 +4161,13 @@ struct ChatForkContext {
 /// belong to the [`MessageScroller`] row wrapper plus the spacing the chat
 /// area's row closure applies (R2d); the reading column is applied by that
 /// closure around this item.
+#[allow(clippy::too_many_arguments)]
 fn render_chat_item(
     entry: &ChatEntry,
     text: &ShellText,
     fork: Option<&ChatForkContext>,
+    identity: Option<&SubagentIdentity>,
+    roster: &[SubagentIdentity],
     row: usize,
     user_expanded: bool,
     cx: &mut App,
@@ -4069,8 +4259,11 @@ fn render_chat_item(
         ChatEntry::Tool(card) => {
             // The "view run" entry point needs the shell handle; harnesses
             // that render without a fork render bare cards (M20).
-            let run = fork.filter(|_| card.subagent_session.is_some());
-            render_tool_card(card, run, text, cx).into_any_element()
+            let run = fork.filter(|_| {
+                card.subagent_session.is_some()
+                    || identity.is_some_and(|identity| identity.subagent_session.is_some())
+            });
+            render_tool_card(card, identity, roster, run, text, cx).into_any_element()
         }
         ChatEntry::Notice { text: body } => div()
             .w_full()
@@ -4294,54 +4487,182 @@ fn markdown_id_key(body: &str) -> u64 {
     std::hash::Hasher::finish(&hasher)
 }
 
-fn render_tool_card(
+/// What a subagent-family row shows about one run: the identity seed its name
+/// and avatar derive from (the child session id when known, else the agent
+/// alias), plus the run's chips.
+#[derive(Clone)]
+struct SubagentIdentity {
+    seed: String,
+    alias: Option<String>,
+    agent_type: Option<String>,
+    model: Option<String>,
+    /// Launch-time status the runtime reported for the run (`started`,
+    /// `failed`, …). Not a live signal on its own — see `running`.
+    status: Option<String>,
+    /// The linked child session currently has a turn in flight, per the
+    /// process-wide session lifecycle. This is what a status chip may claim:
+    /// a historical transcript must not show a finished run as running.
+    running: bool,
+    subagent_session: Option<String>,
+}
+
+/// Spawn cards indexed for the rows that follow them: a wait row names
+/// background task ids, a list row names aliases, and both resolve to the
+/// identity their spawn already established.
+struct AgentIndex {
+    by_task: Vec<(String, SubagentIdentity)>,
+    by_alias: Vec<(String, SubagentIdentity)>,
+}
+
+impl AgentIndex {
+    /// The chips one agent-family row shows. Wait rows resolve their task ids;
+    /// list rows carry their own roster (the result named every agent), which
+    /// links to a launch when one happened in this transcript.
+    fn roster_for(&self, card: &ToolCard) -> Vec<SubagentIdentity> {
+        let mut roster: Vec<SubagentIdentity> = Vec::new();
+        for task in &card.facts.tasks {
+            if let Some((_, identity)) = self.by_task.iter().find(|(id, _)| id == task) {
+                roster.push(identity.clone());
+            }
+        }
+        for agent in &card.facts.agents {
+            if agent.alias.is_empty()
+                || roster
+                    .iter()
+                    .any(|entry| entry.alias.as_deref() == Some(agent.alias.as_str()))
+            {
+                continue;
+            }
+            if let Some((_, identity)) = self
+                .by_alias
+                .iter()
+                .find(|(alias, _)| *alias == agent.alias)
+            {
+                // The launch's own card (when present) carries the model and
+                // run status; the link-derived entry is the fallback.
+                roster.push(identity.clone());
+            } else {
+                // A run this transcript never launched (or one reported only
+                // by id): keep its alias and status, no artwork claim.
+                roster.push(SubagentIdentity {
+                    seed: agent.alias.clone(),
+                    alias: Some(agent.alias.clone()),
+                    agent_type: agent.agent_type.clone(),
+                    model: agent.model.clone(),
+                    status: agent.status.clone(),
+                    running: false,
+                    subagent_session: None,
+                });
+            }
+        }
+        roster
+    }
+}
+
+/// The icon a tool family renders in front of its label.
+fn tool_kind_icon(kind: ToolKind) -> IconName {
+    match kind {
+        ToolKind::Command => IconName::SquareTerminal,
+        ToolKind::Read => IconName::FileText,
+        ToolKind::Search => IconName::Search,
+        ToolKind::Web => IconName::Globe,
+        ToolKind::Write => IconName::FilePlus,
+        ToolKind::Edit => IconName::Pencil,
+        ToolKind::ToolSpec => IconName::BookOpen,
+        ToolKind::ToolCall => IconName::Wrench,
+        ToolKind::AgentSpawn
+        | ToolKind::AgentWait
+        | ToolKind::AgentList
+        | ToolKind::AgentSend
+        | ToolKind::AgentDelete => IconName::Bot,
+        ToolKind::Other => IconName::Wrench,
+    }
+}
+
+/// The localized action label for a tool family (M24): what the call does,
+/// before its payload. The web tool cards carry the same per-family wording.
+fn tool_action_label(kind: ToolKind, text: &ShellText) -> Option<&str> {
+    let label = match kind {
+        ToolKind::Command => &text.tool_action_command,
+        ToolKind::Read => &text.tool_action_read,
+        ToolKind::Search => &text.tool_action_search,
+        ToolKind::Web => &text.tool_action_web,
+        ToolKind::Write => &text.tool_action_write,
+        ToolKind::Edit => &text.tool_action_edit,
+        ToolKind::ToolSpec => &text.tool_action_tool_spec,
+        ToolKind::ToolCall => &text.tool_action_tool_call,
+        ToolKind::AgentSpawn => &text.tool_action_agent_spawn,
+        ToolKind::AgentWait => &text.tool_action_agent_wait,
+        ToolKind::AgentList => &text.tool_action_agent_list,
+        ToolKind::AgentSend => &text.tool_action_agent_send,
+        ToolKind::AgentDelete => &text.tool_action_agent_delete,
+        // A tool without a family names itself; a label prefix would only
+        // repeat the tool name.
+        ToolKind::Other => return None,
+    };
+    Some(label)
+}
+
+/// One tool row: status glyph, family icon, action label, payload, chips. The
+/// payload is the only text that reads like data (a command, a path), so it
+/// stays on the foreground color while the label and chips stay muted.
+fn render_tool_row(
     card: &ToolCard,
     run: Option<&ChatForkContext>,
     text: &ShellText,
     cx: &App,
 ) -> gpui_kit::Div {
-    let status_color = match card.status {
-        ToolStatus::Running | ToolStatus::WaitingConfirm => cx.theme().warning,
-        ToolStatus::Done => cx.theme().success,
-        ToolStatus::Failed | ToolStatus::Cancelled => cx.theme().danger,
-    };
-    let status_label = tool_status_label(card.status, text);
-    let mut row = div()
-        .v_flex()
-        .gap_0p5()
-        .min_w_0()
-        .border_1()
-        .border_color(cx.theme().border)
-        .rounded(cx.theme().radius)
-        .px_2()
-        .py_1()
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .gap_2()
-                .items_center()
-                .min_w_0()
-                .child(
+    let status_color = tool_status_color(card.status, cx);
+    let mut row = div().v_flex().gap_0p5().min_w_0().py_0p5().child(
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .min_w_0()
+            .child(
+                Icon::new(tool_kind_icon(card.facts.kind))
+                    .with_size(px(14.))
+                    .text_color(cx.theme().muted_foreground),
+            )
+            .when_some(tool_action_label(card.facts.kind, text), |this, label| {
+                this.child(
                     div()
+                        .flex_shrink_0()
                         .text_sm()
-                        .text_color(cx.theme().foreground)
-                        .child(card.tool_name.clone()),
+                        .text_color(cx.theme().muted_foreground)
+                        .child(label.to_string()),
                 )
-                .child(
+            })
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_sm()
+                    .text_color(cx.theme().foreground)
+                    .child(if card.facts.title.is_empty() {
+                        card.tool_name.clone()
+                    } else {
+                        card.facts.title.clone()
+                    }),
+            )
+            .children(tool_meta_chips(card, cx))
+            .when(card.status != ToolStatus::Done, |this| {
+                this.child(
                     div()
-                        .text_sm()
+                        .flex_shrink_0()
+                        .text_xs()
                         .text_color(status_color)
-                        .child(status_label.to_string()),
-                ),
-        );
-    if !card.detail.is_empty() {
+                        .child(tool_status_label(card.status, text).to_string()),
+                )
+            }),
+    );
+    if let Some(error) = &card.facts.error {
         row = row.child(
             div()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
+                .text_xs()
+                .text_color(cx.theme().danger)
                 .truncate()
-                .child(card.detail.clone()),
+                .child(error.clone()),
         );
     }
     // A linked hidden subagent session (M20): the card grows the entry point
@@ -4370,6 +4691,493 @@ fn render_tool_card(
     row
 }
 
+/// The structured chips on a tool row: exit codes, line and match counts,
+/// subagent tallies. Numbers are formatted per locale at render time.
+fn tool_meta_chips(card: &ToolCard, cx: &App) -> Vec<gpui_kit::AnyElement> {
+    card.facts
+        .meta
+        .iter()
+        .map(|meta| {
+            let label = match meta {
+                transcript::ToolMeta::Text(value) => value.clone(),
+                transcript::ToolMeta::ExitCode(code) => i18n::tool_meta_exit_code(*code, cx),
+                transcript::ToolMeta::Lines(count) => i18n::tool_meta_lines(*count, cx),
+                transcript::ToolMeta::Replacements(count) => {
+                    i18n::tool_meta_replacements(*count, cx)
+                }
+                transcript::ToolMeta::Matches(count) => i18n::tool_meta_matches(*count, cx),
+                transcript::ToolMeta::Agents { total, running } => {
+                    i18n::tool_meta_agents(*total, *running, cx)
+                }
+                transcript::ToolMeta::Failed(count) => i18n::tool_meta_failed(*count, cx),
+            };
+            let danger = matches!(meta, transcript::ToolMeta::Failed(_));
+            div()
+                .flex_shrink_0()
+                .text_xs()
+                .text_color(if danger {
+                    cx.theme().danger
+                } else {
+                    cx.theme().muted_foreground
+                })
+                .child(label)
+                .into_any_element()
+        })
+        .collect()
+}
+
+/// A one-line chip naming one subagent run: avatar, localized name and — for
+/// roster rows — its run status. The name and artwork come from the same
+/// seeded pools the web UI uses, so a run reads identically on both surfaces.
+fn subagent_chip(identity: &SubagentIdentity, show_status: bool, cx: &App) -> gpui_kit::Div {
+    let text = i18n::current(cx);
+    let name = subagent_identity::display_name(&identity.seed, &text);
+    let mut chip = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_1p5()
+        .flex_shrink_0()
+        .child(
+            Icon::default()
+                .path(subagent_identity::avatar_path(&identity.seed))
+                .with_size(px(18.))
+                .flex_shrink_0(),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().foreground)
+                .child(name),
+        );
+    if let Some(agent_type) = identity
+        .agent_type
+        .as_ref()
+        .filter(|value| !value.is_empty())
+    {
+        chip = chip.child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(agent_type.clone()),
+        );
+    }
+    if let Some(model) = identity.model.as_ref().filter(|value| !value.is_empty()) {
+        chip = chip.child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(model.clone()),
+        );
+    }
+    if show_status {
+        if let Some((status, color)) = agent_run_status(identity, &text, cx) {
+            chip = chip.child(div().text_xs().text_color(color).child(status));
+        }
+    }
+    chip
+}
+
+/// The status a subagent row may honestly claim. A live turn on the child
+/// session is the only "running" evidence; a recorded terminal status
+/// (`failed`, `cancelled`) stays readable forever.
+fn agent_run_status(
+    identity: &SubagentIdentity,
+    text: &ShellText,
+    cx: &App,
+) -> Option<(String, gpui_kit::Hsla)> {
+    if identity.running {
+        return Some((text.tool_running.clone(), cx.theme().success));
+    }
+    match identity.status.as_deref()? {
+        "failed" | "error" => Some((text.tool_failed.clone(), cx.theme().danger)),
+        "cancelled" | "canceled" | "stopped" => {
+            Some((text.tool_cancelled.clone(), cx.theme().muted_foreground))
+        }
+        _ => None,
+    }
+}
+
+/// The status text for an agent card: the run's own status when there is one,
+/// else the tool lifecycle (a spawn still being approved, for instance).
+fn agent_card_status(
+    card: &ToolCard,
+    identity: &SubagentIdentity,
+    text: &ShellText,
+    cx: &App,
+) -> Option<(String, gpui_kit::Hsla)> {
+    if let Some(status) = agent_run_status(identity, text, cx) {
+        return Some(status);
+    }
+    match card.status {
+        ToolStatus::Done => None,
+        ToolStatus::Failed => Some((text.tool_failed.clone(), cx.theme().danger)),
+        ToolStatus::Cancelled => Some((text.tool_cancelled.clone(), cx.theme().danger)),
+        ToolStatus::Running => Some((text.tool_running.clone(), cx.theme().warning)),
+        ToolStatus::WaitingConfirm => Some((text.tool_waiting.clone(), cx.theme().warning)),
+    }
+}
+
+/// One subagent run as a card (M24, web `AgentControlToolCard` shape): the
+/// run's identity, its type and model, its status, the task hint, and the
+/// "view run" entry point when the child transcript is reachable.
+fn render_agent_card(
+    card: &ToolCard,
+    identity: &SubagentIdentity,
+    run: Option<&ChatForkContext>,
+    text: &ShellText,
+    cx: &App,
+) -> gpui_kit::Div {
+    // Type and model read as chips beside the name; the prompt hint (the one
+    // free-text meta a spawn carries) becomes the card's subtitle line.
+    let mut chips: Vec<gpui_kit::AnyElement> = Vec::new();
+    if let Some(agent_type) = identity
+        .agent_type
+        .as_ref()
+        .filter(|value| !value.is_empty())
+    {
+        chips.push(
+            div()
+                .flex_shrink_0()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(agent_type.clone())
+                .into_any_element(),
+        );
+    }
+    if let Some(model) = identity.model.as_ref().filter(|value| !value.is_empty()) {
+        chips.push(
+            div()
+                .flex_shrink_0()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(model.clone())
+                .into_any_element(),
+        );
+    }
+    if let Some((status, color)) = agent_card_status(card, identity, text, cx) {
+        chips.push(
+            div()
+                .flex_shrink_0()
+                .text_xs()
+                .text_color(color)
+                .child(status)
+                .into_any_element(),
+        );
+    }
+    let hint = card.facts.meta.iter().find_map(|meta| match meta {
+        transcript::ToolMeta::Text(value) => Some(value.clone()),
+        _ => None,
+    });
+    let mut row = div()
+        .v_flex()
+        .gap_1()
+        .min_w_0()
+        .border_1()
+        .border_color(cx.theme().border)
+        .rounded(cx.theme().radius)
+        .px_2()
+        .py_1p5()
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .min_w_0()
+                .child(
+                    Icon::default()
+                        .path(subagent_identity::avatar_path(&identity.seed))
+                        .with_size(px(24.))
+                        .flex_shrink_0(),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().foreground)
+                        .child(subagent_identity::display_name(&identity.seed, text)),
+                )
+                .when_some(identity.alias.clone(), |this, alias| {
+                    this.child(
+                        div()
+                            .flex_shrink_0()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(alias),
+                    )
+                })
+                .children(chips),
+        )
+        .when_some(hint, |this, hint| {
+            this.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .truncate()
+                    .child(hint),
+            )
+        });
+    if let (Some(subagent_session_id), Some(fork)) = (&identity.subagent_session, run) {
+        let child = subagent_session_id.clone();
+        let parent = fork.session_id.clone();
+        let view = fork.view.clone();
+        let label = text.subagent_open.clone();
+        row = row.child(
+            div().flex().justify_end().child(
+                Button::new(SharedString::from(format!("{}-view-run", card.key)))
+                    .label(label)
+                    .small()
+                    .with_variant(ButtonVariant::Ghost)
+                    .on_click(move |_, _, cx| {
+                        if let Some(view) = view.upgrade() {
+                            view.update(cx, |shell, cx| {
+                                shell.open_subagent_run(child.clone(), parent.clone(), cx);
+                            });
+                        }
+                    }),
+            ),
+        );
+    }
+    row
+}
+
+/// One agent-family tool call as a transcript row: the action row plus the
+/// runs it touched. `roster` resolves the aliases a wait/list call names.
+fn render_agent_row(
+    card: &ToolCard,
+    identity: Option<&SubagentIdentity>,
+    roster: &[SubagentIdentity],
+    run: Option<&ChatForkContext>,
+    text: &ShellText,
+    cx: &App,
+) -> gpui_kit::Div {
+    // A spawn call IS its run: render the identity card.
+    if card.facts.kind == ToolKind::AgentSpawn {
+        if let Some(identity) = identity {
+            return render_agent_card(card, identity, run, text, cx);
+        }
+    }
+    let status_color = tool_status_color(card.status, cx);
+    let mut row = div().v_flex().gap_1().min_w_0().py_0p5().child(
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .min_w_0()
+            .child(
+                Icon::new(tool_kind_icon(card.facts.kind))
+                    .with_size(px(14.))
+                    .text_color(cx.theme().muted_foreground),
+            )
+            .when_some(tool_action_label(card.facts.kind, text), |this, label| {
+                this.child(
+                    div()
+                        .flex_shrink_0()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(label.to_string()),
+                )
+            })
+            .children(tool_meta_chips(card, cx))
+            .when(card.status != ToolStatus::Done, |this| {
+                this.child(
+                    div()
+                        .flex_shrink_0()
+                        .text_xs()
+                        .text_color(status_color)
+                        .child(tool_status_label(card.status, text).to_string()),
+                )
+            }),
+    );
+    if !roster.is_empty() {
+        row = row.child(
+            div()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .items_center()
+                .gap_x_3()
+                .gap_y_1()
+                .children(
+                    roster
+                        .iter()
+                        .map(|identity| subagent_chip(identity, true, cx).into_any_element()),
+                ),
+        );
+    }
+    if let Some(error) = &card.facts.error {
+        row = row.child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().danger)
+                .truncate()
+                .child(error.clone()),
+        );
+    }
+    if let (Some(subagent_session_id), Some(fork)) = (&card.subagent_session, run) {
+        let child = subagent_session_id.clone();
+        let parent = fork.session_id.clone();
+        let view = fork.view.clone();
+        let label = text.subagent_open.clone();
+        row = row.child(
+            div().flex().justify_end().child(
+                Button::new(SharedString::from(format!("{}-view-run", card.key)))
+                    .label(label)
+                    .small()
+                    .with_variant(ButtonVariant::Ghost)
+                    .on_click(move |_, _, cx| {
+                        if let Some(view) = view.upgrade() {
+                            view.update(cx, |shell, cx| {
+                                shell.open_subagent_run(child.clone(), parent.clone(), cx);
+                            });
+                        }
+                    }),
+            ),
+        );
+    }
+    row
+}
+
+/// The transcript row for one tool call: family rows, agent cards, and the
+/// failure/status affordances they carry.
+/// Stable key for one work run: the head call's own key. Transcript reloads
+/// re-index rows but keep tool ids, so the reader's disclosure survives.
+fn group_head_key(entries: &[ChatEntry], head: usize) -> u64 {
+    match entries.get(head) {
+        Some(ChatEntry::Tool(card)) => markdown_id_key(&card.key),
+        _ => markdown_id_key(&format!("row-{head}")),
+    }
+}
+
+fn render_tool_card(
+    card: &ToolCard,
+    identity: Option<&SubagentIdentity>,
+    roster: &[SubagentIdentity],
+    run: Option<&ChatForkContext>,
+    text: &ShellText,
+    cx: &App,
+) -> gpui_kit::Div {
+    match card.facts.kind {
+        ToolKind::AgentSpawn
+        | ToolKind::AgentWait
+        | ToolKind::AgentList
+        | ToolKind::AgentSend
+        | ToolKind::AgentDelete => render_agent_row(card, identity, roster, run, text, cx),
+        _ => render_tool_row(card, run, text, cx),
+    }
+}
+
+/// The collapsed work run's row (M24, web `workspaceGroup.summary`): one chip
+/// naming how many read/search/shell steps the reader skipped, with the
+/// category breakdown beside it. Clicking toggles the run open.
+fn render_group_chip(
+    group: &transcript::ExploreGroup,
+    expanded: bool,
+    key: u64,
+    fork: Option<&ChatForkContext>,
+    cx: &App,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let mut parts: Vec<String> = Vec::new();
+    if group.stats.reads > 0 {
+        parts.push(i18n::transcript_group_reads(group.stats.reads, cx));
+    }
+    if group.stats.searches > 0 {
+        parts.push(i18n::transcript_group_searches(group.stats.searches, cx));
+    }
+    if group.stats.commands > 0 {
+        parts.push(i18n::transcript_group_commands(group.stats.commands, cx));
+    }
+    let mut chips = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .text_xs()
+        .text_color(cx.theme().muted_foreground);
+    if !parts.is_empty() {
+        chips = chips.child(div().child(parts.join(" · ")));
+    }
+    if group.stats.failed > 0 {
+        chips = chips.child(
+            div()
+                .text_color(cx.theme().danger)
+                .child(i18n::tool_meta_failed(group.stats.failed, cx)),
+        );
+    }
+    let toggle = fork.cloned();
+    let head = group.head;
+    div()
+        .debug_selector(|| "transcript-group".to_string())
+        .id(ElementId::Name(format!("transcript-group-{key}").into()))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .min_w_0()
+        .py_1()
+        .cursor_pointer()
+        .rounded(cx.theme().radius)
+        .on_click(move |_, _, cx| {
+            let Some(fork) = toggle.as_ref() else {
+                return;
+            };
+            let Some(view) = fork.view.upgrade() else {
+                return;
+            };
+            let session_id = fork.session_id.clone();
+            view.update(cx, |shell, cx| {
+                let span = shell.chat_mut_for(&session_id).and_then(|chat| {
+                    let plan = transcript::TranscriptGroups::build(&chat.entries);
+                    let group = plan
+                        .group_of(head)
+                        .filter(|group| group.head == head)
+                        .cloned()?;
+                    Some((chat.scroller.clone(), chat.toggle_group(&group)))
+                });
+                if let Some((scroller, (first, len))) = span {
+                    // The run's rows change height together: remeasure the
+                    // whole span, not just the chip.
+                    scroller.update(cx, |scroller, cx| {
+                        scroller.remeasure_items(first..first + len, cx);
+                    });
+                }
+                cx.notify();
+            });
+        })
+        .child(
+            Icon::new(IconName::Route)
+                .with_size(px(14.))
+                .text_color(cx.theme().muted_foreground),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_sm()
+                .text_color(cx.theme().foreground)
+                .child(i18n::transcript_group_summary(group.len, cx)),
+        )
+        .child(chips)
+        .child(
+            Icon::new(if expanded {
+                IconName::ChevronDown
+            } else {
+                IconName::ChevronRight
+            })
+            .with_size(px(14.))
+            .text_color(cx.theme().muted_foreground),
+        )
+}
+
+/// The status color ramp shared by tool rows, agent cards and group chips.
+fn tool_status_color(status: ToolStatus, cx: &App) -> gpui_kit::Hsla {
+    match status {
+        ToolStatus::Running | ToolStatus::WaitingConfirm => cx.theme().warning,
+        ToolStatus::Done => cx.theme().success,
+        ToolStatus::Failed | ToolStatus::Cancelled => cx.theme().danger,
+    }
+}
+
 impl ShellWindow {
     /// The virtualized transcript: gpui's native `list` element keeps measured
     /// per-item heights in a sum tree and only renders the visible range plus
@@ -4389,6 +5197,12 @@ impl ShellWindow {
         let session_id = session_id.to_string();
         let this = cx.entity();
         let jump_label = text.chat_jump_latest.clone();
+        // Per-frame transcript plan: which consecutive calls collapse into one
+        // work run (M24), and the spawn cards a wait/list row resolves its
+        // subagent chips against. Derived, never stored — both are pure
+        // functions of the entries.
+        let groups = transcript::TranscriptGroups::build(&chat.entries);
+        let agents = self.agent_index(&chat.session_id, &chat.entries);
         let text = text.clone();
         // The scroller's uniform inter-row gap stands in for a CSS `gap`;
         // transcript rows own their rhythm instead (turn boundary 32px,
@@ -4399,6 +5213,17 @@ impl ShellWindow {
             let snapshot = this.read(cx);
             let chat = snapshot.chat_for(&session_id);
             let entry = chat.and_then(|chat| chat.entries.get(index)).cloned();
+            let group = groups.group_of(index);
+            let expanded = match (group, chat) {
+                (Some(group), Some(chat)) => chat.group_expanded(group),
+                _ => false,
+            };
+            // Rows inside a collapsed run keep their entry indices (the list
+            // counts entries) but render empty, so the run reads as its
+            // summary chip alone.
+            if group.is_some() && !expanded && !groups.is_head(index) {
+                return div().into_any_element();
+            }
             let footer_plan = chat.and_then(|chat| {
                 turn_footer_plan(&chat.entries, index, chat.busy, chat.submitting, &text)
             });
@@ -4431,10 +5256,47 @@ impl ShellWindow {
                     } else {
                         row = row.mb(px(TURN_RHYTHM_GAP));
                     }
+                    // A run's head hosts its summary chip; its own row joins
+                    // the run when open.
+                    if let Some(group) = group.filter(|group| group.head == index) {
+                        let key = match &entry {
+                            ChatEntry::Tool(card) => markdown_id_key(&card.key),
+                            _ => markdown_id_key(&format!("row-{index}")),
+                        };
+                        row = row.child(render_group_chip(group, expanded, key, fork.as_ref(), cx));
+                        if !expanded {
+                            // The chip stands in for the whole run, footer
+                            // included: attach the turn footer the hidden tail
+                            // would have carried.
+                            let tail = group.head + group.len - 1;
+                            let plan = chat.and_then(|chat| {
+                                turn_footer_plan(
+                                    &chat.entries,
+                                    tail,
+                                    chat.busy,
+                                    chat.submitting,
+                                    &text,
+                                )
+                            });
+                            if let (Some(plan), Some(fork)) = (plan, fork.as_ref()) {
+                                row = row.child(turn_footer(plan, tail, fork, &text));
+                            }
+                            return row.into_any_element();
+                        }
+                    }
+                    let (identity, roster) = match &entry {
+                        ChatEntry::Tool(card) => (
+                            snapshot.subagent_identity_for(card),
+                            agents.roster_for(card),
+                        ),
+                        _ => (None, Vec::new()),
+                    };
                     row = row.child(render_chat_item(
                         &entry,
                         &text,
                         fork.as_ref(),
+                        identity.as_ref(),
+                        &roster,
                         index,
                         user_expanded,
                         cx,
@@ -5891,6 +6753,11 @@ impl Render for ShellWindow {
             if self.git_auto_open {
                 self.git_auto_open = false;
                 self.toggle_git_view(window, cx);
+            }
+            if let Some(session_id) = self.session_auto_open.take() {
+                if let Some(handle) = runtime::runtime_handle() {
+                    handle.open_session(session_id, self.event_tx.clone());
+                }
             }
             if self.plugin_ui_auto_open && !self.plugin_ui.scenes().is_empty() {
                 self.plugin_ui_auto_open = false;
@@ -7443,6 +8310,7 @@ mod tests {
             submitting: false,
             child_context: None,
             expanded_user_texts: BTreeSet::new(),
+            expanded_groups: BTreeMap::new(),
         }
     }
 
@@ -7468,9 +8336,11 @@ mod tests {
             },
             ChatEntry::Tool(ToolCard {
                 key: "tool-1".into(),
+                call_id: "tool-1".into(),
                 tool_name: "read_file".into(),
                 status: ToolStatus::Done,
-                detail: String::new(),
+                facts: transcript::ToolFacts::empty(),
+                result_success: None,
                 subagent_session: None,
                 background: false,
             }),
@@ -7529,9 +8399,11 @@ mod tests {
             },
             ChatEntry::Tool(ToolCard {
                 key: "tool-1".into(),
+                call_id: "tool-1".into(),
                 tool_name: "run_command".into(),
                 status: ToolStatus::Done,
-                detail: String::new(),
+                facts: transcript::ToolFacts::empty(),
+                result_success: None,
                 subagent_session: None,
                 background: false,
             }),
@@ -7546,9 +8418,11 @@ mod tests {
         cx.update(|cx| gpui_kit::init(cx));
         let card = |key: &'static str| ToolCard {
             key: SharedString::from(key),
+            call_id: key.to_string(),
             tool_name: "read_file".into(),
             status: ToolStatus::Running,
-            detail: String::new(),
+            facts: transcript::ToolFacts::empty(),
+            result_success: None,
             subagent_session: None,
             background: false,
         };
@@ -7641,9 +8515,11 @@ mod tests {
         let parent_entries = || {
             vec![ChatEntry::Tool(crate::runtime::ToolCard {
                 key: "tool-call-1".into(),
+                call_id: "call-1".into(),
                 tool_name: "task".into(),
                 status: ToolStatus::Running,
-                detail: String::new(),
+                facts: transcript::ToolFacts::empty(),
+                result_success: None,
                 subagent_session: None,
                 background: false,
             })]
@@ -7873,7 +8749,9 @@ mod tests {
                 move |index, _window, cx| {
                     render_count.set(render_count.get() + 1);
                     match this.read(cx).entries.get(index).cloned() {
-                        Some(entry) => render_chat_item(&entry, &text, None, index, false, cx),
+                        Some(entry) => {
+                            render_chat_item(&entry, &text, None, None, &[], index, false, cx)
+                        }
                         None => div().into_any_element(),
                     }
                 },
@@ -9211,9 +10089,11 @@ mod tests {
             session_id: "parent".into(),
             card: crate::runtime::ToolCard {
                 key: "tool-call-1".into(),
+                call_id: "call-1".into(),
                 tool_name: "task".into(),
                 status: crate::runtime::ToolStatus::Running,
-                detail: String::new(),
+                facts: transcript::ToolFacts::empty(),
+                result_success: None,
                 subagent_session: None,
                 background,
             },
@@ -9808,6 +10688,218 @@ mod tests {
     /// The docked panel (R2c) lays out to the right of the sidebar over the
     /// chat column with its head chrome, and pop-out removes it from the
     /// session view.
+    /// M24: an exploration/execution run collapses into one summary chip, its
+    /// member rows render empty, and the reader's toggle flips it open.
+    #[gpui_kit::test]
+    fn work_runs_collapse_into_a_summary_chip(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        let entries = vec![
+            ChatEntry::User {
+                text: "port the slice".into(),
+                turn_id: Some("turn-1".into()),
+            },
+            ChatEntry::Tool(ToolCard {
+                key: "tool-call-1".into(),
+                call_id: "call-1".into(),
+                tool_name: "Read".into(),
+                status: ToolStatus::Done,
+                facts: transcript::facts_from_input(
+                    "Read",
+                    &serde_json::json!({ "file_path": "src/main.rs" }),
+                ),
+                result_success: None,
+                subagent_session: None,
+                background: false,
+            }),
+            ChatEntry::Tool(ToolCard {
+                key: "tool-call-2".into(),
+                call_id: "call-2".into(),
+                tool_name: "ExecCommand".into(),
+                status: ToolStatus::Done,
+                facts: transcript::facts_from_input(
+                    "ExecCommand",
+                    &serde_json::json!({ "cmd": "cargo test --lib" }),
+                ),
+                result_success: None,
+                subagent_session: None,
+                background: false,
+            }),
+        ];
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(
+                    RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                        session_id: "s-1".into(),
+                        name: "First".into(),
+                        agent_type: "Standard".into(),
+                        model_id: None,
+                        entries,
+                        busy: false,
+                    }),
+                    window,
+                    cx,
+                );
+            });
+        });
+
+        let view = shell.clone();
+        window.draw(
+            point(px(0.), px(0.)),
+            size(px(1400.), px(900.)),
+            move |_, _| view.into_any_element(),
+        );
+        window.run_until_parked();
+        assert!(
+            window.debug_bounds("transcript-group").is_some(),
+            "the settled run renders its summary chip"
+        );
+
+        // Flipping the run open is a reader choice that survives the frame:
+        // the chat records it and the run's own rows become visible.
+        window.update(|_, cx| {
+            shell.update(cx, |shell, _| {
+                let chat = shell.chat_mut_for("s-1").expect("chat open");
+                let plan = transcript::TranscriptGroups::build(&chat.entries);
+                let group = plan.group_of(1).expect("run covers both calls").clone();
+                assert_eq!(group.len, 2);
+                assert!(!chat.group_expanded(&group), "settled runs fold by default");
+                chat.toggle_group(&group);
+                assert!(chat.group_expanded(&group));
+                assert_eq!(chat.expanded_groups.len(), 1);
+            });
+        });
+    }
+
+    /// M24: a restored transcript has no live link events, but its lineage
+    /// entries carry `parent_tool_call_id` — the shell seeds the subagent map
+    /// from them, so an agent row resolves the identity the web UI shows.
+    #[gpui_kit::test]
+    fn lineage_entries_seed_subagent_identity(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        let spawn = ToolCard {
+            key: "tool-call-1".into(),
+            call_id: "call-1".into(),
+            tool_name: "AgentSpawn".into(),
+            status: ToolStatus::Done,
+            facts: transcript::facts_from_input(
+                "AgentSpawn",
+                &serde_json::json!({
+                    "agent_id": "parser-review",
+                    "agent_type": "SwarmWorker",
+                    "model_id": "glm-5.3",
+                    "prompt": "port the parser",
+                }),
+            ),
+            result_success: None,
+            subagent_session: None,
+            background: false,
+        };
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(
+                    RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                        session_id: "s-1".into(),
+                        name: "First".into(),
+                        agent_type: "Standard".into(),
+                        model_id: None,
+                        entries: vec![ChatEntry::Tool(spawn.clone())],
+                        busy: false,
+                    }),
+                    window,
+                    cx,
+                );
+                // The fixture session id and its launcher entry: the same
+                // shape the zenix parity session's lineage carries.
+                let child_session = "0ea023ee-9e67-4300-9e89-3e9586438292";
+                shell.apply_runtime_event(
+                    RuntimeEvent::SessionLineages(vec![
+                        openbitfun_runtime_ports::AgentSessionLineageSnapshot {
+                            root_session_id: "s-1".into(),
+                            sessions: vec![openbitfun_runtime_ports::AgentSessionLineageEntry {
+                                parent_tool_call_id: Some("call-1".into()),
+                                agent_id: Some("parser-review".into()),
+                                ..lineage_entry(
+                                    child_session,
+                                    "Subagent: port the parser",
+                                    Some("s-1"),
+                                    Some("SwarmWorker"),
+                                )
+                            }],
+                        },
+                    ]),
+                    window,
+                    cx,
+                );
+            });
+        });
+
+        window.update(|_, cx| {
+            shell.update(cx, |shell, _| {
+                // The link map now knows the child session, seeded from the
+                // lineage entry rather than a live event.
+                let link = shell
+                    .subagent_links
+                    .iter()
+                    .find(|link| link.tool_call_id == "call-1")
+                    .expect("lineage link");
+                assert_eq!(
+                    link.subagent_session_id,
+                    "0ea023ee-9e67-4300-9e89-3e9586438292"
+                );
+                let identity = shell.subagent_identity_for(&spawn).expect("identity");
+                // Same seeding rule as the web resolver: the child session id
+                // picks popcorn-imp (爆米花) and robot-03.
+                assert_eq!(identity.seed, "0ea023ee-9e67-4300-9e89-3e9586438292");
+                assert_eq!(
+                    subagent_identity::avatar_path(&identity.seed),
+                    "subagent-avatars/robot-03.svg"
+                );
+                let text = sample_shell_text();
+                assert_eq!(
+                    subagent_identity::display_name(&identity.seed, &text),
+                    "Popcorn Imp"
+                );
+                assert_eq!(identity.agent_type.as_deref(), Some("SwarmWorker"));
+                assert_eq!(identity.model.as_deref(), Some("glm-5.3"));
+
+                // A wait row naming the same alias resolves through the
+                // roster index without a spawn card of its own.
+                let wait = ToolCard {
+                    key: "tool-call-2".into(),
+                    call_id: "call-2".into(),
+                    tool_name: "AgentWait".into(),
+                    status: ToolStatus::Done,
+                    facts: transcript::facts_from_input(
+                        "AgentWait",
+                        &serde_json::json!({ "bg_task_ids": ["parser-review_bg1"] }),
+                    ),
+                    result_success: None,
+                    subagent_session: None,
+                    background: false,
+                };
+                let entries = vec![ChatEntry::Tool(wait.clone())];
+                let index = shell.agent_index("s-1", &entries);
+                // The task id has no launch in this transcript, so the roster
+                // stays empty rather than inventing an identity.
+                assert!(index.roster_for(&wait).is_empty());
+                // The spawn card itself indexes both ways.
+                let spawn_entries = vec![ChatEntry::Tool(spawn.clone())];
+                let spawn_index = shell.agent_index("s-1", &spawn_entries);
+                let roster = spawn_index.roster_for(&spawn);
+                assert_eq!(roster.len(), 1);
+                assert_eq!(roster[0].seed, "0ea023ee-9e67-4300-9e89-3e9586438292");
+            });
+        });
+    }
+
     #[gpui_kit::test]
     fn user_bubble_wraps_and_caps_inside_the_reading_column(cx: &mut gpui_kit::TestAppContext) {
         install_shell_globals(cx);

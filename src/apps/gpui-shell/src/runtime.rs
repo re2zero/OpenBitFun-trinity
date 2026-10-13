@@ -56,7 +56,10 @@ use openbitfun_runtime_ports::{
     SessionSearchHit, TranscriptContent, TranscriptMessage,
 };
 use openbitfun_services_core::session::SessionStatus;
+use std::collections::HashMap;
 use tokio::sync::mpsc;
+
+use crate::transcript;
 
 /// Matches the CLI interactive buffer (`RUNTIME_EVENT_BUFFER`).
 const RUNTIME_EVENT_BUFFER: usize = 256;
@@ -64,7 +67,6 @@ const ENTRYPOINT: &str = "gpui-shell";
 /// Same default agent the CLI startup page resolves from `behavior.default_agent`.
 const DEFAULT_AGENT_TYPE: &str = "Standard";
 /// Tool card payload previews stay short; full values live in the runtime.
-const TOOL_DETAIL_LIMIT: usize = 400;
 /// Per-process workspace history kept for the picker (the shared catalog holds
 /// the desktop/CLI recent list; this only remembers what this shell visited).
 const VISITED_WORKSPACES_LIMIT: usize = 12;
@@ -558,9 +560,17 @@ pub(crate) enum ChatEntry {
 #[derive(Debug, Clone)]
 pub(crate) struct ToolCard {
     pub key: SharedString,
+    /// The runtime's tool call id: the join key for the subagent-link map and
+    /// the background-task pairing (the `key` adds the `tool-` prefix).
+    pub call_id: String,
     pub tool_name: String,
     pub status: ToolStatus,
-    pub detail: String,
+    /// Display facts parsed once from the call's input (and result) — see
+    /// [`crate::transcript`]; the row renderer never sees raw JSON.
+    pub facts: crate::transcript::ToolFacts,
+    /// The result reported `success: false`, when it reported anything at all
+    /// (web `toolResult.success`); grouping excludes such calls.
+    pub result_success: Option<bool>,
     /// Hidden subagent session linked to this tool call (M20): set when the
     /// runtime's `SubagentSessionLinked` event arrives, and the chat renders
     /// the "view run" entry point on the card.
@@ -3301,7 +3311,7 @@ impl RuntimeHandle {
                     }
                 }
             };
-            let entries: Vec<ChatEntry> = transcript.messages.iter().map(convert_message).collect();
+            let entries = convert_transcript(&transcript.messages);
             let _ = tx.send(RuntimeEvent::SessionOpened(OpenedSession {
                 session_id,
                 // Reload keeps the current pane title; the list refresh on turn
@@ -3348,7 +3358,7 @@ async fn emit_opened(
             }
         }
     };
-    let entries: Vec<ChatEntry> = transcript.messages.iter().map(convert_message).collect();
+    let entries = convert_transcript(&transcript.messages);
     let _ = tx.send(RuntimeEvent::SessionOpened(OpenedSession {
         session_id,
         name,
@@ -3359,79 +3369,90 @@ async fn emit_opened(
     }));
 }
 
-/// Converts one persisted transcript message into shell chat entries.
-/// Mixed assistant messages keep their order: text first, then tool calls
-/// (result details arrive in their own `ToolResult` messages).
-fn convert_message(message: &TranscriptMessage) -> ChatEntry {
-    match &message.content {
-        TranscriptContent::Text(text) => match message.role.as_str() {
-            "assistant" => ChatEntry::Assistant {
-                round_id: message.turn_id.clone().unwrap_or_default(),
-                text: text.clone(),
-            },
-            _ => ChatEntry::User {
-                text: text.clone(),
-                turn_id: message.turn_id.clone(),
-            },
-        },
-        TranscriptContent::Multimodal { text, image_count } => {
-            let mut text = text.clone();
-            if *image_count > 0 {
-                text.push_str(&format!("\n\n[{image_count} image(s) attached]"));
+/// Converts a persisted transcript into shell chat entries.
+///
+/// Assistant rounds persist as one `Mixed` message (text plus every call with
+/// its arguments) followed by one `ToolResult` message per call. The shell
+/// emits one assistant entry plus one card per call, so a historical card
+/// carries the same input facts as a live one — the pairing pass below holds
+/// the call arguments until the result arrives.
+pub(crate) fn convert_transcript(messages: &[TranscriptMessage]) -> Vec<ChatEntry> {
+    let mut calls: HashMap<String, (String, serde_json::Value)> = HashMap::new();
+    let mut entries = Vec::with_capacity(messages.len());
+    for message in messages {
+        match &message.content {
+            TranscriptContent::Text(text) => entries.push(match message.role.as_str() {
+                "assistant" => ChatEntry::Assistant {
+                    round_id: message.turn_id.clone().unwrap_or_default(),
+                    text: text.clone(),
+                },
+                _ => ChatEntry::User {
+                    text: text.clone(),
+                    turn_id: message.turn_id.clone(),
+                },
+            }),
+            TranscriptContent::Multimodal { text, image_count } => {
+                let mut text = text.clone();
+                if *image_count > 0 {
+                    text.push_str(&format!("\n\n[{image_count} image(s) attached]"));
+                }
+                entries.push(ChatEntry::User {
+                    text,
+                    turn_id: message.turn_id.clone(),
+                });
             }
-            ChatEntry::User {
-                text,
-                turn_id: message.turn_id.clone(),
-            }
-        }
-        TranscriptContent::ToolResult {
-            tool_id,
-            tool_name,
-            result,
-            is_error,
-            ..
-        } => ChatEntry::Tool(ToolCard {
-            key: SharedString::from(format!("tool-{tool_id}")),
-            tool_name: tool_name.clone(),
-            status: if *is_error {
-                ToolStatus::Failed
-            } else {
-                ToolStatus::Done
-            },
-            detail: truncate_detail(&result.to_string()),
-            subagent_session: None,
-            background: false,
-        }),
-        TranscriptContent::Mixed {
-            text, tool_calls, ..
-        } => {
-            // Historical Mixed messages collapse into an assistant entry plus
-            // one Done card per call; per-call results land in ToolResult
-            // entries and refresh the same keyed cards when they follow.
-            if let Some(card) = tool_calls.first().map(|call| {
-                ChatEntry::Tool(ToolCard {
-                    key: SharedString::from(format!("tool-{}", call.tool_id)),
-                    tool_name: call.tool_name.clone(),
-                    status: ToolStatus::Done,
-                    detail: truncate_detail(&call.arguments.to_string()),
-                    subagent_session: None,
-                    background: false,
-                })
-            }) {
-                if text.trim().is_empty() {
-                    return card;
+            TranscriptContent::Mixed {
+                text, tool_calls, ..
+            } => {
+                if !text.trim().is_empty() {
+                    entries.push(ChatEntry::Assistant {
+                        round_id: message.turn_id.clone().unwrap_or_default(),
+                        text: text.clone(),
+                    });
+                }
+                for call in tool_calls {
+                    calls.insert(
+                        call.tool_id.clone(),
+                        (call.tool_name.clone(), call.arguments.clone()),
+                    );
                 }
             }
-            ChatEntry::Assistant {
-                round_id: message.turn_id.clone().unwrap_or_default(),
-                text: text.clone(),
+            TranscriptContent::ToolResult {
+                tool_id,
+                tool_name,
+                effective_tool_name,
+                result,
+                is_error,
+            } => {
+                let (call_name, arguments) = calls
+                    .remove(tool_id)
+                    .unwrap_or_else(|| (tool_name.clone(), serde_json::Value::Null));
+                // The deferred gateway reports the inner tool as its effective
+                // name; that is the identity a reader recognizes.
+                let display_name = effective_tool_name.clone().unwrap_or(call_name);
+                let mut facts = transcript::facts_from_input(&display_name, &arguments);
+                transcript::apply_result(&mut facts, &display_name, result);
+                if *is_error {
+                    facts.error = Some(transcript::first_line(&result.to_string()));
+                }
+                entries.push(ChatEntry::Tool(ToolCard {
+                    key: SharedString::from(format!("tool-{tool_id}")),
+                    call_id: tool_id.clone(),
+                    tool_name: display_name,
+                    status: if *is_error {
+                        ToolStatus::Failed
+                    } else {
+                        ToolStatus::Done
+                    },
+                    facts,
+                    result_success: result.get("success").and_then(serde_json::Value::as_bool),
+                    subagent_session: None,
+                    background: false,
+                }));
             }
         }
     }
-}
-
-fn truncate_detail(value: &str) -> String {
-    truncate_chars(value, TOOL_DETAIL_LIMIT)
+    entries
 }
 
 /// Renders a persisted transcript as Markdown for the export flow: roles
@@ -3781,41 +3802,73 @@ fn translate_event(event: AgenticEvent) -> Vec<RuntimeEvent> {
 }
 
 /// Collapses the tool lifecycle onto the four card states the shell renders.
+/// The input-side facts come from the `Started`/`Confirmed` params (the only
+/// events that carry them); result-side counts are folded in on completion.
 fn convert_tool_event(event: ToolEventData) -> ToolCard {
     let (tool_id, tool_name) = {
         let identity = event.identity();
         (identity.tool_id.clone(), identity.tool_name.clone())
     };
     let key = SharedString::from(format!("tool-{tool_id}"));
-    let card = |status: ToolStatus, detail: String| ToolCard {
+    let card = |status: ToolStatus, facts: transcript::ToolFacts| ToolCard {
         key: key.clone(),
+        call_id: tool_id.clone(),
         tool_name: tool_name.clone(),
         status,
-        detail,
+        facts,
+        result_success: None,
         subagent_session: None,
         background: false,
+    };
+    // Result-side events carry no input: the facts they build are empty and
+    // the shell merges them into the card the `Started` event opened.
+    let result_facts = |result: &serde_json::Value| {
+        let mut facts = transcript::facts_from_input(&tool_name, &serde_json::Value::Null);
+        transcript::apply_result(&mut facts, &tool_name, result);
+        facts
     };
     match event {
         ToolEventData::Started { params, .. } => ToolCard {
             // The web backgroundSubagentActivity signal: a task tool that
             // started with `run_in_background` outlives its parent's turn.
             background: params.get("run_in_background") == Some(&serde_json::Value::Bool(true)),
-            ..card(ToolStatus::Running, truncate_detail(&params.to_string()))
+            ..card(
+                ToolStatus::Running,
+                transcript::facts_from_input(&tool_name, &params),
+            )
         },
         ToolEventData::Progress { message, .. } => {
-            card(ToolStatus::Running, truncate_detail(&message))
+            let mut facts = transcript::ToolFacts::empty();
+            if !message.trim().is_empty() {
+                facts
+                    .meta
+                    .push(transcript::ToolMeta::Text(transcript::first_line(&message)));
+            }
+            card(ToolStatus::Running, facts)
         }
         ToolEventData::ConfirmationNeeded { params, .. } => card(
             ToolStatus::WaitingConfirm,
-            truncate_detail(&params.to_string()),
+            transcript::facts_from_input(&tool_name, &params),
         ),
-        ToolEventData::Rejected { .. } => card(ToolStatus::Cancelled, String::new()),
-        ToolEventData::Completed { result, .. } => {
-            card(ToolStatus::Done, truncate_detail(&result.to_string()))
+        ToolEventData::Rejected { .. } => {
+            card(ToolStatus::Cancelled, transcript::ToolFacts::empty())
         }
-        ToolEventData::Failed { error, .. } => card(ToolStatus::Failed, truncate_detail(&error)),
+        ToolEventData::Completed { result, .. } => {
+            let mut card = card(ToolStatus::Done, result_facts(&result));
+            card.result_success = result.get("success").and_then(serde_json::Value::as_bool);
+            card
+        }
+        ToolEventData::Failed { error, .. } => {
+            let mut facts = transcript::ToolFacts::empty();
+            facts.error = Some(transcript::first_line(&error));
+            card(ToolStatus::Failed, facts)
+        }
         ToolEventData::Cancelled { reason, .. } => {
-            card(ToolStatus::Cancelled, truncate_detail(&reason))
+            let mut facts = transcript::ToolFacts::empty();
+            if !reason.trim().is_empty() {
+                facts.error = Some(transcript::first_line(&reason));
+            }
+            card(ToolStatus::Cancelled, facts)
         }
         ToolEventData::EarlyDetected { .. }
         | ToolEventData::ParamsPartial { .. }
@@ -3823,7 +3876,9 @@ fn convert_tool_event(event: ToolEventData) -> ToolCard {
         | ToolEventData::Waiting { .. }
         | ToolEventData::Streaming { .. }
         | ToolEventData::StreamChunk { .. }
-        | ToolEventData::Confirmed { .. } => card(ToolStatus::Running, String::new()),
+        | ToolEventData::Confirmed { .. } => {
+            card(ToolStatus::Running, transcript::ToolFacts::empty())
+        }
     }
 }
 
@@ -4289,39 +4344,126 @@ mod tests {
 
     #[test]
     fn transcript_converts_roles_and_tool_results() {
-        let user = convert_message(&message(
-            "user",
-            TranscriptContent::Text("hello".to_string()),
-        ));
-        assert!(matches!(user, ChatEntry::User { .. }));
+        let entries = convert_transcript(&[
+            message("user", TranscriptContent::Text("hello".to_string())),
+            message("assistant", TranscriptContent::Text("**done**".to_string())),
+            message("system", TranscriptContent::Text("note".to_string())),
+        ]);
+        assert!(matches!(entries[0], ChatEntry::User { .. }));
+        assert!(matches!(entries[1], ChatEntry::Assistant { .. }));
+        assert!(matches!(entries[2], ChatEntry::User { .. }));
 
-        let assistant = convert_message(&message(
-            "assistant",
-            TranscriptContent::Text("**done**".to_string()),
-        ));
-        assert!(matches!(assistant, ChatEntry::Assistant { .. }));
-
-        let non_user_text_stays_user = convert_message(&message(
-            "system",
-            TranscriptContent::Text("note".to_string()),
-        ));
-        assert!(matches!(non_user_text_stays_user, ChatEntry::User { .. }));
-
-        let tool = convert_message(&message(
+        // A result without a preceding call still renders a card, with the
+        // result-side facts only.
+        let entries = convert_transcript(&[message(
             "tool",
             TranscriptContent::ToolResult {
                 tool_id: "t1".to_string(),
                 tool_name: "Read".to_string(),
                 effective_tool_name: None,
-                result: serde_json::json!({"ok": true}),
+                result: serde_json::json!({"file_path": "src/lib.rs", "lines_read": 12}),
                 is_error: false,
             },
-        ));
-        match tool {
+        )]);
+        match &entries[0] {
             ChatEntry::Tool(card) => {
                 assert_eq!(card.tool_name, "Read");
                 assert_eq!(card.status, ToolStatus::Done);
-                assert!(card.detail.contains("ok"));
+                assert_eq!(card.facts.kind, transcript::ToolKind::Read);
+                assert_eq!(card.facts.title, "src/lib.rs");
+                assert_eq!(card.facts.meta, vec![transcript::ToolMeta::Lines(12)]);
+            }
+            other => panic!("expected tool card, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn transcript_pairs_tool_calls_with_their_results() {
+        // The persisted shape: one Mixed round carrying every call with its
+        // arguments, then one ToolResult message per call. The card must show
+        // the input facts (path, window) plus the result counts.
+        let call = |tool_id: &str, tool_name: &str, arguments: serde_json::Value| {
+            openbitfun_runtime_ports::TranscriptToolCall {
+                tool_id: tool_id.to_string(),
+                tool_name: tool_name.to_string(),
+                arguments,
+            }
+        };
+        let entries = convert_transcript(&[
+            message(
+                "assistant",
+                TranscriptContent::Mixed {
+                    reasoning_content: None,
+                    text: "reading the file".to_string(),
+                    tool_calls: vec![call(
+                        "t1",
+                        "Read",
+                        serde_json::json!({"file_path": "src/main.rs", "offset": 0, "limit": 200}),
+                    )],
+                },
+            ),
+            message(
+                "tool",
+                TranscriptContent::ToolResult {
+                    tool_id: "t1".to_string(),
+                    tool_name: "Read".to_string(),
+                    effective_tool_name: None,
+                    result: serde_json::json!({"file_path": "src/main.rs", "lines_read": 200}),
+                    is_error: false,
+                },
+            ),
+        ]);
+        assert_eq!(entries.len(), 2);
+        assert!(matches!(entries[0], ChatEntry::Assistant { .. }));
+        match &entries[1] {
+            ChatEntry::Tool(card) => {
+                assert_eq!(card.facts.title, "src/main.rs");
+                assert_eq!(
+                    card.facts.meta,
+                    vec![
+                        transcript::ToolMeta::Text("1-200".to_string()),
+                        transcript::ToolMeta::Lines(200),
+                    ]
+                );
+            }
+            other => panic!("expected tool card, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deferred_tool_cards_use_the_projected_tool_identity() {
+        // The gateway call is what the transcript stores; the inner tool is
+        // what the row must name.
+        let entries = convert_transcript(&[
+            message(
+                "assistant",
+                TranscriptContent::Mixed {
+                    reasoning_content: None,
+                    text: String::new(),
+                    tool_calls: vec![openbitfun_runtime_ports::TranscriptToolCall {
+                        tool_id: "t4".to_string(),
+                        tool_name: "CallDeferredTool".to_string(),
+                        arguments: serde_json::json!({"tool_name": "ListModels", "args": {}}),
+                    }],
+                },
+            ),
+            message(
+                "tool",
+                TranscriptContent::ToolResult {
+                    tool_id: "t4".to_string(),
+                    tool_name: "CallDeferredTool".to_string(),
+                    effective_tool_name: Some("ListModels".to_string()),
+                    result: serde_json::json!({"match_count": 7}),
+                    is_error: false,
+                },
+            ),
+        ]);
+        match &entries[0] {
+            ChatEntry::Tool(card) => {
+                assert_eq!(card.tool_name, "ListModels");
+                assert_eq!(card.facts.kind, transcript::ToolKind::Other);
+                assert_eq!(card.facts.title, "ListModels");
+                assert_eq!(card.facts.meta, vec![transcript::ToolMeta::Matches(7)]);
             }
             other => panic!("expected tool card, got {other:?}"),
         }
@@ -4329,19 +4471,21 @@ mod tests {
 
     #[test]
     fn multimodal_and_mixed_transcripts_convert() {
-        let images = convert_message(&message(
+        let images = convert_transcript(&[message(
             "user",
             TranscriptContent::Multimodal {
                 text: "see this".to_string(),
                 image_count: 2,
             },
-        ));
-        match images {
+        )]);
+        match &images[0] {
             ChatEntry::User { text, .. } => assert!(text.contains("[2 image(s) attached]")),
             other => panic!("expected user entry, got {other:?}"),
         }
 
-        let empty_text_mixed = convert_message(&message(
+        // A text-less Mixed round emits no assistant entry: its calls are
+        // the round's content, and they arrive through their results.
+        let empty_text_mixed = convert_transcript(&[message(
             "assistant",
             TranscriptContent::Mixed {
                 reasoning_content: None,
@@ -4352,23 +4496,17 @@ mod tests {
                     arguments: serde_json::json!({"cmd": "ls"}),
                 }],
             },
-        ));
-        match empty_text_mixed {
-            ChatEntry::Tool(card) => {
-                assert_eq!(card.status, ToolStatus::Done);
-                assert!(card.detail.contains("ls"));
-            }
-            other => panic!("expected tool card for text-less mixed, got {other:?}"),
-        }
+        )]);
+        assert!(empty_text_mixed.is_empty());
     }
 
     #[test]
     fn transcript_carries_turn_ids_for_fork_boundaries() {
-        let user = convert_message(&message(
+        let entries = convert_transcript(&[message(
             "user",
             TranscriptContent::Text("hello".to_string()),
-        ));
-        match user {
+        )]);
+        match &entries[0] {
             ChatEntry::User { turn_id, .. } => {
                 assert_eq!(turn_id.as_deref(), Some("turn-1"));
             }
@@ -4379,7 +4517,7 @@ mod tests {
             turn_id: None,
             ..message("user", TranscriptContent::Text("legacy".to_string()))
         };
-        match convert_message(&unnamed) {
+        match &convert_transcript(&[unnamed])[0] {
             ChatEntry::User { turn_id, .. } => assert!(turn_id.is_none()),
             other => panic!("expected user entry, got {other:?}"),
         }
@@ -4445,7 +4583,8 @@ mod tests {
             timeout_seconds: None,
         });
         assert_eq!(started.status, ToolStatus::Running);
-        assert!(started.detail.contains("ls"));
+        assert_eq!(started.facts.kind, transcript::ToolKind::Command);
+        assert_eq!(started.facts.title, "ls");
 
         let confirm = convert_tool_event(ToolEventData::ConfirmationNeeded {
             identity: id.clone(),
@@ -4478,7 +4617,7 @@ mod tests {
             execution_ms: None,
         });
         assert_eq!(failed.status, ToolStatus::Failed);
-        assert_eq!(failed.detail, "boom");
+        assert_eq!(failed.facts.error.as_deref(), Some("boom"));
 
         let queued = convert_tool_event(ToolEventData::Queued {
             identity: id,
@@ -4488,11 +4627,51 @@ mod tests {
     }
 
     #[test]
-    fn detail_preview_is_truncated_with_ellipsis() {
-        let long = "x".repeat(TOOL_DETAIL_LIMIT + 10);
-        let truncated = truncate_detail(&long);
-        assert_eq!(truncated.chars().count(), TOOL_DETAIL_LIMIT + 1);
-        assert!(truncated.ends_with('…'));
+    fn sparse_lifecycle_updates_mark_success_and_failure() {
+        // The Completed event carries the result out of band: the shell reads
+        // `success` off it and merges the result facts into the started card.
+        let id = ToolEventIdentity::direct("id-2", "Edit");
+        let done = convert_tool_event(ToolEventData::Completed {
+            identity: id,
+            result: serde_json::json!({"success": false, "match_count": 0}),
+            result_for_assistant: None,
+            image_attachments: None,
+            duration_ms: 5,
+            queue_wait_ms: None,
+            preflight_ms: None,
+            confirmation_wait_ms: None,
+            execution_ms: None,
+        });
+        assert_eq!(done.result_success, Some(false));
+        assert_eq!(done.facts.meta, vec![transcript::ToolMeta::Replacements(0)]);
+    }
+
+    #[test]
+    fn tool_fact_merge_keeps_input_identity_and_appends_results() {
+        let stored = transcript::facts_from_input(
+            "AgentSpawn",
+            &serde_json::json!({
+                "agent_id": "parser-review",
+                "agent_type": "SwarmWorker",
+                "model_id": "glm-5.3",
+                "prompt": "port one slice",
+            }),
+        );
+        let mut update = transcript::facts_from_input("AgentSpawn", &serde_json::Value::Null);
+        transcript::apply_result(
+            &mut update,
+            "AgentSpawn",
+            &serde_json::json!({"agent_id": "parser-review", "bg_task_id": "t_bg1", "status": "started"}),
+        );
+        let merged = transcript::merge_facts(&stored, &update);
+        assert_eq!(merged.kind, transcript::ToolKind::AgentSpawn);
+        assert_eq!(merged.title, "parser-review");
+        assert_eq!(merged.agents.len(), 1);
+        assert_eq!(merged.agents[0].alias, "parser-review");
+        assert_eq!(merged.agents[0].agent_type.as_deref(), Some("SwarmWorker"));
+        assert_eq!(merged.agents[0].model.as_deref(), Some("glm-5.3"));
+        assert_eq!(merged.agents[0].task_id.as_deref(), Some("t_bg1"));
+        assert_eq!(merged.agents[0].status.as_deref(), Some("started"));
     }
 
     #[test]
