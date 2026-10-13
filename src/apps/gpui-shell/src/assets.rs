@@ -26,6 +26,7 @@ gpui_kit::assets::icon_assets!(
     // settings worktrees redirect landing on the Worktree view.
     // LayoutDashboard is the plugin-contributed scene's tab glyph (R7b
     // fixture; contribution icon names resolve through the closed icon set).
+    // Puzzle is the extensions nav row (the desktop 扩展与兼容 scene).
     [
         Activity,
         Archive,
@@ -43,6 +44,7 @@ gpui_kit::assets::icon_assets!(
         Languages,
         Laptop,
         Plug,
+        Puzzle,
         Shield,
         ShieldAlert,
         Sparkles,

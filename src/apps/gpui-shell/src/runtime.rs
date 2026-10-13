@@ -263,6 +263,13 @@ pub(crate) enum RuntimeEvent {
     /// first, then the rest of the opened set) plus workspaces visited by
     /// this process, with the active one always present.
     Workspaces(Vec<WorkspaceChoice>),
+    /// One other workspace's session list for the sidebar groups (web
+    /// SessionsSection): one event per recent workspace that answered.
+    OtherWorkspaceSessions {
+        name: String,
+        root_path: String,
+        rows: Vec<SessionListRow>,
+    },
     /// The active workspace changed; workspace-scoped surfaces reset and the
     /// list reloads for the new root.
     WorkspaceSwitched(WorkspaceChoice),
@@ -648,6 +655,67 @@ impl RuntimeHandle {
             self.tokio.clone(),
             tx,
         );
+    }
+
+    /// Sidebar session groups beyond the current workspace (web
+    /// SessionsSection): one list request per recent workspace, each answering
+    /// through [`RuntimeEvent::OtherWorkspaceSessions`]. A workspace that
+    /// fails (deleted root, unreachable remote) simply sends no group — the
+    /// sidebar renders the workspaces it can see, and the failure lands in
+    /// the log rather than a broken row.
+    pub(crate) fn load_other_workspace_sessions(
+        &self,
+        choices: Vec<WorkspaceChoice>,
+        current_workspace_id: &str,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+    ) {
+        for choice in choices {
+            if choice.id == current_workspace_id {
+                continue;
+            }
+            let runtime = self.agent_runtime.clone();
+            let compat = self.compat.clone();
+            let tx = tx.clone();
+            let name = choice.name.clone();
+            let root_path = choice.root_path.clone();
+            let workspace_id = choice.id.clone();
+            let root = std::path::PathBuf::from(&choice.root_path);
+            self.tokio.spawn(async move {
+                let request = AgentSessionListRequest {
+                    workspace_id: Some(workspace_id),
+                    workspace_path: String::new(),
+                    remote_connection_id: None,
+                    remote_ssh_host: None,
+                };
+                let archived = archived_session_ids(&compat, &root).await;
+                match runtime.list_sessions(request).await {
+                    Ok(mut sessions) => {
+                        if sessions.is_empty() {
+                            return;
+                        }
+                        sort_sessions(&mut sessions);
+                        let rows = sessions
+                            .into_iter()
+                            .map(|summary| SessionListRow {
+                                archived: archived.contains(&summary.session_id),
+                                summary,
+                            })
+                            .collect::<Vec<_>>();
+                        let _ = tx.send(RuntimeEvent::OtherWorkspaceSessions {
+                            name,
+                            root_path,
+                            rows,
+                        });
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            "Sidebar group skipped for workspace {root_path}: {}",
+                            error.into_message()
+                        );
+                    }
+                }
+            });
+        }
     }
 
     /// Renames one session; a successful call reports

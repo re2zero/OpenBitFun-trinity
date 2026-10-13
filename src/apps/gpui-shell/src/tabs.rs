@@ -26,6 +26,12 @@ pub(crate) enum SceneId {
     Tasks,
     Files,
     Trinity,
+    /// The desktop 小应用 scene; the shell has no MiniApp runtime, so the tab
+    /// renders an honest empty state.
+    MiniApps,
+    /// The desktop 扩展与兼容 scene (T3 ecosystem import family); same honest
+    /// empty state until that milestone lands.
+    Extensions,
     External(SceneRef),
 }
 
@@ -76,6 +82,16 @@ pub(crate) fn builtin_scenes() -> Vec<SceneDef> {
             in_nav: true,
         },
         SceneDef {
+            id: MiniApps,
+            icon: IconName::LayoutDashboard,
+            in_nav: true,
+        },
+        SceneDef {
+            id: Extensions,
+            icon: IconName::Puzzle,
+            in_nav: true,
+        },
+        SceneDef {
             id: Settings,
             icon: IconName::Settings,
             in_nav: false,
@@ -111,18 +127,24 @@ impl ResourcePanelKind {
 }
 
 /// The window's open tabs plus the active index. Pure state, so the
-/// activation/close rules are unit-testable without a window.
+/// activation/close rules are unit-testable without a window. Activation
+/// changes record a back/forward navigation history (the desktop NavBar's
+/// arrow buttons), keyed by tab kind so entries survive index shifts.
 #[derive(Debug, Default)]
 pub(crate) struct TabsState {
     tabs: Vec<TabKind>,
     active: Option<usize>,
+    back_stack: Vec<TabKind>,
+    forward_stack: Vec<TabKind>,
 }
 
 impl TabsState {
     /// Opens the tab (activating the existing one when already present) and
     /// returns its index. Every open activates.
     pub(crate) fn open(&mut self, kind: TabKind) -> usize {
-        if let Some(index) = self.index_of(&kind) {
+        let existed = self.index_of(&kind);
+        self.record_navigation(kind.clone(), existed.is_none());
+        if let Some(index) = existed {
             self.active = Some(index);
             return index;
         }
@@ -130,6 +152,78 @@ impl TabsState {
         let index = self.tabs.len() - 1;
         self.active = Some(index);
         index
+    }
+
+    /// Records a user-visible activation into the back/forward history. A
+    /// brand-new tab counts (the desktop back button returns from opening a
+    /// scene, too); a `back`/`forward` move records nothing here because the
+    /// move swaps the stacks itself.
+    fn record_navigation(&mut self, kind: TabKind, _new_tab: bool) {
+        let previous = self.active_kind().cloned();
+        if previous == Some(kind.clone()) {
+            return;
+        }
+        if let Some(previous) = previous {
+            self.back_stack.push(previous);
+        }
+        self.forward_stack.clear();
+    }
+
+    /// The desktop NavBar back arrow: returns to the previously active tab
+    /// (reopening it when it was closed in the meantime). `true` when the
+    /// move happened.
+    pub(crate) fn go_back(&mut self) -> bool {
+        if self.back_stack.is_empty() {
+            return false;
+        }
+        let Some(target) = self.back_stack.pop() else {
+            return false;
+        };
+        let current = self.active_kind().cloned();
+        if let Some(current) = current {
+            self.forward_stack.push(current);
+        }
+        self.reopen_raw(target);
+        true
+    }
+
+    /// The desktop NavBar forward arrow: mirrors [`Self::go_back`].
+    pub(crate) fn go_forward(&mut self) -> bool {
+        if self.forward_stack.is_empty() {
+            return false;
+        }
+        let Some(target) = self.forward_stack.pop() else {
+            return false;
+        };
+        let current = self.active_kind().cloned();
+        if let Some(current) = current {
+            self.back_stack.push(current);
+        }
+        self.reopen_raw(target);
+        true
+    }
+
+    /// Reopens a history target without touching the stacks (a plain `open`
+    /// would push the current tab right back onto the stack just popped).
+    fn reopen_raw(&mut self, target: TabKind) {
+        let index = match self.index_of(&target) {
+            Some(index) => index,
+            None => {
+                self.tabs.push(target);
+                self.tabs.len() - 1
+            }
+        };
+        self.active = Some(index);
+    }
+
+    /// Whether the NavBar back arrow has somewhere to go.
+    pub(crate) fn can_go_back(&self) -> bool {
+        !self.back_stack.is_empty()
+    }
+
+    /// Whether the NavBar forward arrow has somewhere to go.
+    pub(crate) fn can_go_forward(&self) -> bool {
+        !self.forward_stack.is_empty()
     }
 
     /// Closes the tab at `index`; the activation moves to the right neighbor
@@ -211,6 +305,8 @@ pub(crate) fn scene_title(id: SceneId, text: &ShellText) -> Option<&str> {
         SceneId::Tasks => Some(&text.tasks_title),
         SceneId::Files => Some(&text.files_title),
         SceneId::Trinity => Some(&text.trinity_title),
+        SceneId::MiniApps => Some(&text.miniapps_title),
+        SceneId::Extensions => Some(&text.extensions_title),
         SceneId::External(_) => None,
     }
 }
@@ -318,6 +414,8 @@ mod tests {
             SceneId::Tasks,
             SceneId::Files,
             SceneId::Trinity,
+            SceneId::MiniApps,
+            SceneId::Extensions,
         ];
         for id in expected {
             assert_eq!(rows.iter().filter(|row| row.id == id).count(), 1);

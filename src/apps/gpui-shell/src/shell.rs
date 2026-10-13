@@ -123,6 +123,19 @@ pub(crate) struct SessionRow {
     pub(crate) archived: bool,
 }
 
+/// One other-workspace session group in the sidebar (web SessionsSection
+/// renders every workspace's sessions as its own group). Populated by one
+/// list request per recent workspace; the current workspace's rows stay in
+/// [`ShellWindow::sessions`].
+struct OtherWorkspaceGroup {
+    name: String,
+    root_path: String,
+    rows: Vec<SessionRow>,
+    collapsed: bool,
+    /// Per-group show-more fold (each group folds to the same level-0 page).
+    expanded: bool,
+}
+
 /// One open session in the chat pane; one per session tab (R1a multi-tab).
 struct ChatView {
     session_id: String,
@@ -480,6 +493,8 @@ enum NavAction {
     Chat,
     Trinity,
     Tasks,
+    MiniApps,
+    Extensions,
 }
 
 impl NavAction {
@@ -488,6 +503,8 @@ impl NavAction {
             NavAction::Chat => IconName::Sparkles,
             NavAction::Trinity => IconName::BrainCircuit,
             NavAction::Tasks => IconName::Calendar,
+            NavAction::MiniApps => IconName::LayoutDashboard,
+            NavAction::Extensions => IconName::Puzzle,
         }
     }
 
@@ -501,6 +518,10 @@ impl NavAction {
                 .is_none_or(|kind| matches!(kind, TabKind::Session(_))),
             NavAction::Trinity => tabs.active_kind() == Some(&TabKind::Scene(SceneId::Trinity)),
             NavAction::Tasks => tabs.active_kind() == Some(&TabKind::Scene(SceneId::Tasks)),
+            NavAction::MiniApps => tabs.active_kind() == Some(&TabKind::Scene(SceneId::MiniApps)),
+            NavAction::Extensions => {
+                tabs.active_kind() == Some(&TabKind::Scene(SceneId::Extensions))
+            }
         }
     }
 }
@@ -527,16 +548,24 @@ pub(crate) fn brand_empty(icon: IconName, title: &str, description: &str) -> gpu
 /// All nav rows in display order (desktop NavPanel top-scene order); a pure
 /// projection so tests can pin the active-state wiring without a window.
 fn nav_actions() -> Vec<NavAction> {
-    vec![NavAction::Chat, NavAction::Trinity, NavAction::Tasks]
+    vec![
+        NavAction::Chat,
+        NavAction::Trinity,
+        NavAction::Tasks,
+        NavAction::MiniApps,
+        NavAction::Extensions,
+    ]
 }
 
 /// Row label for a nav destination: the desktop nav nouns (智能助理/认知体/
-/// 任务看板), not the scene titles the tabs show.
+/// 任务看板/小应用/扩展与兼容), not the scene titles the tabs show.
 fn nav_label<'a>(action: NavAction, text: &'a ShellText) -> &'a str {
     match action {
         NavAction::Chat => &text.nav_assistant,
         NavAction::Trinity => &text.trinity_title,
         NavAction::Tasks => &text.nav_tasks,
+        NavAction::MiniApps => &text.miniapps_title,
+        NavAction::Extensions => &text.extensions_title,
     }
 }
 
@@ -549,6 +578,10 @@ enum SidebarEntry {
     Session {
         row: SessionRow,
         open: bool,
+        /// The shell's single active row (web `is-active`): true only while
+        /// this session is the active tab, so exactly one row highlights no
+        /// matter how many session tabs are open.
+        active: bool,
         /// Tree depth (R1c): 0 = workspace top-level session, 1 = subagent
         /// child indented under its root. Deeper lineage descendants stay
         /// hidden, matching the web nav's two-level projection.
@@ -571,6 +604,16 @@ enum SidebarEntry {
         /// Hidden root sessions the expansion would reveal.
         remaining: usize,
         expanded: bool,
+        /// Which group the fold toggles: `None` = current workspace,
+        /// `Some(root_path)` = another workspace group.
+        group: Option<String>,
+        view: WeakEntity<ShellWindow>,
+    },
+    /// The desktop group-tail collapse row (收起): folds the whole group back
+    /// to its header line.
+    Collapse {
+        /// Same group key as [`SidebarEntry::More`].
+        group: Option<String>,
         view: WeakEntity<ShellWindow>,
     },
     Empty(SharedString),
@@ -599,6 +642,7 @@ impl SidebarItem for SidebarEntry {
             SidebarEntry::Session {
                 row,
                 open,
+                active,
                 depth,
                 running,
                 tx,
@@ -675,11 +719,14 @@ impl SidebarItem for SidebarEntry {
                     .when(depth > 0, |this| this.ml_4())
                     .rounded(cx.theme().radius)
                     // Web SessionsSection final layer: hover lights the
-                    // neutral surface, the open row the selection surface —
-                    // two different tokens, so a hovered row next to the open
-                    // one never reads as two selections.
-                    .when(open, |this| this.bg(cx.theme().selection))
-                    .when(!open, |this| this.hover(|style| style.bg(cx.theme().muted)))
+                    // neutral surface, the ACTIVE row the selection surface —
+                    // two different tokens, and only one active row per
+                    // window, so a hovered row beside a merely-open tab never
+                    // reads as two selections.
+                    .when(active, |this| this.bg(cx.theme().selection))
+                    .when(!active, |this| {
+                        this.hover(|style| style.bg(cx.theme().muted))
+                    })
                     .child(
                         div()
                             .flex_1()
@@ -753,6 +800,7 @@ impl SidebarItem for SidebarEntry {
             SidebarEntry::More {
                 remaining,
                 expanded,
+                group,
                 view,
             } => {
                 let text = i18n::current(cx);
@@ -767,11 +815,25 @@ impl SidebarItem for SidebarEntry {
                     IconName::ChevronDown
                 };
                 div()
-                    .id("sessions-show-more")
+                    .id(SharedString::from(format!(
+                        "sessions-show-more-{}",
+                        group.clone().unwrap_or_else(|| "current".to_string())
+                    )))
                     .on_click(move |_, _, cx| {
                         if let Some(view) = view.upgrade() {
                             view.update(cx, |this, cx| {
-                                this.sessions_expanded = !this.sessions_expanded;
+                                match &group {
+                                    Some(path) => {
+                                        if let Some(group) = this
+                                            .other_groups
+                                            .iter_mut()
+                                            .find(|group| group.root_path == *path)
+                                        {
+                                            group.expanded = !group.expanded;
+                                        }
+                                    }
+                                    None => this.sessions_expanded = !this.sessions_expanded,
+                                }
                                 cx.notify();
                             });
                         }
@@ -785,7 +847,7 @@ impl SidebarItem for SidebarEntry {
                     .rounded(cx.theme().radius)
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
-                    .hover(|style| style.bg(cx.theme().sidebar_accent))
+                    .hover(|style| style.bg(cx.theme().muted))
                     .child(Icon::new(chevron).small())
                     .child(label)
                     .when(!expanded && remaining > 0, |this| {
@@ -799,6 +861,48 @@ impl SidebarItem for SidebarEntry {
                                 .child(format!("+{remaining}")),
                         )
                     })
+                    .into_any_element()
+            }
+            SidebarEntry::Collapse { group, view } => {
+                let text = i18n::current(cx);
+                div()
+                    .id(SharedString::from(format!(
+                        "sessions-collapse-{}",
+                        group.clone().unwrap_or_else(|| "current".to_string())
+                    )))
+                    .on_click(move |_, _, cx| {
+                        if let Some(view) = view.upgrade() {
+                            view.update(cx, |this, cx| {
+                                match &group {
+                                    Some(path) => {
+                                        if let Some(group) = this
+                                            .other_groups
+                                            .iter_mut()
+                                            .find(|group| group.root_path == *path)
+                                        {
+                                            group.collapsed = true;
+                                        }
+                                    }
+                                    None => this.sessions_group_collapsed = true,
+                                }
+                                cx.notify();
+                            });
+                        }
+                    })
+                    .cursor_pointer()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap_1()
+                    .px_2()
+                    .py_1()
+                    .rounded(cx.theme().radius)
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .hover(|style| style.bg(cx.theme().muted))
+                    .child(text.sessions_collapse.clone())
+                    .child(Icon::new(IconName::ChevronUp).small())
                     .into_any_element()
             }
             SidebarEntry::Empty(text) => div()
@@ -839,11 +943,14 @@ enum SidebarSection {
         view: WeakEntity<ShellWindow>,
     },
     /// The workspace group row (R1c): chevron fold, workspace name, and the
-    /// running dot when any visible session has a live turn.
+    /// running dot when any visible session has a live turn. `group` keys the
+    /// collapse state: `None` = the current workspace (`sessions_group_
+    /// collapsed`), `Some(root_path)` = one of the other-workspace groups.
     GroupHeader {
         name: SharedString,
         collapsed: bool,
         running: bool,
+        group: Option<String>,
         view: WeakEntity<ShellWindow>,
     },
     Item(SidebarEntry),
@@ -965,13 +1072,30 @@ impl SidebarItem for SidebarSection {
                 name,
                 collapsed,
                 running,
+                group,
                 view,
             } => div()
-                .id("session-group")
+                .id(SharedString::from(format!(
+                    "session-group-{}",
+                    group.clone().unwrap_or_else(|| "current".to_string())
+                )))
                 .on_click(move |_, _, cx| {
                     if let Some(view) = view.upgrade() {
                         view.update(cx, |this, cx| {
-                            this.sessions_group_collapsed = !this.sessions_group_collapsed;
+                            match &group {
+                                Some(path) => {
+                                    if let Some(group) = this
+                                        .other_groups
+                                        .iter_mut()
+                                        .find(|group| group.root_path == *path)
+                                    {
+                                        group.collapsed = !group.collapsed;
+                                    }
+                                }
+                                None => {
+                                    this.sessions_group_collapsed = !this.sessions_group_collapsed
+                                }
+                            }
                             cx.notify();
                         });
                     }
@@ -985,7 +1109,7 @@ impl SidebarItem for SidebarSection {
                 .p_2()
                 .rounded(cx.theme().radius)
                 .text_sm()
-                .hover(|style| style.bg(cx.theme().sidebar_accent))
+                .hover(|style| style.bg(cx.theme().muted))
                 .child(
                     Icon::new(if collapsed {
                         IconName::ChevronRight
@@ -994,6 +1118,10 @@ impl SidebarItem for SidebarSection {
                     })
                     .small(),
                 )
+                // The desktop workspace group carries a folder glyph (the
+                // person icon is the standalone-agent group, which the shell
+                // has no data for).
+                .child(Icon::new(IconName::Folder).small())
                 .child(
                     div()
                         .flex_1()
@@ -1246,6 +1374,9 @@ pub(crate) struct ShellWindow {
     /// level-0 page).
     sessions_group_collapsed: bool,
     sessions_expanded: bool,
+    /// Sidebar session groups beyond the current workspace (web
+    /// SessionsSection): one entry per recent workspace that reported rows.
+    other_groups: Vec<OtherWorkspaceGroup>,
     /// Global search palette (R1b): one boolean, because the query state and
     /// the input entity live on the window already (`search`/`search_input`).
     search_overlay_open: bool,
@@ -1490,6 +1621,7 @@ impl ShellWindow {
             lineages: Vec::new(),
             sessions_group_collapsed: false,
             sessions_expanded: false,
+            other_groups: Vec::new(),
             search_overlay_open: false,
             sidebar_open: true,
             root_focus: cx.focus_handle(),
@@ -2359,7 +2491,39 @@ impl ShellWindow {
                 cx.refresh_windows();
             }
             RuntimeEvent::Workspaces(choices) => {
-                self.workspaces = choices;
+                self.workspaces = choices.clone();
+                // Sidebar groups beyond the current workspace (web
+                // SessionsSection renders every workspace's sessions): one
+                // list request per recent workspace, aggregated as they land.
+                if let Some(handle) = runtime::runtime_handle() {
+                    let current = handle.workspace().id;
+                    handle.load_other_workspace_sessions(choices, &current, self.event_tx.clone());
+                }
+            }
+            RuntimeEvent::OtherWorkspaceSessions {
+                name,
+                root_path,
+                rows,
+            } => {
+                let composed: Vec<SessionRow> =
+                    rows.iter().map(|row| self.compose_row(row, cx)).collect();
+                if let Some(group) = self
+                    .other_groups
+                    .iter_mut()
+                    .find(|group| group.root_path == root_path)
+                {
+                    group.name = name;
+                    group.rows = composed;
+                } else {
+                    self.other_groups.push(OtherWorkspaceGroup {
+                        name,
+                        root_path,
+                        rows: composed,
+                        collapsed: false,
+                        expanded: false,
+                    });
+                }
+                cx.notify();
             }
             RuntimeEvent::WorkspaceSwitched(choice) => {
                 tracing::info!("Adopted workspace {} ({})", choice.name, choice.root_path);
@@ -2747,47 +2911,35 @@ impl ShellWindow {
             .with_variant(ButtonVariant::Ghost)
             .tooltip(text.workspace_switch.clone())
             .dropdown_menu_with_anchor(Anchor::TopLeft, move |menu, _window, cx| {
-                let (choices, error, active_id, tx) = match view.upgrade() {
-                    Some(shell) => {
-                        let shell = shell.read(cx);
-                        (
-                            shell.workspaces.clone(),
-                            shell.workspace_error.clone(),
-                            runtime::runtime_handle().map(|handle| handle.workspace().id),
-                            shell.event_tx.clone(),
-                        )
-                    }
-                    None => return menu,
-                };
-                let text = i18n::current(cx);
-                let mut menu = menu;
-                if let Some(error) = error {
-                    menu = menu.item(PopupMenuItem::new(error).disabled(true));
-                }
-                for choice in choices {
-                    let label = format!("{} · {}", choice.name, choice.root_path);
-                    let item = if active_id.as_deref() == Some(choice.id.as_str()) {
-                        PopupMenuItem::new(label).checked(true)
-                    } else {
-                        PopupMenuItem::new(label)
-                    };
-                    let root = choice.root_path;
-                    let tx = tx.clone();
-                    menu = menu.item(item.on_click(move |_, _, _| {
-                        if let Some(handle) = runtime::runtime_handle() {
-                            handle.switch_workspace(std::path::PathBuf::from(&root), tx.clone());
-                        }
-                    }));
-                }
-                menu.separator().item(
-                    PopupMenuItem::new(text.workspace_open_path.clone()).on_click({
-                        let view = view.clone();
-                        move |_, window, cx| {
-                            open_workspace_path_dialog(view.clone(), window, cx);
-                        }
-                    }),
-                )
+                workspace_menu_into(menu, view.clone(), cx)
             })
+    }
+
+    /// The composer strip's workspace pill (web `ChatInputWorkspaceStrip`
+    /// left rail): the workspace name opens the same recent-workspace menu as
+    /// the chrome button, so switching stays reachable where the session
+    /// names it (the web pill is clickable too).
+    fn render_workspace_pill(
+        &self,
+        label: String,
+        text: &ShellText,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        let view = cx.entity().downgrade();
+        Button::new("composer-workspace-pill")
+            .label(label)
+            .xsmall()
+            .custom(
+                ButtonCustomVariant::new(cx)
+                    .color(cx.theme().muted)
+                    .foreground(cx.theme().muted_foreground),
+            )
+            .rounded(ButtonRounded::Size(px(999.)))
+            .tooltip(text.workspace_switch.clone())
+            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _window, cx| {
+                workspace_menu_into(menu, view.clone(), cx)
+            })
+            .into_any_element()
     }
 
     /// Re-annotates every open transcript's tool cards from the subagent link
@@ -3063,6 +3215,14 @@ impl ShellWindow {
             }
             NavAction::Trinity => self.toggle_trinity_view(cx),
             NavAction::Tasks => self.toggle_tasks_view(cx),
+            NavAction::MiniApps => {
+                self.tabs.open(TabKind::Scene(SceneId::MiniApps));
+                cx.notify();
+            }
+            NavAction::Extensions => {
+                self.tabs.open(TabKind::Scene(SceneId::Extensions));
+                cx.notify();
+            }
         }
     }
 
@@ -3334,7 +3494,6 @@ impl ShellWindow {
         text: &ShellText,
         cx: &mut Context<Self>,
     ) -> Vec<SidebarSection> {
-        let view = cx.entity().downgrade();
         let mut sections = Vec::new();
         if let Some(error) = &self.list_error {
             sections.push(SidebarSection::Item(SidebarEntry::Danger(
@@ -3343,36 +3502,81 @@ impl ShellWindow {
             return sections;
         }
 
-        let visible: Vec<&SessionRow> = self
-            .sessions
+        // One section per workspace group: the current workspace first (its
+        // fold state lives on the window), then every other recent workspace
+        // that reported sessions (web SessionsSection renders the same
+        // per-workspace groups side by side).
+        let current_name = runtime::runtime_handle()
+            .map(|handle| handle.workspace().name)
+            .unwrap_or_default();
+        self.push_group_sections(
+            &mut sections,
+            &current_name,
+            None,
+            &self.sessions,
+            self.sessions_group_collapsed,
+            self.sessions_expanded,
+            text,
+            cx,
+        );
+        for group in &self.other_groups {
+            self.push_group_sections(
+                &mut sections,
+                &group.name,
+                Some(group.root_path.clone()),
+                &group.rows,
+                group.collapsed,
+                group.expanded,
+                text,
+                cx,
+            );
+        }
+        if sections.is_empty() {
+            sections.push(SidebarSection::Item(SidebarEntry::Empty(
+                text.sessions_empty.clone().into(),
+            )));
+        }
+        sections
+    }
+
+    /// One workspace group's sidebar sections: the group header (folder
+    /// glyph, fold chevron, running dot), the single-line session rows with
+    /// their lineage children, the show-more fold, and the desktop group-tail
+    /// collapse row. `group` routes fold toggles: `None` mutates the window's
+    /// current-workspace state, `Some(root_path)` the matching other group.
+    #[allow(clippy::too_many_arguments)]
+    fn push_group_sections(
+        &self,
+        sections: &mut Vec<SidebarSection>,
+        name: &str,
+        group: Option<String>,
+        rows: &[SessionRow],
+        collapsed: bool,
+        expanded: bool,
+        _text: &ShellText,
+        cx: &mut Context<Self>,
+    ) {
+        let view = cx.entity().downgrade();
+        let visible: Vec<&SessionRow> = rows
             .iter()
             .filter(|row| self.show_archived || !row.archived)
             .collect();
         let group_running = visible.iter().any(|row| self.session_is_running(&row.id));
         sections.push(SidebarSection::GroupHeader {
-            name: SharedString::from(
-                runtime::runtime_handle()
-                    .map(|handle| handle.workspace().name)
-                    .unwrap_or_default(),
-            ),
-            collapsed: self.sessions_group_collapsed,
+            name: SharedString::from(name.to_string()),
+            collapsed,
             running: group_running,
+            group: group.clone(),
             view: view.clone(),
         });
-        if self.sessions_group_collapsed {
-            return sections;
-        }
-        if visible.is_empty() {
-            sections.push(SidebarSection::Item(SidebarEntry::Empty(
-                text.sessions_empty.clone().into(),
-            )));
-            return sections;
+        if collapsed {
+            return;
         }
 
         // Collapsed shows the web nav's level-0 page; expanding reveals the
         // rest (virtualized, so the count itself is cheap).
         let foldable = visible.len() > SESSIONS_COLLAPSED_VISIBLE;
-        let (shown, more): (Vec<&SessionRow>, usize) = if self.sessions_expanded || !foldable {
+        let (shown, more): (Vec<&SessionRow>, usize) = if expanded || !foldable {
             (visible, 0)
         } else {
             (
@@ -3383,9 +3587,11 @@ impl ShellWindow {
 
         for row in shown {
             let open = self.chats.iter().any(|chat| chat.matches(&row.id));
+            let active = self.tabs.active_kind() == Some(&TabKind::Session(row.id.clone()));
             sections.push(SidebarSection::Item(SidebarEntry::Session {
                 row: row.clone(),
                 open,
+                active,
                 depth: 0,
                 running: self.session_is_running(&row.id),
                 tx: self.event_tx.clone(),
@@ -3393,10 +3599,13 @@ impl ShellWindow {
             }));
             for child in self.lineage_children(&row.id) {
                 let child_open = self.chats.iter().any(|chat| chat.matches(&child.id));
+                let child_active =
+                    self.tabs.active_kind() == Some(&TabKind::Session(child.id.clone()));
                 let child_running = self.session_is_running(&child.id);
                 sections.push(SidebarSection::Item(SidebarEntry::Session {
                     row: child,
                     open: child_open,
+                    active: child_active,
                     depth: 1,
                     running: child_running,
                     tx: self.event_tx.clone(),
@@ -3405,15 +3614,17 @@ impl ShellWindow {
             }
         }
         // The fold row only exists when it can do something: reveal hidden
-        // roots, or re-fold an expansion that actually hid something.
-        if more > 0 || (self.sessions_expanded && foldable) {
+        // roots, or re-fold an expansion that actually hid something. The
+        // collapse row closes the whole group (the desktop group tail).
+        if more > 0 || (expanded && foldable) {
             sections.push(SidebarSection::Item(SidebarEntry::More {
                 remaining: more,
-                expanded: self.sessions_expanded,
-                view,
+                expanded,
+                group: group.clone(),
+                view: view.clone(),
             }));
         }
-        sections
+        sections.push(SidebarSection::Item(SidebarEntry::Collapse { group, view }));
     }
 
     /// A turn is executing for this session, whether its tab is open or not:
@@ -3603,11 +3814,6 @@ impl ShellWindow {
             }
         }
 
-        let terminal_variant = if self.terminal_open {
-            ButtonVariant::Secondary
-        } else {
-            ButtonVariant::Ghost
-        };
         let status_line = match &self.phase {
             RuntimePhase::Starting => {
                 Some((text.status_starting.clone(), cx.theme().muted_foreground))
@@ -3640,6 +3846,11 @@ impl ShellWindow {
                 )
             })
             .child(
+                // The desktop footer (PersistentFooterActions): identity and
+                // the lamp on the left, the settings gear alone on the right.
+                // The terminal toggle moved to the scene top bar; workspace
+                // switching lives in the nav top bar button and the composer
+                // strip pill.
                 div()
                     .flex()
                     .items_center()
@@ -3647,25 +3858,7 @@ impl ShellWindow {
                     .gap_2()
                     .min_w_0()
                     .child(left)
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .flex_shrink_0()
-                            .child(
-                                Button::new("status-terminal")
-                                    .icon(IconName::SquareTerminal)
-                                    .small()
-                                    .with_variant(terminal_variant)
-                                    .tooltip(text.terminal_title.clone())
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.toggle_terminal_panel(window, cx)
-                                    })),
-                            )
-                            .child(self.render_workspace_button(text, cx))
-                            .child(self.render_settings_button(text, cx)),
-                    ),
+                    .child(self.render_settings_button(text, cx)),
             )
     }
 
@@ -3679,6 +3872,53 @@ impl ShellWindow {
             .tooltip(text.settings_open.clone())
             .on_click(cx.listener(|this, _, _, cx| this.open_settings_view(cx)))
     }
+}
+
+/// The shared recent-workspace menu body: choices with the active one
+/// checked, then open-by-path. Used by the nav-top-bar button and the
+/// composer strip pill so both triggers stay one menu.
+fn workspace_menu_into(
+    menu: gpui_kit::component::menu::PopupMenu,
+    view: WeakEntity<ShellWindow>,
+    cx: &mut App,
+) -> gpui_kit::component::menu::PopupMenu {
+    let Some(shell) = view.upgrade() else {
+        return menu;
+    };
+    let (choices, error, tx) = {
+        let shell = shell.read(cx);
+        (
+            shell.workspaces.clone(),
+            shell.workspace_error.clone(),
+            shell.event_tx.clone(),
+        )
+    };
+    let active_id = runtime::runtime_handle().map(|handle| handle.workspace().id);
+    let text = i18n::current(cx);
+    let mut menu = menu;
+    if let Some(error) = error {
+        menu = menu.item(PopupMenuItem::new(error).disabled(true));
+    }
+    for choice in choices {
+        let label = format!("{} · {}", choice.name, choice.root_path);
+        let item = if active_id.as_deref() == Some(choice.id.as_str()) {
+            PopupMenuItem::new(label).checked(true)
+        } else {
+            PopupMenuItem::new(label)
+        };
+        let root = choice.root_path;
+        let tx = tx.clone();
+        menu = menu.item(item.on_click(move |_, _, _| {
+            if let Some(handle) = runtime::runtime_handle() {
+                handle.switch_workspace(std::path::PathBuf::from(&root), tx.clone());
+            }
+        }));
+    }
+    menu.separator().item(
+        PopupMenuItem::new(text.workspace_open_path.clone()).on_click(move |_, window, cx| {
+            open_workspace_path_dialog(view.clone(), window, cx);
+        }),
+    )
 }
 
 /// The settings button keeps a raised variant while its page is showing.
@@ -4518,6 +4758,13 @@ impl ShellWindow {
                 None => (IconName::Shield, text.permission_ask.clone(), false),
             };
 
+        // Built before the `fact`/`divider` closures borrow `cx`: the pill
+        // mounts the shared workspace menu, which needs `&mut Context`.
+        let has_workspace = !workspace.is_empty();
+        let has_mode = !mode.is_empty();
+        let workspace_pill =
+            has_workspace.then(|| self.render_workspace_pill(workspace.clone(), text, cx));
+
         let fact = |label: String| {
             div()
                 .flex()
@@ -4530,8 +4777,6 @@ impl ShellWindow {
         };
         let divider = || div().w_px().h_3().flex_shrink_0().bg(cx.theme().border);
 
-        let has_workspace = !workspace.is_empty();
-        let has_mode = !mode.is_empty();
         div()
             .debug_selector(|| "composer-context-strip".to_string())
             .flex()
@@ -4541,14 +4786,17 @@ impl ShellWindow {
             .px_2()
             .pb_1()
             .min_h(px(20.))
-            // Left rail: where this session runs.
+            // Left rail: where this session runs — the workspace pill opens
+            // the recent-workspace menu (web left-rail pill is clickable);
+            // the mode stays a read-only fact (switching has no shell runtime
+            // path yet).
             .child(
                 div()
                     .flex()
                     .items_center()
                     .gap_2()
                     .min_w_0()
-                    .when(has_workspace, |this| this.child(fact(workspace.clone())))
+                    .when_some(workspace_pill, |this, pill| this.child(pill))
                     .when(has_workspace && has_mode, |this| this.child(divider()))
                     .when(has_mode, |this| this.child(fact(mode))),
             )
@@ -5673,9 +5921,28 @@ impl Render for ShellWindow {
         }
 
         let main_area = match self.tabs.active_kind().cloned() {
-            Some(TabKind::Scene(SceneId::Settings)) => {
-                settings::render_page(&text, cx.entity().downgrade(), cx)
-            }
+            Some(TabKind::Scene(SceneId::Settings)) => div()
+                .id("settings-page")
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                // The desktop settings page centers one bounded column; a
+                // maximized window otherwise stretches every group box edge
+                // to edge.
+                .child(
+                    div()
+                        .w_full()
+                        .max_w(px(1000.))
+                        .mx_auto()
+                        .flex_1()
+                        .min_h_0()
+                        .flex()
+                        .flex_col()
+                        .child(settings::render_page(&text, cx.entity().downgrade(), cx)),
+                )
+                .into_any_element(),
             Some(TabKind::Scene(SceneId::Git)) => match self.git.clone() {
                 Some(panel) => div()
                     .flex_1()
@@ -5742,6 +6009,34 @@ impl Render for ShellWindow {
             Some(TabKind::Scene(SceneId::External(reference))) => {
                 self.render_external_scene(reference, window, &text, cx)
             }
+            // The desktop MiniApp/extension scenes have no shell runtime yet:
+            // the tab renders the branded empty state instead of a fake
+            // surface (loud degrade, same treatment as the chat/files/search
+            // empty states).
+            Some(TabKind::Scene(SceneId::MiniApps)) => div()
+                .id("miniapps-page")
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .overflow_y_scroll()
+                .child(brand_empty(
+                    IconName::LayoutDashboard,
+                    &text.miniapps_title,
+                    &text.miniapps_empty,
+                ))
+                .into_any_element(),
+            Some(TabKind::Scene(SceneId::Extensions)) => div()
+                .id("extensions-page")
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .overflow_y_scroll()
+                .child(brand_empty(
+                    IconName::Puzzle,
+                    &text.extensions_title,
+                    &text.extensions_empty,
+                ))
+                .into_any_element(),
             Some(TabKind::Session(session_id)) => self.render_session_main(&session_id, &text, cx),
             // No tab at all: the tabless landing face (R2b, the web
             // WelcomeScene) — brand slogan plus one input that starts a
@@ -6059,6 +6354,24 @@ impl ShellWindow {
                     .h_full()
                     .window_control_area(WindowControlArea::Drag),
             )
+            // The terminal dock toggle lives on the window chrome (any scene
+            // can dock the terminal); the footer keeps only the settings gear,
+            // like the desktop.
+            .child({
+                let terminal_variant = if self.terminal_open {
+                    ButtonVariant::Secondary
+                } else {
+                    ButtonVariant::Ghost
+                };
+                Button::new("top-bar-terminal")
+                    .icon(IconName::SquareTerminal)
+                    .small()
+                    .with_variant(terminal_variant)
+                    .tooltip(text.terminal_title.clone())
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.toggle_terminal_panel(window, cx)),
+                    )
+            })
             .when(session_active, |bar| {
                 bar.child(self.render_usage_button(cx))
                     .child(self.render_quick_actions_menu(text, cx))
@@ -6172,6 +6485,35 @@ impl ShellWindow {
                     })),
             )
             .child(div().text_sm().font_medium().child("OpenBitFun"))
+            // The desktop NavBar arrows: tab-activation history (scene and
+            // session tabs alike, entries keyed by kind so closes survive).
+            .child(
+                Button::new("nav-back")
+                    .icon(IconName::ArrowLeft)
+                    .small()
+                    .with_variant(ButtonVariant::Ghost)
+                    .disabled(!self.tabs.can_go_back())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.tabs.go_back();
+                        this.list_sync_reset(cx);
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("nav-forward")
+                    .icon(IconName::ArrowRight)
+                    .small()
+                    .with_variant(ButtonVariant::Ghost)
+                    .disabled(!self.tabs.can_go_forward())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.tabs.go_forward();
+                        this.list_sync_reset(cx);
+                        cx.notify();
+                    })),
+            )
+            // Workspace switching at the window chrome (the desktop keeps it
+            // in the nav's workspace section and the composer strip pill).
+            .child(self.render_workspace_button(text, cx))
             .child(
                 div()
                     .flex_1()
@@ -9917,17 +10259,25 @@ mod tests {
     }
 
     /// R1b sidebar nav over the R1a tab model: the row set is the desktop
-    /// top-scene trio in NavPanel order, and exactly one row lights up per
-    /// active tab (Settings activates none — its own footer button keeps the
-    /// raised variant). Workbench scenes (files/git/insights) light no row;
-    /// they live in the search palette until R2c. A session tab lights the
-    /// Chat row; no tabs light it too (the resting empty state).
+    /// top-scene five in NavPanel order (assistant / trinity / tasks /
+    /// mini-apps / extensions — the last two degrade to honest empty-state
+    /// scenes), and exactly one row lights up per active tab (Settings
+    /// activates none — its own footer button keeps the raised variant).
+    /// Workbench scenes (files/git/insights) light no row; they live in the
+    /// search palette until R2c. A session tab lights the Chat row; no tabs
+    /// light it too (the resting empty state).
     #[test]
     fn nav_rows_map_active_state_to_tabs() {
         let actions = nav_actions();
         assert_eq!(
             actions,
-            vec![NavAction::Chat, NavAction::Trinity, NavAction::Tasks]
+            vec![
+                NavAction::Chat,
+                NavAction::Trinity,
+                NavAction::Tasks,
+                NavAction::MiniApps,
+                NavAction::Extensions,
+            ]
         );
         let mut tabs = TabsState::default();
         for kind in [
