@@ -164,6 +164,7 @@ R3 `34a3effef` / R4 `006cc8063` / R5 `5da468203`（gpui-frontend 分支）。
 | 15 | 会话列表投影（分组切换 + 过滤菜单） | 会话区头前簇 = 分组切换（`ListTree` 分组树 ↔ `List` 全平铺）+ 过滤菜单（排序 最近更新/最新创建/名称 · 显示 全部/未读 · 筛选 运行中 · 重置 · 分区标签平铺一菜单）+ 尾部「全部折叠」（分组态）/「全部标为已读」；全平铺投影 = 跨工作区全局排序、行首带工作区名、行内 menu 原样，无分组头、无「显示更多」上限（`SessionListFilters` + `visible_rows`/`flat_entries`） | `WorkspaceSessionGroupingToggle` + `WorkspaceSessionFilterMenu` + `workspaceSessionView.ts`（六段 + `matchesWorkspaceSessionView` + `compareWorkspaceNavSessions`）+ `WorkspaceListSection layout="flat"` + `SessionsSection workspaceScopes` | 同构（诚实子集） | 刻意分歧：① 排序「状态」不做（壳无 error/attention/completed 会话状态数据）；② 显示「需要处理」不做（`needs_user_attention` 不在 `AgentSessionSummary`）；③ 筛选 工作树/环境/来源 三段不做（壳无 worktree/remote/detached/agentType 数据）；④ web per-workspace localStorage 持久化 → 壳窗口态（关窗即忘）；⑤ web 二级子菜单 → 壳平铺一菜单；⑥ 名称排序按大小写折叠比较（无 locale/numeric collation）；⑦ 全平铺保留子会话缩进（web 平铺流式展开）。**子项数不变量**：两态在同一子项数内换内容（全平铺 = 首子项 + 空占位子项），折叠/过滤/换视图都不动滚动锚点 |
 | 16 | 工作区组头操作（卡片动作） | 组头行尾 = ＋新建会话 + ⋯菜单（新建会话 / 文件面板 / 复制路径 / 在文件管理器中打开）；异工作区组先切工作区再动手（`run_group_action` = `workspace_group_plan` + `pending_group_action`，在 `WorkspaceSwitched` 落地） | `WorkspaceItem.tsx` 卡片 hover 簇 `[＋新建会话][文件夹][⋯]` + ⋯ 菜单（新建会话/计划任务/项目权限/端口转发(仅远程)/复制路径/在文件管理器打开/批量管理/重置·删除助理） | 同构（诚实子集） | 刻意分歧：① web hover 显隐 → 壳常显（本 gpui 无父 hover 门控子元素；与会话行 menu 常显同惯例）；②「文件夹」动作移入 ⋯ 菜单（同一动作，省一枚常显钮）；③ 计划任务/项目权限/端口转发/批量管理会话/重置·删除助理 不做（壳无对应面，宁缺勿假）；④ 复制路径走载入的根路径 + 壳剪贴板，在文件管理器打开走 `process_manager` + `xdg-open`（与设置页日志目录同一实现） |
 | 17 | 侧栏固定区（搜索 / 导航 / 会话区头） | 搜索触发、五个导航行、会话区头（视图切换 + 过滤 + 新建/归档/刷新/工作区菜单）全放 `Sidebar` 的固定头槽；滚动列表只剩工作区分组——滚到再多工作区，区头与其动作始终可点 | `NavigationPanelHeader`（品牌 + 搜索触发，钉住）→ 滚动容器内 `NavigationPanelContent`（导航项，随滚动移出）+ `StickySectionHeader`（会话区头，CSS `position: sticky` 钉在滚动容器顶） | 同构（钉法不同） | ① gpui 无 `position: sticky`，`gpui-component` 的 `Sidebar` 又只暴露 header/footer 两个固定槽，故壳把整块固定；② 读不到列表滚动量做「滚过才钉」：`ListState` 经 `use_keyed_state` 创建，键含**完整元素 id 栈**（`GlobalElementId`），组件外拿同一 key 只是新建另一个状态——已实测该探针恒为未滚动，故弃用；③ 可见分歧：web 导航行随滚动移出、壳导航行常驻（区头可达性与 web 一致，导航行占用约 180px 列表视口） |
+| 18 | 会话渲染富元素（代码高亮/复制块/链接/路径/工具行状态与动作） | `markdown.rs`（syntect 高亮器经 `TextViewDefaults` 安装 + `code_block_actions` 语言标签/复制钮 + `classify_link`/`resolve_path`）+ `shell.rs`（`tool_leading_glyph`、行内 `打开`/`复制`、`open_transcript_path`）+ `files.rs`（`open_path_at` 行跳转、紧凑面板让位查看器） | `MarkdownRenderer`（prism 高亮 + `code-block-toolbar` CopyButton + `a` 前缀分派 `file-link`）· `ToolCardStatusSlot`/`AmbientToolCardHeader contentActions` · ExecProcess 复制命令 | 同构（诚实子集） | ① 高亮引擎 = 壳 syntect（默认语法集无 TS/TSX/TOML；与文件查看器同配色）vs web prism + domain prism token；② 工具栏锚位 = 组件右上动作簇 vs web 全宽 toolbar；③ 打开/复制钮常显（web hover 显隐，同 R8 惯例）；④ 工具行状态文字移出（web ambient 同）；⑤ 复制内容 = 命令全文；结果/输出文本复制与工具卡展开体见「未做」栏 |
 
 **双端对照截图归档**（本目录 `assets/gpui-shell-layout-parity/`，sha256 见文件名旁注；/tmp
 会清，以此为准）。拍摄配方：壳 `DISPLAY=:97`（Xvfb），桌面 dev `DISPLAY=:98 pnpm run
@@ -225,6 +226,37 @@ headless 锚点：`settings_scene_nav_selects_pages_and_searches`（树 15 行�
 zigzag-duck · 阿 view-input · SwarmWorker）、AgentWait 失败名册（3 个失败 + 三头像）、
 AgentList（3 个子代理 · 0 个运行中）全部渲染，展开/收起往返一次，0 panic（唯一 ERROR 为
 会话内失效图片资源 + 启动期 wgpu 一次重试）。截图 `/tmp/gpui-m24/03-top.png`…`08-collapse-single.png`。
+
+**会话渲染富元素 1:1 证据**（2026-10-14，公子点名「对比原来的会话渲染实现——高亮/链接/路径/卡片/状态/
+快捷复制块/子代理卡片 1:1 复刻」；Xvfb :137 私有号；素材 = `examples/seed_transcript.rs` 种子会话
+（离线导入路径，工作区 `/tmp/md-smoke-ws`，冒烟后已删）`OPENBITFUN_GPUI_AUTOOPEN_SESSION` autoopen）：
+
+- `md-01-code-toolbar.png` `0df062fb3b50abdf`：助手 markdown 富渲染 —— 标题/段落、**文件链接
+  `src/demo.rs`（文件族点击样式）**、外部链接 `https://example.com`、```rust 代码块 = syntect 高亮 +
+  右上「Rust + 复制」工具栏、连续调用折叠 chip（读取1·命令2·1 个失败）、Write 行带「打开」钮。
+- `md-02-rows-expanded.png` `3312f3bd0de3edf1`：chip 点开后的工具行 —— 命令行（族图标 + `复制` 钮 +
+  `退出码 0`）、Read 行（`打开` 钮 + 行窗/行数 chip）、**失败命令行 = 危险色 ✕ 字形**、Write 行。
+- `md-03-copied.png` `ec625fa2c4231541`：代码块复制钮的 2s 勾选反馈（`xclip -o` 回读 = 整段代码）。
+- `md-04-file-jump.png` `e52371a30c33aca0`：markdown 文件链接 `[src/demo.rs](src/demo.rs#L40)` →
+  右面板打开该文件并**定位到第 40 行**（相对路径按活动工作区根解析）。
+- `md-05-row-open.png` `7c435296be0ada9f`：工具行「打开」钮 → 同一查看器打开该文件（无行号定位）。
+- 交互实测：外部链接点击 → 日志 `Opened external URL https://example.com`（走 `process_manager` +
+  `xdg-open`，不经 ashpd/zbus）；命令行复制 → `xclip` 回读**完整多行命令**（非行内截断标题）。
+- 本轮**顺带修既有 bug**：文件查看器正文空白 —— `gpui-pre` 的 `list` 元素按调用方样式定尺，不传
+  显式尺寸即塌成零高盒、零行布局（`MessageScroller` 同款 `.size_full().min_h_0()` 是正解）；
+  修后查看器渲染行号 + 高亮文本，并有 `files-code-row` 布局断言钉住。
+
+**矩阵第 18 行（会话渲染富元素）**：壳内锚点 = `markdown.rs`（syntect `code_block_highlighter` 经
+`TextViewDefaults` 安装 + `code_block_actions` 工具栏 + `classify_link`/`resolve_path` 链接路由）+
+`shell.rs`（`tool_leading_glyph` 状态字形、行内 `打开`/`复制` 动作、`open_transcript_path`）+
+`files.rs`（`open_path_at` 行跳转、紧凑面板「有文件即让位给查看器」）。桌面对应物 =
+`MarkdownRenderer`（prism 主题 + `code-block-toolbar` CopyButton + `a` 前缀分派/`file-link`）·
+`ToolCardStatusSlot` + `AmbientToolCardHeader contentActions` · `ExecProcess` 复制命令。**刻意分歧**：
+① 高亮引擎 = 壳 syntect（默认语法集无 TS/TSX/TOML；与文件查看器同一配色）vs web prism-async-light +
+domain prism token；② 工具栏锚位 = 组件右上动作簇（语言标签与复制钮并排）vs web 全宽 toolbar；
+③ 打开/复制钮**常显**（web hover 显隐；同 R8 侧栏惯例）；④ 工具行不再显示状态**文字**（web ambient
+同为图标/动效，文字只在 tooltip/aria）；⑤ 待批准行 = 族图标染警告色（web 同义）；⑥ 已取消行 = 族图标 +
+0.6 透明度（web `opacity-muted`）。
 
 ## 3. 缺口分级（已拍板，2026-10-09：P0 立项为里程碑 M11）
 
@@ -316,6 +348,7 @@ AgentList（3 个子代理 · 0 个运行中）全部渲染，展开/收起往�
 | 2026-10-11 | **§2 矩阵整轮刷新（T2-14，接力清单项）**：逐行刷到 2026-10-11 真相（M11-M23 + 后置接力 T1-1..5 / T2-6..13 落地后）。已支持/子集：会话管理（2）、模型（3）、附件（4）、ask_user（5）、子代理投影/BTW（6，近似口径 D67）、文件树/查看器（9，pdf 缺）、全局搜索（11，files/sessions）、终端（13）、Git（14，graph/branches 缺）、worktree（15）、定时任务（17）、洞察/用量（18）、技能/智能体/MCP 管理（19/20/21，市场/编辑器/OAuth 缺）、系统集成（32）、更新 UI（33）、快照（39）；设置页 3/21 → 13/21（§2.1 改写，含 T2-13 诊断包导出与 include_sensitive_diagnostics 假开关不复制注记）。§1 基线表未动（M10 交付物口径不变）；残余缺口：git graph/branches、搜索 actions/entities、content 标签、生态导入、Trinity（T2-15）、托盘未读角标（T2-16）等 |
 | 2026-10-12 | **§2.3 布局 parity 矩阵新增（Phase 3 R6 收口）**：布局/信息架构逐行锚点矩阵 13 行（R1a-R5 全部锚点 × 桌面对应物 × 同构/刻意分歧+理由）；双端对照签字截图 7 张归档 `assets/gpui-shell-layout-parity/`（含拍摄配方与 sha256）。Phase 3 R1-R6 主线收官；R7（插件功能+UI 一体架构）与 T3 大项维持「点名才动」；默认切换终审（§4.3）待公子重开 |
 | 2026-10-13 | **真机 parity 修正四项（公子看真机后点名）**：桌面 `92ce04f8d`（simplify desktop shell UI）后拓扑已变——无独立 TitleBar/横贯底栏、侧栏 NavBar+footer 贯穿左列、SceneTopBar 带 tabs+场景动作+窗口钮。壳随之重排：分列式 45px 双顶栏、侧栏抽屉折叠（Ctrl B + 左上悬浮条）、tab 移右顶栏（横向滚动不覆盖动作区）、会话列表单行 30px、选中(selection)/hover(muted) token 分离、inline code 高亮 accent→neutral 弱底（`theme.rs::install_text_view_style` 随主题应用重装 TextViewDefaults）、composer 圆形发送钮 + placeholder「有什么可以帮您...」+「+」boost 菜单。壳 251 测绿，Xvfb :73 截图对照 0 panic |
+| 2026-10-14 | **会话渲染富元素 1:1（公子点名「高亮/链接/路径/卡片/状态/快捷复制块/子代理卡片」）**：助手 markdown 三条钩子全接（`code_block_highlighter` 经 `TextViewDefaults` 装 syntect 高亮、`code_block_actions` = 语言标签 + 复制钮 2s 勾选反馈、`on_link_click` = http(s) 走 `process_manager`+`xdg-open`／文件路径按工作区根解析并激活文件查看器）；工具行 = 状态字形化（运行=转圈、失败=✕、待批准=警告色族图标、取消=0.6 透明）+ 行内「打开」（Read/Write/Edit）与「复制」（命令全文）动作；`files.rs` 增 `open_path_at` 行跳转、紧凑面板有文件时让位给查看器、并修掉 `gpui-pre` list 零尺寸导致的**查看器正文空白**（既有 bug）。壳 289 测绿（+4：链接分派/语言标签/高亮区间/工具栏与行动作布局断言 + files-code-row）；i18n 637×3；证据 `md-01..05`（§2.3 证据段） |
 | 2026-10-14 | **R9 设置布局 1:1（`d4920fe35`，公子点名：左侧项覆盖侧栏、内容右侧居中）**：设置场景改为「场景导航列」——设置导航替换侧栏（`settings::render_nav`：搜索设置 + 五组分类树，`SettingsNav` 同构；查询折平结果 + 诚实空态）、内容列 680px 居中（`ConfigPageLayout` 同构）、页头改 24px 粗标题 + 新增 15 条页副标题文案（×3 语言，ftl 616→633）、组卡 `GroupBoxVariant::Fill`、去掉重复页名的组标题；顺带修控制列长文案溢出与导航搜索不重绘。壳 282 测绿（+1 无头导航测试、+2 投影断言）；证据 `r9-01..03`（§2.3 证据段）。刻意分歧按矩阵第 10 行「理由」栏在案（单卡片无子分节 / 行内语言随组件 / 列宽 300 / 无脏标记 / 搜索索引面） |
 | 2026-10-13 | **§2.3 矩阵 R8 两行（会话列表投影 + 工作区组头操作）**：侧栏 1:1 尾项落地——分组切换 grouped/all（全平铺跨工作区全局排序 + 行首工作区名 + 无折叠上限）、过滤菜单（排序/显示/筛选 运行中/重置/全部折叠/全部标为已读）、组头 ＋/⋯（新建会话/文件面板/复制路径/在文件管理器打开，异工作区先切后动）。刻意分歧按矩阵各行「理由」栏在案（web-only 段：状态排序、需要处理、工作树/环境/来源、计划任务/项目权限/端口转发/批量管理/助理重置删除）。子项数不变量跨视图保持（平铺 = 首子项 + 空占位子项）；Xvfb 冒烟见 §6 次行 |
 | 2026-10-13 | **§2.3 矩阵第 17 行（侧栏固定区）**：公子点名「要补」——会话区头与视图切换/过滤钮在侧栏滚动后不可达。修法 = 搜索/导航/会话区头整块进 `Sidebar` 固定头槽（列表只剩工作区分组，顺带把子项数常量 +2 也去掉）。先试过「读组件列表偏移、滚过再钉同款行」：`ListState` 键含完整元素 id 栈，壳外读不到（探针实测恒为未滚动），弃用；同源分歧（导航行不随滚动移出）已记入该行 |

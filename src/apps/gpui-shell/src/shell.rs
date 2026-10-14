@@ -1,4 +1,4 @@
-use crate::{i18n, runtime, settings, theme};
+use crate::{i18n, markdown, runtime, settings, theme};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
@@ -22,9 +22,9 @@ use gpui_kit::InteractiveElement as _;
 use gpui_kit::StatefulInteractiveElement as _;
 use gpui_kit::{
     div, img, point, prelude::*, px, size, Anchor, App, Bounds, ClipboardEntry, ClipboardItem,
-    Context, ElementId, Entity, ExternalPaths, FontWeight, Image, ImageFormat, KeyBinding,
-    Pixels, SharedString, StyleRefinement, SystemNotification, TitlebarOptions,
-    WeakEntity, Window, WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowOptions,
+    Context, ElementId, Entity, ExternalPaths, FontWeight, Image, ImageFormat, KeyBinding, Pixels,
+    SharedString, StyleRefinement, SystemNotification, TitlebarOptions, WeakEntity, Window,
+    WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowOptions,
 };
 use openbitfun_agent_runtime::sdk::{PendingUserQuestion, PermissionReply, PermissionRequest};
 use openbitfun_runtime_ports::{AgentInputAttachment, AgentSessionLineageSnapshot};
@@ -4008,10 +4008,40 @@ impl ShellWindow {
     /// same opening policy as the toggles (R2c): the active session tab's
     /// right panel, or the main Files tab when no session tab is active.
     pub(crate) fn open_file_in_files_view(&mut self, path: String, cx: &mut Context<Self>) {
+        self.open_file_in_files_view_at(path, None, cx);
+    }
+
+    /// A transcript file link (`#L42` / `:12-14` line specs included):
+    /// relative paths resolve against the active workspace root, then open
+    /// under the files viewer's usual opening policy.
+    pub(crate) fn open_transcript_path(
+        &mut self,
+        path: String,
+        line: Option<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        let root = runtime::runtime_handle()
+            .map(|handle| handle.workspace().root_path.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let resolved = markdown::resolve_path(&root, &path);
+        if resolved.is_empty() {
+            return;
+        }
+        self.open_file_in_files_view_at(resolved, line, cx);
+    }
+
+    /// Like [`Self::open_file_in_files_view`], revealing a 1-based line when
+    /// the link carried one.
+    pub(crate) fn open_file_in_files_view_at(
+        &mut self,
+        path: String,
+        line: Option<usize>,
+        cx: &mut Context<Self>,
+    ) {
         let page = self
             .files
             .get_or_insert_with(|| cx.new(crate::files::FilesPage::new));
-        page.update(cx, |page, cx| page.open_path(path, cx));
+        page.update(cx, |page, cx| page.open_path_at(path, line, cx));
         if matches!(self.tabs.active_kind(), Some(TabKind::Session(_))) {
             self.dock_resource_panel(ResourcePanelKind::Files, cx);
         } else {
@@ -4984,18 +5014,50 @@ fn render_chat_item(
                 );
             column.into_any_element()
         }
-        ChatEntry::Assistant { text: body, .. } => div()
-            .w_full()
-            .min_w_0()
-            .text_sm()
-            .child(
-                TextView::markdown(
-                    SharedString::from(format!("entry-{}-md", markdown_id_key(body))),
-                    body.clone(),
+        ChatEntry::Assistant { text: body, .. } => {
+            // The rich-render hooks the desktop MarkdownRenderer wires: links
+            // route by target (external opener vs the shell's file viewer),
+            // and fenced code gets a language label plus a copy action.
+            let link_view = fork.map(|fork| fork.view.clone());
+            let copy_label: SharedString = text.code_copy.clone().into();
+            let copied_label: SharedString = text.code_copied.clone().into();
+            div()
+                .w_full()
+                .min_w_0()
+                .text_sm()
+                .child(
+                    TextView::markdown(
+                        SharedString::from(format!("entry-{}-md", markdown_id_key(body))),
+                        body.clone(),
+                    )
+                    .selectable(true)
+                    .on_link_click(move |url, _event, _window, cx| {
+                        let target = markdown::classify_link(url);
+                        match target {
+                            markdown::LinkTarget::External(url) => markdown::open_external(&url),
+                            markdown::LinkTarget::File { path, line } => {
+                                let Some(view) = link_view.as_ref().and_then(|view| view.upgrade())
+                                else {
+                                    return;
+                                };
+                                view.update(cx, |shell, cx| {
+                                    shell.open_transcript_path(path, line, cx);
+                                });
+                            }
+                            markdown::LinkTarget::Unsupported => {}
+                        }
+                    })
+                    .code_block_actions(move |block, _window, cx| {
+                        markdown::code_block_toolbar(
+                            block,
+                            copy_label.clone(),
+                            copied_label.clone(),
+                            cx,
+                        )
+                    }),
                 )
-                .selectable(true),
-            )
-            .into_any_element(),
+                .into_any_element()
+        }
         ChatEntry::Tool(card) => {
             // The "view run" entry point needs the shell handle; harnesses
             // that render without a fork render bare cards (M20).
@@ -5003,7 +5065,7 @@ fn render_chat_item(
                 card.subagent_session.is_some()
                     || identity.is_some_and(|identity| identity.subagent_session.is_some())
             });
-            render_tool_card(card, identity, roster, run, text, cx).into_any_element()
+            render_tool_card(card, identity, roster, run, fork, text, cx).into_any_element()
         }
         ChatEntry::Notice { text: body } => div()
             .w_full()
@@ -5349,53 +5411,85 @@ fn tool_action_label(kind: ToolKind, text: &ShellText) -> Option<&str> {
 fn render_tool_row(
     card: &ToolCard,
     run: Option<&ChatForkContext>,
+    fork: Option<&ChatForkContext>,
     text: &ShellText,
     cx: &App,
 ) -> gpui_kit::Div {
-    let status_color = tool_status_color(card.status, cx);
-    let mut row = div().v_flex().gap_0p5().min_w_0().py_0p5().child(
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_2()
-            .min_w_0()
-            .child(
-                Icon::new(tool_kind_icon(card.facts.kind))
-                    .with_size(px(14.))
-                    .text_color(cx.theme().muted_foreground),
-            )
-            .when_some(tool_action_label(card.facts.kind, text), |this, label| {
-                this.child(
-                    div()
-                        .flex_shrink_0()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(label.to_string()),
-                )
-            })
-            .child(
+    let mut row = div().v_flex().gap_0p5().min_w_0().py_0p5();
+    // Web `FlowChatToolCard.module.css`: a cancelled/rejected card dims
+    // instead of changing its glyph.
+    if card.status == ToolStatus::Cancelled {
+        row = row.opacity(0.6);
+    }
+    let title = if card.facts.title.is_empty() {
+        card.tool_name.clone()
+    } else {
+        card.facts.title.clone()
+    };
+    let mut header = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .min_w_0()
+        .child(tool_leading_glyph(card, cx))
+        .when_some(tool_action_label(card.facts.kind, text), |this, label| {
+            this.child(
                 div()
                     .flex_shrink_0()
                     .text_sm()
-                    .text_color(cx.theme().foreground)
-                    .child(if card.facts.title.is_empty() {
-                        card.tool_name.clone()
-                    } else {
-                        card.facts.title.clone()
-                    }),
+                    .text_color(cx.theme().muted_foreground)
+                    .child(label.to_string()),
             )
-            .children(tool_meta_chips(card, cx))
-            .when(card.status != ToolStatus::Done, |this| {
-                this.child(
-                    div()
-                        .flex_shrink_0()
-                        .text_xs()
-                        .text_color(status_color)
-                        .child(tool_status_label(card.status, text).to_string()),
-                )
-            }),
-    );
+        })
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_sm()
+                .text_color(cx.theme().foreground)
+                .child(title.clone()),
+        );
+    // Content actions (web `AmbientToolCardHeader` `contentActions`, revealed
+    // on hover there and always shown here): a file-family row opens its path
+    // in the viewer, a command row copies the whole command.
+    if let (Some(fork), false) = (fork, title.is_empty()) {
+        if tool_row_opens_path(card) {
+            let view = fork.view.clone();
+            let path = title.clone();
+            header = header.child(
+                Button::new(SharedString::from(format!("{}-open", card.key)))
+                    .debug_selector(|| "tool-row-open".to_string())
+                    .icon(IconName::ArrowUpRight)
+                    .xsmall()
+                    .with_variant(ButtonVariant::Ghost)
+                    .tooltip(text.tool_open_details.clone())
+                    .on_click(move |_, _, cx| {
+                        let Some(view) = view.upgrade() else {
+                            return;
+                        };
+                        let path = path.clone();
+                        view.update(cx, |shell, cx| {
+                            shell.open_transcript_path(path, None, cx);
+                        });
+                    }),
+            );
+        }
+    }
+    if let Some(copy) = &card.facts.copy {
+        let copy = copy.clone();
+        header = header.child(
+            Button::new(SharedString::from(format!("{}-copy", card.key)))
+                .debug_selector(|| "tool-row-copy".to_string())
+                .icon(IconName::Copy)
+                .xsmall()
+                .with_variant(ButtonVariant::Ghost)
+                .tooltip(text.tool_copy.clone())
+                .on_click(move |_, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
+                }),
+        );
+    }
+    let mut row = row.child(header.children(tool_meta_chips(card, cx)));
     if let Some(error) = &card.facts.error {
         row = row.child(
             div()
@@ -5429,6 +5523,42 @@ fn render_tool_row(
         );
     }
     row
+}
+
+/// The leading glyph of a tool row: the web ambient card swaps the family
+/// icon for the status glyph while work is in flight and on failure (the
+/// processing dots / xmark of `ToolCardStatusSlot`); a completed, waiting or
+/// cancelled row keeps its family icon. Approvals tint that icon as the
+/// card's confirmation colour does on the desktop.
+fn tool_leading_glyph(card: &ToolCard, cx: &App) -> gpui_kit::AnyElement {
+    match card.status {
+        ToolStatus::Running => gpui_kit::component::spinner::Spinner::new()
+            .xsmall()
+            .color(cx.theme().muted_foreground)
+            .into_any_element(),
+        ToolStatus::Failed => Icon::new(IconName::X)
+            .with_size(px(14.))
+            .text_color(cx.theme().danger)
+            .into_any_element(),
+        ToolStatus::WaitingConfirm => Icon::new(tool_kind_icon(card.facts.kind))
+            .with_size(px(14.))
+            .text_color(cx.theme().warning)
+            .into_any_element(),
+        ToolStatus::Done | ToolStatus::Cancelled => Icon::new(tool_kind_icon(card.facts.kind))
+            .with_size(px(14.))
+            .text_color(cx.theme().muted_foreground)
+            .into_any_element(),
+    }
+}
+
+/// Whether a tool row carries the web `arrow-up-right` open action: the
+/// path-bearing families (Read/Write/Edit) open their file in the viewer,
+/// like the desktop ReadFile/FileOperation cards.
+fn tool_row_opens_path(card: &ToolCard) -> bool {
+    matches!(
+        card.facts.kind,
+        ToolKind::Read | ToolKind::Write | ToolKind::Edit
+    )
 }
 
 /// The structured chips on a tool row: exit codes, line and match counts,
@@ -5794,7 +5924,12 @@ fn render_tool_card(
     card: &ToolCard,
     identity: Option<&SubagentIdentity>,
     roster: &[SubagentIdentity],
+    // `run` is the fork context restricted to rows that expose a linked
+    // subagent run; `fork` is the chat's own context, present whenever a
+    // shell window renders the row — the content actions (open file) need it
+    // even without a run link.
     run: Option<&ChatForkContext>,
+    fork: Option<&ChatForkContext>,
     text: &ShellText,
     cx: &App,
 ) -> gpui_kit::Div {
@@ -5804,7 +5939,7 @@ fn render_tool_card(
         | ToolKind::AgentList
         | ToolKind::AgentSend
         | ToolKind::AgentDelete => render_agent_row(card, identity, roster, run, text, cx),
-        _ => render_tool_row(card, run, text, cx),
+        _ => render_tool_row(card, run, fork, text, cx),
     }
 }
 
@@ -9487,10 +9622,10 @@ pub fn launch_main_window(tokio_handle: tokio::runtime::Handle) {
 
 #[cfg(test)]
 mod tests {
-    use gpui_kit::Modifiers;
     use super::*;
     use crate::runtime::ToolStatus;
     use crate::tabs;
+    use gpui_kit::Modifiers;
     use openbitfun_core::service::i18n::LocaleId;
     use std::cell::Cell;
     use std::rc::Rc;
@@ -12521,6 +12656,127 @@ mod tests {
     /// The docked panel (R2c) lays out to the right of the sidebar over the
     /// chat column with its head chrome, and pop-out removes it from the
     /// session view.
+    /// Assistant markdown carries the desktop reader's rich-render hooks:
+    /// identical fenced blocks in one message each get their own toolbar
+    /// (element ids are scoped per block) and the block draws without the
+    /// duplicate-id a11y panic.
+    #[gpui_kit::test]
+    fn assistant_markdown_renders_code_block_toolbars(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        let body = "Two blocks:\n\n```rust\nfn a() {}\n```\n\n```rust\nfn a() {}\n```\n";
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(
+                    RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                        session_id: "s-1".into(),
+                        name: "First".into(),
+                        agent_type: "Standard".into(),
+                        model_id: None,
+                        entries: vec![ChatEntry::Assistant {
+                            round_id: "round-1".into(),
+                            text: body.into(),
+                        }],
+                        busy: false,
+                    }),
+                    window,
+                    cx,
+                );
+            });
+        });
+        // Both code blocks host a toolbar; the second draw settles the
+        // markdown parse the first frame kicked off.
+        for _ in 0..2 {
+            let view = shell.clone();
+            window.draw(
+                point(px(0.), px(0.)),
+                size(px(1400.), px(900.)),
+                move |_, _| view.into_any_element(),
+            );
+            window.run_until_parked();
+        }
+        window.run_until_parked();
+        assert!(
+            window.debug_bounds("code-block-toolbar").is_some(),
+            "fenced code blocks render their language/copy toolbar"
+        );
+    }
+
+    /// Tool rows carry the desktop content actions: a path-bearing row opens
+    /// its file, a command row copies the whole command.
+    #[gpui_kit::test]
+    fn tool_rows_expose_open_and_copy_actions(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(
+                    RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                        session_id: "s-1".into(),
+                        name: "First".into(),
+                        agent_type: "Standard".into(),
+                        model_id: None,
+                        entries: vec![
+                            // `Write` never joins a work run, and a command
+                            // awaiting approval stays out of one too: both
+                            // rows render their own card here.
+                            ChatEntry::Tool(ToolCard {
+                                key: "tool-call-1".into(),
+                                call_id: "call-1".into(),
+                                tool_name: "Write".into(),
+                                status: ToolStatus::Done,
+                                facts: transcript::facts_from_input(
+                                    "Write",
+                                    &serde_json::json!({ "file_path": "src/main.rs" }),
+                                ),
+                                result_success: None,
+                                subagent_session: None,
+                                background: false,
+                            }),
+                            ChatEntry::Tool(ToolCard {
+                                key: "tool-call-2".into(),
+                                call_id: "call-2".into(),
+                                tool_name: "ExecCommand".into(),
+                                status: ToolStatus::WaitingConfirm,
+                                facts: transcript::facts_from_input(
+                                    "ExecCommand",
+                                    &serde_json::json!({ "cmd": "cargo test --lib" }),
+                                ),
+                                result_success: None,
+                                subagent_session: None,
+                                background: false,
+                            }),
+                        ],
+                        busy: false,
+                    }),
+                    window,
+                    cx,
+                );
+            });
+        });
+        let view = shell.clone();
+        window.draw(
+            point(px(0.), px(0.)),
+            size(px(1400.), px(900.)),
+            move |_, _| view.into_any_element(),
+        );
+        window.run_until_parked();
+        assert!(
+            window.debug_bounds("tool-row-open").is_some(),
+            "the Write row opens its file"
+        );
+        assert!(
+            window.debug_bounds("tool-row-copy").is_some(),
+            "the command row copies the whole command"
+        );
+    }
+
     /// M24: an exploration/execution run collapses into one summary chip, its
     /// member rows render empty, and the reader's toggle flips it open.
     #[gpui_kit::test]

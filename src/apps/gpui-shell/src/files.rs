@@ -26,8 +26,8 @@ use gpui_kit::component::{ActiveTheme, Icon, Sizable};
 use gpui_kit::InteractiveElement as _;
 use gpui_kit::{
     div, img, list, prelude::*, px, App, Context, FontStyle, HighlightStyle, Hsla, Image,
-    ImageFormat, IntoElement, ListAlignment, ListState, Render, Rgba, SharedString, StyledText,
-    TextStyle, Window,
+    ImageFormat, IntoElement, ListAlignment, ListOffset, ListState, Render, Rgba, SharedString,
+    StyledText, TextStyle, Window,
 };
 use openbitfun_core::service::filesystem::{FileSystemService, FileTreeNode};
 use syntect::easy::HighlightLines;
@@ -51,8 +51,9 @@ const CODE_ROW_OVERSCAN: f32 = 40.;
 
 /// Syntax and theme sets load once and are shared across highlights (the CLI
 /// TUI keeps the same process-wide sets).
-static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
-static THEME_SET: LazyLock<ThemeSet> = LazyLock::new(ThemeSet::load_defaults);
+pub(crate) static SYNTAX_SET: LazyLock<SyntaxSet> =
+    LazyLock::new(SyntaxSet::load_defaults_newlines);
+pub(crate) static THEME_SET: LazyLock<ThemeSet> = LazyLock::new(ThemeSet::load_defaults);
 
 /// Which syntect theme the highlights were computed for. A tab highlighted
 /// for the other flavor falls back to plain text until it is reopened; the
@@ -64,7 +65,7 @@ pub(crate) enum HighlightFlavor {
 }
 
 impl HighlightFlavor {
-    fn for_theme(dark: bool) -> Self {
+    pub(crate) fn for_theme(dark: bool) -> Self {
         if dark {
             Self::Dark
         } else {
@@ -72,7 +73,7 @@ impl HighlightFlavor {
         }
     }
 
-    fn syntect_theme_name(self) -> &'static str {
+    pub(crate) fn syntect_theme_name(self) -> &'static str {
         match self {
             Self::Dark => "base16-ocean.dark",
             Self::Light => "base16-ocean.light",
@@ -386,6 +387,9 @@ pub(crate) struct FilesPage {
     active: Option<String>,
     /// The path an open request is in flight for, if any.
     opening: Option<String>,
+    /// 1-based line to reveal once the requested file lands (transcript file
+    /// links carry `#L42` / `:12-14` specs).
+    pending_line: Option<usize>,
     code_list: ListState,
     /// Docked right-panel form (R2c): the tree takes the whole panel and the
     /// viewer column is dropped — a 360px panel cannot fit the fixed 300px
@@ -418,6 +422,7 @@ impl FilesPage {
             tabs: Vec::new(),
             active: None,
             opening: None,
+            pending_line: None,
             code_list: ListState::new(0, ListAlignment::Top, px(CODE_ROW_OVERSCAN)),
             compact: false,
         };
@@ -566,9 +571,21 @@ impl FilesPage {
 
     /// Opens a file in the viewer (upserting its tab when already open).
     pub(crate) fn open_path(&mut self, path: String, cx: &mut Context<Self>) {
+        self.open_path_at(path, None, cx);
+    }
+
+    /// Like [`Self::open_path`], revealing a 1-based line once the file lands
+    /// (a transcript file link's `#L42` / `:12-14` suffix).
+    pub(crate) fn open_path_at(
+        &mut self,
+        path: String,
+        line: Option<usize>,
+        cx: &mut Context<Self>,
+    ) {
         if self.opening.as_deref() == Some(path.as_str()) {
             return;
         }
+        self.pending_line = line;
         let Some(handle) = crate::runtime::runtime_handle() else {
             self.fail("runtime not ready", cx);
             return;
@@ -632,6 +649,16 @@ impl FilesPage {
             kind,
             truncated,
         });
+        // Reveal the requested line after `activate_tab` reset the list, so
+        // the scroll lands on the fresh content instead of being cleared.
+        if let Some(line) = self.pending_line.take() {
+            if line > 1 {
+                self.code_list.scroll_to(ListOffset {
+                    item_ix: line - 1,
+                    offset_in_item: px(0.),
+                });
+            }
+        }
     }
 
     /// Replaces or inserts the tab for `file.path` and activates it.
@@ -774,18 +801,26 @@ impl Render for FilesPage {
             .h_full()
             .flex()
             .flex_col()
-            .pl_2()
+            .when(!self.compact, |this| this.pl_2())
             .child(self.render_viewer(this, &text, cx));
 
-        column.child(
+        // The docked panel is one column wide, so tree and viewer cannot sit
+        // side by side (R2c kept the tree): an opened file takes the panel
+        // over — a transcript path link must land on the file itself — and
+        // closing the last tab brings the tree back.
+        let docked_viewer = self.compact && (!self.tabs.is_empty() || self.opening.is_some());
+        let body = if docked_viewer {
+            viewer
+        } else {
             div()
                 .flex_1()
                 .min_h_0()
                 .flex()
                 .flex_row()
                 .child(tree)
-                .when(!self.compact, |this| this.child(viewer)),
-        )
+                .when(!self.compact, |this| this.child(viewer))
+        };
+        column.child(body)
     }
 }
 
@@ -1011,12 +1046,17 @@ impl FilesPage {
             OpenFileKind::Code { lines, flavor } => {
                 let stale = *flavor != HighlightFlavor::for_theme(cx.theme().mode.is_dark());
                 let lines = lines.clone();
+                // `gpui-pre`'s list sizes itself from the caller's style: without
+                // an explicit fill it collapses to a zero-height box and lays
+                // out no rows (MessageScroller passes the same pair).
                 let list_element = list(self.code_list.clone(), move |index, _window, cx| {
                     let Some(spans) = lines.get(index) else {
                         return div().into_any_element();
                     };
                     render_code_line(index, spans, stale, cx)
-                });
+                })
+                .size_full()
+                .min_h_0();
                 div()
                     .flex_1()
                     .min_h_0()
@@ -1106,6 +1146,7 @@ fn render_code_line(
         ..Default::default()
     };
     div()
+        .debug_selector(|| "files-code-row".to_string())
         .flex()
         .items_start()
         .w_full()
@@ -1302,6 +1343,13 @@ mod tests {
             },
         );
         window.run_until_parked();
+        // The code list must lay rows out: a list without an explicit size
+        // collapses to a zero-height box and paints nothing (the shape that
+        // shipped an empty viewer until this assertion landed).
+        assert!(
+            window.debug_bounds("files-code-row").is_some(),
+            "the code viewer lays out its rows"
+        );
     }
 
     /// A page wired as if the root listing arrived, without any runtime.
@@ -1320,6 +1368,7 @@ mod tests {
             tabs: Vec::new(),
             active: None,
             opening: None,
+            pending_line: None,
             code_list: ListState::new(0, ListAlignment::Top, px(CODE_ROW_OVERSCAN)),
             compact: false,
         }

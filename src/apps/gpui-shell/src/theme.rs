@@ -48,7 +48,9 @@ impl ThemePreset {
 /// in the transcript. The desktop markdown renders inline code as a quiet
 /// tertiary surface with the inherited foreground (`Markdown.scss`), so this
 /// recipe mirrors the component's `base_text_view_style` shape with the
-/// inline-code highlight swapped to the neutral surface token. Safe to
+/// inline-code highlight swapped to the neutral surface token, and installs
+/// the transcript's fenced-code highlighter (the same syntect palette the
+/// file viewer uses) so assistant code blocks are not rendered plain. Safe to
 /// reinstall: the shell builds gpui-component without tree-sitter, so the
 /// defaults carry no code-block highlighter to lose.
 pub(crate) fn install_text_view_style(cx: &mut App) {
@@ -57,6 +59,7 @@ pub(crate) fn install_text_view_style(cx: &mut App) {
     use gpui_kit::{HighlightStyle, StyleRefinement, Styled as _};
 
     let theme = cx.theme();
+    let flavor = crate::files::HighlightFlavor::for_theme(theme.mode.is_dark());
     let radius = theme.semantic_tokens().radius.md;
     let mut table = StyleRefinement::default();
     table.corner_radii.top_left = Some(radius.into());
@@ -85,6 +88,7 @@ pub(crate) fn install_text_view_style(cx: &mut App) {
         });
     TextViewDefaults::new()
         .with_style(style)
+        .with_code_block_highlighter(crate::markdown::code_block_highlighter(flavor))
         .with_inherit_text_color(true)
         .install(cx);
 }

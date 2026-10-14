@@ -79,6 +79,9 @@ pub(crate) struct ToolFacts {
     pub tasks: Vec<String>,
     /// Failure text (first line), shown under a failed row.
     pub error: Option<String>,
+    /// Full text the row's copy action puts on the clipboard (the web
+    /// ExecProcess card copies the whole command, not the truncated title).
+    pub copy: Option<String>,
 }
 
 impl ToolFacts {
@@ -90,6 +93,7 @@ impl ToolFacts {
             agents: Vec::new(),
             tasks: Vec::new(),
             error: None,
+            copy: None,
         }
     }
 
@@ -131,6 +135,7 @@ pub(crate) fn merge_facts(stored: &ToolFacts, update: &ToolFacts) -> ToolFacts {
             update.tasks.clone()
         },
         error: update.error.clone().or_else(|| stored.error.clone()),
+        copy: update.copy.clone().or_else(|| stored.copy.clone()),
     };
     for item in &update.meta {
         // Result-side counts repeat across retries; never double a chip.
@@ -219,6 +224,9 @@ pub(crate) fn facts_from_input(tool_name: &str, input: &Value) -> ToolFacts {
             let mut facts = ToolFacts::titled(ToolKind::Command, "");
             if let Some(cmd) = field(input, "cmd").or_else(|| field(input, "command")) {
                 facts.title = first_line(cmd);
+                // The row shows one line; the copy action gets the whole
+                // command, like the desktop ExecProcess card's copy button.
+                facts.copy = Some(cmd.to_string());
             }
             facts
         }
@@ -719,6 +727,7 @@ mod tests {
         );
         assert_eq!(facts.kind, ToolKind::Command);
         assert_eq!(facts.title, "ls .relay/");
+        assert_eq!(facts.copy.as_deref(), Some("ls .relay/\necho done"));
         apply_result(
             &mut facts,
             "ExecCommand",
