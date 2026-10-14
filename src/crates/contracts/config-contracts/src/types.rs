@@ -437,6 +437,27 @@ pub struct AppFlowChatConfig {
         skip_serializing_if = "is_permission_mode_control_visible"
     )]
     pub show_permission_mode_control: bool,
+    /// Automatically show excerpt actions after selecting transcript text.
+    #[serde(default = "default_auto_show_selection_toolbar")]
+    pub auto_show_selection_toolbar: bool,
+    /// How the shared composer submits follow-ups to a running native session.
+    #[serde(skip_serializing_if = "ChatInputSendDuringTurn::is_immediate")]
+    pub send_during_turn: ChatInputSendDuringTurn,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatInputSendDuringTurn {
+    Queue,
+    #[default]
+    #[serde(other)]
+    Immediate,
+}
+
+impl ChatInputSendDuringTurn {
+    fn is_immediate(&self) -> bool {
+        *self == Self::Immediate
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -454,6 +475,10 @@ fn is_permission_mode_control_visible(value: &bool) -> bool {
     *value
 }
 
+fn default_auto_show_selection_toolbar() -> bool {
+    true
+}
+
 impl Default for AppFlowChatConfig {
     fn default() -> Self {
         Self {
@@ -461,6 +486,8 @@ impl Default for AppFlowChatConfig {
             default_mode_id: None,
             last_mode_id: None,
             show_permission_mode_control: default_show_permission_mode_control(),
+            auto_show_selection_toolbar: default_auto_show_selection_toolbar(),
+            send_during_turn: ChatInputSendDuringTurn::default(),
         }
     }
 }
@@ -585,8 +612,6 @@ pub struct AIExperienceConfig {
     pub enable_session_title_generation: bool,
     /// Whether to enable AI analysis of work status on the FlowChat welcome page.
     pub enable_welcome_panel_ai_analysis: bool,
-    /// Whether to enable visual mode.
-    pub enable_visual_mode: bool,
     /// Whether to show the desktop Agent companion.
     pub enable_agent_companion: bool,
     /// Optional Petdex-compatible companion package selected by the user.
@@ -683,7 +708,8 @@ pub struct NotificationConfig {
     /// Whether to show a toast notification when an approval request arrives while the window is not focused.
     #[serde(default = "default_true")]
     pub permission_request_notify: bool,
-    /// Whether to show built-in tip cards on startup (can be disabled by the user).
+    /// Retired startup-tip preference, retained only for configuration round-trip compatibility.
+    /// This field has no runtime effect.
     #[serde(default = "default_true")]
     pub enable_startup_tips: bool,
 }
@@ -886,16 +912,10 @@ impl Default for SubagentModelDefaultsConfig {
     fn default() -> Self {
         Self {
             default_selection: default_subagent_model_selection(),
-            builtin: HashMap::from([
-                (
-                    "GeneralPurpose".to_string(),
-                    SubagentModelSelection::fixed("primary"),
-                ),
-                (
-                    "ResearchSpecialist".to_string(),
-                    SubagentModelSelection::Inherit,
-                ),
-            ]),
+            builtin: HashMap::from([(
+                "ResearchSpecialist".to_string(),
+                SubagentModelSelection::Inherit,
+            )]),
             fork: SubagentModelSelection::Inherit,
         }
     }
@@ -1933,7 +1953,6 @@ impl Default for AIExperienceConfig {
         Self {
             enable_session_title_generation: true,
             enable_welcome_panel_ai_analysis: false,
-            enable_visual_mode: false,
             enable_agent_companion: true,
             agent_companion_pet: default_agent_companion_pet(),
             enable_workspace_search: false,
@@ -2233,9 +2252,9 @@ mod tests {
         assert!(settings.enable_git_commit_coauthor);
 
         let mut persisted = serde_json::to_value(settings).unwrap();
-        assert_eq!(
-            persisted["enable_visual_mode"],
-            legacy["enable_visual_mode"]
+        assert!(
+            persisted.get("enable_visual_mode").is_none(),
+            "retired visual mode setting should not be serialized"
         );
         assert_eq!(persisted["quick_actions"], legacy["quick_actions"]);
         persisted["enable_git_commit_coauthor"] = serde_json::json!(false);
@@ -2495,6 +2514,25 @@ mod tests {
         let config: NotificationConfig = serde_json::from_value(serde_json::json!({}))
             .expect("empty notification config should default");
         assert!(config.permission_request_notify);
+    }
+
+    #[test]
+    fn retired_startup_tip_preference_round_trips_legacy_notification_config() {
+        let legacy = serde_json::json!({
+            "enabled": true,
+            "position": "bottom-left",
+            "duration": 4000,
+            "dialog_completion_notify": false,
+            "permission_request_notify": true,
+            "enable_startup_tips": false
+        });
+        let config: NotificationConfig = serde_json::from_value(legacy.clone())
+            .expect("legacy notification preferences should remain readable");
+
+        assert!(!config.enable_startup_tips);
+        assert!(!config.dialog_completion_notify);
+        assert!(config.permission_request_notify);
+        assert_eq!(serde_json::to_value(config).unwrap(), legacy);
     }
 
     #[test]
@@ -2789,7 +2827,6 @@ mod tests {
         let config: AIExperienceConfig = serde_json::from_value(serde_json::json!({
             "enable_session_title_generation": true,
             "enable_welcome_panel_ai_analysis": false,
-            "enable_visual_mode": false,
             "enable_agent_companion": true,
             "agent_companion_pet": {
                 "id": "boxcat",
@@ -2858,7 +2895,6 @@ mod tests {
                     "ai_experience": {
                         "enable_session_title_generation": true,
                         "enable_welcome_panel_ai_analysis": false,
-                        "enable_visual_mode": false,
                         "enable_agent_companion": true,
                         "enable_workspace_search": false,
                         "quick_actions": [
@@ -3042,6 +3078,84 @@ mod tests {
     }
 
     #[test]
+    fn app_flow_chat_selection_toolbar_defaults_and_round_trips() {
+        // Old payloads retain automatic display and remain readable after saving.
+        let legacy = serde_json::json!({ "default_mode_id": "Standard" });
+        let config: super::AppFlowChatConfig = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(config.auto_show_selection_toolbar);
+        let written = serde_json::to_value(&config).unwrap();
+        assert_eq!(written["default_mode_id"], legacy["default_mode_id"]);
+        let reloaded: super::AppFlowChatConfig = serde_json::from_value(written).unwrap();
+        assert!(reloaded.auto_show_selection_toolbar);
+
+        let disabled = serde_json::json!({
+            "auto_show_selection_toolbar": false,
+            "show_permission_mode_control": false,
+            "default_mode_id": "Standard"
+        });
+        let config: super::AppFlowChatConfig = serde_json::from_value(disabled.clone()).unwrap();
+        assert!(!config.auto_show_selection_toolbar);
+        let written = serde_json::to_value(&config).unwrap();
+        assert_eq!(written, disabled);
+        let reloaded: super::AppFlowChatConfig = serde_json::from_value(written).unwrap();
+        assert!(!reloaded.auto_show_selection_toolbar);
+
+        let enabled: super::AppFlowChatConfig = serde_json::from_value(serde_json::json!({
+            "auto_show_selection_toolbar": true,
+            "future_field": "tolerated"
+        }))
+        .unwrap();
+        assert!(enabled.auto_show_selection_toolbar);
+        assert_eq!(
+            serde_json::to_value(enabled).unwrap(),
+            serde_json::json!({ "auto_show_selection_toolbar": true })
+        );
+        assert!(super::AppFlowChatConfig::default().auto_show_selection_toolbar);
+    }
+
+    #[test]
+    fn app_flow_chat_send_during_turn_defaults_and_round_trips() {
+        use super::{AppFlowChatConfig, ChatInputSendDuringTurn};
+
+        assert_eq!(
+            AppFlowChatConfig::default().send_during_turn,
+            ChatInputSendDuringTurn::Immediate
+        );
+        let legacy = serde_json::json!({
+            "default_mode_id": "Standard",
+            "auto_show_selection_toolbar": false
+        });
+        let config: AppFlowChatConfig = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(config.send_during_turn, ChatInputSendDuringTurn::Immediate);
+        let written = serde_json::to_value(config).unwrap();
+        assert_eq!(written, legacy);
+        let reloaded: AppFlowChatConfig = serde_json::from_value(written).unwrap();
+        assert_eq!(
+            reloaded.send_during_turn,
+            ChatInputSendDuringTurn::Immediate
+        );
+
+        let queued = serde_json::json!({
+            "send_during_turn": "queue",
+            "auto_show_selection_toolbar": true
+        });
+        let config: AppFlowChatConfig = serde_json::from_value(queued.clone()).unwrap();
+        assert_eq!(config.send_during_turn, ChatInputSendDuringTurn::Queue);
+        let written = serde_json::to_value(config).unwrap();
+        assert_eq!(written, queued);
+        let reloaded: AppFlowChatConfig = serde_json::from_value(written).unwrap();
+        assert_eq!(reloaded.send_during_turn, ChatInputSendDuringTurn::Queue);
+
+        for value in ["immediate", "future_policy"] {
+            let config: AppFlowChatConfig = serde_json::from_value(serde_json::json!({
+                "send_during_turn": value
+            }))
+            .unwrap();
+            assert_eq!(config.send_during_turn, ChatInputSendDuringTurn::Immediate);
+        }
+    }
+
+    #[test]
     fn default_model_serialization_contains_no_retired_reasoning_fields() {
         let config = AIModelConfig::default();
         let value = serde_json::to_value(&config).expect("config should serialize");
@@ -3111,7 +3225,7 @@ mod tests {
                 .subagents
                 .builtin
                 .get("GeneralPurpose"),
-            Some(&SubagentModelSelection::fixed("primary"))
+            None
         );
         assert_eq!(
             config
@@ -3232,22 +3346,65 @@ mod tests {
     }
 
     #[test]
-    fn general_purpose_uses_primary_unless_explicitly_overridden() {
+    fn general_purpose_uses_shared_default_unless_explicitly_overridden() {
         let mut defaults = AgentModelDefaultsConfig::default();
 
         assert_eq!(
             defaults.builtin_subagent_selection("GeneralPurpose"),
-            SubagentModelSelection::fixed("primary")
+            SubagentModelSelection::fixed("fast")
+        );
+
+        defaults.subagents.default_selection = SubagentModelSelection::Inherit;
+        assert_eq!(
+            defaults.builtin_subagent_selection("GeneralPurpose"),
+            SubagentModelSelection::Inherit
         );
 
         defaults.subagents.builtin.insert(
             "GeneralPurpose".to_string(),
-            SubagentModelSelection::fixed("fast"),
+            SubagentModelSelection::fixed("primary"),
         );
         assert_eq!(
             defaults.builtin_subagent_selection("GeneralPurpose"),
-            SubagentModelSelection::fixed("fast")
+            SubagentModelSelection::fixed("primary")
         );
+    }
+
+    #[test]
+    fn general_purpose_legacy_model_defaults_preserve_explicit_selections() {
+        for payload in [
+            serde_json::json!({}),
+            serde_json::json!({"subagents": {}}),
+            serde_json::json!({"subagents": {"builtin": {}}}),
+        ] {
+            let defaults: AgentModelDefaultsConfig = serde_json::from_value(payload).unwrap();
+            assert!(!defaults.subagents.builtin.contains_key("GeneralPurpose"));
+            assert_eq!(
+                defaults.builtin_subagent_selection("GeneralPurpose"),
+                SubagentModelSelection::fixed("fast")
+            );
+        }
+
+        for selection in [
+            SubagentModelSelection::fixed("primary"),
+            SubagentModelSelection::fixed("custom-model"),
+            SubagentModelSelection::Inherit,
+        ] {
+            let payload = serde_json::json!({
+                "subagents": {"builtin": {"GeneralPurpose": selection}}
+            });
+            let defaults: AgentModelDefaultsConfig = serde_json::from_value(payload).unwrap();
+            assert_eq!(
+                defaults.builtin_subagent_selection("GeneralPurpose"),
+                selection
+            );
+            let reloaded: AgentModelDefaultsConfig =
+                serde_json::from_value(serde_json::to_value(defaults).unwrap()).unwrap();
+            assert_eq!(
+                reloaded.builtin_subagent_selection("GeneralPurpose"),
+                selection
+            );
+        }
     }
 
     #[test]

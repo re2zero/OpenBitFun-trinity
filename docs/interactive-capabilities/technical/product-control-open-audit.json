@@ -1,20 +1,20 @@
 {
   "schemaVersion": 1,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
-  "catalogDigest": "b626f77724d05af870f136a1d0913b740d28b592e93241e61bd7d18852e2262e",
-  "count": 219,
+  "catalogDigest": "b7a929992cab46782a7a76fdaaa3953ec9628a8a823846a46bacd9dd4d46e6d9",
+  "count": 224,
   "reasonCounts": {
     "externalAuth": 4,
     "secretEntry": 7,
     "unstructuredInteraction": 190,
-    "visualSelection": 18
+    "visualSelection": 23
   },
   "entries": [
     {
       "capabilityId": "feature.ai-assistant",
       "itemId": "session-lifecycle",
-      "titleZh": "重命名、归档、恢复、删除、分叉与导出会话",
-      "titleEn": "Rename, archive, restore, delete, fork, and export sessions",
+      "titleZh": "重命名、归档、恢复、删除、复制、分叉与导出会话",
+      "titleEn": "Rename, archive, restore, delete, copy, fork, and export sessions",
       "reasonCode": "visualSelection",
       "reasonZh": "这些操作依赖选中的会话、当前运行状态或删除确认；智能体可准确打开会话界面，但不把新建会话冒充为完整生命周期控制。",
       "reasonEn": "These actions depend on the selected session, its live state, or deletion confirmation; the Agent can open the exact session UI without pretending that session creation controls the full lifecycle.",
@@ -27,6 +27,7 @@
         "command:archive_session",
         "command:restore_session",
         "command:delete_session",
+        "command:copy_session",
         "command:fork_session",
         "command:export_session_transcript",
         "command:archive_all_sessions",
@@ -96,6 +97,22 @@
         "command:subscribe_permission_requests",
         "command:submit_user_answers",
         "command:start_user_question_interaction"
+      ]
+    },
+    {
+      "capabilityId": "feature.ai-assistant",
+      "itemId": "session-storage-directory",
+      "titleZh": "从工作区或会话菜单打开会话存储目录，用于备份与手动排障",
+      "titleEn": "Open session storage from workspace or session menus for backups and manual troubleshooting",
+      "reasonCode": "visualSelection",
+      "reasonZh": "需要用户选择工作区或会话，并在本机桌面文件管理器中操作；远程工作区打开本机保存的会话镜像，对端设备和 Detached Dispatch 会话不支持此操作。打开目录不会修改会话归属。",
+      "reasonEn": "The user selects a workspace or session and works in the local desktop file manager; remote workspaces reveal their locally stored session mirror, while peer and detached-dispatch sessions are unsupported. Opening storage does not change session ownership.",
+      "presentationTarget": {
+        "kind": "scene",
+        "sceneId": "session"
+      },
+      "evidence": [
+        "command:reveal_session_storage_directory"
       ]
     },
     {
@@ -337,7 +354,27 @@
       },
       "evidence": [
         "command:create_assistant_workspace",
+        "command:get_assistant_workspaces",
         "source:src/web-ui/src/app/scenes/profile/views/NurseryGallery.tsx#NurseryGallery"
+      ]
+    },
+    {
+      "capabilityId": "feature.personal-assistants",
+      "itemId": "assistant-open-close",
+      "titleZh": "关闭侧栏中的助理并取消正在运行的会话，保留配置和历史，之后从助理空间重新打开",
+      "titleEn": "Close sidebar assistants and cancel running sessions, preserve configuration and history, and reopen them from the assistant gallery",
+      "reasonCode": "visualSelection",
+      "reasonZh": "关闭操作依赖用户选择的助理；助理空间保留完整目录，并提供重新打开入口。",
+      "reasonEn": "Closing depends on the assistant selected by the user; the gallery retains the complete catalog and provides a reopen action.",
+      "presentationTarget": {
+        "kind": "scene",
+        "sceneId": "profile"
+      },
+      "evidence": [
+        "command:close_workspace",
+        "command:open_workspace",
+        "source:src/web-ui/src/app/components/NavPanel/sections/workspaces/WorkspaceItem.tsx#handleCloseWorkspace",
+        "source:src/web-ui/src/app/scenes/profile/views/NurseryGallery.tsx#handleOpenAssistant"
       ]
     },
     {
@@ -921,7 +958,8 @@
         "pageId": "tools.execution"
       },
       "evidence": [
-        "command:computer_use_request_permissions"
+        "command:computer_use_request_permissions",
+        "command:computer_use_request_permission"
       ]
     },
     {
@@ -1007,6 +1045,59 @@
         "command:computer_use_control_status",
         "command:computer_use_control_preview",
         "source:src/web-ui/src/app/components/ComputerUseControlCard.tsx#ComputerUseControlCard"
+      ]
+    },
+    {
+      "capabilityId": "feature.computer-use",
+      "itemId": "app-sharing",
+      "titleZh": "选择 App 窗口并单独授权或撤销控制",
+      "titleEn": "Select an App window and separately grant or revoke control",
+      "reasonCode": "visualSelection",
+      "reasonZh": "共享窗口及控制模式由用户明确选择；智能体只能请求共享，不能代替用户授权。",
+      "reasonEn": "Window selection and input mode require an explicit user choice; agents can request sharing but cannot grant themselves control.",
+      "presentationTarget": {
+        "kind": "settings",
+        "pageId": "tools.execution"
+      },
+      "evidence": [
+        "command:computer_use_share_request",
+        "command:computer_use_share_targets",
+        "command:computer_use_share_start",
+        "command:computer_use_share_control"
+      ]
+    },
+    {
+      "capabilityId": "feature.computer-use",
+      "itemId": "preview-input",
+      "titleZh": "在共享预览中点击、拖动、滚动及输入",
+      "titleEn": "Click, drag, scroll and type through the shared preview",
+      "reasonCode": "visualSelection",
+      "reasonZh": "预览输入需要用户授权，并绑定共享窗口、图像坐标及授权版本。",
+      "reasonEn": "Preview input requires user authorization and is bound to the shared window, image coordinates and authorization revision.",
+      "presentationTarget": {
+        "kind": "settings",
+        "pageId": "tools.execution"
+      },
+      "evidence": [
+        "command:computer_use_share_observe",
+        "command:computer_use_share_input"
+      ]
+    },
+    {
+      "capabilityId": "feature.computer-use",
+      "itemId": "remembered-control",
+      "titleZh": "按应用执行文件和控制模式记住或忘记授权",
+      "titleEn": "Remember or forget control by application executable and input mode",
+      "reasonCode": "visualSelection",
+      "reasonZh": "记住授权只在用户选定并共享同一应用后生效，应用文件或输入模式改变时需要重新授权。",
+      "reasonEn": "Remembered control applies only after the user shares the same application; changed executable contents or input modes require a new grant.",
+      "presentationTarget": {
+        "kind": "settings",
+        "pageId": "tools.execution"
+      },
+      "evidence": [
+        "command:computer_use_share_grants",
+        "command:computer_use_share_forget_grant"
       ]
     },
     {
@@ -2502,11 +2593,11 @@
     {
       "capabilityId": "feature.trinity",
       "itemId": "memory",
-      "titleZh": "检索、新增、强化与遗忘长期记忆，并翻看记忆时间线",
-      "titleEn": "Search, add, reinforce, and forget long-term memories, and browse the memory timeline",
+      "titleZh": "检索、新增、强化与遗忘长期记忆，翻看记忆时间线，并导出或导入记忆容器",
+      "titleEn": "Search, add, reinforce, and forget long-term memories, browse the memory timeline, and export or import a memory container",
       "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“检索、新增、强化与遗忘长期记忆，并翻看记忆时间线”由多个实时状态相关步骤组成，目前没有一个能确定完成整个流程的单一结构化 Command；Agent 会打开精确入口，并把后续交互保留在用户可见界面。",
-      "reasonEn": "“Search, add, reinforce, and forget long-term memories, and browse the memory timeline” spans multiple live-state-dependent steps and currently has no single structured Command that can deterministically complete the whole workflow; the Agent opens the exact entry and keeps the remaining interaction visible to the user.",
+      "reasonZh": "“检索、新增、强化与遗忘长期记忆，翻看记忆时间线，并导出或导入记忆容器”由多个实时状态相关步骤组成，目前没有一个能确定完成整个流程的单一结构化 Command；Agent 会打开精确入口，并把后续交互保留在用户可见界面。",
+      "reasonEn": "“Search, add, reinforce, and forget long-term memories, browse the memory timeline, and export or import a memory container” spans multiple live-state-dependent steps and currently has no single structured Command that can deterministically complete the whole workflow; the Agent opens the exact entry and keeps the remaining interaction visible to the user.",
       "presentationTarget": {
         "kind": "scene",
         "sceneId": "trinity"
@@ -2518,7 +2609,27 @@
         "command:trinity_memory_stats",
         "command:trinity_reinforce_memory",
         "command:trinity_forget_memory",
-        "source:src/web-ui/src/locales/zh-CN/common.json#trinity.scene.memoryTimeline"
+        "command:trinity_memory_export",
+        "command:trinity_memory_import",
+        "source:src/web-ui/src/locales/zh-CN/common.json#trinity.scene.memoryTimeline",
+        "source:src/web-ui/src/locales/zh-CN/common.json#trinity.memory.export"
+      ]
+    },
+    {
+      "capabilityId": "feature.trinity",
+      "itemId": "morning",
+      "titleZh": "查看今日晨报：昨夜思绪、冲动与自省的摘要",
+      "titleEn": "Read today's morning report: a summary of overnight thoughts, urges, and reflections",
+      "reasonCode": "unstructuredInteraction",
+      "reasonZh": "“查看今日晨报：昨夜思绪、冲动与自省的摘要”由多个实时状态相关步骤组成，目前没有一个能确定完成整个流程的单一结构化 Command；Agent 会打开精确入口，并把后续交互保留在用户可见界面。",
+      "reasonEn": "“Read today's morning report: a summary of overnight thoughts, urges, and reflections” spans multiple live-state-dependent steps and currently has no single structured Command that can deterministically complete the whole workflow; the Agent opens the exact entry and keeps the remaining interaction visible to the user.",
+      "presentationTarget": {
+        "kind": "scene",
+        "sceneId": "trinity"
+      },
+      "evidence": [
+        "command:trinity_morning_report",
+        "source:src/web-ui/src/locales/zh-CN/common.json#trinity.morning.title"
       ]
     },
     {
@@ -2601,27 +2712,6 @@
         "command:get_pending_update",
         "command:install_pending_update",
         "command:get_app_version"
-      ]
-    },
-    {
-      "capabilityId": "setting.application.general",
-      "itemId": "announcements",
-      "titleZh": "查看、标记已读、忽略或永久隐藏产品公告与提示",
-      "titleEn": "Review, mark seen, dismiss, or permanently hide product announcements and tips",
-      "reasonCode": "unstructuredInteraction",
-      "reasonZh": "“查看、标记已读、忽略或永久隐藏产品公告与提示”由多个实时状态相关步骤组成，目前没有一个能确定完成整个流程的单一结构化 Command；智能体会打开精确入口，并把后续交互保留在用户可见界面。",
-      "reasonEn": "“Review, mark seen, dismiss, or permanently hide product announcements and tips” spans multiple live-state-dependent steps and currently has no single structured Command that can deterministically complete the whole workflow; the Agent opens the exact entry and keeps the remaining interaction visible to the user.",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "application.general"
-      },
-      "evidence": [
-        "command:get_pending_announcements",
-        "command:mark_announcement_seen",
-        "command:dismiss_announcement",
-        "command:never_show_announcement",
-        "command:get_announcement_tips",
-        "command:trigger_announcement"
       ]
     },
     {
@@ -2760,7 +2850,7 @@
         "pageId": "application.shortcuts"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/settings/components/KeyboardShortcutsTab.tsx#lists every known shortcut"
+        "source:src/web-ui/src/app/scenes/settings/pages/application/KeyboardShortcutsSection.tsx#lists every known shortcut"
       ]
     },
     {
@@ -2776,8 +2866,8 @@
         "pageId": "application.shortcuts"
       },
       "evidence": [
-        "source:src/web-ui/src/app/scenes/settings/components/KeyboardShortcutsTab.tsx#buildFinalConflictMap",
-        "source:src/web-ui/src/app/scenes/settings/components/KeyboardShortcutsTab.tsx#buildStoredKeybindings({})"
+        "source:src/web-ui/src/app/scenes/settings/pages/application/KeyboardShortcutsSection.tsx#buildFinalConflictMap",
+        "source:src/web-ui/src/app/scenes/settings/pages/application/KeyboardShortcutsSection.tsx#buildStoredKeybindings({})"
       ]
     },
     {
@@ -2916,9 +3006,9 @@
         "pageId": "ai.models"
       },
       "evidence": [
-        "source:src/web-ui/src/infrastructure/config/components/ModelSettingsPage.tsx#custom_headers",
-        "source:src/web-ui/src/infrastructure/config/components/ModelSettingsPage.tsx#custom_request_body",
-        "source:src/web-ui/src/infrastructure/config/components/ModelSettingsPage.tsx#skip_ssl_verify"
+        "source:src/web-ui/src/app/scenes/settings/pages/ai/ModelSettingsPage.tsx#custom_headers",
+        "source:src/web-ui/src/app/scenes/settings/pages/ai/ModelSettingsPage.tsx#custom_request_body",
+        "source:src/web-ui/src/app/scenes/settings/pages/ai/ModelSettingsPage.tsx#skip_ssl_verify"
       ]
     },
     {
@@ -3022,7 +3112,7 @@
         "pageId": "workspace.session"
       },
       "evidence": [
-        "source:src/web-ui/src/infrastructure/config/components/DefaultHarnessConfig.tsx#DefaultHarnessConfig",
+        "source:src/web-ui/src/app/scenes/settings/pages/ai/DefaultHarnessSection.tsx#DefaultHarnessSection",
         "source:src/web-ui/src/locales/zh-CN/settings/runtime.json#defaultHarness.title"
       ]
     },

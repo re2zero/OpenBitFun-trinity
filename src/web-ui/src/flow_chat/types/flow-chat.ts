@@ -233,6 +233,8 @@ export interface ModelRound {
 export interface TokenUsage {
   inputTokens: number;
   outputTokens?: number;
+  /** Cache-read tokens; absent when any request in the turn did not report them. */
+  cachedTokens?: number;
   totalTokens: number;
   timestamp: number;
   /** Persisted source turn used to invalidate usage after history rewrites. */
@@ -443,6 +445,8 @@ export interface Session {
    * - 'failed': hydrate failed and the UI should offer retry instead of showing a new session.
    */
   historyState?: SessionHistoryState;
+  /** Last authoritative metadata count; absent on legacy projections. */
+  persistedTurnCount?: number;
 
   /**
    * Backend runtime-context lifecycle for sessions restored through the fast

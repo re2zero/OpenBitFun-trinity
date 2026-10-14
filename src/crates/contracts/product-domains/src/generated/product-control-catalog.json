@@ -4,8 +4,8 @@
   "title": "OpenBitFun Playbook",
   "origin": "https://playbook.openbitfun.com",
   "source": "src/shared/interactive-capabilities/catalog.json",
-  "digest": "b626f77724d05af870f136a1d0913b740d28b592e93241e61bd7d18852e2262e",
-  "ownerDigest": "c0e5c187cf62bc6ed06196ce8520b3eb427bf268cf24659b72d2552fb1d99c54",
+  "digest": "b7a929992cab46782a7a76fdaaa3953ec9628a8a823846a46bacd9dd4d46e6d9",
+  "ownerDigest": "c989ace53614c2a526fefe64816fdd6895ec71edcc28f44b6f80d1edb75bb33e",
   "searchAcceptance": [
     {
       "id": "companion-pet-mixed",
@@ -138,11 +138,11 @@
     "features": 23,
     "settings": 22,
     "userFacing": 45,
-    "documentedItems": 329,
+    "documentedItems": 335,
     "controlCoverage": {
-      "direct": 48,
+      "direct": 49,
       "delegated": 62,
-      "interactive": 219,
+      "interactive": 224,
       "unsupported": 0
     }
   },
@@ -196,6 +196,7 @@
         "turn-control",
         "permission-mailbox",
         "history-search",
+        "session-storage-directory",
         "agent-session-coordination",
         "mcp-mentions",
         "tool-activity",
@@ -563,11 +564,58 @@
         "additionalProperties": true
       },
       "delegateTools": [
+        "ListWorkspaces",
         "SessionControl",
         "SessionHistory",
         "Read",
         "Grep"
       ],
+      "presentationTarget": {
+        "kind": "scene",
+        "sceneId": "session"
+      }
+    },
+    {
+      "id": "feature.ai-assistant:open:session-storage-directory",
+      "capabilityId": "feature.ai-assistant",
+      "itemIds": [
+        "session-storage-directory"
+      ],
+      "kind": "open",
+      "risk": "ui",
+      "executionHost": "presentationSurface",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1",
+            "product_control_presentation_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "openReason": "visualSelection",
       "presentationTarget": {
         "kind": "scene",
         "sceneId": "session"
@@ -611,6 +659,7 @@
         "additionalProperties": true
       },
       "delegateTools": [
+        "ListWorkspaces",
         "SessionControl",
         "SessionMessage"
       ],
@@ -1353,13 +1402,11 @@
         "additionalProperties": true
       },
       "delegateTools": [
-        "Task",
         "AgentSpawn",
         "AgentWait",
         "AgentSendInput",
-        "AgentInterrupt",
-        "AgentList",
-        "AgentDelete"
+        "AgentControl",
+        "AgentList"
       ],
       "presentationTarget": {
         "kind": "action",
@@ -1371,6 +1418,7 @@
       "capabilityId": "feature.personal-assistants",
       "itemIds": [
         "assistant-gallery",
+        "assistant-open-close",
         "primary-delete-reset",
         "identity-avatar",
         "persona-documents",
@@ -1461,6 +1509,52 @@
         "additionalProperties": true
       },
       "openReason": "unstructuredInteraction",
+      "presentationTarget": {
+        "kind": "scene",
+        "sceneId": "profile"
+      }
+    },
+    {
+      "id": "feature.personal-assistants:open:assistant-open-close",
+      "capabilityId": "feature.personal-assistants",
+      "itemIds": [
+        "assistant-open-close"
+      ],
+      "kind": "open",
+      "risk": "ui",
+      "executionHost": "presentationSurface",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1",
+            "product_control_presentation_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "openReason": "visualSelection",
       "presentationTarget": {
         "kind": "scene",
         "sceneId": "profile"
@@ -4775,7 +4869,10 @@
         "default-cdp",
         "agent-actions",
         "control-session-preview",
-        "stop-control-session"
+        "stop-control-session",
+        "app-sharing",
+        "preview-input",
+        "remembered-control"
       ],
       "kind": "query",
       "risk": "read",
@@ -5223,6 +5320,144 @@
       "delegateTools": [
         "ComputerUse"
       ],
+      "presentationTarget": {
+        "kind": "settings",
+        "pageId": "tools.execution"
+      }
+    },
+    {
+      "id": "feature.computer-use:open:app-sharing",
+      "capabilityId": "feature.computer-use",
+      "itemIds": [
+        "app-sharing"
+      ],
+      "kind": "open",
+      "risk": "ui",
+      "executionHost": "presentationSurface",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1",
+            "product_control_presentation_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "openReason": "visualSelection",
+      "presentationTarget": {
+        "kind": "settings",
+        "pageId": "tools.execution"
+      }
+    },
+    {
+      "id": "feature.computer-use:open:preview-input",
+      "capabilityId": "feature.computer-use",
+      "itemIds": [
+        "preview-input"
+      ],
+      "kind": "open",
+      "risk": "ui",
+      "executionHost": "presentationSurface",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1",
+            "product_control_presentation_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "openReason": "visualSelection",
+      "presentationTarget": {
+        "kind": "settings",
+        "pageId": "tools.execution"
+      }
+    },
+    {
+      "id": "feature.computer-use:open:remembered-control",
+      "capabilityId": "feature.computer-use",
+      "itemIds": [
+        "remembered-control"
+      ],
+      "kind": "open",
+      "risk": "ui",
+      "executionHost": "presentationSurface",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1",
+            "product_control_presentation_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "openReason": "visualSelection",
       "presentationTarget": {
         "kind": "settings",
         "pageId": "tools.execution"
@@ -10740,6 +10975,7 @@
         "awaken",
         "state",
         "memory",
+        "morning",
         "being",
         "cloud",
         "engine"
@@ -10880,6 +11116,52 @@
       "capabilityId": "feature.trinity",
       "itemIds": [
         "memory"
+      ],
+      "kind": "open",
+      "risk": "ui",
+      "executionHost": "presentationSurface",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1",
+            "product_control_presentation_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": false,
+          "reason": "This delivery profile has no live presentation surface"
+        }
+      },
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "openReason": "unstructuredInteraction",
+      "presentationTarget": {
+        "kind": "scene",
+        "sceneId": "trinity"
+      }
+    },
+    {
+      "id": "feature.trinity:open:morning",
+      "capabilityId": "feature.trinity",
+      "itemIds": [
+        "morning"
       ],
       "kind": "open",
       "risk": "ui",
@@ -11068,8 +11350,7 @@
         "launch-at-login",
         "prevent-sleep",
         "close-behavior",
-        "notifications",
-        "announcements"
+        "notifications"
       ],
       "kind": "query",
       "risk": "read",
@@ -11388,100 +11669,10 @@
       }
     },
     {
-      "id": "setting.application.general:option:startup-tips",
-      "capabilityId": "setting.application.general",
-      "itemIds": [
-        "notifications"
-      ],
-      "kind": "option",
-      "risk": "write",
-      "executionHost": "productHost",
-      "availability": {
-        "desktop": {
-          "available": true
-        },
-        "cli": {
-          "available": true
-        },
-        "peer": {
-          "available": true,
-          "requiredCapabilities": [
-            "product_control_v1"
-          ]
-        },
-        "remoteControl": {
-          "available": true
-        },
-        "detachedDispatch": {
-          "available": true
-        }
-      },
-      "inputSchema": {
-        "type": "boolean"
-      },
-      "outputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "valueSource": {
-        "kind": "static"
-      },
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "application.general"
-      }
-    },
-    {
       "id": "setting.application.general:open:manual-update",
       "capabilityId": "setting.application.general",
       "itemIds": [
         "manual-update"
-      ],
-      "kind": "open",
-      "risk": "ui",
-      "executionHost": "presentationSurface",
-      "availability": {
-        "desktop": {
-          "available": true
-        },
-        "cli": {
-          "available": false,
-          "reason": "This delivery profile has no live presentation surface"
-        },
-        "peer": {
-          "available": true,
-          "requiredCapabilities": [
-            "product_control_v1",
-            "product_control_presentation_v1"
-          ]
-        },
-        "remoteControl": {
-          "available": true
-        },
-        "detachedDispatch": {
-          "available": false,
-          "reason": "This delivery profile has no live presentation surface"
-        }
-      },
-      "inputSchema": {
-        "type": "object",
-        "additionalProperties": false
-      },
-      "outputSchema": {
-        "type": "object",
-        "additionalProperties": true
-      },
-      "openReason": "unstructuredInteraction",
-      "presentationTarget": {
-        "kind": "settings",
-        "pageId": "application.general"
-      }
-    },
-    {
-      "id": "setting.application.general:open:announcements",
-      "capabilityId": "setting.application.general",
-      "itemIds": [
-        "announcements"
       ],
       "kind": "open",
       "risk": "ui",
@@ -12248,6 +12439,7 @@
       "id": "setting.application.input:query",
       "capabilityId": "setting.application.input",
       "itemIds": [
+        "auto-show-selection-toolbar",
         "voice-enabled",
         "language",
         "microphone-test",
@@ -12280,6 +12472,50 @@
       "inputSchema": {
         "type": "object",
         "additionalProperties": false
+      },
+      "outputSchema": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "valueSource": {
+        "kind": "static"
+      },
+      "presentationTarget": {
+        "kind": "settings",
+        "pageId": "application.voice"
+      }
+    },
+    {
+      "id": "setting.application.input:option:auto-show-selection-toolbar",
+      "capabilityId": "setting.application.input",
+      "itemIds": [
+        "auto-show-selection-toolbar"
+      ],
+      "kind": "option",
+      "risk": "write",
+      "executionHost": "productHost",
+      "availability": {
+        "desktop": {
+          "available": true
+        },
+        "cli": {
+          "available": true
+        },
+        "peer": {
+          "available": true,
+          "requiredCapabilities": [
+            "product_control_v1"
+          ]
+        },
+        "remoteControl": {
+          "available": true
+        },
+        "detachedDispatch": {
+          "available": true
+        }
+      },
+      "inputSchema": {
+        "type": "boolean"
       },
       "outputSchema": {
         "type": "object",
@@ -19663,8 +19899,8 @@
         },
         {
           "id": "session-lifecycle",
-          "titleZh": "重命名、归档、恢复、删除、分叉与导出会话",
-          "titleEn": "Rename, archive, restore, delete, fork, and export sessions",
+          "titleZh": "重命名、归档、恢复、删除、复制、分叉与导出会话",
+          "titleEn": "Rename, archive, restore, delete, copy, fork, and export sessions",
           "control": {
             "kind": "open",
             "reasonCode": "visualSelection",
@@ -19736,6 +19972,7 @@
           "control": {
             "kind": "delegate",
             "tools": [
+              "ListWorkspaces",
               "SessionControl",
               "SessionHistory",
               "Read",
@@ -19752,21 +19989,33 @@
           }
         },
         {
+          "id": "session-storage-directory",
+          "titleZh": "从工作区或会话菜单打开会话存储目录，用于备份与手动排障",
+          "titleEn": "Open session storage from workspace or session menus for backups and manual troubleshooting",
+          "control": {
+            "kind": "open",
+            "reasonCode": "visualSelection",
+            "reasonZh": "需要用户选择工作区或会话，并在本机桌面文件管理器中操作；远程工作区打开本机保存的会话镜像，对端设备和 Detached Dispatch 会话不支持此操作。打开目录不会修改会话归属。",
+            "reasonEn": "The user selects a workspace or session and works in the local desktop file manager; remote workspaces reveal their locally stored session mirror, while peer and detached-dispatch sessions are unsupported. Opening storage does not change session ownership."
+          }
+        },
+        {
           "id": "agent-session-coordination",
           "titleZh": "让智能体创建、列出、取消、删除会话或向另一会话发送消息",
           "titleEn": "Let an agent create, list, cancel, or delete sessions and send messages to another session",
           "control": {
             "kind": "delegate",
             "tools": [
+              "ListWorkspaces",
               "SessionControl",
               "SessionMessage"
             ],
             "workflowZh": [
-              "用 SessionControl 在明确工作区内创建或列出会话；取消只终止当前运行轮次，删除是独立动作",
+              "用 ListWorkspaces 获取运行主机登记的 workspace_id，再传给 SessionControl.workspace 创建或列出本地或远程会话；绝对路径仅在调用者执行环境中解析；取消只终止当前轮次，删除是独立动作",
               "需要让另一持久会话接手工作时用 SessionMessage，并保留异步返回；跨远程边界时沿用目标会话绑定，不得复用控制器路径"
             ],
             "workflowEn": [
-              "Use SessionControl to create or list sessions in an explicit workspace; cancel affects only the active turn and delete is separate",
+              "Use ListWorkspaces to discover runtime-host workspace IDs, then pass one as SessionControl.workspace to create or list local or remote sessions; absolute paths resolve in the caller environment; cancel affects only the active turn and delete is separate",
               "Use SessionMessage when another persisted session should take over work and retain its asynchronous result; preserve the target session binding across remote boundaries"
             ]
           }
@@ -19954,8 +20203,8 @@
         "Safely customize the running OpenBitFun frontend in Creative mode",
         "打开并新建一个 AI 会话",
         "Open and create a new AI session",
-        "重命名、归档、恢复、删除、分叉与导出会话",
-        "Rename, archive, restore, delete, fork, and export sessions",
+        "重命名、归档、恢复、删除、复制、分叉与导出会话",
+        "Rename, archive, restore, delete, copy, fork, and export sessions",
         "为会话选择模型、工作模式、记忆模式与权限模式",
         "Choose the model, work mode, memory mode, and permission mode per session",
         "让创造模式扩展客户端界面与运行时能力",
@@ -19966,6 +20215,8 @@
         "Review and answer pending permission requests individually or in a batch",
         "分页加载、搜索和回填历史消息与会话内容",
         "Page through, search, and backfill historical turns and session content",
+        "从工作区或会话菜单打开会话存储目录，用于备份与手动排障",
+        "Open session storage from workspace or session menus for backups and manual troubleshooting",
         "让智能体创建、列出、取消、删除会话或向另一会话发送消息",
         "Let an agent create, list, cancel, or delete sessions and send messages to another session",
         "在对话中通过 @ 选择当前模式可用的 MCP 服务",
@@ -19998,6 +20249,7 @@
         "Call FrontendWorkbench prepare on the local Desktop in Creative mode, read the packaged API, and edit only draft CSS, JavaScript and owned assets without source or build tools",
         "Apply with the original draft ID; the host starts the immutable review window's 15-second countdown only after the real shell and customization activate, and apply waits for a final confirmed or rolled_back outcome",
         "Compose commands, state and events into reusable capabilities; use FrontendWorkbench inspect to discover schemas and diagnostics, then invoke to verify execution",
+        "ListWorkspaces",
         "SessionControl",
         "SessionHistory",
         "Grep",
@@ -20006,9 +20258,9 @@
         "Use SessionControl list to find the target session, then export its indexed transcript with SessionHistory",
         "Read only the exported index first, then use Read or Grep for the required turns instead of loading the entire history into context",
         "SessionMessage",
-        "用 SessionControl 在明确工作区内创建或列出会话；取消只终止当前运行轮次，删除是独立动作",
+        "用 ListWorkspaces 获取运行主机登记的 workspace_id，再传给 SessionControl.workspace 创建或列出本地或远程会话；绝对路径仅在调用者执行环境中解析；取消只终止当前轮次，删除是独立动作",
         "需要让另一持久会话接手工作时用 SessionMessage，并保留异步返回；跨远程边界时沿用目标会话绑定，不得复用控制器路径",
-        "Use SessionControl to create or list sessions in an explicit workspace; cancel affects only the active turn and delete is separate",
+        "Use ListWorkspaces to discover runtime-host workspace IDs, then pass one as SessionControl.workspace to create or list local or remote sessions; absolute paths resolve in the caller environment; cancel affects only the active turn and delete is separate",
         "Use SessionMessage when another persisted session should take over work and retain its asynchronous result; preserve the target session binding across remote boundaries",
         "get_goal",
         "create_goal",
@@ -20132,20 +20384,18 @@
           "control": {
             "kind": "delegate",
             "tools": [
-              "Task",
               "AgentSpawn",
               "AgentWait",
               "AgentSendInput",
-              "AgentInterrupt",
-              "AgentList",
-              "AgentDelete"
+              "AgentControl",
+              "AgentList"
             ],
             "workflowZh": [
-              "按任务形态使用 Task 或 AgentSpawn 启动有边界的子任务，并保留返回的 agent_id",
+              "使用 AgentSpawn 启动有边界的子任务，并保留返回的 agent_id",
               "用 AgentList/AgentWait 查看进度；需要调整时用 AgentSendInput，必要时再中断或删除，最终综合子智能体结果"
             ],
             "workflowEn": [
-              "Start a bounded subtask with Task or AgentSpawn and retain the returned agent_id",
+              "Start a bounded subtask with AgentSpawn and retain the returned agent_id",
               "Use AgentList or AgentWait for progress, AgentSendInput for corrections, and interrupt or delete only when necessary before synthesizing the results"
             ]
           }
@@ -20215,16 +20465,14 @@
         "帮我进入智能体管理页",
         "Open Agents so I can see the specialized roles",
         "Take me to agent management",
-        "Task",
         "AgentSpawn",
         "AgentWait",
         "AgentSendInput",
-        "AgentInterrupt",
+        "AgentControl",
         "AgentList",
-        "AgentDelete",
-        "按任务形态使用 Task 或 AgentSpawn 启动有边界的子任务，并保留返回的 agent_id",
+        "使用 AgentSpawn 启动有边界的子任务，并保留返回的 agent_id",
         "用 AgentList/AgentWait 查看进度；需要调整时用 AgentSendInput，必要时再中断或删除，最终综合子智能体结果",
-        "Start a bounded subtask with Task or AgentSpawn and retain the returned agent_id",
+        "Start a bounded subtask with AgentSpawn and retain the returned agent_id",
         "Use AgentList or AgentWait for progress, AgentSendInput for corrections, and interrupt or delete only when necessary before synthesizing the results"
       ],
       "docsUrl": "https://playbook.openbitfun.com/capabilities/feature.agents/"
@@ -20280,6 +20528,17 @@
             "reasonCode": "unstructuredInteraction",
             "reasonZh": "“浏览已有助理、创建新助理并查看每个助理的身份与能力概览”由多个实时状态相关步骤组成，目前没有一个能确定完成整个流程的单一结构化 Command；智能体会打开精确入口，并把后续交互保留在用户可见界面。",
             "reasonEn": "“Browse existing assistants, create a new one, and review each assistant's identity and capability summary” spans multiple live-state-dependent steps and currently has no single structured Command that can deterministically complete the whole workflow; the Agent opens the exact entry and keeps the remaining interaction visible to the user."
+          }
+        },
+        {
+          "id": "assistant-open-close",
+          "titleZh": "关闭侧栏中的助理并取消正在运行的会话，保留配置和历史，之后从助理空间重新打开",
+          "titleEn": "Close sidebar assistants and cancel running sessions, preserve configuration and history, and reopen them from the assistant gallery",
+          "control": {
+            "kind": "open",
+            "reasonCode": "visualSelection",
+            "reasonZh": "关闭操作依赖用户选择的助理；助理空间保留完整目录，并提供重新打开入口。",
+            "reasonEn": "Closing depends on the assistant selected by the user; the gallery retains the complete catalog and provides a reopen action."
           }
         },
         {
@@ -20440,6 +20699,8 @@
         "Configure default Skills, built-in tools, and MCP tools",
         "浏览已有助理、创建新助理并查看每个助理的身份与能力概览",
         "Browse existing assistants, create a new one, and review each assistant's identity and capability summary",
+        "关闭侧栏中的助理并取消正在运行的会话，保留配置和历史，之后从助理空间重新打开",
+        "Close sidebar assistants and cancel running sessions, preserve configuration and history, and reopen them from the assistant gallery",
         "设为主助理、删除非主助理，或将助理工作区重置为默认状态",
         "Set the primary assistant, delete non-primary assistants, or reset an assistant workspace to defaults",
         "编辑助理名称、角色类型和气质，并选择官方头像、Emoji 或自定义头像字符",
@@ -22239,13 +22500,15 @@
         "启用或停用 Computer Use",
         "连接或断开受支持的浏览器",
         "检查并打开系统权限设置",
-        "查看当前控制目标与预览，并随时停止控制"
+        "查看当前控制目标与预览，并随时停止控制",
+        "先选择共享 App，再授权输入；可记住授权或随时撤销"
       ],
       "highlightsEn": [
         "Enable or disable Computer Use",
         "Connect or disconnect a supported browser",
         "Inspect and open OS permission settings",
-        "Inspect the current control target and preview, and stop control at any time"
+        "Inspect the current control target and preview, and stop control at any time",
+        "Select an App share before granting input; remember or revoke the grant"
       ],
       "items": [
         {
@@ -22362,6 +22625,39 @@
               "Use ComputerUse stop_control to release the tool-owned session. Users can also stop from the executing Desktop control card; its button addresses the displayed generation rather than a subsequently created session."
             ]
           }
+        },
+        {
+          "id": "app-sharing",
+          "titleZh": "选择 App 窗口并单独授权或撤销控制",
+          "titleEn": "Select an App window and separately grant or revoke control",
+          "control": {
+            "kind": "open",
+            "reasonCode": "visualSelection",
+            "reasonZh": "共享窗口及控制模式由用户明确选择；智能体只能请求共享，不能代替用户授权。",
+            "reasonEn": "Window selection and input mode require an explicit user choice; agents can request sharing but cannot grant themselves control."
+          }
+        },
+        {
+          "id": "preview-input",
+          "titleZh": "在共享预览中点击、拖动、滚动及输入",
+          "titleEn": "Click, drag, scroll and type through the shared preview",
+          "control": {
+            "kind": "open",
+            "reasonCode": "visualSelection",
+            "reasonZh": "预览输入需要用户授权，并绑定共享窗口、图像坐标及授权版本。",
+            "reasonEn": "Preview input requires user authorization and is bound to the shared window, image coordinates and authorization revision."
+          }
+        },
+        {
+          "id": "remembered-control",
+          "titleZh": "按应用执行文件和控制模式记住或忘记授权",
+          "titleEn": "Remember or forget control by application executable and input mode",
+          "control": {
+            "kind": "open",
+            "reasonCode": "visualSelection",
+            "reasonZh": "记住授权只在用户选定并共享同一应用后生效，应用文件或输入模式改变时需要重新授权。",
+            "reasonEn": "Remembered control applies only after the user shares the same application; changed executable contents or input modes require a new grant."
+          }
         }
       ],
       "stepsZh": [
@@ -22409,10 +22705,12 @@
         "连接或断开受支持的浏览器",
         "检查并打开系统权限设置",
         "查看当前控制目标与预览，并随时停止控制",
+        "先选择共享 App，再授权输入；可记住授权或随时撤销",
         "Enable or disable Computer Use",
         "Connect or disconnect a supported browser",
         "Inspect and open OS permission settings",
         "Inspect the current control target and preview, and stop control at any time",
+        "Select an App share before granting input; remember or revoke the grant",
         "检查 Computer Use 可用性、辅助功能和屏幕录制授权状态",
         "Check Computer Use availability plus accessibility and screen-recording permission status",
         "请求桌面控制所需的系统权限",
@@ -22431,6 +22729,12 @@
         "Inspect the current target, mode, and authorized capture preview in the control card",
         "停止当前桌面控制会话并释放捕获与输入资源",
         "Stop the current desktop-control session and release capture and input resources",
+        "选择 App 窗口并单独授权或撤销控制",
+        "Select an App window and separately grant or revoke control",
+        "在共享预览中点击、拖动、滚动及输入",
+        "Click, drag, scroll and type through the shared preview",
+        "按应用执行文件和控制模式记住或忘记授权",
+        "Remember or forget control by application executable and input mode",
         "打开桌面控制设置",
         "带我配置浏览器控制",
         "Open desktop-control settings",
@@ -25414,13 +25718,24 @@
         },
         {
           "id": "memory",
-          "titleZh": "检索、新增、强化与遗忘长期记忆，并翻看记忆时间线",
-          "titleEn": "Search, add, reinforce, and forget long-term memories, and browse the memory timeline",
+          "titleZh": "检索、新增、强化与遗忘长期记忆，翻看记忆时间线，并导出或导入记忆容器",
+          "titleEn": "Search, add, reinforce, and forget long-term memories, browse the memory timeline, and export or import a memory container",
           "control": {
             "kind": "open",
             "reasonCode": "unstructuredInteraction",
-            "reasonZh": "“检索、新增、强化与遗忘长期记忆，并翻看记忆时间线”由多个实时状态相关步骤组成，目前没有一个能确定完成整个流程的单一结构化 Command；Agent 会打开精确入口，并把后续交互保留在用户可见界面。",
-            "reasonEn": "“Search, add, reinforce, and forget long-term memories, and browse the memory timeline” spans multiple live-state-dependent steps and currently has no single structured Command that can deterministically complete the whole workflow; the Agent opens the exact entry and keeps the remaining interaction visible to the user."
+            "reasonZh": "“检索、新增、强化与遗忘长期记忆，翻看记忆时间线，并导出或导入记忆容器”由多个实时状态相关步骤组成，目前没有一个能确定完成整个流程的单一结构化 Command；Agent 会打开精确入口，并把后续交互保留在用户可见界面。",
+            "reasonEn": "“Search, add, reinforce, and forget long-term memories, browse the memory timeline, and export or import a memory container” spans multiple live-state-dependent steps and currently has no single structured Command that can deterministically complete the whole workflow; the Agent opens the exact entry and keeps the remaining interaction visible to the user."
+          }
+        },
+        {
+          "id": "morning",
+          "titleZh": "查看今日晨报：昨夜思绪、冲动与自省的摘要",
+          "titleEn": "Read today's morning report: a summary of overnight thoughts, urges, and reflections",
+          "control": {
+            "kind": "open",
+            "reasonCode": "unstructuredInteraction",
+            "reasonZh": "“查看今日晨报：昨夜思绪、冲动与自省的摘要”由多个实时状态相关步骤组成，目前没有一个能确定完成整个流程的单一结构化 Command；Agent 会打开精确入口，并把后续交互保留在用户可见界面。",
+            "reasonEn": "“Read today's morning report: a summary of overnight thoughts, urges, and reflections” spans multiple live-state-dependent steps and currently has no single structured Command that can deterministically complete the whole workflow; the Agent opens the exact entry and keeps the remaining interaction visible to the user."
           }
         },
         {
@@ -25518,8 +25833,10 @@
         "Complete the awaken ceremony: name the core being, bind its owner, and confirm the persona preset",
         "查看实时认知状态：情绪效价、需求强度、注意力焦点与置信度",
         "Inspect the live cognitive state: emotion valence, need strengths, attention focus, and confidence",
-        "检索、新增、强化与遗忘长期记忆，并翻看记忆时间线",
-        "Search, add, reinforce, and forget long-term memories, and browse the memory timeline",
+        "检索、新增、强化与遗忘长期记忆，翻看记忆时间线，并导出或导入记忆容器",
+        "Search, add, reinforce, and forget long-term memories, browse the memory timeline, and export or import a memory container",
+        "查看今日晨报：昨夜思绪、冲动与自省的摘要",
+        "Read today's morning report: a summary of overnight thoughts, urges, and reflections",
         "查看核心认知体身份（名字、认主、人格）并管理助理列表",
         "Inspect the core being identity (name, owner, persona) and manage the assistant list",
         "注册登录云端记忆，设置主密钥，并同步、备份或恢复认知体记忆",
@@ -25562,12 +25879,12 @@
       "highlightsZh": [
         "开机启动与自动更新",
         "窗口关闭和托盘行为",
-        "任务完成、权限请求与启动提示通知"
+        "任务完成与权限请求通知"
       ],
       "highlightsEn": [
         "Launch-at-login and automatic updates",
         "Window close and tray behavior",
-        "Completion, permission, and startup-tip notifications"
+        "Completion and permission notifications"
       ],
       "items": [
         {
@@ -25639,8 +25956,8 @@
         },
         {
           "id": "notifications",
-          "titleZh": "分别控制任务完成、权限请求和启动提示通知",
-          "titleEn": "Control completion, permission-request, and startup-tip notifications independently",
+          "titleZh": "分别控制任务完成和权限请求通知",
+          "titleEn": "Control completion and permission-request notifications independently",
           "control": {
             "kind": "direct",
             "operations": [],
@@ -25650,22 +25967,8 @@
               },
               {
                 "id": "permission-notification"
-              },
-              {
-                "id": "startup-tips"
               }
             ]
-          }
-        },
-        {
-          "id": "announcements",
-          "titleZh": "查看、标记已读、忽略或永久隐藏产品公告与提示",
-          "titleEn": "Review, mark seen, dismiss, or permanently hide product announcements and tips",
-          "control": {
-            "kind": "open",
-            "reasonCode": "unstructuredInteraction",
-            "reasonZh": "“查看、标记已读、忽略或永久隐藏产品公告与提示”由多个实时状态相关步骤组成，目前没有一个能确定完成整个流程的单一结构化 Command；智能体会打开精确入口，并把后续交互保留在用户可见界面。",
-            "reasonEn": "“Review, mark seen, dismiss, or permanently hide product announcements and tips” spans multiple live-state-dependent steps and currently has no single structured Command that can deterministically complete the whole workflow; the Agent opens the exact entry and keeps the remaining interaction visible to the user."
           }
         }
       ],
@@ -25785,20 +26088,6 @@
             "kind": "config",
             "path": "app.notifications.permission_request_notify"
           }
-        },
-        {
-          "id": "startup-tips",
-          "titleZh": "启动提示",
-          "titleEn": "Startup tips",
-          "descriptionZh": "启动后显示功能提示。",
-          "descriptionEn": "Show product tips after startup.",
-          "valueSchema": {
-            "type": "boolean"
-          },
-          "handler": {
-            "kind": "config",
-            "path": "app.notifications.enable_startup_tips"
-          }
         }
       ],
       "searchTerms": [
@@ -25820,10 +26109,10 @@
         "prevent sleep",
         "开机启动与自动更新",
         "窗口关闭和托盘行为",
-        "任务完成、权限请求与启动提示通知",
+        "任务完成与权限请求通知",
         "Launch-at-login and automatic updates",
         "Window close and tray behavior",
-        "Completion, permission, and startup-tip notifications",
+        "Completion and permission notifications",
         "启用或停用自动检查更新",
         "Enable or disable automatic update checks",
         "手动检查并后台下载更新，确认后安装并重启，或稍后从关于页面安装",
@@ -25834,10 +26123,8 @@
         "Choose whether OpenBitFun prevents the computer from sleeping while it runs",
         "选择关闭主窗口时退出、最小化到托盘或每次询问",
         "Choose whether closing the main window quits, minimizes to tray, or asks each time",
-        "分别控制任务完成、权限请求和启动提示通知",
-        "Control completion, permission-request, and startup-tip notifications independently",
-        "查看、标记已读、忽略或永久隐藏产品公告与提示",
-        "Review, mark seen, dismiss, or permanently hide product announcements and tips",
+        "分别控制任务完成和权限请求通知",
+        "Control completion and permission-request notifications independently",
         "关闭自动更新",
         "以后关闭窗口时最小化到托盘",
         "打开常规设置",
@@ -26382,11 +26669,14 @@
       "id": "setting.application.input",
       "kind": "setting",
       "categoryId": "application",
-      "titleZh": "语音",
-      "titleEn": "Voice",
-      "summaryZh": "配置语音输入、麦克风、识别语言、本地模型与实时语音通话。",
-      "summaryEn": "Configure voice input, microphones, recognition language, local models, and realtime voice calls.",
+      "titleZh": "输入与交互",
+      "titleEn": "Input & interaction",
+      "summaryZh": "配置对话文本选择操作、语音输入、麦克风、识别语言与本地模型。",
+      "summaryEn": "Configure conversation text selection actions, voice input, microphones, recognition language, and local models.",
       "keywordsZh": [
+        "选中文字",
+        "批注",
+        "侧边提问",
         "语音设置",
         "语音",
         "麦克风",
@@ -26394,6 +26684,9 @@
         "语音识别"
       ],
       "keywordsEn": [
+        "text selection",
+        "annotation",
+        "selection toolbar",
         "voice settings",
         "voice",
         "microphone",
@@ -26401,16 +26694,37 @@
         "speech recognition"
       ],
       "highlightsZh": [
+        "选中文字操作栏的自动显示开关",
         "语音输入与本地模型",
         "识别语言和最长录音时间",
         "实时语音通话"
       ],
       "highlightsEn": [
+        "Automatic text selection toolbar preference",
         "Voice input and local models",
         "Recognition language and maximum recording time",
         "Realtime voice calls"
       ],
       "items": [
+        {
+          "id": "auto-show-selection-toolbar",
+          "titleZh": "开启或关闭选中对话文本后的自动操作栏",
+          "titleEn": "Enable or disable automatic actions after selecting conversation text",
+          "destination": {
+            "kind": "settings",
+            "pageId": "application.voice",
+            "sectionId": "text-selection"
+          },
+          "control": {
+            "kind": "direct",
+            "operations": [],
+            "options": [
+              {
+                "id": "auto-show-selection-toolbar"
+              }
+            ]
+          }
+        },
         {
           "id": "voice-enabled",
           "titleZh": "在聊天输入框启用或停用语音输入",
@@ -26498,11 +26812,11 @@
       ],
       "stepsZh": [
         "打开设置",
-        "进入“应用与界面 > 语音”"
+        "进入“应用与界面 > 输入与交互”"
       ],
       "stepsEn": [
         "Open Settings",
-        "Go to App & Interface > Voice"
+        "Go to App & Interface > Input & Interaction"
       ],
       "agentExamplesZh": [
         "打开语音输入设置",
@@ -26518,6 +26832,20 @@
       },
       "operations": [],
       "options": [
+        {
+          "id": "auto-show-selection-toolbar",
+          "titleZh": "自动显示选中文字操作栏",
+          "titleEn": "Automatically show text selection actions",
+          "descriptionZh": "选中对话文本后自动显示批注和提问操作；关闭后仍可使用右键菜单和提问快捷键。",
+          "descriptionEn": "Automatically show annotation and question actions after selecting conversation text; right-click actions and the question shortcut remain available when disabled.",
+          "valueSchema": {
+            "type": "boolean"
+          },
+          "handler": {
+            "kind": "config",
+            "path": "app.flow_chat.auto_show_selection_toolbar"
+          }
+        },
         {
           "id": "voice-enabled",
           "titleZh": "启用语音输入",
@@ -26581,25 +26909,36 @@
       ],
       "searchTerms": [
         "setting.application.input",
-        "语音",
-        "Voice",
+        "输入与交互",
+        "Input & interaction",
         "应用设置",
         "Application settings",
+        "选中文字",
+        "批注",
+        "侧边提问",
         "语音设置",
+        "语音",
         "麦克风",
         "听写",
         "语音识别",
+        "text selection",
+        "annotation",
+        "selection toolbar",
         "voice settings",
         "voice",
         "microphone",
         "dictation",
         "speech recognition",
+        "选中文字操作栏的自动显示开关",
         "语音输入与本地模型",
         "识别语言和最长录音时间",
         "实时语音通话",
+        "Automatic text selection toolbar preference",
         "Voice input and local models",
         "Recognition language and maximum recording time",
         "Realtime voice calls",
+        "开启或关闭选中对话文本后的自动操作栏",
+        "Enable or disable automatic actions after selecting conversation text",
         "在聊天输入框启用或停用语音输入",
         "Enable or disable voice input in the chat composer",
         "选择自动检测或中文、粤语、英文、日文等识别语言",

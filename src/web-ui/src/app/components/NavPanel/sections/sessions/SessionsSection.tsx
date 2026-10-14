@@ -1,6 +1,9 @@
 import { lazyWithRecovery } from '@/shared/utils/lazyWithRecovery';
 import { useDeviceDirectory, resolveDeviceName } from '@/infrastructure/account/deviceDirectory';
 import { requireSessionOwningWorkspaceId } from '@/flow_chat/utils/sessionOrdering';
+import { isSessionEmptyForCopy } from '@/flow_chat/utils/sessionCopy';
+import { usePeerDeviceModeOptional } from '@/infrastructure/peer-device/peerDeviceContextState';
+import { canCopySessionsOnSurface } from '@/infrastructure/peer-device/peerCapabilityResolution';
 /**
  * SessionsSection — inline accordion content for the "Sessions" nav item.
  *
@@ -10,7 +13,7 @@ import { requireSessionOwningWorkspaceId } from '@/flow_chat/utils/sessionOrderi
 
 import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { subscribeOverlayInteraction, createOverlayPortal, Button, Icon, IconButton, Input, Menu, MenuItem, OverflowText, StatusPill, Tooltip } from '@openbitfun/ui';
-import { Loader2, Archive, FolderGit2, ListChecks } from 'lucide-react';
+import { Loader2, Archive, FolderGit2, FolderOpen, ListChecks } from 'lucide-react';
 import { RetainedMountBoundary } from '@/shared/presence';
 import { useI18n } from '@/infrastructure/i18n';
 import { flowChatStore } from '../../../../../flow_chat/store/FlowChatStore';
@@ -18,6 +21,7 @@ import { flowChatManager } from '../../../../../flow_chat/services/FlowChatManag
 import type { FlowChatState, Session } from '../../../../../flow_chat/types/flow-chat';
 import { useSceneStore } from '../../../../stores/sceneStore';
 import { useWorkspaceContext } from '@/infrastructure/contexts/WorkspaceContext';
+import { sessionAPI } from '@/infrastructure/api/service-api/SessionAPI';
 import { createLogger } from '@/shared/utils/logger';
 import { isSamePath } from '@/shared/utils/pathUtils';
 import { isLinkedWorktreeWorkspace } from '@/shared/types/global-state';
@@ -53,7 +57,7 @@ import { isDefaultSessionTitle, resolveSessionTitle } from '@/flow_chat/utils/se
 import { useSessionTitleNumbers } from '@/flow_chat/hooks/useSessionTitleNumbers';
 import { SessionTitleNumber } from '@/flow_chat/components/SessionTitleNumber';
 import { useSessionComposerStore } from '@/flow_chat/store/sessionComposerStore';
-import { getActiveSurfaceId, surfaceScopedKey } from '@/infrastructure/peer-device/deviceSurface';
+import { getActiveSurfaceId, isSurfaceChangedError, surfaceScopedKey } from '@/infrastructure/peer-device/deviceSurface';
 import { isSessionNavRowActive } from './sessionNavSelection';
 import { isSessionRowPointerTarget } from './sessionOpenPointer';
 import {
@@ -252,6 +256,11 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
   const [flowChatState, setFlowChatState] = useState<FlowChatState>(() =>
     flowChatStore.getState()
   );
+  const peerDevice = usePeerDeviceModeOptional();
+  const canCopySessions = canCopySessionsOnSurface(
+    peerDevice?.peerMode.active ?? false,
+    peerDevice?.currentPeerCapabilities ?? null,
+  );
   const backgroundSubagentActivities = useBackgroundSubagentActivityStore(state => state.activities);
   const dispatchTransportByJobId = useDispatchJobStore(state => state.transportByJobId);
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
@@ -293,6 +302,8 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
   /** Second level of the session menu: pick what a Markdown export includes. */
   const [isExportScopeMenu, setIsExportScopeMenu] = useState(false);
   const [exportingSessionId, setExportingSessionId] = useState<string | null>(null);
+  /** Session whose copy request is in flight; one copy runs at a time. */
+  const [duplicatingSessionId, setDuplicatingSessionId] = useState<string | null>(null);
   const orderingRevision = useSyncExternalStore(
     sessionNavStatusService.subscribeOrdering,
     sessionNavStatusService.getOrderingSnapshot,
@@ -1156,6 +1167,23 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
     [activeSessionId, dispatchHistoryOpenIntentForSession, editingSessionId],
   );
 
+  const handleRevealSessionStorageDirectory = useCallback(async (e: React.MouseEvent, session: Session) => {
+    e.stopPropagation();
+    closeSessionMenu();
+    try {
+      if (isNonLocalDispatchTarget(session.config.dispatchTarget)) {
+        throw new Error(t('nav.sessions.storageDirectoryDesktopOnly'));
+      }
+      const storageWorkspaceId = workspaceId ?? requireSessionOwningWorkspaceId(session);
+      await sessionAPI.revealStorageDirectory(storageWorkspaceId, session.sessionId);
+    } catch (error) {
+      notificationService.error(
+        error instanceof Error ? error.message : t('nav.sessions.openStorageDirectoryFailed'),
+        { duration: 4000 },
+      );
+    }
+  }, [closeSessionMenu, t, workspaceId]);
+
   const resolveSessionTitle = getTitle;
   const titleNumbers = useSessionTitleNumbers(flowChatState.sessions);
 
@@ -1269,6 +1297,47 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
       }
     },
     [t]
+  );
+
+  /**
+   * Copy the session into a new independent session. The copy is created by the
+   * host and appears in this list; the current row and the active session stay
+   * untouched (delete and archive never move the user either).
+   */
+  const handleDuplicateSession = useCallback(
+    async (e: React.MouseEvent, sessionId: string) => {
+      e.stopPropagation();
+      closeSessionMenu();
+      if (duplicatingSessionId) return;
+
+      setDuplicatingSessionId(sessionId);
+      try {
+        const copied = await flowChatManager.duplicateChatSession(sessionId);
+        if (copied.metadataProjected) {
+          notificationService.success(
+            t('nav.sessions.duplicateSuccess', { name: copied.sessionName }),
+            { duration: 3000 },
+          );
+        } else {
+          notificationService.warning(
+            t('nav.sessions.duplicateCreatedRefreshFailed', { name: copied.sessionName }),
+            { duration: 5000 },
+          );
+        }
+      } catch (error) {
+        if (isSurfaceChangedError(error)) return;
+        log.error('Failed to copy session', { sessionId, error });
+        notificationService.error(
+          error instanceof Error && error.message
+            ? error.message
+            : t('nav.sessions.duplicateFailed'),
+          { duration: 4000 },
+        );
+      } finally {
+        setDuplicatingSessionId(null);
+      }
+    },
+    [closeSessionMenu, duplicatingSessionId, t],
   );
 
   /**
@@ -1919,6 +1988,49 @@ const SessionsSection: React.FC<SessionsSectionProps> = ({
                             data-session-id={session.sessionId}
                           >
                             <span>{t('nav.sessions.copySessionId')}</span>
+                          </MenuItem>
+                          <MenuItem
+                            type="button"
+                            leading={duplicatingSessionId === session.sessionId
+                              ? <Loader2 className="openbitfun-nav-panel__inline-toggle-spinner" aria-hidden />
+                              : <Icon name="files" size="sm" />}
+                            onClick={e => { void handleDuplicateSession(e, session.sessionId); }}
+                            // A running turn is still being persisted, so its
+                            // history is not a stable copy boundary; a session
+                            // owned by another device has no local history.
+                            disabled={isDispatched
+                              || !canCopySessions
+                              || isSessionEmptyForCopy(session)
+                              || runningSessionIds.has(session.sessionId)
+                              || duplicatingSessionId === session.sessionId}
+                            title={isDispatched
+                              ? t('nav.sessions.duplicateDispatchUnsupported')
+                              : !canCopySessions
+                                ? t('nav.sessions.duplicateHostUnsupported')
+                                : isSessionEmptyForCopy(session)
+                                  ? t('nav.sessions.duplicateEmpty')
+                                  : runningSessionIds.has(session.sessionId)
+                                    ? t('nav.sessions.duplicateRunning')
+                                    : undefined}
+                            data-testid="nav-session-menu-duplicate"
+                            data-session-id={session.sessionId}
+                          >
+                            <span>{t('nav.sessions.duplicate')}</span>
+                          </MenuItem>
+                          <MenuItem
+                            type="button"
+                            leading={<Icon glyph={FolderOpen} size="sm" />}
+                            onClick={e => { void handleRevealSessionStorageDirectory(e, session); }}
+                            disabled={!sessionAPI.canRevealStorageDirectory() || isDispatched || (!workspaceId && !session.projectWorkspaceId && !session.workspaceId)}
+                            title={!sessionAPI.canRevealStorageDirectory() || isDispatched
+                              ? t('nav.sessions.storageDirectoryDesktopOnly')
+                              : (!workspaceId && !session.projectWorkspaceId && !session.workspaceId)
+                                ? t('nav.sessions.storageDirectoryWorkspaceUnavailable')
+                                : undefined}
+                            data-testid="nav-session-menu-open-storage"
+                            data-session-id={session.sessionId}
+                          >
+                            <span>{t('nav.sessions.openStorageDirectory')}</span>
                           </MenuItem>
                           <MenuItem
                             type="button"

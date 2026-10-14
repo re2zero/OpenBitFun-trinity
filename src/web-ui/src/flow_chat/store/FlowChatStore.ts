@@ -130,6 +130,15 @@ import {
 
 const log = createLogger('FlowChatStore');
 
+/**
+ * Records that can own a pre-ID session projection. A linked worktree may be
+ * known to the host without being opened, so recent records are candidates too.
+ */
+function legacySessionWorkspaceCandidates(): WorkspaceInfo[] {
+  const state = workspaceManager.getState();
+  return [...state.openedWorkspaces.values(), ...(state.recentWorkspaces ?? [])];
+}
+
 function firstNonEmptyString(...values: unknown[]): string | undefined {
   for (const value of values) {
     if (typeof value === 'string' && value.trim()) {
@@ -4660,12 +4669,12 @@ export class FlowChatStore {
     });
   }
 
-  public updateSessionModelName(sessionId: string, modelName: string): void {
+  public updateSessionModelName(sessionId: string, modelName: string | undefined): void {
     this.setState(prev => {
       const session = prev.sessions.get(sessionId);
       if (!session) return prev;
 
-      const normalizedModelName = modelName.trim() || 'primary';
+      const normalizedModelName = modelName === undefined ? undefined : modelName.trim() || 'primary';
       if (session.config.modelName?.trim() === normalizedModelName) {
         return prev;
       }
@@ -5521,6 +5530,7 @@ export class FlowChatStore {
   public async cancelRunningSessionsForWorkspace(
     workspace: Pick<WorkspaceInfo, 'id' | 'rootPath' | 'connectionId' | 'sshHost'>
   ): Promise<string[]> {
+    const scope = getActiveSurfaceScope();
     const runningSessions = Array.from(this.state.sessions.values())
       .filter(session => sessionMatchesWorkspace(session, workspace))
       .filter(session => {
@@ -5541,7 +5551,6 @@ export class FlowChatStore {
       return [];
     }
 
-    const { agentAPI } = await import('@/infrastructure/api/service-api/AgentAPI');
     await Promise.allSettled(
       runningSessions.map(async session => {
         const sessionId = session.sessionId;
@@ -5554,11 +5563,12 @@ export class FlowChatStore {
             error,
           });
         } finally {
-          this.cancelSessionTask(sessionId);
+          if (scope.isCurrent()) this.cancelSessionTask(sessionId);
         }
       })
     );
 
+    scope.assertCurrent('cancel workspace sessions');
     return runningSessionIds;
   }
 
@@ -6668,7 +6678,7 @@ export class FlowChatStore {
     sessionId: string, 
     tokenUsage: Pick<
       TokenUsage,
-      'inputTokens' | 'outputTokens' | 'totalTokens' | 'turnId' | 'source'
+      'inputTokens' | 'outputTokens' | 'cachedTokens' | 'totalTokens' | 'turnId' | 'source'
     >,
     dialogTurnId?: string
   ): void {
@@ -6679,6 +6689,7 @@ export class FlowChatStore {
       const nextTokenUsage: TokenUsage = {
         inputTokens: tokenUsage.inputTokens,
         outputTokens: tokenUsage.outputTokens,
+        cachedTokens: tokenUsage.cachedTokens,
         totalTokens: tokenUsage.totalTokens,
         timestamp: Date.now(),
         ...(tokenUsage.turnId ? { turnId: tokenUsage.turnId } : {}),
@@ -6700,6 +6711,10 @@ export class FlowChatStore {
           const accumulatedTurnUsage: TokenUsage = {
             inputTokens: (previousTurnUsage?.inputTokens ?? 0) + nextTokenUsage.inputTokens,
             outputTokens: accumulatedOutputTokens,
+            cachedTokens: previousTurnUsage
+              ? (typeof previousTurnUsage.cachedTokens === 'number' && typeof nextTokenUsage.cachedTokens === 'number'
+                ? previousTurnUsage.cachedTokens + nextTokenUsage.cachedTokens : undefined)
+              : nextTokenUsage.cachedTokens,
             totalTokens: (previousTurnUsage?.totalTokens ?? 0) + nextTokenUsage.totalTokens,
             timestamp: nextTokenUsage.timestamp,
           };
@@ -6773,7 +6788,7 @@ export class FlowChatStore {
   public rollbackTokenUsage(): void {
   }
 
-  public updateSessionMaxContextTokens(sessionId: string, maxContextTokens: number): void {
+  public updateSessionMaxContextTokens(sessionId: string, maxContextTokens: number | undefined): void {
     this.setState(prev => {
       const session = prev.sessions.get(sessionId);
       if (!session) return prev;
@@ -7359,14 +7374,15 @@ export class FlowChatStore {
           }
         }
 
+        const legacyRecords = legacySessionWorkspaceCandidates();
         const workspaceId = metadata.workspaceId ?? resolveLegacySessionWorkspace({
           workspacePath: metadata.workspacePath || workspacePath,
           projectWorkspacePath: metadata.projectWorkspacePath,
           remoteConnectionId, remoteSshHost,
-        }, [...workspaceManager.getState().openedWorkspaces.values()])?.id;
+        }, legacyRecords)?.id;
         const projectWorkspaceId = metadata.projectWorkspaceId ?? resolveLegacySessionWorkspace({
           workspacePath: metadata.projectWorkspacePath || workspacePath, remoteConnectionId, remoteSshHost,
-        }, [...workspaceManager.getState().openedWorkspaces.values()])?.id;
+        }, legacyRecords)?.id;
         const relationship = deriveSessionRelationshipFromMetadata(metadata);
         const lastFinishedAt = deriveLastFinishedAtFromMetadata(metadata);
         const titleState = deriveSessionTitleStateFromMetadata(metadata);
@@ -7426,6 +7442,7 @@ export class FlowChatStore {
             dialogTurns: [],
             status: 'idle',
             persistedStatus: metadata.status,
+            persistedTurnCount: metadata.turnCount,
             config: {
               agentType: validatedAgentType,
               modelName: metadata.modelName,
@@ -7831,14 +7848,15 @@ export class FlowChatStore {
             }
           }
 
+          const legacyRecords = legacySessionWorkspaceCandidates();
           const workspaceId = metadata.workspaceId ?? resolveLegacySessionWorkspace({
           workspacePath: metadata.workspacePath || workspacePath,
           projectWorkspacePath: metadata.projectWorkspacePath,
           remoteConnectionId, remoteSshHost,
-        }, [...workspaceManager.getState().openedWorkspaces.values()])?.id;
+        }, legacyRecords)?.id;
         const projectWorkspaceId = metadata.projectWorkspaceId ?? resolveLegacySessionWorkspace({
           workspacePath: metadata.projectWorkspacePath || workspacePath, remoteConnectionId, remoteSshHost,
-        }, [...workspaceManager.getState().openedWorkspaces.values()])?.id;
+        }, legacyRecords)?.id;
         const relationship = deriveSessionRelationshipFromMetadata(metadata);
           const lastFinishedAt = deriveLastFinishedAtFromMetadata(metadata);
           const titleState = deriveSessionTitleStateFromMetadata(metadata);
@@ -7877,6 +7895,7 @@ export class FlowChatStore {
               dialogTurns: [],
               status: 'idle',
               persistedStatus: metadata.status,
+              persistedTurnCount: metadata.turnCount,
               config: {
                 agentType: validatedAgentType,
                 modelName: metadata.modelName,
@@ -9225,6 +9244,7 @@ export class FlowChatStore {
         ? {
             inputTokens: rawTokenUsage.inputTokens ?? rawTokenUsage.input_tokens,
             outputTokens: rawTokenUsage.outputTokens ?? rawTokenUsage.output_tokens,
+            cachedTokens: rawTokenUsage.cachedTokens ?? rawTokenUsage.cached_tokens,
             totalTokens: rawTokenUsage.totalTokens ?? rawTokenUsage.total_tokens,
             timestamp: rawTokenUsage.timestamp,
           }

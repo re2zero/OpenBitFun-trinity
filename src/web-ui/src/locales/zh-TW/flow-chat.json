@@ -572,6 +572,8 @@
     "copyFailed": "已複製!",
     "regenerate": "重新生成",
     "edit": "編輯消息",
+    "editAndRollback": "編輯和回滾",
+    "rollbackBeforeTurn": "回滾到此輪之前",
     "delete": "刪除消息",
     "retry": "重試",
     "sentAt": "傳送於 {{time}}",
@@ -1116,6 +1118,7 @@
     "emptyDirectory": "空目錄",
     "rootDirectory": "根目錄",
     "goBack": "返回上一級",
+    "openDirectory": "進入目錄",
     "navHint": "導航",
     "enterHint": "進入",
     "backHint": "返回",
@@ -1133,7 +1136,7 @@
     "unknownTool": "未知工具"
   },
   "transcriptExport": {
-    "copyFull": "複製完整過程",
+    "copyFull": "複製全部",
     "copyResult": "複製結果",
     "copyEmpty": "該對話沒有可複製的內容",
     "exportEmpty": "該工作階段沒有可匯出的內容",
@@ -1162,6 +1165,8 @@
   },
   "btw": {
     "title": "側問",
+    "temporaryLabel": "臨時",
+    "temporaryHint": "關閉標籤頁後，對話內容將消失，無法復原。",
     "shortLabel": "側問",
     "hint": "不儲存 · 使用目前對話上下文 · 無工具",
     "placeholder": "問個小問題…",
@@ -1700,6 +1705,21 @@
     }
   },
   "modelRound": {
+    "metrics": {
+      "label": "本輪用量與輸出速度",
+      "total": "Token 總量",
+      "input": "輸入 Token",
+      "output": "輸出 Token",
+      "cache": "輸入快取命中",
+      "averageRate": "平均輸出",
+      "speedLevel": "速度檔位",
+      "rateValue": "{{value}} t/s",
+      "rateBasis": "輸出 Token 除以本輪總耗時，包含工具執行與等待；檔位分界為 15、40、80 Token/秒",
+      "slow": "慢",
+      "normal": "一般",
+      "fast": "快",
+      "veryFast": "極快"
+    },
     "copyDialog": "複製對話",
     "copiedDialog": "已複製!",
     "forkDialog": "從這裡分叉會話",
@@ -1985,7 +2005,12 @@
       "finished": "產生結束"
     },
     "generativeWidget": {
-      "exportFileNamePrefix": "OpenBitFun組件"
+      "exportFileNamePrefix": "OpenBitFun組件",
+      "exportHtml": "匯出 HTML",
+      "exportingHtml": "正在匯出 HTML…",
+      "exportHtmlSuccess": "HTML 已匯出",
+      "exportHtmlFailed": "匯出 HTML 失敗",
+      "exportHtmlHostUnavailable": "此操作需要 OpenBitFun，無法在匯出的 HTML 中使用。"
     },
     "initMiniApp": {
       "title": "初始化小應用",
@@ -3282,6 +3307,16 @@
     "projectCowork": "項目裡工作。"
   },
   "modelSelector": {
+    "modes": {
+      "selection": "選擇模式",
+      "manual": "手動指定",
+      "manualUnavailable": "上次選擇的模型暫不可用，請重新選擇模型。",
+      "smart": "智慧模式",
+      "pool": "電池模式",
+      "comingSoon": "尚未開放",
+      "developmentNotice": "目前模式尚未開放，暫時直接使用主力模型。",
+      "primaryRequired": "請先設定主力模型"
+    },
     "model": "模型",
     "modelExplanation": "模型說明",
     "modelSettings": "模型設定",
@@ -3298,6 +3333,7 @@
     "acpMode": "模式",
     "acpModeLocked": "對話已經開始，模式不能再改。",
     "acpModeFailed": "切換模式失敗",
+    "defaultSaveFailed": "模型已切換，但未能儲存後續對話的預設選擇。",
     "switchFailed": "切換模型失敗",
     "modelNotConfigured": "未設定",
     "openModelSettings": "前往模型設定",
@@ -3338,6 +3374,9 @@
     "xhighDesc": "最大推理深度（較慢）"
   },
   "reasoningSelector": {
+    "thinking": "思考",
+    "automatic": "自動推理",
+    "manual": "手動",
     "title": "推理強度",
     "auto": "自動",
     "modelDefault": "模型預設值",
@@ -3349,11 +3388,11 @@
       "on": "開啟",
       "none": "關閉",
       "minimal": "極低",
-      "low": "低",
+      "low": "輕",
       "medium": "中",
       "high": "高",
       "xhigh": "極高",
-      "max": "最高"
+      "max": "最大"
     }
   },
   "coworkScope": {
@@ -3470,6 +3509,7 @@
   "steering": {
     "title": "立即引導",
     "injectedAt": "已在第 {{round}} 輪前插入",
+    "statusNotApplied": "未生效，請在訊息佇列中重試",
     "statusPending": "等待觸發",
     "statusInjected": "已觸發"
   },

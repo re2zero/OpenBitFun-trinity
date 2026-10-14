@@ -1,4 +1,5 @@
 import { requireSessionOwningWorkspaceId } from '../../utils/sessionOrdering';
+import { isSessionEmptyForCopy } from '../../utils/sessionCopy';
 /**
  * Session management module
  * Handles session creation, switching, deletion, and other operations
@@ -827,6 +828,59 @@ export async function forkChatSession(
   context.flowChatStore.switchSession(response.sessionId);
 
   return response.sessionId;
+}
+
+/**
+ * Copy a session into a new independent session without leaving the current one.
+ *
+ * The host owns the copy: it duplicates the source session's persisted history
+ * under a new session id and leaves the source session untouched. The copy is
+ * projected into the store from its authoritative metadata record instead of
+ * being switched to, so the navigation list gains a row while the user keeps
+ * their place (delete and archive behave the same way).
+ */
+export async function duplicateChatSession(
+  context: FlowChatContext,
+  sourceSessionId: string,
+): Promise<{ sessionId: string; sessionName: string; metadataProjected: boolean }> {
+  const scope = getActiveSurfaceScope();
+  const sourceSession = context.flowChatStore.getState().sessions.get(sourceSessionId);
+  if (!sourceSession) {
+    throw new Error(`Session does not exist: ${sourceSessionId}`);
+  }
+  if (driverForSession(sourceSessionId, sourceSession).id === 'dispatch') {
+    throw new Error('Copying a detached dispatch session is not supported');
+  }
+  if (isSessionEmptyForCopy(sourceSession)) {
+    throw new Error(i18nService.t('common:nav.sessions.duplicateEmpty'));
+  }
+
+  const workspaceId = requireSessionOwningWorkspaceId(sourceSession);
+  const response = await sessionAPI.duplicateSession(sourceSessionId, workspaceId);
+  scope.assertCurrent('copy session');
+
+  // The host already created the copy. Metadata projection only decides when the
+  // navigation list shows it, so a projection miss is reported, not rethrown.
+  let projected = false;
+  try {
+    projected = await context.flowChatStore.ensurePersistedSessionMetadata(
+      response.sessionId,
+      workspaceId,
+    );
+  } catch (error) {
+    if (isSurfaceChangedError(error)) throw error;
+    log.warn('Failed to project copied session metadata', { sessionId: response.sessionId, error });
+  }
+  scope.assertCurrent('project copied session metadata');
+  if (!projected) {
+    log.warn('Copied session metadata is unavailable for the navigation list', {
+      sessionId: response.sessionId,
+      sourceSessionId,
+      workspaceId,
+    });
+  }
+
+  return { sessionId: response.sessionId, sessionName: response.sessionName, metadataProjected: projected };
 }
 
 /**

@@ -113,8 +113,6 @@ slices that are outside pure product logic but still platform-neutral.
   sandbox or a CPU/memory/filesystem/network resource limit; surfaces must keep
   those residual risks explicit. Unix descendants that deliberately create a
   new session/process group are outside the managed boundary.
-- Announcement remote fetch/cache lives here; product assembly supplies config
-  values such as endpoint, locale, version, platform, and cache path.
 - DeepResearch report IO here owns report/citation sidecar filesystem work;
   provider-neutral citation numbering stays in `openbitfun-agent-runtime`. The IO
   path must use the injected `WorkspaceFileSystem` for both local and remote
@@ -173,6 +171,12 @@ advertise a small handle limit and are included in the existing CI
 the same command with the filter ending in
 `workspace_sftp::openssh_real_files_over_loopback_ssh -- --ignored`.
 
+For directory symlink browsing and workspace-path validation, use the same
+package/features with `--lib directory_symlink_browsing -- --include-ignored`
+and `OPENBITFUN_TEST_SFTP_SERVER` set. This runs real OpenSSH SFTP over loopback
+and the Docker command adapter against a local POSIX shell fixture; the latter
+does not establish real Docker-daemon or Windows WSL coverage.
+
 For the remote Flashgrep distribution gate and retained protocol helpers, use:
 
 ```bash
@@ -187,3 +191,9 @@ cargo test --locked -p openbitfun-services-integrations --no-default-features --
 
 These loopback protocol fixtures exercise the serving host's HTTP and filesystem
 behavior; they do not establish real SSH, relay, peer or dispatch support.
+
+For models.dev snapshot reuse, last-valid recovery, and background refresh:
+
+```bash
+cargo test --locked -p openbitfun-services-integrations --no-default-features --features models-dev --lib models_dev::tests
+```

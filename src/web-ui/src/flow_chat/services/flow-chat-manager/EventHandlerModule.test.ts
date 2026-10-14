@@ -46,6 +46,21 @@ describe('isAppWindowFocused', () => {
   });
 });
 
+describe('external BTW turn projection', () => {
+  beforeEach(() => { resetFlowChatStore(); stateMachineManager.clear(); });
+  afterEach(() => { resetFlowChatStore(); stateMachineManager.clear(); });
+
+  it('keeps a host-started side question transient and attached to its parent', () => {
+    __test_only__.handleDialogTurnStarted(createFlowChatContext(), {
+      sessionId: 'external-btw', turnId: 'btw-turn-question', turnIndex: 0,
+      userInput: 'Explain this', userMessageMetadata: { kind: 'btw', parentSessionId: 'parent' },
+    });
+    expect(FlowChatStore.getInstance().getState().sessions.get('external-btw')).toMatchObject({
+      sessionKind: 'btw', parentSessionId: 'parent', isTransient: true, agentBackedTransient: true,
+    });
+  });
+});
+
 describe('Claw bootstrap cancellation', () => {
   beforeEach(() => {
     resetFlowChatStore();
@@ -1632,6 +1647,7 @@ describe('handleSessionHistoryChanged', () => {
     const context = createFlowChatContext();
     handleSessionHistoryChanged(context, {
       sessionId: 'session-1',
+      settledTurnId: 'turn-1',
     });
     await Promise.resolve();
 
@@ -1657,11 +1673,83 @@ describe('handleSessionHistoryChanged', () => {
     const context = createFlowChatContext();
     handleSessionHistoryChanged(context, {
       sessionId: 'session-1',
+      settledTurnId: 'turn-1',
     });
     await Promise.resolve();
 
     expect(reconcile).not.toHaveBeenCalled();
     expect(context.pendingHistoryFenceSessions.has('session-1')).toBe(true);
+  });
+
+  it.each([
+    { sessionId: 'session-1', settledTurnId: null },
+    { sessionId: 'session-1' },
+    { session_id: 'session-1', settled_turn_id: null },
+  ])('removes rolled-back turns with an authoritative reload, including legacy payloads: %j', async event => {
+    createSessionWithTurn({
+      ...createFinishingTurn(),
+      status: 'completed',
+      endTime: 1000,
+    });
+    const store = FlowChatStore.getInstance();
+    store.setState(prev => ({
+      ...prev,
+      activeSessionId: 'session-1',
+      sessions: new Map([['session-1', {
+        ...prev.sessions.get('session-1')!,
+        workspacePath: '/workspace',
+        workspaceId: 'workspace-1',
+        config: { agentType: 'Standard', workspaceId: 'workspace-1' },
+      }]]),
+    }));
+    vi.spyOn(agentAPI, 'restoreSessionView').mockResolvedValue({
+      session: {
+        sessionId: 'session-1', sessionName: 'Session 1', agentType: 'Standard',
+        state: 'Idle', turnCount: 0, createdAt: 1, updatedAt: 2,
+      },
+      turns: [],
+      contextRestoreState: 'ready',
+      isPartial: false,
+      loadedTurnCount: 0,
+      totalTurnCount: 0,
+    } as any);
+    const reconcile = vi.spyOn(store, 'reconcileSettledDialogTurn');
+    const context = createFlowChatContext();
+    context.pendingHistoryFenceSessions.add('session-1');
+
+    handleSessionHistoryChanged(context, event);
+
+    await vi.waitFor(() => expect(store.getState().sessions.get('session-1')?.dialogTurns).toEqual([]));
+    expect(reconcile).not.toHaveBeenCalled();
+    expect(context.pendingHistoryFenceSessions.has('session-1')).toBe(false);
+  });
+
+  it('reloads an out-of-lifecycle edit even when the obsolete local tail is still finishing', () => {
+    createSessionWithTurn(createFinishingTurn());
+    const store = FlowChatStore.getInstance();
+    const reload = vi.spyOn(store, 'loadSessionHistory').mockResolvedValue(undefined);
+    const context = createFlowChatContext();
+
+    handleSessionHistoryChanged(context, { sessionId: 'session-1', settledTurnId: null });
+
+    expect(reload).toHaveBeenCalledExactlyOnceWith('session-1', { includeInternal: false });
+    expect(context.pendingHistoryFenceSessions.has('session-1')).toBe(false);
+  });
+
+  it('repairs the identified settled turn without dropping a newer live turn', () => {
+    createSessionWithTurn({ ...createFinishingTurn(), status: 'completed', endTime: 1000 });
+    const store = FlowChatStore.getInstance();
+    store.addDialogTurn('session-1', { ...createFinishingTurn(), id: 'turn-2', status: 'processing' });
+    const reconcile = vi.spyOn(store, 'reconcileSettledDialogTurn').mockResolvedValue(false);
+    const reload = vi.spyOn(store, 'loadSessionHistory').mockResolvedValue(undefined);
+    const context = createFlowChatContext();
+
+    handleSessionHistoryChanged(context, { session_id: 'session-1', settled_turn_id: 'turn-1' });
+
+    expect(reconcile).toHaveBeenCalledExactlyOnceWith('session-1', 'turn-1');
+    expect(reload).not.toHaveBeenCalled();
+    expect(context.pendingHistoryFenceSessions.has('session-1')).toBe(false);
+    expect(store.getState().sessions.get('session-1')?.dialogTurns.at(-1)?.status).toBe('processing');
   });
 });
 
@@ -1746,7 +1834,7 @@ describe('handleDialogTurnComplete', () => {
 
     // Durable fence lands while the turn is still finalizing: it must be
     // parked instead of racing the persistence commit with an extra read.
-    handleSessionHistoryChanged(context, { sessionId: 'session-1' });
+    handleSessionHistoryChanged(context, { sessionId: 'session-1', settledTurnId: 'turn-1' });
     expect(FlowChatStore.getInstance().reconcileSettledDialogTurn)
       .not.toHaveBeenCalled();
     expect(context.pendingHistoryFenceSessions.has('session-1')).toBe(true);
@@ -1922,6 +2010,32 @@ describe('handleTokenUsageUpdate', () => {
   afterEach(() => {
     resetFlowChatStore();
     stateMachineManager.clear();
+  });
+
+  it('accumulates reported cache hits across camel and snake case events without treating missing telemetry as zero', () => {
+    putFinishingSessionInStore();
+    const context = createFlowChatContext();
+    handleTokenUsageUpdate(context, {
+      sessionId: 'session-1', turnId: 'turn-1', inputTokens: 100,
+      outputTokens: 20, totalTokens: 120, cachedTokens: 0,
+    });
+    handleTokenUsageUpdate(context, {
+      session_id: 'session-1', turn_id: 'turn-1', input_tokens: 200,
+      output_tokens: 30, total_tokens: 230, cached_tokens: 150,
+    });
+    const current = () => FlowChatStore.getInstance().getState().sessions.get('session-1');
+    expect(current()?.dialogTurns[0].tokenUsage).toMatchObject({
+      inputTokens: 300, outputTokens: 50, totalTokens: 350, cachedTokens: 150,
+    });
+    handleTokenUsageUpdate(context, {
+      sessionId: 'session-1', turnId: 'turn-1', inputTokens: 50, totalTokens: 60, outputTokens: 10,
+    });
+    expect(current()?.dialogTurns[0].tokenUsage?.cachedTokens).toBeUndefined();
+    handleTokenUsageUpdate(context, {
+      sessionId: 'session-1', turnId: 'turn-1', inputTokens: 10, totalTokens: 12, outputTokens: 2, cachedTokens: 5,
+    });
+    expect(current()?.dialogTurns[0].tokenUsage?.cachedTokens).toBeUndefined();
+    expect(current()?.currentTokenUsage?.cachedTokens).toBe(5);
   });
 
   it('tracks the source turn on current usage without adding provenance to accumulated turn usage', () => {

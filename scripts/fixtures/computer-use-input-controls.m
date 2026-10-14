@@ -10,7 +10,7 @@ static NSTableView *table;
 static NSWindow *targetWindow, *foreignWindow;
 static NSMutableArray *events;
 static NSMutableString *canvasText;
-static NSUInteger buttonActions, canvasDowns, canvasCommandDowns, foreignActions, canvasScrolls, shortcutActions;
+static NSUInteger buttonActions, canvasDowns, canvasCommandDowns, foreignActions, canvasScrolls, shortcutActions, canvasEscapes;
 static double canvasScrollX, canvasScrollY;
 static NSDictionary *targets;
 static void installLifecycleHistory(void) {
@@ -23,7 +23,7 @@ static void installLifecycleHistory(void) {
     }
 }
 static void publish(void) {
-    NSDictionary *data = @{@"bundle_id":NSBundle.mainBundle.bundleIdentifier ?: @"", @"frontmost_pid":@(NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier), @"activation_history":activationHistory ?: @[], @"lifecycle_history":lifecycleHistory ?: @[], @"foreign_actions":@(foreignActions), @"selected_count":@(table.selectedRowIndexes.count), @"selected_row":@(table.selectedRow), @"canvas_scrolls":@(canvasScrolls), @"canvas_scroll_x":@(canvasScrollX), @"canvas_scroll_y":@(canvasScrollY), @"button_actions":@(buttonActions), @"shortcut_actions":@(shortcutActions), @"field_text":field.stringValue ?: @"", @"canvas_command_downs":@(canvasCommandDowns), @"canvas_downs":@(canvasDowns), @"canvas_text":canvasText, @"events":events, @"targets":targets ?: @{}, @"window_id":@(targetWindow.windowNumber), @"key_window":@(targetWindow.keyWindow), @"active":@(NSApp.active)};
+    NSDictionary *data = @{@"bundle_id":NSBundle.mainBundle.bundleIdentifier ?: @"", @"frontmost_pid":@(NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier), @"activation_history":activationHistory ?: @[], @"lifecycle_history":lifecycleHistory ?: @[], @"foreign_actions":@(foreignActions), @"selected_count":@(table.selectedRowIndexes.count), @"selected_row":@(table.selectedRow), @"canvas_scrolls":@(canvasScrolls), @"canvas_scroll_x":@(canvasScrollX), @"canvas_scroll_y":@(canvasScrollY), @"button_actions":@(buttonActions), @"shortcut_actions":@(shortcutActions), @"field_text":field.stringValue ?: @"", @"canvas_command_downs":@(canvasCommandDowns), @"canvas_downs":@(canvasDowns), @"canvas_text":canvasText, @"canvas_escape_presses":@(canvasEscapes), @"events":events, @"targets":targets ?: @{}, @"window_id":@(targetWindow.windowNumber), @"key_window":@(targetWindow.keyWindow), @"active":@(NSApp.active)};
     [[NSJSONSerialization dataWithJSONObject:data options:0 error:nil] writeToFile:resultPath atomically:YES];
 }
 @interface OBFControlsApp : NSApplication
@@ -50,7 +50,7 @@ static void publish(void) {
 - (void)drawRect:(NSRect)dirty { [NSColor.systemBlueColor setFill]; NSRectFill(self.bounds); }
 - (void)mouseDown:(NSEvent *)event { canvasDowns++; if (event.modifierFlags & NSEventModifierFlagCommand) canvasCommandDowns++; [self.window makeFirstResponder:self]; publish(); }
 - (void)scrollWheel:(NSEvent *)event { canvasScrolls++; canvasScrollX += event.scrollingDeltaX; canvasScrollY += event.scrollingDeltaY; publish(); }
-- (void)keyDown:(NSEvent *)event { if (event.characters) [canvasText appendString:event.characters]; publish(); }
+- (void)keyDown:(NSEvent *)event { if (event.keyCode == 53) canvasEscapes++; else if (event.characters) [canvasText appendString:event.characters]; publish(); }
 @end
 @interface OBFControlsActions : NSObject <NSTextFieldDelegate, NSTableViewDataSource, NSTableViewDelegate>
 @end
@@ -77,6 +77,12 @@ int main(int argc, const char **argv) { @autoreleasepool {
         const double timeoutSeconds = argc > 2 ? strtod(argv[2], NULL) : 20.0;
         const double started = NSProcessInfo.processInfo.systemUptime;
         do {
+            NSDictionary *session = CFBridgingRelease(CGSessionCopyCurrentDictionary());
+            NSNumber *locked = session[@"CGSSessionScreenIsLocked"];
+            if ([locked isKindOfClass:NSNumber.class] && locked.boolValue) {
+                fprintf(stderr, "INCONCLUSIVE: execution host screen is locked; no observer was activated\n");
+                return 75;
+            }
             double idle = CGEventSourceSecondsSinceLastEventType(kCGEventSourceStateHIDSystemState, kCGAnyInputEventType);
             if (!isfinite(idle) || idle < 0) {
                 fprintf(stderr, "INCONCLUSIVE: hardware input idle state unavailable; no observer was activated\n");
@@ -170,6 +176,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
     NSButton *button = [NSButton buttonWithTitle:@"Count one action" target:actions action:@selector(clicked:)];
     button.frame = NSMakeRect(20,240,240,30);
     field = [[NSTextField alloc] initWithFrame:NSMakeRect(20,180,300,30)];
+    [field setAccessibilityIdentifier:@"fixture-text-field"];
     field.delegate = actions;
     OBFPlainCanvas *canvas = [[OBFPlainCanvas alloc] initWithFrame:NSMakeRect(20,20,300,100)];
     [targetWindow.contentView addSubview:button]; [targetWindow.contentView addSubview:field]; [targetWindow.contentView addSubview:canvas];

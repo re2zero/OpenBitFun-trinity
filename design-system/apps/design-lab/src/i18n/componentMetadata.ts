@@ -15,6 +15,15 @@ const categoryKeys: Readonly<Record<string, MessageKey>> = {
 };
 
 const descriptionKeys: Readonly<Record<string, MessageKey>> = {
+  MobileAvatar: "component.MobileAvatar.description",
+  MobileCheckbox: "component.MobileCheckbox.description",
+  MobileRadioGroup: "component.MobileRadioGroup.description",
+  MobileSelect: "component.MobileSelect.description",
+  MobileStepper: "component.MobileStepper.description",
+  MobileSwitch: "component.MobileSwitch.description",
+  MobileTabBar: "component.MobileTabBar.description",
+  MobileTag: "component.MobileTag.description",
+  MobileToolbar: "component.MobileToolbar.description",
   SplitView: "component.SplitView.description",
   ListModelsToolCard: "component.ListModelsToolCard.description",
   ControlHubToolCard: "component.ControlHubToolCard.description",
@@ -23,6 +32,7 @@ const descriptionKeys: Readonly<Record<string, MessageKey>> = {
   ExploreGroup: "component.ExploreGroup.description",
   ContextLoadGroup: "component.ContextLoadGroup.description",
   FlowChatRuntimeStatus: "component.FlowChatRuntimeStatus.description",
+  FlowChatTurnMetrics: "component.FlowChatTurnMetrics.description",
   OpenBitFunSolidMark: "component.OpenBitFunSolidMark.description",
   OpenBitFunAppIcon: "component.OpenBitFunAppIcon.description",
   OpenBitFunMark: "component.OpenBitFunMark.description",

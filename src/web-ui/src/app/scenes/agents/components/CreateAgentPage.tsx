@@ -31,12 +31,10 @@ const ID_REGEX = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
 const DEFAULT_MODE_POLICY: UserContextSection[] = [
   'workspace_context',
   'workspace_instructions',
-  'project_layout',
 ];
 const DEFAULT_SUBAGENT_POLICY: UserContextSection[] = [
   'workspace_context',
   'workspace_instructions',
-  'project_layout',
 ];
 const DEFAULT_CUSTOM_MODE_TOOLS = [
   'Read',
@@ -48,7 +46,10 @@ const DEFAULT_CUSTOM_MODE_TOOLS = [
   'ExecCommand',
   'WriteStdin',
   'ExecControl',
-  'Task',
+  'AgentSpawn',
+  'AgentSendInput',
+  'AgentControl',
+  'AgentWait',
   'Skill',
   'WebSearch',
   'WebFetch',

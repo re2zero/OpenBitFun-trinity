@@ -31,8 +31,9 @@ vi.mock('../session-drivers/registry', () => ({
 }));
 
 const workspaceFixtures = vi.hoisted(() => new Map<string, any>());
+const recentWorkspaceFixtures = vi.hoisted(() => [] as any[]);
 vi.mock('@/infrastructure/services/business/workspaceManager', () => ({
-  workspaceManager: { getState: () => ({ openedWorkspaces: workspaceFixtures, recentWorkspaces: [] }) },
+  workspaceManager: { getState: () => ({ openedWorkspaces: workspaceFixtures, recentWorkspaces: recentWorkspaceFixtures }) },
 }));
 function fixtureWorkspaceId(rootPath: string, connectionId?: string, sshHost?: string) {
   const existing = [...workspaceFixtures.values()].find(record => record.rootPath === rootPath && record.connectionId === connectionId && record.sshHost === sshHost);
@@ -297,6 +298,62 @@ function resetStartupTraceEventsForTest(): void {
   trace.phaseEvents = 0;
   trace.phaseRecords.length = 0;
 }
+
+describe('FlowChatStore workspace-close cancellation', () => {
+  let originalWorkspaces: Map<string, any>;
+  beforeEach(() => {
+    originalWorkspaces = new Map(workspaceFixtures);
+    resetStore();
+    apiMocks.cancelSession.mockReset();
+    vi.stubGlobal('window', { dispatchEvent: vi.fn() });
+    vi.stubGlobal('CustomEvent', class {
+      constructor(public type: string, public init?: { detail?: unknown }) {}
+    });
+  });
+  afterEach(() => {
+    resetStore();
+    workspaceFixtures.clear();
+    originalWorkspaces.forEach((workspace, id) => workspaceFixtures.set(id, workspace));
+    vi.unstubAllGlobals();
+  });
+
+  function runningSession() {
+    return createSession({
+      workspacePath: '/assistant',
+      isTransient: true,
+      dialogTurns: [{
+        id: 'running-turn', sessionId: 'session-1', startTime: 1, status: 'processing',
+        userMessage: { id: 'user-1', content: 'Work', timestamp: 1 }, modelRounds: [],
+      }],
+    });
+  }
+
+  it('cancels running assistant sessions while retaining their history', async () => {
+    const session = runningSession();
+    flowChatStore.setState(() => ({ sessions: new Map([[session.sessionId, session]]), activeSessionId: session.sessionId }));
+    apiMocks.cancelSession.mockResolvedValueOnce({ cancelled: true, dialogTurnId: 'running-turn' });
+    await expect(flowChatStore.cancelRunningSessionsForWorkspace({
+      id: session.workspaceId!, rootPath: '/assistant',
+    })).resolves.toEqual([session.sessionId]);
+    expect(apiMocks.cancelSession).toHaveBeenCalledWith(session.sessionId);
+    expect(flowChatStore.getState().sessions.get(session.sessionId)?.dialogTurns[0].status).toBe('cancelled');
+  });
+
+  it('does not cancel the newly selected peer projection when an old host replies', async () => {
+    const session = runningSession();
+    flowChatStore.setState(() => ({ sessions: new Map([[session.sessionId, session]]), activeSessionId: session.sessionId }));
+    const reply = createDeferred<{ cancelled: boolean; dialogTurnId: string | null }>();
+    apiMocks.cancelSession.mockReturnValueOnce(reply.promise);
+    const cancelling = flowChatStore.cancelRunningSessionsForWorkspace({ id: session.workspaceId!, rootPath: '/assistant' });
+    const rejection = expect(cancelling).rejects.toSatisfy(isSurfaceChangedError);
+    activateSurface('peer-cancel-test');
+    const peerSession = runningSession();
+    flowChatStore.setState(() => ({ sessions: new Map([[peerSession.sessionId, peerSession]]), activeSessionId: peerSession.sessionId }));
+    reply.resolve({ cancelled: true, dialogTurnId: 'running-turn' });
+    await rejection;
+    expect(flowChatStore.getState().sessions.get(peerSession.sessionId)?.dialogTurns[0].status).toBe('processing');
+  });
+});
 
 describe('FlowChatStore lazy worktree preference', () => {
   afterEach(() => {
@@ -1733,13 +1790,14 @@ describe('FlowChatStore historical session hydration state', () => {
     vi.unstubAllGlobals();
   });
 
-  it('loads persisted metadata as metadata-only historical sessions', async () => {
+  it.each([0, 3, undefined])('loads persisted metadata as metadata-only historical sessions (turns=%s)', async turnCount => {
     apiMocks.listSessions.mockResolvedValueOnce([
       {
         sessionId: 'history-1',
         title: 'Saved session',
         agentType: 'Standard',
         modelName: 'primary',
+        turnCount,
         createdAt: 10,
         lastActiveAt: 20,
       },
@@ -1752,8 +1810,49 @@ describe('FlowChatStore historical session hydration state', () => {
       sessionId: 'history-1',
       isHistorical: true,
       historyState: 'metadata-only',
+      persistedTurnCount: turnCount,
       dialogTurns: [],
     });
+  });
+
+  it('lists pre-ID worktree sessions under their project without borrowing its execution identity', async () => {
+    const legacyWorktreeMetadata = (sessionId: string, projectPath: string) => ({
+      sessionId,
+      title: 'Legacy worktree session',
+      agentType: 'Standard',
+      createdAt: 10,
+      lastActiveAt: 20,
+      workspacePath: `${projectPath}/tree`,
+      projectWorkspacePath: projectPath,
+    });
+
+    try {
+      const unknownProjectId = fixtureWorkspaceId('/legacy/unknown-repo', undefined, undefined);
+      apiMocks.listSessions.mockResolvedValueOnce([
+        legacyWorktreeMetadata('legacy-worktree-unknown', '/legacy/unknown-repo'),
+      ]);
+      await flowChatStore.initializeFromDisk(unknownProjectId, undefined);
+      const unresolved = flowChatStore.getState().sessions.get('legacy-worktree-unknown');
+      expect(unresolved?.projectWorkspaceId).toBe(unknownProjectId);
+      expect(unresolved?.workspaceId).toBeUndefined();
+      expect(unresolved?.workspacePath).toBe('/legacy/unknown-repo/tree');
+
+      // A worktree the host knows about but has not opened still owns it.
+      const knownProjectId = fixtureWorkspaceId('/legacy/known-repo', undefined, undefined);
+      recentWorkspaceFixtures.push({
+        id: 'legacy-worktree-record', rootPath: '/legacy/known-repo/tree', workspaceKind: 'normal',
+      });
+      apiMocks.listSessions.mockResolvedValueOnce([
+        legacyWorktreeMetadata('legacy-worktree-known', '/legacy/known-repo'),
+      ]);
+      await flowChatStore.initializeFromDisk(knownProjectId, undefined);
+      expect(flowChatStore.getState().sessions.get('legacy-worktree-known')).toMatchObject({
+        workspaceId: 'legacy-worktree-record',
+        projectWorkspaceId: knownProjectId,
+      });
+    } finally {
+      recentWorkspaceFixtures.length = 0;
+    }
   });
 
   it('keeps persisted workspace identity separate from remote execution scope', async () => {
@@ -6575,6 +6674,32 @@ describe('FlowChatStore historical session hydration state', () => {
       status: 'unsupported',
     });
     expect(apiMocks.loadSessionTurnWindow).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [{ inputTokens: 100, outputTokens: 20, totalTokens: 120, cachedTokens: 75 }, 75],
+    [{ input_tokens: 100, output_tokens: 20, total_tokens: 120, cached_tokens: 75 }, 75],
+    [{ inputTokens: 100, outputTokens: 20, totalTokens: 120, cachedTokens: 0 }, 0],
+    [{ inputTokens: 100, outputTokens: 20, totalTokens: 120 }, undefined],
+  ])('restores optional cache telemetry from current and legacy turn payloads: %j', async (tokenUsage, cachedTokens) => {
+    peerModeFlagMock.active = true;
+    apiMocks.restoreSessionView.mockResolvedValueOnce({
+      session: { sessionId: 'history-1', sessionName: 'History 1', agentType: 'Standard', state: 'Idle', turnCount: 1, createdAt: 1 },
+      turns: [{ ...createPersistedTurn(0), endTime: 2, tokenUsage: JSON.parse(JSON.stringify(tokenUsage)) }],
+      contextRestoreState: 'ready',
+    });
+    flowChatStore.setState(() => ({
+      sessions: new Map([['history-1', createSession({ sessionId: 'history-1', isHistorical: true, historyState: 'metadata-only' })]]),
+      activeSessionId: 'history-1',
+    }));
+    await flowChatStore.loadSessionHistory('history-1');
+    const restored = flowChatStore.getState().sessions.get('history-1')?.dialogTurns[0].tokenUsage;
+    expect(restored).toMatchObject({ inputTokens: 100, outputTokens: 20, totalTokens: 120 });
+    expect(restored?.cachedTokens).toBe(cachedTokens);
+    // Both cached zero and absent telemetry survive the next JSON persistence boundary.
+    const saved = JSON.parse(JSON.stringify(restored));
+    expect(saved.cachedTokens).toBe(cachedTokens);
+    if (cachedTokens === undefined) expect(saved).not.toHaveProperty('cachedTokens');
   });
 
   it('backfills currentTokenUsage from the last completed turn after hydration', async () => {

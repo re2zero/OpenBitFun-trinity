@@ -53,7 +53,7 @@ import { AsyncLifecycleGate } from '../../services/AsyncLifecycleGate';
 import { RemoteUiState } from '../../services/RemoteUiState';
 import { VoiceInputLifecycleController } from '../../services/VoiceInputLifecycleController';
 import { VoiceInputService } from '../../services/VoiceInputService';
-import { ConversationIntent } from '../actions/ConversationIntent';
+import { ConversationIntent, MessageCopyScope, SessionRollbackRequest } from '../actions/ConversationIntent';
 import { AppRootHostPort } from '../host/AppRootHostAdapter';
 import { AppRootPresentationActions } from '../actions/AppRootPresentationActions';
 import {
@@ -121,6 +121,7 @@ export abstract class AppRootRuntimeComposition {
   abstract failRemoteConnection(err: Object): void;
   abstract handleNavigationBack(route: AppRoute): boolean;
   abstract hasRemoteBindingForResume(): boolean;
+  protected abstract startWatchProvisioning(): Promise<void>;
   abstract isRemoteConversationContext(sessionId: string): boolean;
   abstract mergeSessions(primary: RemoteSession[], extras: RemoteSession[]): RemoteSession[];
   abstract loadWorkspaceSessionsOnDevice(deviceId: string, path: string, remoteConnectionId?: string, remoteSshHost?: string, workspaceId?: string): Promise<void>;
@@ -778,7 +779,9 @@ export abstract class AppRootRuntimeComposition {
       rename: async (title: string): Promise<void> => {
         await this.conversationController.renameVisibleSession(title);
       },
-      copy: async (text: string): Promise<void> => { await this.conversationController.copyRemoteMessage(text); },
+      copy: async (text: string, scope: MessageCopyScope): Promise<void> => {
+        await this.conversationController.copyRemoteMessage(text, scope);
+      },
       retry: async (text: string): Promise<void> => { await this.conversationController.retryVisibleMessage(text); },
       selectModel: async (id: string): Promise<void> => { await this.conversationController.selectVisibleModel(id); },
       pickImages: async (): Promise<void> => { await this.pickImages(); },
@@ -788,6 +791,17 @@ export abstract class AppRootRuntimeComposition {
       downloadFile: (path: string): void => this.conversationController.downloadVisibleFile(path),
       buildPlan: async (path: string, name: string): Promise<void> => {
         await this.conversationController.buildRemotePlan(path, name);
+      },
+      rollback: async (request: SessionRollbackRequest): Promise<void> => {
+        await this.conversationController.rollbackRemoteSession(request);
+      },
+      rollbackResync: async (): Promise<void> => {
+        await this.conversationController.resyncRemoteTranscriptAfterRollback();
+      },
+      rollbackNotice: (key: string): void => {
+        // The policy owns which key a refusal resolves to; the host's own text is
+        // already in the log, where a support report can read it.
+        this.conversationController.showHomeToast(RemoteI18n.t(key));
       },
       send: async (): Promise<void> => { await this.conversationController.sendVisibleMessage(); },
       voiceInput: async (): Promise<void> => { await this.toggleVoiceInput(); },
@@ -894,6 +908,9 @@ export abstract class AppRootRuntimeComposition {
       cloudCancelLogin: (): void => this.settingsController.cancelCloudLogin(),
       cloudLogin: async (): Promise<string> => {
         const user = await this.settingsController.loginCloudAccount();
+        // Returning from authorization can show the page before the account
+        // session is saved. Start listening after login completes as well.
+        await this.startWatchProvisioning();
         const pending = this.pendingAccountDeviceId;
         this.pendingAccountDeviceId = '';
         if (pending.length > 0) {
@@ -989,7 +1006,7 @@ export abstract class AppRootRuntimeComposition {
   }
 
   refreshLocalizedRuntimeCopy(): void {
-    this.remotePageState.setStatusText(RemoteI18n.retranslateKnown(
+    this.remotePageState.setStatusText(RemoteI18n.retranslate(RemoteI18n.retranslateKnown(
       this.remotePageState.statusText,
       [
         ConnectionStatusPresenter.labelKey(this.remotePageState.connectionState),
@@ -997,10 +1014,12 @@ export abstract class AppRootRuntimeComposition {
         'status.waitingConnection',
         'status.notConnected'
       ]
-    ));
+    )));
     this.remotePageState.setError(RemoteI18n.retranslate(this.remotePageState.sessionErrorText));
     this.remotePageState.setWorkspace(
-      RemoteI18n.retranslateKnown(this.remotePageState.workspaceName, ['status.notConnected']),
+      RemoteI18n.retranslateWorkspaceName(
+        this.remotePageState.workspaceName, this.remotePageState.workspacePath, this.remotePageState.workspaceId
+      ),
       this.remotePageState.workspacePath,
       this.remotePageState.assistantId,
       this.remotePageState.workspaceBranch,

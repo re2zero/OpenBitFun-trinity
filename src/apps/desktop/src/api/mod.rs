@@ -3,7 +3,6 @@
 pub mod account_identity_api;
 pub mod acp_client_api;
 pub mod agentic_api;
-pub mod announcement_api;
 pub mod app_state;
 pub mod appearance_market_api;
 pub mod being_api;
@@ -50,6 +49,7 @@ pub mod review_platform_api;
 pub mod runtime_api;
 pub mod search_api;
 pub mod session_api;
+pub mod session_storage_directory;
 pub mod session_storage_path;
 pub mod skill_api;
 pub mod snapshot_service;

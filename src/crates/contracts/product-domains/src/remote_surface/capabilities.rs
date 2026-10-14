@@ -42,6 +42,8 @@ pub enum PeerHostCapability {
     MiniappAgentContextFilesV1,
     /// WSL profiles and discovery are understood; availability is probed on the host.
     WslWorkspacesV1,
+    /// User-selected native window sharing and explicit permission receipts.
+    ComputerUseSharingV1,
     /// `product_control_invoke` is implemented (shared config contract).
     ProductControlV1,
     /// ProductControl definitions that need a host-native provider run here.
@@ -56,6 +58,8 @@ pub enum PeerHostCapability {
     ChatMcpCatalogV1,
     /// Workspace references can carry the owning host's persisted ID.
     WorkspaceIdReferencesV1,
+    /// `copy_session` copies a whole session without a caller-selected turn id.
+    WholeSessionCopyV1,
     /// `submit_user_answers` is implemented for Runtime-owned questions.
     UserQuestionResponse,
     /// First human interaction disables the unattended question timeout.
@@ -75,6 +79,7 @@ impl PeerHostCapability {
         Self::TokenUsageStatistics,
         Self::MiniappAgentContextFilesV1,
         Self::WslWorkspacesV1,
+        Self::ComputerUseSharingV1,
         Self::ProductControlV1,
         Self::ProductControlNativeV1,
         Self::ProductControlPresentationV1,
@@ -82,6 +87,7 @@ impl PeerHostCapability {
         Self::ToolCatalog,
         Self::ChatMcpCatalogV1,
         Self::WorkspaceIdReferencesV1,
+        Self::WholeSessionCopyV1,
         Self::UserQuestionResponse,
         Self::UserQuestionInteractionV1,
     ];
@@ -99,6 +105,7 @@ impl PeerHostCapability {
             Self::TokenUsageStatistics => "token_usage_statistics",
             Self::MiniappAgentContextFilesV1 => "miniapp_agent_context_files_v1",
             Self::WslWorkspacesV1 => "wsl_workspaces_v1",
+            Self::ComputerUseSharingV1 => "computer_use_sharing_v1",
             Self::ProductControlV1 => "product_control_v1",
             Self::ProductControlNativeV1 => "product_control_native_v1",
             Self::ProductControlPresentationV1 => "product_control_presentation_v1",
@@ -106,6 +113,7 @@ impl PeerHostCapability {
             Self::ToolCatalog => "tool_catalog",
             Self::ChatMcpCatalogV1 => "chat_mcp_catalog_v1",
             Self::WorkspaceIdReferencesV1 => "workspace_id_references_v1",
+            Self::WholeSessionCopyV1 => "whole_session_copy_v1",
             Self::UserQuestionResponse => "user_question_response",
             Self::UserQuestionInteractionV1 => "user_question_interaction_v1",
         }
@@ -217,5 +225,10 @@ mod tests {
         assert!(!cli.contains_key("miniapp_agent_context_files_v1"));
         assert!(!cli.contains_key("product_control_native_v1"));
         assert!(!cli.contains_key("product_control_presentation_v1"));
+        assert!(!cli.contains_key("whole_session_copy_v1"));
+        assert_eq!(
+            capability_map(PeerHostKind::Desktop).get("whole_session_copy_v1"),
+            Some(&Value::Bool(true))
+        );
     }
 }

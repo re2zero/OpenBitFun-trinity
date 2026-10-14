@@ -7,7 +7,7 @@ export type ComponentPresentation =
 // These are website presentation choices. The public registry still owns the
 // component inventory, properties and supported states.
 const presentations: Record<string, ComponentPresentation> = {
-  Button: "matrix", IconButton: "matrix",
+  Button: "matrix", IconButton: "matrix", Capsule: "compact",
   Avatar: "compact", Checkbox: "compact", Radio: "compact", Switch: "compact",
   StatusPill: "compact", Spinner: "compact", LoadingState: "compact",
   LauncherButton: "compact", NumberBadge: "compact", KeyHint: "compact",
@@ -23,13 +23,17 @@ const presentations: Record<string, ComponentPresentation> = {
   ThinkingIndicator: "motion",
   MobileBadge: "compact", MobileButton: "compact", MobileIconButton: "compact",
   MobileFileButton: "compact", MobileLink: "compact",
+  MobileAvatar: "compact", MobileCheckbox: "compact", MobileSwitch: "compact", MobileTag: "compact",
   MobileTextField: "fields", MobileTextarea: "fields",
+  MobileSelect: "fields", MobileStepper: "fields",
   MobileCard: "cards", MobileStatus: "cards",
   MobileBanner: "stack", MobilePageHeader: "stack", MobileSection: "stack", MobileListRow: "stack",
+  MobileRadioGroup: "stack", MobileToolbar: "stack",
   MobileActionSheet: "interactive", MobileChoiceSheet: "interactive",
   MobileConfirmSheet: "interactive", MobileSheet: "interactive",
   MobileDisclosure: "composition", MobileComposer: "composition", MobileFloatingActions: "composition",
   MobileMessage: "composition", MobileScrim: "composition", MobileSegmentedControl: "composition",
+  MobileTabBar: "composition",
 };
 
 const initialStates: Record<string, string> = {

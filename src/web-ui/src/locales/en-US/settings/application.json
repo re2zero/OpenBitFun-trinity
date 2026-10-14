@@ -4,6 +4,24 @@
   "common": {
     "retry": "Retry"
   },
+  "messageSending": {
+    "title": "Message sending",
+    "duringTurn": "Send messages while a conversation is running",
+    "description": "Native sessions send follow-up instructions to the current task immediately by default. Choose queue to wait for the current turn to finish. ACP sessions still wait for the current turn; dispatched sessions continue appending messages to the target task.",
+    "immediate": "Send immediately (default)",
+    "queue": "Queue messages",
+    "loading": "Loading message sending preferences…",
+    "loadFailed": "Failed to load message sending preferences",
+    "saveFailed": "Failed to save message sending preferences"
+  },
+  "textSelection": {
+    "title": "Text selection",
+    "autoShowToolbar": "Automatically show text selection actions",
+    "autoShowToolbarDescription": "Show Add annotation and Ask in side chat after selecting conversation text. When disabled, these actions remain available in the right-click menu.",
+    "loading": "Loading text selection preferences…",
+    "loadFailed": "Failed to load text selection preferences",
+    "saveFailed": "Failed to save text selection preferences"
+  },
   "applicationGroups": {
     "startupAndUpdates": {
       "title": "Startup & updates",
@@ -200,13 +218,13 @@
     "sections": {
       "terminal": "Terminal",
       "defaultTerminal": "Default Terminal",
-      "terminalHint": "New terminals use the selected shell; open terminals keep their existing shell"
+      "terminalHint": "New terminals use the selected shell; open terminals keep their existing shell",
+      "terminalHintWithCmdFallback": "New terminals use the selected shell; open terminals keep their existing shell. Agent commands actually use PowerShell."
     },
     "controls": {
       "refreshTooltip": "Refresh available terminals",
       "autoDetect": "Auto Detect (Recommended)",
       "description": "Used for new terminals and agent commands in local workspaces",
-      "cmdFallbackMessage": "Agent commands actually use PowerShell.",
       "placeholder": "Select default terminal",
       "noShells": "No available terminals detected"
     },
@@ -257,10 +275,6 @@
     "permissionRequest": {
       "label": "Permission request notification",
       "description": "Notify you when an action needs approval while the window is in the background"
-    },
-    "startupTips": {
-      "label": "Show tips on startup",
-      "description": "Show a random tip at startup"
     },
     "messages": {
       "loading": "Loading…",

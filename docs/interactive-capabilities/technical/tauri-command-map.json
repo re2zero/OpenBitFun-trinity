@@ -1,11 +1,11 @@
 {
   "schemaVersion": 2,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
-  "catalogDigest": "b626f77724d05af870f136a1d0913b740d28b592e93241e61bd7d18852e2262e",
-  "commandCount": 696,
+  "catalogDigest": "b7a929992cab46782a7a76fdaaa3953ec9628a8a823846a46bacd9dd4d46e6d9",
+  "commandCount": 705,
   "coverage": {
-    "commandCount": 696,
-    "documentedCommandCount": 648,
+    "commandCount": 705,
+    "documentedCommandCount": 657,
     "implementationCommandCount": 48,
     "implementationDigest": "f6d38a24a70708988cb47ada81d07eccf0668684e8734c9ee5155b9ffa7e3db8"
   },
@@ -1285,11 +1285,13 @@
     {
       "id": "close_workspace",
       "moduleId": "commands",
-      "capabilityId": "feature.projects",
+      "capabilityId": null,
       "capabilityIds": [
+        "feature.personal-assistants",
         "feature.projects"
       ],
       "documentedItemIds": [
+        "feature.personal-assistants:assistant-open-close",
         "feature.projects:close-switch-reorder"
       ],
       "visibility": "documented",
@@ -1431,6 +1433,22 @@
       "remoteWorkspacePolicy": "LocalOnly"
     },
     {
+      "id": "computer_use_request_permission",
+      "moduleId": "computer_use",
+      "capabilityId": "feature.computer-use",
+      "capabilityIds": [
+        "feature.computer-use"
+      ],
+      "documentedItemIds": [
+        "feature.computer-use:request-permissions"
+      ],
+      "visibility": "documented",
+      "rustPath": "computer_use_request_permission",
+      "sourceFile": "src/apps/desktop/src/api/computer_use_api.rs",
+      "signature": "fn computer_use_request_permission( request: ComputerPermissionRequest, ) -> Result<ComputerPermissionReceipt, String>",
+      "remoteWorkspacePolicy": "LocalOnly"
+    },
+    {
       "id": "computer_use_request_permissions",
       "moduleId": "computer_use",
       "capabilityId": null,
@@ -1448,6 +1466,134 @@
       "rustPath": "computer_use_request_permissions",
       "sourceFile": "src/apps/desktop/src/api/computer_use_api.rs",
       "signature": "fn computer_use_request_permissions() -> Result<(), String>",
+      "remoteWorkspacePolicy": "LocalOnly"
+    },
+    {
+      "id": "computer_use_share_control",
+      "moduleId": "computer_use",
+      "capabilityId": "feature.computer-use",
+      "capabilityIds": [
+        "feature.computer-use"
+      ],
+      "documentedItemIds": [
+        "feature.computer-use:app-sharing"
+      ],
+      "visibility": "documented",
+      "rustPath": "computer_use_share_control",
+      "sourceFile": "src/apps/desktop/src/api/computer_use_api.rs",
+      "signature": "fn computer_use_share_control( state: State<'_, AppState>, request: ComputerUseShareControlRequest, ) -> Result<openbitfun_agent_tools::computer_use_control::ControlSnapshot, String>",
+      "remoteWorkspacePolicy": "LocalOnly"
+    },
+    {
+      "id": "computer_use_share_forget_grant",
+      "moduleId": "computer_use",
+      "capabilityId": "feature.computer-use",
+      "capabilityIds": [
+        "feature.computer-use"
+      ],
+      "documentedItemIds": [
+        "feature.computer-use:remembered-control"
+      ],
+      "visibility": "documented",
+      "rustPath": "computer_use_share_forget_grant",
+      "sourceFile": "src/apps/desktop/src/api/computer_use_api.rs",
+      "signature": "fn computer_use_share_forget_grant( state: State<'_, AppState>, request: ComputerUseForgetGrantRequest, ) -> Result<Option<String>, String>",
+      "remoteWorkspacePolicy": "LocalOnly"
+    },
+    {
+      "id": "computer_use_share_grants",
+      "moduleId": "computer_use",
+      "capabilityId": "feature.computer-use",
+      "capabilityIds": [
+        "feature.computer-use"
+      ],
+      "documentedItemIds": [
+        "feature.computer-use:remembered-control"
+      ],
+      "visibility": "documented",
+      "rustPath": "computer_use_share_grants",
+      "sourceFile": "src/apps/desktop/src/api/computer_use_api.rs",
+      "signature": "fn computer_use_share_grants( state: State<'_, AppState>, ) -> Result<Vec<crate::computer_use::grants::GrantRecord>, String>",
+      "remoteWorkspacePolicy": "LocalOnly"
+    },
+    {
+      "id": "computer_use_share_input",
+      "moduleId": "computer_use",
+      "capabilityId": "feature.computer-use",
+      "capabilityIds": [
+        "feature.computer-use"
+      ],
+      "documentedItemIds": [
+        "feature.computer-use:preview-input"
+      ],
+      "visibility": "documented",
+      "rustPath": "computer_use_share_input",
+      "sourceFile": "src/apps/desktop/src/api/computer_use_api.rs",
+      "signature": "fn computer_use_share_input( request: crate::computer_use::shared_preview::SharedInputRequest, ) -> Result<openbitfun_agent_tools::computer_use_control::ControlSnapshot, String>",
+      "remoteWorkspacePolicy": "LocalOnly"
+    },
+    {
+      "id": "computer_use_share_observe",
+      "moduleId": "computer_use",
+      "capabilityId": "feature.computer-use",
+      "capabilityIds": [
+        "feature.computer-use"
+      ],
+      "documentedItemIds": [
+        "feature.computer-use:preview-input"
+      ],
+      "visibility": "documented",
+      "rustPath": "computer_use_share_observe",
+      "sourceFile": "src/apps/desktop/src/api/computer_use_api.rs",
+      "signature": "fn computer_use_share_observe( request: crate::computer_use::shared_preview::SharedPreviewRequest, ) -> Result<crate::computer_use::shared_preview::SharedObservation, String>",
+      "remoteWorkspacePolicy": "LocalOnly"
+    },
+    {
+      "id": "computer_use_share_request",
+      "moduleId": "computer_use",
+      "capabilityId": "feature.computer-use",
+      "capabilityIds": [
+        "feature.computer-use"
+      ],
+      "documentedItemIds": [
+        "feature.computer-use:app-sharing"
+      ],
+      "visibility": "documented",
+      "rustPath": "computer_use_share_request",
+      "sourceFile": "src/apps/desktop/src/api/computer_use_api.rs",
+      "signature": "fn computer_use_share_request( request: ComputerUseShareRequest, ) -> Result<openbitfun_agent_tools::computer_use_control::ControlSnapshot, String>",
+      "remoteWorkspacePolicy": "LocalOnly"
+    },
+    {
+      "id": "computer_use_share_start",
+      "moduleId": "computer_use",
+      "capabilityId": "feature.computer-use",
+      "capabilityIds": [
+        "feature.computer-use"
+      ],
+      "documentedItemIds": [
+        "feature.computer-use:app-sharing"
+      ],
+      "visibility": "documented",
+      "rustPath": "computer_use_share_start",
+      "sourceFile": "src/apps/desktop/src/api/computer_use_api.rs",
+      "signature": "fn computer_use_share_start( state: State<'_, AppState>, request: ComputerUseShareStartRequest, ) -> Result<openbitfun_agent_tools::computer_use_control::ControlSnapshot, String>",
+      "remoteWorkspacePolicy": "LocalOnly"
+    },
+    {
+      "id": "computer_use_share_targets",
+      "moduleId": "computer_use",
+      "capabilityId": "feature.computer-use",
+      "capabilityIds": [
+        "feature.computer-use"
+      ],
+      "documentedItemIds": [
+        "feature.computer-use:app-sharing"
+      ],
+      "visibility": "documented",
+      "rustPath": "computer_use_share_targets",
+      "sourceFile": "src/apps/desktop/src/api/computer_use_api.rs",
+      "signature": "fn computer_use_share_targets( ) -> Result<Vec<openbitfun_agent_tools::computer_use_control::ShareTarget>, String>",
       "remoteWorkspacePolicy": "LocalOnly"
     },
     {
@@ -1497,6 +1643,22 @@
       "sourceFile": "src/apps/desktop/src/api/agentic_api.rs",
       "signature": "fn control_deep_review_queue( request: ControlDeepReviewQueueRequest, ) -> Result<(), String>",
       "remoteWorkspacePolicy": "LegacyUnaudited"
+    },
+    {
+      "id": "copy_session",
+      "moduleId": "session",
+      "capabilityId": "feature.ai-assistant",
+      "capabilityIds": [
+        "feature.ai-assistant"
+      ],
+      "documentedItemIds": [
+        "feature.ai-assistant:session-lifecycle"
+      ],
+      "visibility": "documented",
+      "rustPath": "copy_session",
+      "sourceFile": "src/apps/desktop/src/api/session_api.rs",
+      "signature": "fn copy_session( request: CopySessionRequest, runtime: State<'_, DesktopRuntimeContext>, ) -> Result<CopySessionResponse, String>",
+      "remoteWorkspacePolicy": "RemoteRouted"
     },
     {
       "id": "create_acp_flow_session",
@@ -1963,22 +2125,6 @@
       "sourceFile": "src/apps/desktop/src/api/subagent_api.rs",
       "signature": "fn delete_subagent( state: State<'_, AppState>, request: DeleteSubagentRequest, ) -> Result<(), String>",
       "remoteWorkspacePolicy": "LegacyUnaudited"
-    },
-    {
-      "id": "dismiss_announcement",
-      "moduleId": "announcement",
-      "capabilityId": "setting.application.general",
-      "capabilityIds": [
-        "setting.application.general"
-      ],
-      "documentedItemIds": [
-        "setting.application.general:announcements"
-      ],
-      "visibility": "documented",
-      "rustPath": "api::announcement_api::dismiss_announcement",
-      "sourceFile": "src/apps/desktop/src/api/announcement_api.rs",
-      "signature": "fn dismiss_announcement( state: State<'_, AppState>, request: AnnouncementIdRequest, ) -> Result<(), String>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
       "id": "dispatch_answer",
@@ -2777,22 +2923,6 @@
       "remoteWorkspacePolicy": "LegacyUnaudited"
     },
     {
-      "id": "get_announcement_tips",
-      "moduleId": "announcement",
-      "capabilityId": "setting.application.general",
-      "capabilityIds": [
-        "setting.application.general"
-      ],
-      "documentedItemIds": [
-        "setting.application.general:announcements"
-      ],
-      "visibility": "documented",
-      "rustPath": "api::announcement_api::get_announcement_tips",
-      "sourceFile": "src/apps/desktop/src/api/announcement_api.rs",
-      "signature": "fn get_announcement_tips( state: State<'_, AppState>, ) -> Result<Vec<AnnouncementCard>, String>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
       "id": "get_app_state",
       "moduleId": "commands",
       "capabilityId": "feature.projects",
@@ -2822,6 +2952,22 @@
       "rustPath": "get_app_version",
       "sourceFile": "src/apps/desktop/src/api/system_api.rs",
       "signature": "fn get_app_version( app: AppHandle, request: GetAppVersionRequest, ) -> Result<String, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "get_assistant_workspaces",
+      "moduleId": "commands",
+      "capabilityId": "feature.personal-assistants",
+      "capabilityIds": [
+        "feature.personal-assistants"
+      ],
+      "documentedItemIds": [
+        "feature.personal-assistants:assistant-gallery"
+      ],
+      "visibility": "documented",
+      "rustPath": "get_assistant_workspaces",
+      "sourceFile": "src/apps/desktop/src/api/commands.rs",
+      "signature": "fn get_assistant_workspaces( state: State<'_, AppState>, ) -> Result<Vec<WorkspaceInfoDto>, String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
@@ -3642,22 +3788,6 @@
       "sourceFile": "src/apps/desktop/src/api/snapshot_service.rs",
       "signature": "fn get_operation_summary( runtime: State<'_, DesktopRuntimeContext>, mut request: GetOperationSummaryRequest, ) -> Result<serde_json::Value, String>",
       "remoteWorkspacePolicy": "RemoteRouted"
-    },
-    {
-      "id": "get_pending_announcements",
-      "moduleId": "announcement",
-      "capabilityId": "setting.application.general",
-      "capabilityIds": [
-        "setting.application.general"
-      ],
-      "documentedItemIds": [
-        "setting.application.general:announcements"
-      ],
-      "visibility": "documented",
-      "rustPath": "api::announcement_api::get_pending_announcements",
-      "sourceFile": "src/apps/desktop/src/api/announcement_api.rs",
-      "signature": "fn get_pending_announcements( state: State<'_, AppState>, ) -> Result<Vec<AnnouncementCard>, String>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
       "id": "get_pending_update",
@@ -5569,22 +5699,6 @@
       "remoteWorkspacePolicy": "RemoteRouted"
     },
     {
-      "id": "mark_announcement_seen",
-      "moduleId": "announcement",
-      "capabilityId": "setting.application.general",
-      "capabilityIds": [
-        "setting.application.general"
-      ],
-      "documentedItemIds": [
-        "setting.application.general:announcements"
-      ],
-      "visibility": "documented",
-      "rustPath": "api::announcement_api::mark_announcement_seen",
-      "sourceFile": "src/apps/desktop/src/api/announcement_api.rs",
-      "signature": "fn mark_announcement_seen( state: State<'_, AppState>, request: AnnouncementIdRequest, ) -> Result<(), String>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
       "id": "mark_openbitfun_control_surface_ready",
       "moduleId": "openbitfun_control_host",
       "capabilityId": null,
@@ -6375,22 +6489,6 @@
       "remoteWorkspacePolicy": "RemoteUnsupported"
     },
     {
-      "id": "never_show_announcement",
-      "moduleId": "announcement",
-      "capabilityId": "setting.application.general",
-      "capabilityIds": [
-        "setting.application.general"
-      ],
-      "documentedItemIds": [
-        "setting.application.general:announcements"
-      ],
-      "visibility": "documented",
-      "rustPath": "api::announcement_api::never_show_announcement",
-      "sourceFile": "src/apps/desktop/src/api/announcement_api.rs",
-      "signature": "fn never_show_announcement( state: State<'_, AppState>, request: AnnouncementIdRequest, ) -> Result<(), String>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
       "id": "notify_cron_host_ready",
       "moduleId": "cron",
       "capabilityId": "feature.tasks-automation",
@@ -6441,11 +6539,13 @@
     {
       "id": "open_workspace",
       "moduleId": "commands",
-      "capabilityId": "feature.projects",
+      "capabilityId": null,
       "capabilityIds": [
+        "feature.personal-assistants",
         "feature.projects"
       ],
       "documentedItemIds": [
+        "feature.personal-assistants:assistant-open-close",
         "feature.projects:open-create"
       ],
       "visibility": "documented",
@@ -7984,6 +8084,22 @@
       "sourceFile": "src/apps/desktop/src/api/commands.rs",
       "signature": "fn reveal_models_dev_cache_directory() -> Result<(), String>",
       "remoteWorkspacePolicy": "LocalOnly"
+    },
+    {
+      "id": "reveal_session_storage_directory",
+      "moduleId": "session_storage_directory",
+      "capabilityId": "feature.ai-assistant",
+      "capabilityIds": [
+        "feature.ai-assistant"
+      ],
+      "documentedItemIds": [
+        "feature.ai-assistant:session-storage-directory"
+      ],
+      "visibility": "documented",
+      "rustPath": "reveal_session_storage_directory",
+      "sourceFile": "src/apps/desktop/src/api/session_storage_directory.rs",
+      "signature": "fn reveal_session_storage_directory( state: State<'_, AppState>, request: RevealSessionStorageDirectoryRequest, ) -> Result<(), String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
       "id": "review_platform_clear_auth_token",
@@ -10262,22 +10378,6 @@
       "remoteWorkspacePolicy": "LegacyUnaudited"
     },
     {
-      "id": "trigger_announcement",
-      "moduleId": "announcement",
-      "capabilityId": "setting.application.general",
-      "capabilityIds": [
-        "setting.application.general"
-      ],
-      "documentedItemIds": [
-        "setting.application.general:announcements"
-      ],
-      "visibility": "documented",
-      "rustPath": "api::announcement_api::trigger_announcement",
-      "sourceFile": "src/apps/desktop/src/api/announcement_api.rs",
-      "signature": "fn trigger_announcement( state: State<'_, AppState>, request: AnnouncementIdRequest, ) -> Result<Option<AnnouncementCard>, String>",
-      "remoteWorkspacePolicy": "WorkspaceAgnostic"
-    },
-    {
       "id": "trinity_awaken",
       "moduleId": "trinity",
       "capabilityId": "feature.trinity",
@@ -10550,6 +10650,38 @@
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
+      "id": "trinity_memory_export",
+      "moduleId": "trinity",
+      "capabilityId": "feature.trinity",
+      "capabilityIds": [
+        "feature.trinity"
+      ],
+      "documentedItemIds": [
+        "feature.trinity:memory"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::trinity_api::trinity_memory_export",
+      "sourceFile": "src/apps/desktop/src/api/trinity_api.rs",
+      "signature": "fn trinity_memory_export( _state: State<'_, crate::api::app_state::AppState>, request: Option<TrinityRequest>, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "trinity_memory_import",
+      "moduleId": "trinity",
+      "capabilityId": "feature.trinity",
+      "capabilityIds": [
+        "feature.trinity"
+      ],
+      "documentedItemIds": [
+        "feature.trinity:memory"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::trinity_api::trinity_memory_import",
+      "sourceFile": "src/apps/desktop/src/api/trinity_api.rs",
+      "signature": "fn trinity_memory_import( _state: State<'_, crate::api::app_state::AppState>, request: Option<TrinityRequest>, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
       "id": "trinity_memory_stats",
       "moduleId": "trinity",
       "capabilityId": "feature.trinity",
@@ -10579,6 +10711,22 @@
       "rustPath": "api::trinity_api::trinity_memory_timeline",
       "sourceFile": "src/apps/desktop/src/api/trinity_api.rs",
       "signature": "fn trinity_memory_timeline( _state: State<'_, crate::api::app_state::AppState>, request: Option<TrinityRequest>, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "trinity_morning_report",
+      "moduleId": "trinity",
+      "capabilityId": "feature.trinity",
+      "capabilityIds": [
+        "feature.trinity"
+      ],
+      "documentedItemIds": [
+        "feature.trinity:morning"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::trinity_api::trinity_morning_report",
+      "sourceFile": "src/apps/desktop/src/api/trinity_api.rs",
+      "signature": "fn trinity_morning_report( _state: State<'_, crate::api::app_state::AppState>, request: Option<TrinityRequest>, ) -> Result<Value, String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {

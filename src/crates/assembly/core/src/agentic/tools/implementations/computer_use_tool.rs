@@ -83,7 +83,7 @@ pub(crate) async fn computer_use_augment_result_json(
     let success = body
         .get("success")
         .and_then(|v| v.as_bool())
-        .unwrap_or(true);
+        .unwrap_or(false);
     host.record_action(&action_type, &action_params, success);
 
     // Check for action loops
@@ -239,16 +239,14 @@ impl ComputerUseTool {
         let keys = Self::key_chord_os_hint();
         format!(
             "Desktop application control on {}. {} \
-The primary model cannot consume image attachments: use describe_screen and get_app_state to read accessibility and OCR observations; do not call screenshot or infer pixels from unseen images. \
-Start with start_control mode=background, identify the application with list_apps, then use its app selector consistently. Keep the session active across observations and actions; stop_control when finished. \
-An empty app selector follows the bound target, or the current app when no target is bound yet. control_status reports the owner, mode and target. Its capabilities describe backend routes, not support for every control or arbitrary background pointer input. A system stop requires an explicit new start. \
-For GUI tasks use ComputerUse's observation and app-scoped input interfaces. Do not replace failed observations with ad hoc AppleScript, capture or OCR programs in ExecCommand. \
-Read the complete returned data, including application identities, tree_text, node indices, OCR text, target geometry, limitations and errors. \
-Prefer app_batch for already-decided app_click/app_type_text/app_scroll/app_key_chord steps using observed node_idx or ocr_text targets; it returns one final observation. Stop before choosing a target that depends on new information, and never replay completed receipts after a partial failure. Consult get_app_shortcuts when a shortcut is unknown. When the accessibility tree is sparse, use returned OCR facts with an app-scoped ocr_text target. \
-Global click, key_chord, type_text, mouse_move and paste require foreground mode. Use that mode only when the user explicitly requests taking over the visible desktop; do not activate an app or change modes to repair an observation error. \
-Observe, act once, and verify the intended change in the next observation. Event submission or a changed digest alone does not prove task success, and an unchanged digest is not a reason to repeat a mutation. \
-Before sending a message or another irreversible action, verify the intended target and content from the current observation, then verify the result. \
-If neither accessibility nor built-in OCR exposes the required content, report that specific limitation instead of guessing coordinates or claiming success. Prefer ControlHub's browser interface for web content; ComputerUse can operate native browser chrome and dialogs.",
+Text-only model: observe the selected app through get_app_state or describe_screen and read AX/OCR facts; do not call screenshot or guess unseen pixels. \
+A first app observation can start background control automatically. Use list_apps only when the target is unknown; reuse its selector or omit app to follow the bound target. \
+Use app_batch by default for already-decided app_click/app_type_text/app_key_chord/app_scroll steps. Focus and exact Unicode text fit in one app_type_text step. Batch known search input and its submit key, or several observed fields. \
+One batch returns ordered receipts and one final observation. End it when new information is needed; reuse the result without a duplicate read or routine delay. include_image=false omits the image when AX text is sufficient. \
+Use fresh observed node_idx/ocr_text targets and echo observation_id for node/index input when available. Read capability, OCR and truncation notes; report missing evidence instead of inventing it. \
+Verify the intended content, not digest changes. Never replay completed steps after partial failure; check delivery before retrying a submission. \
+Keep background mode. Foreground takeover requires the user's explicit request; never activate an app or widen scope to repair an error. Respect Stop, cancellation and permission denial. start_control is needed for an authorized restart or mode choice; control_status is diagnostic, and stop_control releases the session when finished. \
+Use ExecCommand for genuine shell work, never ad hoc GUI capture, clipboard or input workarounds. Prefer available ControlHub browser actions for web content. Before an irreversible submission verify its target, content and user authorization, then verify the result.",
             os, keys
         )
     }
@@ -455,6 +453,7 @@ If neither accessibility nor built-in OCR exposes the required content, report t
             "text_query": { "type": "string", "description": "For `move_to_text`, `move_to_target`, `click_target`: visible text to OCR-match on screen (case-insensitive substring)." },
             "identifier_contains": { "type": "string", "description": "For `locate`, `click_element`: case-insensitive substring on AXIdentifier." },
             "node_idx": { "type": "integer", "minimum": 0, "description": "For `locate`, `click_element`: jump straight to a node returned by the most recent `get_app_state` (field `idx`). Bypasses BFS. macOS only; other platforms return AX_IDX_NOT_SUPPORTED." },
+            "observation_id": { "type": "string", "minLength": 1, "description": "Echo the opaque observation_id from get_app_state or the latest app action when sending node/index input. It is invalidated by every new app observation, target change, or stop. Omit only for older hosts without observation-id-v1." },
             "app_state_digest": { "type": "string", "description": "For `locate`, `click_element`: optional `state_digest` from the same `get_app_state` call that produced `node_idx`. Stale digest yields AX_IDX_STALE so you re-snapshot." },
             "max_depth": { "type": "integer", "minimum": 1, "maximum": 200, "description": "For get_app_state: AX depth (default 32). For locate/click_element: max BFS depth (default 48), ignored with node_idx." },
             "filter_combine": { "type": "string", "enum": ["all", "any"], "description": "For `locate`, `click_element`: `all` (default, AND) or `any` (OR) for filter combination. Priority: `node_idx` > `text_contains` > `title_contains`+`role_substring`." },
@@ -473,6 +472,7 @@ If neither accessibility nor built-in OCR exposes the required content, report t
             "display_id": { "type": ["integer", "null"], "description": "For `focus_display` or display-pinned desktop actions: display id, or null to clear the pin." },
             "include_hidden": { "type": "boolean", "description": "For `list_apps`: include hidden/background apps." },
             "focus_window_only": {"type":"boolean","description":"For get_app_state: restrict the AX tree to the target application window (default true). Does not activate the application."},
+            "include_image": {"type":"boolean","description":"For get_app_state and app_batch/app input results: include the final window image (default true). Set false when AX text is sufficient; keep true for visual, canvas or image-coordinate decisions. Does not change input capability or authorization."},
             "only_visible": { "type": "boolean", "description": "For `list_apps`: list only visible apps when true." },
             "target": Self::app_target_schema(false),
             "focus": Self::app_target_schema(true),
@@ -554,12 +554,14 @@ If neither accessibility nor built-in OCR exposes the required content, report t
                     | "include_hidden"
                     | "only_visible"
                     | "focus_window_only"
+                    | "include_image"
                     | "steps"
                     | "target"
                     | "focus"
                     | "text"
                     | "keys"
                     | "focus_idx"
+                    | "observation_id"
                     | "dx"
                     | "dy"
                     | "app_name"
@@ -636,20 +638,37 @@ If neither accessibility nor built-in OCR exposes the required content, report t
         compact(&mut schema, vision);
         let properties = schema["properties"].as_object_mut().unwrap();
         properties["app"]["description"] =
-            json!("Target from list_apps. Omit to keep the bound application.");
+            json!("Known app selector or identity from list_apps. Omit to keep the bound application; no repeated discovery needed.");
         properties["mode"]["description"] =
             json!("Default background. Foreground only for a user-requested takeover.");
-        properties["app_name"]["description"] = json!("Application name for open_app; launching may activate it and requires foreground control.");
-        properties["steps"]["description"] = json!("Use app_batch when multiple inputs are already decided. One app, ordered steps, one final observation. Example assumes an observed search field where Return submits the query. Stop before selecting unseen results; batch changes neither input capability nor authorization. Never replay completed steps.");
+        properties["app_name"]["description"] = json!("Application name, bundle identifier or path for open_app. Background mode requests a launch without activation where the host supports it; then observe the returned target.");
+        properties["include_image"]["description"] = json!("get_app_state and app_batch/app input results: default true. Set false for sufficient AX text or known semantic/keyboard flows; keep true for visual, canvas or image-coordinate decisions.");
+        properties["steps"]["description"] = json!("Default for several already-decided inputs: one app, ordered steps, one final observation. Examples: known search+Return; several observed form fields with stable layout. End before new information is needed. No routine waits or duplicate reads; never replay completed steps after partial failure. Batch changes neither capability nor authorization.");
         let observed_focus = if vision {
             json!({"kind":"image_xy","x":120,"y":80,"screenshot_id":"observed-frame"})
         } else {
             json!({"kind":"node_idx","idx":3})
         };
-        properties["steps"]["examples"] = json!([[
-            {"action":"app_type_text","focus":observed_focus,"text":"search query"},
-            {"action":"app_key_chord","keys":["return"]}
-        ]]);
+        let observed_fields = if vision {
+            json!([
+                {"kind":"image_xy","x":120,"y":80,"screenshot_id":"observed-frame"},
+                {"kind":"image_xy","x":120,"y":140,"screenshot_id":"observed-frame"},
+                {"kind":"image_xy","x":120,"y":200,"screenshot_id":"observed-frame"}
+            ])
+        } else {
+            json!([{"kind":"node_idx","idx":3},{"kind":"node_idx","idx":7},{"kind":"node_idx","idx":11}])
+        };
+        properties["steps"]["examples"] = json!([
+            [
+                {"action":"app_type_text","focus":observed_focus,"text":"search query"},
+                {"action":"app_key_chord","keys":["return"]}
+            ],
+            [
+                {"action":"app_type_text","focus":observed_fields[0],"text":"Ada"},
+                {"action":"app_type_text","focus":observed_fields[1],"text":"Lovelace"},
+                {"action":"app_type_text","focus":observed_fields[2],"text":"London"}
+            ]
+        ]);
         if let Some(variants) = properties["steps"]["items"]["oneOf"].as_array_mut() {
             for variant in variants {
                 match variant.pointer("/properties/action/enum/0").and_then(Value::as_str) {
@@ -667,7 +686,7 @@ If neither accessibility nor built-in OCR exposes the required content, report t
         });
         properties["focus"]["description"] =
             json!("Text: focus and type together. Scroll: anchor only, never click. Omit to preserve current app focus.");
-        properties["action"]["description"] = json!("Prefer app_batch/app_* for application tasks. Global click/key_chord/type_text/scroll and mouse_move/drag require explicitly authorized foreground control. click acts at the current pointer and takes no coordinates.");
+        properties["action"]["description"] = json!("Observe known target, then app_batch for decided inputs and one final observation. First app observation can start background control automatically. Global click/key_chord/type_text/scroll and mouse_move/drag require explicitly authorized foreground control; click uses the current pointer.");
         properties["delta_x"]["description"] =
             json!("Global scroll horizontal wheel delta; app_scroll uses dx instead.");
         properties["delta_y"]["description"] =
@@ -689,7 +708,7 @@ If neither accessibility nor built-in OCR exposes the required content, report t
             "action": {
                 "type": "string",
                 "enum": ["start_control", "stop_control", "control_status", "click_target", "move_to_target", "click_element", "move_to_text", "click", "mouse_move", "scroll", "drag", "locate", "key_chord", "type_text", "pointer_move_rel", "wait", "list_displays", "focus_display", "paste", "list_apps", "get_app_state", "get_app_shortcuts", "describe_screen", "app_batch", "app_drag", "app_click", "app_type_text", "app_scroll", "app_key_chord", "app_wait_for", "open_app", "open_url", "open_file", "clipboard_get", "clipboard_set", "run_script", "run_apple_script", "get_os_info"],
-                "description": "Select a ComputerUse action. This model is text-only: observe through describe_screen/get_app_state and read returned AX/OCR facts; screenshot and image-based targeting require image support. Start background control, identify the app with list_apps, then prefer app_click/app_type_text/app_scroll/app_key_chord with that app and fresh node_idx or observed ocr_text targets. Consult get_app_shortcuts for unknown shortcuts. Keep the session active until the task is finished; control_status reports its scope and stop_control releases it. Foreground mode and global input require an explicit user request to take over the visible desktop. Never activate the target or switch modes just to fix an observation error. Do not replace missing GUI observations with ad hoc scripts in ExecCommand. Reuse the returned after-action observation; app_type_text with focus combines known targeting and exact Unicode input. Observe, act once, then verify the intended result; do not repeat a mutation merely because its digest is unchanged. Prefer ControlHub domain=\"browser\" for web content; ComputerUse supports native browser chrome and dialogs."
+                "description": "Select a ComputerUse action. This model is text-only: observe through describe_screen/get_app_state and read returned AX/OCR facts; screenshot and image-based targeting require image support. Observe the known target with get_app_state/describe_screen; list_apps is only needed to resolve an unknown target, and a first observation can start background control automatically. Use app_batch for decided app_click/app_type_text/app_scroll/app_key_chord inputs to fresh node_idx or observed ocr_text targets and one final observation. Consult get_app_shortcuts for unknown shortcuts. Keep the session active until the task is finished; control_status reports its scope and stop_control releases it. Foreground mode and global input require an explicit user request to take over the visible desktop. Never activate the target or switch modes just to fix an observation error. Do not replace missing GUI observations with ad hoc scripts in ExecCommand. Reuse the returned after-action observation; app_type_text with focus combines known targeting and exact Unicode input. Observe, act once, then verify the intended result; do not repeat a mutation merely because its digest is unchanged. Prefer ControlHub domain=\"browser\" for web content; ComputerUse supports native browser chrome and dialogs."
             },
             "use_screen_coordinates": { "type": "boolean", "description": "For `mouse_move`, `drag`: **must be true** — global display coordinates from `move_to_text`, `locate`, AX, or `pointer_global`. **Not** for `click`." },
             "delta_x": { "type": "integer", "description": "For `pointer_move_rel`: horizontal delta (negative=left); also accepted as `dx`. For `scroll`: horizontal wheel delta." },
@@ -1504,22 +1523,13 @@ impl Tool for ComputerUseTool {
         let keys = Self::key_chord_os_hint();
         Ok(format!(
             "Desktop application control on {}. {} \
-Start with start_control mode=background and reuse that session across observations and actions. \
-Use foreground only when the user explicitly requests taking over the visible desktop; do not switch modes or activate an app merely to repair an observation error. \
-Use list_apps once to identify the target, then get_app_state with its app selector (pid, bundle_id, or name). \
-An empty app selector follows the bound target, or the current app when no target is bound yet. \
-For GUI tasks, use this tool's capture, accessibility and input interfaces. Do not replace failed observations with ad hoc AppleScript, screen-capture, or OCR programs in ExecCommand. \
-Read the returned structured data: application identities, tree_text, node indices, screenshot_id, coordinate bounds, and errors. \
-Prefer app_batch for already-decided app_click, app_type_text, app_key_chord, app_scroll or app_drag steps; it returns one final observation. Stop before choosing a target that depends on new pixels. Never replay completed receipts after a partial failure. \
-Use observed image_xy coordinates with the matching screenshot_id; node_idx and ocr_text are optional precision aids, not prerequisites for graphical controls. \
-Screenshot image coordinates are valid only with that screenshot identity and its image_content_rect/image_global_bounds; never reinterpret them as screen coordinates. \
-Execute an action or batch once, then verify the intended change. A submitted event is not evidence of successful delivery; do not repeat a mutation merely because the AX digest is unchanged. \
-If the app exposes only window chrome, use the authorized window screenshot and built-in OCR targeting instead of guessing controls from a sparse tree. \
-For text-only models use describe_screen and the returned accessibility/OCR facts; screenshot requires image support. \
-When the host cannot observe the necessary content, report the specific missing capability instead of inventing a successful state. \
-Keep the capture session active during the task. control_status reports its owner, mode and target; capabilities describe backend routes, not support for every control or arbitrary background pointer input. stop_control releases it when finished. \
-A system stop requires an explicit new start. Prefer ControlHub's browser interface for web content; ComputerUse can operate native browser chrome and dialogs. \
-Before sending a message or another irreversible action, verify the intended target and content using the current observation; verify the resulting state afterward.",
+Observe a known app with get_app_state; use list_apps only when its identity is unknown. A first app observation can start background control automatically. Reuse the selector or omit app to follow the bound target. \
+Use app_batch by default for already-decided app_click/app_type_text/app_key_chord/app_scroll/app_drag steps. Focus and Unicode input fit in one app_type_text step. Batch known search input plus its submit key, or several observed form fields; end the batch when new information is needed. \
+One batch returns ordered receipts and one final observation. Use that result for the next decision, without a duplicate screenshot or routine delay; finish when the requested outcome is verified. \
+Set include_image=false when AX text is enough for the next decision; keep the default true for visual, canvas or image-coordinate work. Read tree_text, observation_id, screenshot_id, geometry and errors. Use observed image_xy with its exact screenshot_id; echo observation_id for node/index input when available. AX/OCR are optional precision aids for visible graphical controls. \
+A submitted event or changed digest does not prove completion. Verify intended content; never replay completed steps after partial failure, and check delivery before retrying a submission. \
+Keep background mode. Foreground takeover requires the user's explicit request; never activate an app or widen scope to repair an error. Respect Stop, cancellation and permission denial. start_control is needed for an authorized restart or mode choice; control_status is diagnostic, and stop_control releases the session when finished. \
+Capabilities describe available routes, not support for every control. Use supported recovery or report the limitation. Text-only models use describe_screen/get_app_state and AX/OCR targets. Use ExecCommand for genuine shell work, never ad hoc GUI capture, clipboard or input workarounds. Prefer available ControlHub browser actions for web content. Before an irreversible submission verify its target, content and user authorization, then verify the result.",
             os, keys,
         ))
     }
@@ -1529,7 +1539,7 @@ Before sending a message or another irreversible action, verify the intended tar
     }
 
     fn default_exposure(&self) -> ToolExposure {
-        ToolExposure::Deferred
+        ToolExposure::Direct
     }
 
     async fn description_with_context(
@@ -1551,7 +1561,7 @@ Before sending a message or another irreversible action, verify the intended tar
             "action": {
                 "type": "string",
                 "enum": ["start_control", "stop_control", "control_status", "screenshot", "describe_screen", "click_target", "move_to_target", "click_element", "move_to_text", "click", "mouse_move", "scroll", "drag", "locate", "key_chord", "type_text", "pointer_move_rel", "wait", "list_displays", "focus_display", "paste", "list_apps", "get_app_state", "get_app_shortcuts", "app_batch", "app_drag", "app_click", "app_type_text", "app_scroll", "app_key_chord", "app_wait_for", "build_interactive_view", "interactive_click", "interactive_type_text", "interactive_scroll", "build_visual_mark_view", "visual_click", "open_app", "open_url", "open_file", "clipboard_get", "clipboard_set", "run_script", "run_apple_script", "get_os_info"],
-                "description": "Select a ComputerUse action. Start background control, identify the app with list_apps, then observe it with get_app_state/describe_screen/screenshot and prefer app_click/app_type_text/app_scroll/app_key_chord. For app_click use a fresh node_idx, observed ocr_text, or image_xy/image_grid with the screenshot_id from that same app observation. Screenshot pixels are valid for these app-scoped targets; do not reinterpret them as global screen coordinates. Consult get_app_shortcuts for unknown shortcuts. Keep the session active across observations and actions; control_status reports its scope and stop_control releases it. Global click (at the current pointer), mouse_move, key_chord, type_text and paste require foreground mode and an explicit user request to take over the visible desktop. A parent-generated task plan is not user approval for foreground takeover; ordinary app tasks and confirmation of message content keep background mode. Never activate the target or switch modes merely to repair an observation error. Do not replace failed GUI observations with ad hoc scripts in ExecCommand. Reuse the returned after-action observation; app_type_text with focus combines known targeting and exact Unicode input. Observe, act once, then verify the intended result; do not repeat a mutation merely because its digest is unchanged. Prefer ControlHub domain=\"browser\" for web content; ComputerUse supports native browser chrome and dialogs."
+                "description": "Select a ComputerUse action. Observe the known target with get_app_state/describe_screen/screenshot; list_apps is only needed to resolve an unknown target, and a first observation can start background control automatically. Use app_batch for decided app_click/app_type_text/app_scroll/app_key_chord inputs and one final observation. For app_click use a fresh node_idx, observed ocr_text, or image_xy/image_grid with the screenshot_id from that same app observation. Screenshot pixels are valid for these app-scoped targets; do not reinterpret them as global screen coordinates. Consult get_app_shortcuts for unknown shortcuts. Keep the session active across observations and actions; control_status reports its scope and stop_control releases it. Global click (at the current pointer), mouse_move, key_chord, type_text and paste require foreground mode and an explicit user request to take over the visible desktop. A parent-generated task plan is not user approval for foreground takeover; ordinary app tasks and confirmation of message content keep background mode. Never activate the target or switch modes merely to repair an observation error. Do not replace failed GUI observations with ad hoc scripts in ExecCommand. Reuse the returned after-action observation; app_type_text with focus combines known targeting and exact Unicode input. Observe, act once, then verify the intended result; do not repeat a mutation merely because its digest is unchanged. Prefer ControlHub domain=\"browser\" for web content; ComputerUse supports native browser chrome and dialogs."
             },
             "use_screen_coordinates": { "type": "boolean", "description": "For `mouse_move`, `drag`: **must be true** — global display coordinates (e.g. macOS points) from `move_to_text`, `locate`, AX, or `pointer_global`. **Not** for `click`." },
             "delta_x": { "type": "integer", "description": "For `pointer_move_rel`: horizontal delta (negative=left); also accepted as `dx`. **Not** allowed as the first move after `screenshot` (host). For `scroll`: horizontal wheel delta." },
@@ -1689,6 +1699,13 @@ impl ComputerUseTool {
             .get("action")
             .and_then(Value::as_str)
             .ok_or_else(|| OpenBitFunError::tool("action is required"))?;
+        let policy =
+            openbitfun_agent_tools::computer_use_control::ControlActionPolicy::for_action(action)
+                .ok_or_else(|| {
+                OpenBitFunError::tool(format!(
+                    "[CONTROL_ACTION_INVALID] Unknown ComputerUse action: {action}"
+                ))
+            })?;
         let host = context
             .computer_use_host
             .as_ref()
@@ -1727,27 +1744,15 @@ impl ComputerUseTool {
             _ => {}
         }
         let previous_generation = host.control_snapshot().generation;
-        let mut lease = host.acquire_control_action(owner, action).await?;
+        let lease_result = host.acquire_control_action(owner, action).await;
         let current_generation = host.control_snapshot().generation;
         if current_generation != previous_generation {
             Self::watch_control_cancellation(host.clone(), context, current_generation);
         }
+        let mut lease = lease_result?;
         let result = async {
             let mut capture_preparation_error = None;
-            if !matches!(
-                action,
-                "list_apps"
-                    | "list_displays"
-                    | "wait"
-                    | "get_os_info"
-                    | "clipboard_get"
-                    | "clipboard_set"
-                    | "open_app"
-                    | "open_url"
-                    | "open_file"
-                    | "run_script"
-                    | "run_apple_script"
-            ) {
+            if policy.target {
                 let app: crate::agentic::tools::computer_use_host::AppSelector = match input.get("app").filter(|v| v.is_object()) {
                     Some(app) => serde_json::from_value(app.clone())
                         .map_err(|e| OpenBitFunError::tool(format!("Invalid app selector: {e}")))?,
@@ -1769,7 +1774,19 @@ impl ComputerUseTool {
                     }
                 }
             }
+            if !policy.observation {
+                if let Some(value) = input.get("observation_id") {
+                    let id = value.as_str().filter(|id| !id.is_empty()).ok_or_else(|| OpenBitFunError::tool("[INVALID_PARAMS] observation_id must be a nonempty string"))?;
+                    host.validate_observation(id)?;
+                }
+            }
+            let observation_scope = host.control_snapshot();
             let mut results = self.call_controlled(input, context).await?;
+            if policy.observation && policy.lease
+                && !super::computer_use_program::same_active_control(&observation_scope, &host.control_snapshot())
+            {
+                return Err(OpenBitFunError::tool("[CONTROL_STALE] Observation discarded because control stopped or changed target"));
+            }
             if let Some(error) = capture_preparation_error {
                 for result in &mut results {
                     if let ToolResult::Result { data, .. } = result {
@@ -2539,8 +2556,8 @@ impl ComputerUseTool {
                 let next_step = if windowless {
                     Some(format!(
                         "'{}' is running (PID {}) but owns no window, so there is nothing on screen to click. \
-The host already retried via `open -b`. Re-run `open_app`, or ask the user to open the app's main window (e.g. from its Dock icon). \
-Do not fall back to screen-coordinate clicks — there is no window to hit.",
+Inspect the application's current state and supported reopen or menu actions, then continue the task. \
+Do not send screen-coordinate clicks without an observed window or report launch as task completion.",
                         result.app_name,
                         result
                             .process_id
@@ -2717,9 +2734,17 @@ mod tests {
         ComputerScreenshot, ComputerUseForegroundApplication, ComputerUseHost,
         ComputerUsePermissionSnapshot, ComputerUseScreenshotParams, ComputerUseSessionSnapshot,
     };
-    use crate::agentic::tools::framework::{Tool, ToolResult, ToolUseContext};
+    use crate::agentic::tools::framework::{Tool, ToolExposure, ToolResult, ToolUseContext};
     use crate::util::errors::{OpenBitFunError, OpenBitFunResult};
     use serde_json::{json, Value};
+
+    #[test]
+    fn computer_use_is_direct_by_default() {
+        assert_eq!(
+            ComputerUseTool::new().default_exposure(),
+            ToolExposure::Direct
+        );
+    }
 
     #[test]
     fn computer_use_permission_resource_identifies_action_and_safe_target() {
@@ -2817,6 +2842,11 @@ mod tests {
             .await;
         assert!(visual.to_string().len() < legacy.to_string().len() / 2);
         for schema in [&visual, &textual] {
+            let launch = schema["properties"]["app_name"]["description"]
+                .as_str()
+                .unwrap();
+            assert!(launch.contains("without activation"));
+            assert!(!launch.contains("requires foreground"));
             let actions = action_enum(schema);
             for current in [
                 "app_batch",
@@ -2841,6 +2871,12 @@ mod tests {
             }
             assert_eq!(schema["additionalProperties"], false);
             assert_eq!(schema["properties"]["app"]["type"], "object");
+            assert_eq!(schema["properties"]["include_image"]["type"], "boolean");
+            assert!(!schema["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|field| field == "include_image"));
             assert!(schema["properties"].get("script").is_none());
         }
         for hidden in [
@@ -3339,6 +3375,12 @@ mod tests {
         fn control_snapshot(&self) -> crate::agentic::tools::computer_use_host::ControlSnapshot {
             crate::agentic::tools::computer_use_host::ControlSnapshot {
                 supported: self.control_supported,
+                state: if self.control_supported {
+                    "active"
+                } else {
+                    "idle"
+                }
+                .into(),
                 target: self.control_supported.then(|| "pid:421/window:22".into()),
                 ..Default::default()
             }
@@ -3694,8 +3736,10 @@ mod tests {
         state: Mutex<ControlSnapshot>,
         events: Arc<Mutex<Vec<String>>>,
         wait_started: tokio::sync::Notify,
+        require_share: bool,
         fail_capture: bool,
         fail_observation: bool,
+        observation_image: bool,
         replace_control_during_observation: Option<ControlSnapshot>,
         replace_control_during_input: Option<ControlSnapshot>,
         capture_error: &'static str,
@@ -3710,8 +3754,10 @@ mod tests {
                 }),
                 events: Arc::default(),
                 wait_started: tokio::sync::Notify::new(),
+                require_share: false,
                 fail_capture: false,
                 fail_observation: false,
+                observation_image: false,
                 replace_control_during_observation: None,
                 replace_control_during_input: None,
                 capture_error: "TARGET_APP_HIDDEN: no live surface",
@@ -3742,6 +3788,15 @@ mod tests {
     }
     #[async_trait::async_trait]
     impl ComputerUseHost for ControlRecordingHost {
+        fn validate_observation(&self, id: &str) -> OpenBitFunResult<()> {
+            self.events.lock().unwrap().push(format!("validate:{id}"));
+            if id == "fixture-current" {
+                Ok(())
+            } else {
+                Err(OpenBitFunError::tool("[STALE_OBSERVATION] Read again"))
+            }
+        }
+
         async fn dispatch_app_input(
             &self,
             app: crate::agentic::tools::computer_use_host::AppSelector,
@@ -3794,10 +3849,20 @@ mod tests {
             if let Some(replacement) = &self.replace_control_during_observation {
                 *self.state.lock().unwrap() = replacement.clone();
             }
-            Ok(serde_json::from_value(json!({
-                "app":{"name":"Requested target","pid":421,"running":true},
-                "tree_text":"AXMenuBar target menu", "digest":"target-ax", "captured_at_ms":1
-            }))?)
+            let mut snapshot: crate::agentic::tools::computer_use_host::AppStateSnapshot =
+                serde_json::from_value(json!({
+                    "app":{"name":"Requested target","pid":421,"running":true},
+                    "tree_text":"AXMenuBar target menu", "digest":"target-ax", "captured_at_ms":1
+                }))?;
+            if self.observation_image {
+                snapshot.observation_id = Some("fixture-current".into());
+                snapshot.screenshot = Some(serde_json::from_value(json!({
+                    "screenshot_id":"fixture-image", "bytes":[1,2,3], "mime_type":"image/jpeg",
+                    "image_width":16,"image_height":12,"native_width":16,"native_height":12,
+                    "display_origin_x":0,"display_origin_y":0,"vision_scale":1.0
+                }))?);
+            }
+            Ok(snapshot)
         }
         async fn get_app_shortcuts(
             &self,
@@ -3840,6 +3905,23 @@ mod tests {
             state.state = "stopped".into();
             Ok(state.clone())
         }
+        async fn stop_control_generation(
+            &self,
+            owner: &str,
+            generation: u64,
+        ) -> OpenBitFunResult<ControlSnapshot> {
+            let snapshot = {
+                let mut state = self.state.lock().unwrap();
+                if state.generation != generation {
+                    return Ok(state.clone());
+                }
+                state.generation += 1;
+                state.state = "stopped".into();
+                state.clone()
+            };
+            self.events.lock().unwrap().push(format!("stop:{owner}"));
+            Ok(snapshot)
+        }
         async fn acquire_control_action(
             &self,
             owner: &str,
@@ -3849,6 +3931,21 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(format!("acquire:{owner}:{action}"));
+            {
+                let mut state = self.state.lock().unwrap();
+                if self.require_share {
+                    state.generation += 1;
+                    state.owner = Some(owner.into());
+                    state.state = "awaiting_share".into();
+                    return Err(OpenBitFunError::tool(
+                        "[SHARE_REQUIRED] Select an application",
+                    ));
+                }
+                if state.state == "idle" {
+                    state.state = "active".into();
+                    state.owner = Some(owner.into());
+                }
+            }
             Ok(Some(Box::new(RecordingLease {
                 events: self.events.clone(),
                 complete: false,
@@ -3917,6 +4014,108 @@ mod tests {
         context
     }
 
+    #[test]
+    fn every_advertised_action_has_explicit_admission_policy() {
+        for schema in [
+            ComputerUseTool::new().input_schema(),
+            ComputerUseTool::input_schema_text_only(),
+        ] {
+            for action in schema["properties"]["action"]["enum"].as_array().unwrap() {
+                let name = action.as_str().unwrap();
+                assert!(
+                    openbitfun_agent_tools::computer_use_control::ControlActionPolicy::for_action(
+                        name
+                    )
+                    .is_some(),
+                    "{name}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_workspace_and_headless_hosts_never_fall_back_to_controller_gui() {
+        let host = Arc::new(ControlRecordingHost::default());
+        let mut remote = control_context(host.clone());
+        let identity = openbitfun_services_core::workspace_identity::workspace_session_identity(
+            "/srv/project",
+            Some("fixture-ssh"),
+            Some("ssh.fixture"),
+        )
+        .unwrap();
+        remote.workspace = Some(crate::agentic::WorkspaceBinding::new_remote(
+            None,
+            std::path::PathBuf::from("/srv/project"),
+            "fixture-ssh".into(),
+            "Fixture".into(),
+            identity,
+        ));
+        let result = ComputerUseTool::new()
+            .call_impl(&json!({"action":"start_control"}), &remote)
+            .await;
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("workspace is remote"));
+        assert!(host.events.lock().unwrap().is_empty());
+        let headless = ToolUseContext::for_tool_listing(None, None);
+        let result = ComputerUseTool::new()
+            .call_impl(
+                &json!({"action":"get_app_state","app":{"pid":421}}),
+                &headless,
+            )
+            .await;
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("provider unavailable"));
+    }
+
+    #[tokio::test]
+    async fn stale_observation_references_fail_before_any_input() {
+        let host = Arc::new(ControlRecordingHost::default());
+        let context = control_context(host.clone());
+        let result = ComputerUseTool::new().call_impl(&json!({
+            "action":"app_click", "app":{"pid":421}, "observation_id":"fixture-old", "target":{"node_idx":0}
+        }), &context).await;
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("STALE_OBSERVATION"));
+        let events = host.events.lock().unwrap();
+        assert!(events.iter().any(|event| event == "validate:fixture-old"));
+        assert!(!events.iter().any(|event| event.starts_with("input:")));
+    }
+
+    #[tokio::test]
+    async fn read_discarded_after_target_revision_changes_even_when_target_is_identical() {
+        let initial = ControlSnapshot {
+            supported: true,
+            state: "active".into(),
+            owner: Some("control-task".into()),
+            generation: 1,
+            target: Some("window:a".into()),
+            target_revision: 1,
+            ..Default::default()
+        };
+        let host = Arc::new(ControlRecordingHost {
+            state: Mutex::new(initial.clone()),
+            replace_control_during_observation: Some(ControlSnapshot {
+                target_revision: 3,
+                ..initial
+            }),
+            ..Default::default()
+        });
+        let context = control_context(host);
+        let result = ComputerUseTool::new()
+            .call_impl(
+                &json!({"action":"get_app_state","app":{"pid":421}}),
+                &context,
+            )
+            .await;
+        assert!(result.unwrap_err().to_string().contains("CONTROL_STALE"));
+    }
+
     #[tokio::test]
     async fn control_entrypoints_route_owner_mode_and_do_not_take_action_leases() {
         let host = Arc::new(ControlRecordingHost::default());
@@ -3979,6 +4178,48 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("CONTROL_UNSUPPORTED"));
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_failed_share_request_closes_only_its_own_generation() {
+        for superseded in [false, true] {
+            let host = Arc::new(ControlRecordingHost {
+                require_share: true,
+                ..Default::default()
+            });
+            let mut context = control_context(host.clone());
+            let token = tokio_util::sync::CancellationToken::new();
+            context.runtime_handles =
+                openbitfun_runtime_ports::ToolRuntimeHandles::new(None, Some(token.clone()));
+            let error = ComputerUseTool::new()
+                .call_impl(
+                    &json!({"action":"get_app_state","app":{"pid":421}}),
+                    &context,
+                )
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("SHARE_REQUIRED"));
+            assert_eq!(host.control_snapshot().state, "awaiting_share");
+            if superseded {
+                host.state.lock().unwrap().generation += 1;
+            }
+            token.cancel();
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            assert_eq!(
+                host.control_snapshot().state,
+                if superseded {
+                    "awaiting_share"
+                } else {
+                    "stopped"
+                }
+            );
+            assert!(!host
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| event.starts_with("observe:") || event.starts_with("input:")));
         }
     }
 
@@ -4142,53 +4383,62 @@ mod tests {
         ));
     }
     #[tokio::test]
-    async fn computer_use_model_combo_example_runs_two_inputs_and_one_final_observation() {
+    async fn computer_use_model_combo_examples_run_all_inputs_and_one_final_observation() {
         for vision in [true, false] {
             let tool = ComputerUseTool::new();
             let schema = tool.model_input_schema(vision);
-            let steps = schema["properties"]["steps"]["examples"][0].clone();
-            let typed: Vec<crate::agentic::tools::computer_use_host::AppInputAction> =
-                serde_json::from_value(steps.clone()).unwrap();
-            for step in &typed {
-                super::super::computer_use_program::validate_step(step).unwrap();
-            }
-            assert_eq!(typed.len(), 2);
-            assert_eq!(steps[0]["action"], "app_type_text");
-            assert_eq!(
-                steps[0]["focus"]["kind"],
-                if vision { "image_xy" } else { "node_idx" }
-            );
-            let host = Arc::new(ControlRecordingHost::default());
-            let context = control_context(host.clone());
-            tool.call_impl(
-                &json!({"action":"start_control","mode":"background"}),
-                &context,
-            )
-            .await
-            .unwrap();
-            host.events.lock().unwrap().clear();
-            let result = tool
-                .call_impl(
-                    &json!({"action":"app_batch","app":{"pid":421},"steps":steps}),
+            let examples = schema["properties"]["steps"]["examples"]
+                .as_array()
+                .unwrap();
+            assert_eq!(examples.len(), 2);
+            for (steps, expected_inputs) in examples.iter().zip([
+                vec!["input:app_type_text", "input:app_key_chord"],
+                vec!["input:app_type_text"; 3],
+            ]) {
+                let typed: Vec<crate::agentic::tools::computer_use_host::AppInputAction> =
+                    serde_json::from_value(steps.clone()).unwrap();
+                for step in &typed {
+                    super::super::computer_use_program::validate_step(step).unwrap();
+                }
+                assert_eq!(typed.len(), expected_inputs.len());
+                assert_eq!(steps[0]["action"], "app_type_text");
+                assert_eq!(
+                    steps[0]["focus"]["kind"],
+                    if vision { "image_xy" } else { "node_idx" }
+                );
+                let host = Arc::new(ControlRecordingHost::default());
+                let context = control_context(host.clone());
+                tool.call_impl(
+                    &json!({"action":"start_control","mode":"background"}),
                     &context,
                 )
                 .await
                 .unwrap();
-            assert_eq!(result[0].content()["completed_steps"], 2);
-            let events = host.events.lock().unwrap();
-            let inputs: Vec<_> = events
-                .iter()
-                .filter(|event| event.starts_with("input:"))
-                .collect();
-            assert_eq!(inputs, vec!["input:app_type_text", "input:app_key_chord"]);
-            assert_eq!(
-                events
+                host.events.lock().unwrap().clear();
+                let result = tool
+                    .call_impl(
+                        &json!({"action":"app_batch","app":{"pid":421},"steps":steps}),
+                        &context,
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(result[0].content()["completed_steps"], typed.len());
+                let events = host.events.lock().unwrap();
+                let inputs: Vec<_> = events
                     .iter()
-                    .filter(|event| event.starts_with("observe:"))
-                    .count(),
-                1
-            );
-            assert!(!events.iter().any(|event| event.contains("foreground")));
+                    .filter(|event| event.starts_with("input:"))
+                    .map(String::as_str)
+                    .collect();
+                assert_eq!(inputs, expected_inputs);
+                assert_eq!(
+                    events
+                        .iter()
+                        .filter(|event| event.starts_with("observe:"))
+                        .count(),
+                    1
+                );
+                assert!(!events.iter().any(|event| event.contains("foreground")));
+            }
         }
     }
 
@@ -4230,6 +4480,102 @@ mod tests {
                     .rposition(|e| e.starts_with("input:"))
                     .unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn computer_use_image_option_preserves_legacy_provider_and_one_observation() {
+        // This host only implements the original get_app_state port. The new
+        // default method must preserve old callers and support AX-only output.
+        for include_image in [None, Some(true), Some(false)] {
+            for mut input in [
+                json!({"action":"get_app_state"}),
+                json!({"action":"app_type_text","text":"exact Unicode 内容"}),
+                json!({"action":"app_batch","steps":[
+                    {"action":"app_type_text","text":"exact Unicode 内容"},
+                    {"action":"app_key_chord","keys":["tab"]}
+                ]}),
+            ] {
+                let host = Arc::new(ControlRecordingHost {
+                    observation_image: true,
+                    ..Default::default()
+                });
+                let context = control_context(host.clone());
+                input["app"] = json!({"pid":421});
+                if let Some(include_image) = include_image {
+                    input["include_image"] = json!(include_image);
+                }
+                let results = ComputerUseTool::new()
+                    .call_impl(&input, &context)
+                    .await
+                    .unwrap();
+                let body = results[0].content();
+                let expected_image = include_image.unwrap_or(true);
+                assert_eq!(body["app_state"]["has_screenshot"], expected_image);
+                assert_eq!(body["app_state"]["observation_id"], "fixture-current");
+                assert_eq!(body["app_state"]["tree_text"], "AXMenuBar target menu");
+                assert_eq!(
+                    body["app_state"].get("screenshot_meta").is_some(),
+                    expected_image
+                );
+                let ToolResult::Result {
+                    image_attachments, ..
+                } = &results[0]
+                else {
+                    panic!("expected observation result");
+                };
+                assert_eq!(
+                    image_attachments.as_ref().map_or(0, Vec::len),
+                    usize::from(expected_image)
+                );
+                let expected_inputs = match input["action"].as_str().unwrap() {
+                    "get_app_state" => 0,
+                    "app_batch" => 2,
+                    _ => 1,
+                };
+                let events = host.events.lock().unwrap();
+                assert_eq!(
+                    events.iter().filter(|e| e.starts_with("observe:")).count(),
+                    1
+                );
+                assert_eq!(
+                    events.iter().filter(|e| e.starts_with("input:")).count(),
+                    expected_inputs
+                );
+                if expected_inputs > 0 {
+                    assert_eq!(body["completed_steps"], expected_inputs);
+                    assert!(body["observation_elapsed_ms"].is_u64());
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn computer_use_invalid_image_option_fails_before_input_or_observation() {
+        for value in [Value::Null, json!("false"), json!(0)] {
+            for mut input in [
+                json!({"action":"get_app_state"}),
+                json!({"action":"app_type_text","text":"must not be entered"}),
+                json!({"action":"app_batch","steps":[{"action":"app_key_chord","keys":["return"]}]}),
+            ] {
+                let host = Arc::new(ControlRecordingHost::default());
+                let context = control_context(host.clone());
+                input["app"] = json!({"pid":421});
+                input["include_image"] = value.clone();
+                let error = ComputerUseTool::new()
+                    .call_impl(&input, &context)
+                    .await
+                    .unwrap_err();
+                assert!(error
+                    .to_string()
+                    .contains("include_image must be a boolean"));
+                assert!(!host
+                    .events
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|event| event.starts_with("input:") || event.starts_with("observe:")));
+            }
+        }
     }
 
     #[tokio::test]
@@ -4418,6 +4764,7 @@ mod tests {
                     AppSelector::by_pid(421),
                     steps,
                     None,
+                    true,
                 )
                 .await;
                 assert_eq!(
@@ -4461,6 +4808,7 @@ mod tests {
                 AppSelector::by_pid(421),
                 steps,
                 None,
+                true,
             )
             .await;
             if initially_stopped {
@@ -4518,6 +4866,7 @@ mod tests {
                     ..Default::default()
                 },
                 None,
+                true,
             )
             .await;
             assert!(
@@ -4593,6 +4942,7 @@ mod tests {
                 focus: None,
             }],
             Some(&context),
+            true,
         )
         .await;
         assert_eq!(outcome.receipt["status"], "cancelled");
@@ -4624,6 +4974,7 @@ mod tests {
                 },
             ],
             Some(&context),
+            true,
         );
         let cancel = async {
             host.wait_started.notified().await;

@@ -28,6 +28,9 @@ export const WorkspaceProvider: React.FC<WorkspaceProviderProps> = ({ children }
         ...initialState,
         activeWorkspace,
         openedWorkspacesList,
+        allAssistantWorkspacesList: initialState.assistantWorkspaces ?? openedWorkspacesList.filter(
+          workspace => workspace.workspaceKind === WorkspaceKind.Assistant
+        ),
         normalWorkspacesList: openedWorkspacesList.filter(
           (workspace) => workspace.workspaceKind !== WorkspaceKind.Assistant
         ),
@@ -78,6 +81,7 @@ export const WorkspaceProvider: React.FC<WorkspaceProviderProps> = ({ children }
       return {
         currentWorkspace: null,
         openedWorkspaces: new Map(),
+        assistantWorkspaces: null,
         activeWorkspaceId: null,
         lastUsedWorkspaceId: null,
         recentWorkspaces: [],
@@ -88,6 +92,7 @@ export const WorkspaceProvider: React.FC<WorkspaceProviderProps> = ({ children }
         openedWorkspacesList: [],
         normalWorkspacesList: [],
         assistantWorkspacesList: [],
+        allAssistantWorkspacesList: [],
         openWorkspace: async (path: string) => workspaceManager.openWorkspace(path),
         createAssistantWorkspace: async () => workspaceManager.createAssistantWorkspace(),
         ensureCognitiveBeingAssistant: async () => workspaceManager.ensureCognitiveBeingAssistant(),
@@ -321,6 +326,9 @@ export const WorkspaceProvider: React.FC<WorkspaceProviderProps> = ({ children }
       ...state,
       activeWorkspace,
       openedWorkspacesList,
+      allAssistantWorkspacesList: state.assistantWorkspaces ?? openedWorkspacesList.filter(
+        workspace => workspace.workspaceKind === WorkspaceKind.Assistant
+      ),
       normalWorkspacesList: openedWorkspacesList.filter(
         (workspace) => workspace.workspaceKind !== WorkspaceKind.Assistant
       ),

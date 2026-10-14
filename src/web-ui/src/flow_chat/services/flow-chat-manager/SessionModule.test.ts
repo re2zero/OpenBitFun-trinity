@@ -3,6 +3,7 @@ import {
   archiveChatSession,
   createChatSession,
   deleteChatSession,
+  duplicateChatSession,
   ensureBackendSession,
   forkChatSession,
   hydrateSessionHistoryForDetail,
@@ -45,6 +46,7 @@ const configManagerMocks = vi.hoisted(() => ({
 const sessionApiMocks = vi.hoisted(() => ({
   archiveSession: vi.fn(),
   forkSession: vi.fn(),
+  duplicateSession: vi.fn(),
   loadSessionMetadata: vi.fn(),
 }));
 
@@ -222,6 +224,7 @@ function createContext(
       state = { ...state, activeSessionId: sessionId };
     }),
     loadSessionHistory: vi.fn(),
+    ensurePersistedSessionMetadata: vi.fn(async () => true),
     getCascadeSessionIds: vi.fn((sessionId: string) => (
       options?.getCascadeSessionIdsImpl?.(sessionId) ?? [sessionId]
     )),
@@ -618,6 +621,107 @@ describe('forkChatSession', () => {
       remoteSshHost: 'source-host',
     });
     expect(flowChatStore.loadSessionHistory).toHaveBeenCalledWith('remote-fork', { deferFullHistoryUntilActive: true });
+  });
+});
+
+describe('duplicateChatSession', () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('copies the source session without switching away from the active session', async () => {
+    const source = createSession({ sessionId: 'copy-source', title: 'Source' });
+    const other = createSession({ sessionId: 'other-session' });
+    const { context, flowChatStore } = createContext(source, {
+      additionalSessions: [other],
+      activeSessionId: other.sessionId,
+    });
+    sessionApiMocks.duplicateSession.mockResolvedValueOnce({
+      sessionId: 'copy-1',
+      sessionName: 'Source (1)',
+      agentType: 'Standard',
+    });
+
+    await expect(duplicateChatSession(context, source.sessionId)).resolves.toEqual({
+      sessionId: 'copy-1',
+      sessionName: 'Source (1)',
+      metadataProjected: true,
+    });
+
+    // The host resolves the copy boundary: no turn id leaves the controller.
+    expect(sessionApiMocks.duplicateSession).toHaveBeenCalledWith('copy-source', 'workspace-1');
+    // The copy is projected from its authoritative metadata record, so the
+    // navigation list can show it without the controller loading its history.
+    expect(flowChatStore.ensurePersistedSessionMetadata).toHaveBeenCalledWith('copy-1', 'workspace-1');
+    expect(flowChatStore.loadSessionHistory).not.toHaveBeenCalled();
+    // Delete/archive do not move the user either: the copy must not activate.
+    expect(flowChatStore.switchSession).not.toHaveBeenCalled();
+    expect(flowChatStore.getState().activeSessionId).toBe('other-session');
+    expect(flowChatStore.getState().sessions.has('copy-source')).toBe(true);
+  });
+
+  it.each(['missing', 'timeout'])('preserves copy success after a metadata %s', async failure => {
+    const source = createSession({ sessionId: 'copy-source', persistedTurnCount: 3 });
+    const { context, flowChatStore } = createContext(source);
+    sessionApiMocks.duplicateSession.mockResolvedValueOnce({
+      sessionId: 'copy-1', sessionName: 'Source (1)', agentType: 'Standard',
+    });
+    if (failure === 'missing') {
+      flowChatStore.ensurePersistedSessionMetadata.mockResolvedValueOnce(false);
+    } else {
+      flowChatStore.ensurePersistedSessionMetadata.mockRejectedValueOnce(new Error('metadata timed out'));
+    }
+    await expect(duplicateChatSession(context, source.sessionId)).resolves.toEqual({
+      sessionId: 'copy-1', sessionName: 'Source (1)', metadataProjected: false,
+    });
+    expect(sessionApiMocks.duplicateSession).toHaveBeenCalledTimes(1);
+    expect(flowChatStore.switchSession).not.toHaveBeenCalled();
+  });
+
+  it('does not read copied metadata on a device selected after the copy started', async () => {
+    const source = createSession({ sessionId: 'copy-source' });
+    const { context, flowChatStore } = createContext(source);
+    const pending = createDeferred<{ sessionId: string; sessionName: string; agentType: string }>();
+    sessionApiMocks.duplicateSession.mockReturnValueOnce(pending.promise);
+    const copy = duplicateChatSession(context, source.sessionId);
+    activateSurface('peer-other');
+    pending.resolve({ sessionId: 'copy-1', sessionName: 'Source (1)', agentType: 'Standard' });
+    await expect(copy).rejects.toMatchObject({ name: 'SurfaceChangedError' });
+    expect(flowChatStore.ensurePersistedSessionMetadata).not.toHaveBeenCalled();
+    activateSurface(LOCAL_SURFACE_ID);
+  });
+
+  it.each([
+    { historyState: 'new' as const },
+    { persistedTurnCount: 0 },
+  ])('rejects a known empty session before sending the copy mutation', async overrides => {
+    const source = createSession({ sessionId: 'copy-source', ...overrides });
+    const { context } = createContext(source);
+    await expect(duplicateChatSession(context, source.sessionId))
+      .rejects.toThrow('common:nav.sessions.duplicateEmpty');
+    expect(sessionApiMocks.duplicateSession).not.toHaveBeenCalled();
+  });
+
+  it('refuses a detached dispatch session before asking the host', async () => {
+    const dispatched = createSession({
+      sessionId: 'dispatch-source',
+      config: { agentType: 'Standard', dispatchJobId: 'job-1' },
+    });
+    const { context } = createContext(dispatched);
+
+    await expect(duplicateChatSession(context, dispatched.sessionId))
+      .rejects.toThrow('Copying a detached dispatch session is not supported');
+
+    expect(sessionApiMocks.duplicateSession).not.toHaveBeenCalled();
+  });
+
+  it('reports a missing session instead of calling the host', async () => {
+    const { context } = createContext(createSession({ sessionId: 'copy-source' }));
+
+    await expect(duplicateChatSession(context, 'missing-session'))
+      .rejects.toThrow('Session does not exist: missing-session');
+
+    expect(sessionApiMocks.duplicateSession).not.toHaveBeenCalled();
   });
 });
 
