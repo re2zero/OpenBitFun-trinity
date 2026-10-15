@@ -7,6 +7,10 @@ fn main() {
         std::process::exit(exit_code);
     }
 
+    // Before anything resolves a path: the session log directory, the
+    // single-instance lock, and the update lock all read the user root, and the
+    // shell keeps the shared roots untouched unless it is asked for them.
+    openbitfun_gpui_shell::storage::apply_isolated_storage_defaults();
     openbitfun_gpui_shell::shell::init_tracing();
 
     // Process-lifetime tokio runtime: core services are async (config, i18n,

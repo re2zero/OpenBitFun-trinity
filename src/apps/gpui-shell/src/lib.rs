@@ -21,6 +21,7 @@ pub mod runtime;
 pub mod search;
 pub mod settings;
 pub mod shell;
+pub mod storage;
 pub mod subagent_identity;
 pub mod tabs;
 pub mod tasks;
