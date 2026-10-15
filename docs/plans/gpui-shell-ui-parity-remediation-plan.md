@@ -527,9 +527,12 @@
 - **W-4 未提交改动**：并发规模档（`runtime.rs`/`shell.rs` + `examples/session_scale_probe.rs`，HANDOFF-079）
   现存放于 `stash@{0}`（"gpui T13"，并发会话 `3c274e9e1` 提交前 stash；内容备份
   `.relay/journal/handoff079-wip.patch`），**恢复时机需与创建它的会话核对，勿擅自 pop/丢弃**；该档提交仍需公子点头。
-  **工作区当前另有一份并发未提交改动 = 会话 73（`sess_efd8c36b`，活动）的 A 批 2 设置小字段 WIP**
-  （`settings.rs` G-SE31 上一轮异常退出提示 + `i18n.rs` + ftl×3 的配套键）——A 批 3 交付时按同一纪律
-  **只暂存自己的 hunk**，对方 WIP 原样留在工作区。
+  **工作区当前另有一份未登记的未提交改动**：`settings.rs` 诊断页「上次异常退出」横幅（G-SE31 语义，
+  `+153/-2`）+ `i18n.rs`（+33）+ ftl×3（各 +4 键）。它不是 A 批 3 的内容，且查不到登记作者——
+  `state.json` 里会话 73 早在 13:10 已 done（交付 A 批 1），71/72 登记 active 但无 handoff，
+  rollout 已轮转查不到该改动来源（settings.rs mtime 2026-10-15 18:20）。
+  A 批 3 交付时按同一纪律**只暂存自己的 hunk**（`git hash-object` + `update-index --cacheinfo`
+  装入自建内容，工作区不动），该 WIP 原样留在工作区；**接管或覆盖它前需公子或作者点头**。
 - **W-5 A 批 3 未交付余项**：G-Y4（原生文件对话框）/ G-A3（子代理模型覆盖）/ G-A6（Harness 概览，需扩 core 投影）/
   G-M2（MCP 粘贴导入预览）四项暂缓（理由见 §3.1 批 3 行）；G-I5/G-I6 的视觉复验待本机出现洞察报告时补。
 
