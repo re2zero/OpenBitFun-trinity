@@ -13,11 +13,14 @@ use std::path::Path;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
-use gpui_kit::component::input::{Input, InputState, Textarea};
+use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea};
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, StyledExt, WindowExt};
-use gpui_kit::{div, prelude::*, px, App, FontWeight, Global, SharedString, WeakEntity, Window};
+use gpui_kit::{
+    div, prelude::*, px, Anchor, App, Context, FontWeight, Global, SharedString, WeakEntity, Window,
+};
 
 use crate::i18n::{self, ShellText};
 use crate::shell::ShellWindow;
@@ -958,6 +961,321 @@ pub(crate) fn skill_matches(row: &SkillRow, facet: &SkillFacet) -> bool {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Page-local filters (G-K5 skills search + G-A5 agents search)
+// ---------------------------------------------------------------------------
+
+/// G-K5: the skills page's local filter row — the search box plus the web's
+/// "Hide duplicates" toggle for shadowed rows. The page renders from globals,
+/// so the query the input currently holds is mirrored here on every keystroke
+/// (nothing else would repaint the list).
+#[derive(Debug, Default)]
+pub(crate) struct SkillsFilterState {
+    pub(crate) query: String,
+    pub(crate) hide_shadowed: bool,
+    /// The lazily created search box; `None` until the window installs it.
+    pub(crate) input: Option<gpui_kit::Entity<InputState>>,
+}
+
+impl Global for SkillsFilterState {}
+
+/// G-A5: the agents page's search plus its source and type filters (web
+/// `filters.source` / `filters.kind`).
+#[derive(Debug, Default)]
+pub(crate) struct AgentsFilterState {
+    pub(crate) query: String,
+    pub(crate) source: AgentSourceFilter,
+    pub(crate) kind: AgentKindFilter,
+    pub(crate) input: Option<gpui_kit::Entity<InputState>>,
+}
+
+impl Global for AgentsFilterState {}
+
+/// Web `filters.source` options.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum AgentSourceFilter {
+    #[default]
+    All,
+    Builtin,
+    User,
+    Project,
+    External,
+}
+
+impl AgentSourceFilter {
+    pub(crate) fn matches(self, source: AgentSourceKind) -> bool {
+        match self {
+            Self::All => true,
+            Self::Builtin => source == AgentSourceKind::Builtin,
+            Self::User => source == AgentSourceKind::User,
+            Self::Project => source == AgentSourceKind::Project,
+            Self::External => source == AgentSourceKind::External,
+        }
+    }
+}
+
+/// Web `filters.kind` options: which of the page's two lists shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum AgentKindFilter {
+    #[default]
+    All,
+    Agent,
+    SubAgent,
+}
+
+impl AgentKindFilter {
+    pub(crate) fn matches(self, kind: AgentListKind) -> bool {
+        match self {
+            Self::All => true,
+            Self::Agent => matches!(kind, AgentListKind::Modes),
+            Self::SubAgent => matches!(kind, AgentListKind::Subagents),
+        }
+    }
+}
+
+/// G-K5: whether a skill row survives the local filter. The web matches name,
+/// description and path; the shell row carries the skill key — the
+/// path-derived identity the scan gives it — so the key stands in for the
+/// path the row does not keep.
+pub(crate) fn skill_matches_filter(row: &SkillRow, query: &str, hide_shadowed: bool) -> bool {
+    if hide_shadowed && row.shadowed {
+        return false;
+    }
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return true;
+    }
+    [
+        row.name.as_str(),
+        row.description.as_str(),
+        row.key.as_str(),
+    ]
+    .iter()
+    .any(|value| value.to_lowercase().contains(&query))
+}
+
+/// G-A5: whether an agent card survives the search and source filter (the
+/// kind filter chooses the list, not the row). The web matches the name and
+/// description only.
+pub(crate) fn agent_matches_filter(
+    card: &AgentCardRow,
+    query: &str,
+    source: AgentSourceFilter,
+) -> bool {
+    if !source.matches(card.source) {
+        return false;
+    }
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return true;
+    }
+    [card.name.as_str(), card.description.as_str()]
+        .iter()
+        .any(|value| value.to_lowercase().contains(&query))
+}
+
+/// G-K5/G-A5: creates the two page-local search boxes, installs their filter
+/// globals, and mirrors every keystroke into them. A keystroke has to repaint
+/// the window that renders the list, which nothing else would notify — the
+/// same subscription the settings nav search uses.
+pub(crate) fn install_page_filters(window: &mut Window, cx: &mut Context<ShellWindow>) {
+    let text = i18n::current(cx);
+    let skills_input = cx.new(|cx| {
+        InputState::new(window, cx).placeholder(text.manage_skills_search_placeholder.clone())
+    });
+    let agents_input = cx.new(|cx| {
+        InputState::new(window, cx).placeholder(text.manage_agents_search_placeholder.clone())
+    });
+    let skills_placeholder = skills_input.clone();
+    cx.set_global(SkillsFilterState {
+        query: String::new(),
+        hide_shadowed: false,
+        input: Some(skills_placeholder),
+    });
+    let agents_placeholder = agents_input.clone();
+    cx.set_global(AgentsFilterState {
+        query: String::new(),
+        source: AgentSourceFilter::All,
+        kind: AgentKindFilter::All,
+        input: Some(agents_placeholder),
+    });
+    cx.subscribe(
+        &skills_input,
+        |_: &mut ShellWindow, input, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                let query = input.read(cx).value().trim().to_string();
+                cx.update_global::<SkillsFilterState, _>(|state, _| state.query = query);
+                cx.notify();
+            }
+        },
+    )
+    .detach();
+    cx.subscribe(
+        &agents_input,
+        |_: &mut ShellWindow, input, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                let query = input.read(cx).value().trim().to_string();
+                cx.update_global::<AgentsFilterState, _>(|state, _| state.query = query);
+                cx.notify();
+            }
+        },
+    )
+    .detach();
+}
+
+/// The skills page's filter row (G-K5): the search box and the shadowed-row
+/// toggle, above the list the way the web toolbar sits.
+fn skills_filter_row(text: &ShellText, cx: &App) -> gpui_kit::AnyElement {
+    let state = cx.try_global::<SkillsFilterState>();
+    let input = state.and_then(|state| state.input.clone());
+    let hide_shadowed = state.map(|state| state.hide_shadowed).unwrap_or(false);
+    let mut row = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .w_full()
+        .min_w_0()
+        .pb_1();
+    if let Some(input) = input {
+        row = row.child(div().w(px(220.)).child(Input::new(&input).small()));
+    }
+    row = row.child(
+        Checkbox::new("skills-hide-duplicates")
+            .label(text.manage_skills_hide_shadowed.clone())
+            .checked(hide_shadowed)
+            .on_click(move |checked: &bool, _window, cx| {
+                let checked = *checked;
+                cx.update_global::<SkillsFilterState, _>(|state, _| state.hide_shadowed = checked);
+                cx.refresh_windows();
+            }),
+    );
+    row.into_any_element()
+}
+
+/// The agents page's control row (G-A5): search plus the source and type
+/// menus, rendered once above both lists.
+fn agents_controls(text: &ShellText, cx: &App) -> gpui_kit::AnyElement {
+    let state = cx.try_global::<AgentsFilterState>();
+    let input = state.and_then(|state| state.input.clone());
+    let source = state.map(|state| state.source).unwrap_or_default();
+    let kind = state.map(|state| state.kind).unwrap_or_default();
+    let mut row = div()
+        .flex()
+        .flex_row()
+        .flex_wrap()
+        .items_center()
+        .gap_2()
+        .w_full()
+        .min_w_0()
+        .pb_1();
+    if let Some(input) = input {
+        row = row.child(
+            div()
+                .flex_1()
+                .min_w(px(220.))
+                .child(Input::new(&input).small()),
+        );
+    }
+    row = row
+        .child(agents_source_menu(text, source))
+        .child(agents_kind_menu(text, kind));
+    row.into_any_element()
+}
+
+/// The source filter menu (web `filters.source`).
+fn agents_source_menu(text: &ShellText, selected: AgentSourceFilter) -> gpui_kit::AnyElement {
+    let options = [
+        (
+            AgentSourceFilter::All,
+            text.manage_agents_source_any.clone(),
+        ),
+        (
+            AgentSourceFilter::Builtin,
+            text.manage_agent_source_builtin.clone(),
+        ),
+        (
+            AgentSourceFilter::User,
+            text.manage_agent_source_user.clone(),
+        ),
+        (
+            AgentSourceFilter::Project,
+            text.manage_agent_source_project.clone(),
+        ),
+        (
+            AgentSourceFilter::External,
+            text.manage_agent_source_external.clone(),
+        ),
+    ];
+    let current = options
+        .iter()
+        .find(|(value, _)| *value == selected)
+        .map(|(_, label)| label.clone())
+        .unwrap_or_default();
+    Button::new("agents-source-filter")
+        .label(format!("{}: {current}", text.manage_agents_source_label))
+        .small()
+        .with_variant(ButtonVariant::Secondary)
+        .dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, _window, _cx| {
+            let mut popup = menu;
+            for (value, label) in options.clone() {
+                popup = popup.item(
+                    PopupMenuItem::new(label)
+                        .checked(value == selected)
+                        .on_click(move |_: &gpui_kit::ClickEvent, _window, cx| {
+                            cx.update_global::<AgentsFilterState, _>(|state, _| {
+                                state.source = value
+                            });
+                            cx.refresh_windows();
+                        }),
+                );
+            }
+            popup
+        })
+        .into_any_element()
+}
+
+/// The type filter menu (web `filters.kind`).
+fn agents_kind_menu(text: &ShellText, selected: AgentKindFilter) -> gpui_kit::AnyElement {
+    let options = [
+        (AgentKindFilter::All, text.manage_agents_kind_any.clone()),
+        (
+            AgentKindFilter::Agent,
+            text.manage_agents_kind_agent.clone(),
+        ),
+        (
+            AgentKindFilter::SubAgent,
+            text.manage_agents_kind_subagent.clone(),
+        ),
+    ];
+    let current = options
+        .iter()
+        .find(|(value, _)| *value == selected)
+        .map(|(_, label)| label.clone())
+        .unwrap_or_default();
+    Button::new("agents-kind-filter")
+        .label(format!("{}: {current}", text.manage_agents_kind_label))
+        .small()
+        .with_variant(ButtonVariant::Secondary)
+        .dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, _window, _cx| {
+            let mut popup = menu;
+            for (value, label) in options.clone() {
+                popup = popup.item(
+                    PopupMenuItem::new(label)
+                        .checked(value == selected)
+                        .on_click(move |_: &gpui_kit::ClickEvent, _window, cx| {
+                            // The type filter drops a whole section, so the
+                            // page has to re-render from the top.
+                            cx.update_global::<AgentsFilterState, _>(|state, _| state.kind = value);
+                            cx.refresh_windows();
+                        }),
+                );
+            }
+            popup
+        })
+        .into_any_element()
+}
+
 /// The skills page: a facet sidebar (library / groups / sources / explore)
 /// beside the filtered skill list. The market entry renders an explicit
 /// degrade card (T3-17) instead of a dead-end.
@@ -1151,17 +1469,30 @@ fn skills_page(text: &ShellText, cx: &mut App) -> gpui_kit::Div {
             .child(content);
     }
 
+    // G-K5: the local filter row sits above the list, so the facet rail and
+    // the search box narrow the same rows.
+    content = content.child(skills_filter_row(text, cx));
+    let filter = cx
+        .try_global::<SkillsFilterState>()
+        .map(|state| (state.query.clone(), state.hide_shadowed))
+        .unwrap_or_default();
+    let filtered = !filter.0.trim().is_empty() || filter.1;
     let rows: Vec<&SkillRow> = catalog
         .skills
         .iter()
         .filter(|row| skill_matches(row, &facet))
+        .filter(|row| skill_matches_filter(row, &filter.0, filter.1))
         .collect();
     if rows.is_empty() {
-        content = content.child(crate::shell::brand_empty(
-            IconName::BookOpen,
-            &text.manage_skills_empty_title,
-            &text.manage_skills_empty,
-        ));
+        let (title, body) = if filtered {
+            (text.manage_skills_no_match.clone(), String::new())
+        } else {
+            (
+                text.manage_skills_empty_title.clone(),
+                text.manage_skills_empty.clone(),
+            )
+        };
+        content = content.child(crate::shell::brand_empty(IconName::BookOpen, &title, &body));
         return div()
             .flex()
             .gap_3()
@@ -1305,7 +1636,11 @@ fn set_skill_disabled(key: String, user_level: bool, disabled: bool) {
 }
 
 /// The agents page: mode cards, subagent cards, and the create dialog entry.
-pub(crate) fn agents_group(text: &ShellText, view: WeakEntity<ShellWindow>) -> SettingGroup {
+pub(crate) fn agents_group(
+    text: &ShellText,
+    view: WeakEntity<ShellWindow>,
+    cx: &App,
+) -> SettingGroup {
     let modes_text = text.clone();
     let modes_view = view.clone();
     let modes_field = SettingField::render(move |_options, _window, cx| {
@@ -1335,14 +1670,40 @@ pub(crate) fn agents_group(text: &ShellText, view: WeakEntity<ShellWindow>) -> S
             .into_any_element()
     });
 
-    SettingGroup::new().items(vec![
-        SettingItem::new(text.manage_agents_modes.clone(), modes_field),
-        SettingItem::new(text.manage_agents_subagents.clone(), subagents_field),
-        SettingItem::new(text.manage_agents_create.clone(), create_field),
-    ])
+    // G-A5: the search / source / type controls sit above both lists, and the
+    // type filter drops the section it excludes — the same shape the web
+    // gallery takes when its kind filter is set.
+    let controls_text = text.clone();
+    let controls_item =
+        SettingItem::render(move |_options, _window, cx| agents_controls(&controls_text, cx));
+    let kind = cx
+        .try_global::<AgentsFilterState>()
+        .map(|state| state.kind)
+        .unwrap_or_default();
+
+    let mut items = vec![controls_item];
+    if kind.matches(AgentListKind::Modes) {
+        items.push(SettingItem::new(
+            text.manage_agents_modes.clone(),
+            modes_field,
+        ));
+    }
+    if kind.matches(AgentListKind::Subagents) {
+        items.push(SettingItem::new(
+            text.manage_agents_subagents.clone(),
+            subagents_field,
+        ));
+    }
+    items.push(SettingItem::new(
+        text.manage_agents_create.clone(),
+        create_field,
+    ));
+    SettingGroup::new().items(items)
 }
 
-enum AgentListKind {
+/// Which of the agents page's two lists a field renders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentListKind {
     Modes,
     Subagents,
 }
@@ -1367,12 +1728,26 @@ fn agent_cards(
         AgentListKind::Modes => catalog.modes,
         AgentListKind::Subagents => catalog.subagents,
     };
+    // G-A5: the search and source filters narrow whichever list is showing.
+    let filter = cx
+        .try_global::<AgentsFilterState>()
+        .map(|state| (state.query.clone(), state.source))
+        .unwrap_or_default();
+    let filtered = !filter.0.trim().is_empty() || filter.1 != AgentSourceFilter::All;
+    let rows: Vec<AgentCardRow> = rows
+        .into_iter()
+        .filter(|card| agent_matches_filter(card, &filter.0, filter.1))
+        .collect();
     if rows.is_empty() {
-        return crate::shell::brand_empty(
-            IconName::Bot,
-            &text.manage_agents_empty_title,
-            &text.manage_agents_empty,
-        );
+        let (title, body) = if filtered {
+            (text.manage_agents_no_match.clone(), String::new())
+        } else {
+            (
+                text.manage_agents_empty_title.clone(),
+                text.manage_agents_empty.clone(),
+            )
+        };
+        return crate::shell::brand_empty(IconName::Bot, &title, &body);
     }
 
     let mut column = div().v_flex().gap_2().w_full();
@@ -3803,5 +4178,108 @@ mod tests {
             "card stays inside the window: card {:?}",
             card
         );
+    }
+
+    fn skill_row(key: &str, name: &str, description: &str, shadowed: bool) -> SkillRow {
+        SkillRow {
+            key: key.to_string(),
+            name: name.to_string(),
+            description: description.to_string(),
+            project_level: false,
+            builtin: false,
+            shadowed,
+            disabled: false,
+            group_key: None,
+            source_id: "openbitfun".to_string(),
+            source_label: "OpenBitFun".to_string(),
+        }
+    }
+
+    fn agent_card(name: &str, description: &str, source: AgentSourceKind) -> AgentCardRow {
+        AgentCardRow {
+            id: name.to_string(),
+            name: name.to_string(),
+            description: description.to_string(),
+            tool_count: 0,
+            readonly: false,
+            review: false,
+            source,
+            enabled: None,
+            skills_manageable: false,
+            skills_mode_id: String::new(),
+        }
+    }
+
+    /// G-K5: the local skill filter matches the web fields — name,
+    /// description, and the path-derived key — case-insensitively and after
+    /// trimming, and the shadowed toggle drops the duplicate rows.
+    #[test]
+    fn skill_filter_matches_name_description_and_key() {
+        let row = skill_row("user::alpha", "Alpha", "Summarises long diffs", false);
+        assert!(skill_matches_filter(&row, "", false));
+        assert!(skill_matches_filter(&row, "  ", false));
+        assert!(skill_matches_filter(&row, "alpha", false));
+        assert!(skill_matches_filter(&row, "ALPHA", false));
+        assert!(skill_matches_filter(&row, " long diffs ", false));
+        // The key stands in for the path the row does not keep.
+        assert!(skill_matches_filter(&row, "user::", false));
+        assert!(!skill_matches_filter(&row, "missing", false));
+
+        let shadowed = skill_row("user::beta", "Beta", "", true);
+        assert!(skill_matches_filter(&shadowed, "", false));
+        assert!(!skill_matches_filter(&shadowed, "", true));
+        // Hiding duplicates only drops shadowed rows, never the query match.
+        assert!(!skill_matches_filter(&shadowed, "beta", true));
+    }
+
+    /// G-A5: the agents filter follows the web — the search covers the name
+    /// and description, the source filter compares the resolved source, and
+    /// both compose.
+    #[test]
+    fn agent_filter_follows_search_and_source() {
+        let user_agent = agent_card("Reviewer", "Checks diffs", AgentSourceKind::User);
+        let builtin_agent = agent_card("Explorer", "Reads the tree", AgentSourceKind::Builtin);
+        assert!(agent_matches_filter(
+            &user_agent,
+            "",
+            AgentSourceFilter::All
+        ));
+        assert!(agent_matches_filter(
+            &user_agent,
+            "diffs",
+            AgentSourceFilter::All
+        ));
+        assert!(agent_matches_filter(
+            &user_agent,
+            "REVIEWER",
+            AgentSourceFilter::All
+        ));
+        assert!(!agent_matches_filter(
+            &user_agent,
+            "reviewer",
+            AgentSourceFilter::Builtin
+        ));
+        assert!(agent_matches_filter(
+            &builtin_agent,
+            "",
+            AgentSourceFilter::Builtin
+        ));
+        assert!(!agent_matches_filter(
+            &builtin_agent,
+            "tree",
+            AgentSourceFilter::User
+        ));
+    }
+
+    /// G-A5: the type filter picks exactly one of the page's two lists, and
+    /// `Any type` keeps both.
+    #[test]
+    fn agent_kind_filter_selects_the_lists() {
+        assert!(AgentKindFilter::All.matches(AgentListKind::Modes));
+        assert!(AgentKindFilter::All.matches(AgentListKind::Subagents));
+        assert!(AgentKindFilter::Agent.matches(AgentListKind::Modes));
+        assert!(!AgentKindFilter::Agent.matches(AgentListKind::Subagents));
+        assert!(!AgentKindFilter::SubAgent.matches(AgentListKind::Modes));
+        assert!(AgentKindFilter::SubAgent.matches(AgentListKind::Subagents));
     }
 }

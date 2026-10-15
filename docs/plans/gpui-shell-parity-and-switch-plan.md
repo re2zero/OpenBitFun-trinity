@@ -63,10 +63,10 @@
 | 14 | Git 面板 | git_api(31)、git_agent_api(3)、diff_api(3) | 已支持（子集） | 状态 + diff + 写操作（stage/commit/push 族 + **pull**，2026-10-15）+ history + worktree + 快照恢复 + 信任横幅 + **非仓库态 init 引导**；分支 chip 带 ahead/behind 徽标、行内按文件 discard/delete、文件列↔diff 可拖分隔条（`04a1675c5`）；graph / branches 图形面缺 |
 | 15 | Worktree 管理 | worktree_api(8) | 已支持 | 全生命周期（list/create/remove/recreate/promote/bind）经 git 面板落地 |
 | 16 | 设置页（21 页 / 5 类） | config_api(21)、i18n_api(5) | 部分（13/21） | 🔶见 §2.1 设置缺口明细 |
-| 17 | 定时任务 / 任务看板 | cron_api(5) | 已支持 | 定时任务页 + 看板（`tasks.rs`，core `service/cron` 直调） |
-| 18 | 洞察 / 用量报告 | insights_api(5)、token_usage_api(1) | 已支持 | insights 报告 + usage 数字面 + 趋势图/活动热力图（T2-8；热力格 UTC 锚定为有意简化） |
-| 19 | 技能管理 / 技能市场 | skill_api(13) | 已支持（子集） | 技能管理页（目录扫描 + 全局启停）+ 每 mode 技能选择（T2-11）；市场下载缺 |
-| 20 | 智能体管理（agents / custom agents / subagents） | custom_agent_api(5)、subagent_api、agentic_api | 已支持（子集） | agents 管理页 + 创建/编辑/删除卡片（T2-12，编辑粒度 = 壳创建面六字段）；subagents 编辑器缺 |
+| 17 | 定时任务 / 任务看板 | cron_api(5) | 已支持 | 定时任务页 + 看板（`tasks.rs`，core `service/cron` 直调）；**A 批 3（2026-10-15）**：日历点选日详情面板（选中日期 + 清除 + 当日条目）、行徽标（正在运行/下次运行/已逾期）、不可执行分区「无后续运行（N）」+ 已暂停/已结束/计划无效 chip |
+| 18 | 洞察 / 用量报告 | insights_api(5)、token_usage_api(1) | 已支持 | insights 报告 + usage 数字面 + 趋势图/活动热力图（T2-8；热力格 UTC 锚定为有意简化）；**A 批 3（2026-10-15）**：范围 chips 7/14/30/90 + 模型选择（primary/目录 enabled 模型）、报告历史区（保留 5 份提示 + 时间/窗口/会话/消息/小时/天数/生成 tokens/模型/标签 meta 卡）、建议三段 + 复制钮 |
+| 19 | 技能管理 / 技能市场 | skill_api(13) | 已支持（子集） | 技能管理页（目录扫描 + 全局启停）+ 每 mode 技能选择（T2-11）；市场下载缺；**A 批 3（2026-10-15）**：技能页搜索（名称/描述/key）+「隐藏重复项」（shadowed）+ 无匹配空态 |
+| 20 | 智能体管理（agents / custom agents / subagents） | custom_agent_api(5)、subagent_api、agentic_api | 已支持（子集） | agents 管理页 + 创建/编辑/删除卡片（T2-12，编辑粒度 = 壳创建面六字段）；subagents 编辑器缺；**A 批 3（2026-10-15）**：搜索（名称/描述）+ 来源过滤（任意/内置/用户/项目/外部）+ 类型过滤（任意/智能体/子代理，按 web 语义切换整块分区） |
 | 21 | MCP 管理（servers / resources / prompts / OAuth） | mcp_api(23) | 已支持（子集） | 管理页 + 增删改 + 运行中交互应答（多行 + 预填）+ JSON 原文编辑 + 资源浏览（T2-7）；OAuth 流程缺 |
 | 22 | 生态兼容（外部来源导入 / ACP 客户端 / external hooks） | external_sources_api(27)、acp_client_api(16)、external_hooks_api(5) | 缺 | 大工程（发现/冲突解决/批导入） |
 | 23 | 插件 / 扩展管理页 | 生态 + 插件运行时 | 缺 | 依赖 22 |
@@ -82,7 +82,7 @@
 | 33 | 应用内更新 UI（检查 / 下载 / 安装提示） | update_api(3) | 已支持 | 引擎（D32）+ UI（检查/下载/安装/重启）+ 每日门控（T1-3）；feed 接入仍按 §4.4 拍板时同批 |
 | 34 | 公告 / 更新提示 | announcement_api(6) | 缺 | 可后置 |
 | 35 | 桌面宠物 / 工具条模式 / 浮动 mini chat | — | 缺（明确后置） | 与壳定位无关 |
-| 36 | Trinity 认知控制台 | trinity_api(26) | 缺 | 薄 RPC 转发；已转正为接力清单 T2-15（D77） |
+| 36 | Trinity 认知控制台 | trinity_api(26) | 已支持（子集） | 薄 RPC 转发，T2-15 已交付（`trinity.rs`：认知态卡 + 趋势 + 记忆时间线 浏览/搜索/新增/强化/两步遗忘，云端同步/晨报/觉醒向导仍缺）；**A 批 3（2026-10-15）**：记忆行内修正（`memorize {content, target_id}` + corrected 回执提示）、词汇量计数（`memory.vocabulary_size`） |
 | 37 | 审查平台 / 深度审查 | review_platform_api(10) + review-team 前端 | 缺（review 族投影已有标签） | 平台本体后置；review 族 agent_type 已有「审核中」标签与子视图（T2-6） |
 | 38 | 账号 / 身份（GitHub 登录、市场） | account_identity_api(3) | 缺 | 服务市场能力时一并 |
 | 39 | 会话快照 / 回滚（turn 文件 accept/reject） | snapshot_service(22) | 已支持 | 快照恢复经 Git 面板落地（`git.rs` snapshot 族） |
@@ -343,6 +343,7 @@ domain prism token；② 工具栏锚位 = 组件右上动作簇（语言标签�
 
 | 日期 | 变更 |
 |---|---|
+| 2026-10-15 | **界面 1:1 整改 A 批 3（场景小项）交付**（会话 74）：任务看板日详情面板 + 行徽标/不可执行分区（G-P2/G-P3）、洞察范围 7/14/30/90 + 模型选择 + 历史 meta 卡 + 建议三段复制（G-I1/G-I5/G-I6）、技能搜索 + 隐藏重复项（G-K5）、智能体搜索 + 来源/类型过滤（G-A5）、Trinity 记忆行内修正 + 词汇量（G-Y5/G-Y6）；G-Y4（原生文件对话框）/G-A3/G-A6/G-M2 判为暂缓（理由见整改计划 §3.1）；§2 行 17/18/19/20/36 按本批改判并补注 |
 | 2026-10-09 | 首个基线（M10 第 1 会话）：704 命令域统计、19 场景矩阵、P0/P1/P2 分级、M-A/B/C 机制设计 |
 | 2026-10-09 | **三项拍板（M10 收口，公子亲手选定）**：① P0 立项为里程碑 M11（验收于开工时冻结）；② feed 维持显式 `--update-manifest`，切换拍板时同批接入 + minisign；③ 机制 = M-B（落地为里程碑 M12）。切换动作本身待 P0 闭合后终审 |
 | 2026-10-09 | 整固复核（M10 第 2 会话，仅文档）：①逐条复核 §2「可低成本补」6 行 —— SDK 方法族（第 2/3/5/18 行）、端口、core 服务全部真实存在，无一虚标；②修正证据措辞 4 处：第 4 行改为「拖放/剪贴板走 gpui-pre 原生（XDND / wl_data_device / `ClipboardItem::new_image`）＋图片落盘助手为 desktop-local」、第 5 行补「装配已通」的直接证据（`build_with_event_source` 注入 `AgentInteractionResponsePort`）、第 8 行改为「切工作区 = 运行时重装配」（ownership 与 local services 启动即固化）并标出 `current workspace` 共享指针的跨壳耦合、§2.2 修正「多数端口是能力标记（无方法）」并把文件/工作区能力指向 core 服务；③补证据锚点：第 3 行补 catalog 三个 core 函数、第 17 行补 `scheduled-jobs` 已在闭包、第 18 行补 `InsightsService` 五个方法；④第 32 行补「通知可走 gpui-pre 原生 `show_system_notification`」；⑤§2.1 application 分类修正为 7 页（补 `terminal`，壳已覆盖其 4 个共享键）、去掉不存在的独立「appearance pack」页；⑥抽查「缺」档三行的证据锚点（第 15 行 `service/worktree` 生命周期、第 21 行 `McpManager` 家族、第 39 行 `service/snapshot`），去掉对标记端口的引用；⑦第 9 / 11 行同样把「端口现成」改为指向 core 服务（`FileSystemService` / `WorkspaceSearchService`）；⑧§4.2 / §4.4 补落地锚点：M-B 的 schema/resolver/adapter/校验入口逐文件点名，feed 接入点名 `generate-linux-binaries-manifest.mjs` 的 `gpuiShell` 资产键及其 `asset()` 存在性约束 |

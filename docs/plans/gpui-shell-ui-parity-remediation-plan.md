@@ -289,6 +289,11 @@
 - **G-K4 技能分组管理**：web `components/SkillGroupsView.tsx` + `SkillGroupEditor.tsx`（创建/编辑/复制/排序/删除）；
   壳 facet 有「分组」投影但无编辑（R4 判「用户分组 web 侧配置未接→不伪造」）。**B 档**。
 - **G-K5 技能页搜索 / shadowed 过滤**：web `SkillsScene.tsx:321-331,298-303`；壳 facet + 列表，无搜索框。**A 档**。
+  **✅ 交付**（2026-10-15，A 批 3）****：技能页顶过滤行（`manage.rs::skills_filter_row`）—— 搜索框（名称/描述/技能 key，
+  trim + 大小写不敏感；key 是行内保留的路径派生身份，web 的 path 字段壳未保留）+「隐藏重复项」勾选
+  （`SkillRow.shadowed`，daemon 侧标记；web 的 `isShadowed` 同源）。无匹配出 `manage-skills-no-match` 空态，
+  与「无技能」空态区分。搜索框由 `manage::install_page_filters` 建成并订阅（逐键写 `SkillsFilterState`
+  全局 + 重绘，同设置导航搜索的订阅范式）。证据帧 `a3-01..03`。
 
 ### 2.8 智能体（G-A）
 
@@ -300,6 +305,11 @@
 - **G-A3 子代理模型覆盖**：web `:1113-1127`（默认/inherit/fast/primary/具体模型）；壳无。**A 档**。
 - **G-A4 详情卡（能力 5 级条 / follow-up / 共享 profile / external provider）**：web `:1038-1110`；壳卡片简化。**A/B 档**。
 - **G-A5 搜索 / source / kind 过滤**：web `:808-865`；壳无。**A 档**。
+  **✅ 交付**（2026-10-15，A 批 3）****：智能体页顶部控制行（`manage.rs::agents_controls`）—— 搜索（名称/描述，trim +
+  大小写不敏感）+「来源」菜单（任意/内置/用户/项目/外部）+「类型」菜单（任意/智能体/子代理）。类型过滤按
+  web 语义**切换整块分区**（选「子代理」即只留子代理区 + 新建入口），故 `agents_group` 改为按
+  `AgentsFilterState` 动态组装 items（`settings.rs` 调用点随之传 `cx`）。空结果出 `manage-agents-no-match`。
+  证据帧 `a3-04..06`。
 - **G-A6 Harness 概览区**：web `components/AgentHarnessOverview.tsx:70-107`；壳无。**A 档**。
 - **G-A7 external agent → 生态页跳转**：依赖 G-E1。**C 档（随生态页）**。
 
@@ -319,7 +329,17 @@
   schedule kind at|every|cron/时区/锚点/绑定 session/启用/prompt 1000 字）；壳只有列表操作（启停/立即运行/删除，`tasks.rs`）。
   动作：完整编辑器（core cron 写面已有）。**B 档（本组最大项）**。
 - **G-P2 日详情面板**：web `TodosScene.tsx:615-673`（点日期看当日 occurrence + clear day）；壳月历无点击详情。**A 档**。
+  **✅ 交付**（2026-10-15，A 批 3）****：日历格可点（唯一 id + 选中底色；再点同格=取消，同 web `onSelectDay` 的 toggle），
+  卡片出日详情：标题「选中日期 · YYYY-MM-DD」（参数化键）+「清除」+ 当日条目（时间 + 任务名 + 
+  下次运行/已运行/出错 chip，按时刻排序）或空态「当天没有安排。」。条目只列 store 真正携带的两个瞬时
+  （每任务最多两条）——与日历图例「不含历史运行日志」的诚实口径一致。证据帧 `a3-08`。
 - **G-P3 状态徽标与不可执行分区**：web `components/TodoItemRow.tsx:81-122` + `TodosScene.tsx:344-353`
+  **✅ 交付**（2026-10-15，A 批 3）****：
+  行徽标（`JobBadge` + 纯函数 `job_badges`/`next_run_job_id`：正在运行=上次运行中 / 下次运行=全局最近
+  未来瞬时（web `isNextRun`）/ 已逾期=启用且瞬时已过）+ 不可执行分区（`inactive_reason`：未启用→已暂停 /
+  一次性 At 且已跑过→已结束 / 启用但无下次运行→计划无效），分区头「无后续运行（N）」= web `inactive.title`。
+  证据帧 `a3-07`（注意：徽标标签用「正在运行/已结束」而非 web 的共享词 Running/Done，因 core 契约无法引用
+  shared 术语通道，同值会让 `i18n:audit` 的 `sharedTermDuplicates` 超基线）。
   （running/overdue/disabled/completed/invalid 徽标 + 不可执行任务分区）；壳行内已有 next_run/last_run 时间与
   上次运行状态（`tasks.rs:259-270`）+ 启停/运行/删除，缺 running/overdue 徽标与不可执行分区。**A 档**。
 - **G-P4 30s tick 倒计时**：web `TodosScene.tsx:73-75`；壳无实时时钟刷新。**A 档（可选）**。
@@ -327,14 +347,29 @@
 ### 2.11 洞察（G-I）
 
 - **G-I1 模型选择 + 范围 7/14/30/90**：web `InsightsScene.tsx:169-249`；壳范围 7/30/90（`insights.rs:20`）无模型选择。**A 档**。
+  **✅ 交付**（2026-10-15，A 批 3）****：范围 chips 7/14/30/90（默认 30，选中态 Primary）+ 模型菜单（首项「主模型」=
+  daemon 默认选择器 `primary`，其后目录里 `enabled` 的模型；选择消失时回退首项）+「生成报告」按钮；
+  `runtime::generate_insights(days, model_id)` 透传 `InsightsService::generate(days, selector)`。
+  **口径差异（记录）**：壳的模型目录投影不含 capabilities，故只按 `enabled` 过滤，未再按 web 的 `text_chat` 筛。
+  证据帧 `a3-09`。
 - **G-I2 生成五阶段进度面板**：web `:35-153`；壳只有「生成中…」+ 取消。**B 档**。
 - **G-I3 统计行 + bar 图表组**：web `:772-1048`（goals/tools/languages/session types/响应时间/时段/tool errors/
   agent types/outcomes/friction）；壳渲染结构事实（headline + 四段叙事），无图表。**B 档**。
 - **G-I4 8 段 + TOC 滚动联动**：web `:22-31,437-527`；壳四段（what's working/hindering/quick wins/looking ahead，
   `i18n.rs:102-105`）无 TOC。**B 档**。
 - **G-I5 建议复制按钮（openbitfun.md 补丁/features/patterns）**：web `:1050-1160`；壳无。**A 档**。
+  **✅ 交付**（2026-10-15，A 批 3）****：报告新增三段建议区（OPENBITFUN.md 增补 / 值得一试 / 用法模式），每行一个复制钮，
+  入剪贴板的载荷与 web 一致（增补 `content` / 特性 `example_usage`（空则不出钮）/ 模式 `suggested_prompt`，
+  后者标签「试试这个提示词」）；列表为空整段不渲染（同 web 条件）。
+  **未做视觉冒烟**：本机洞察报告 store 为空且隔离环境无模型目录，无法出报告 → 待有报告时目视复验（见 HANDOFF-081）。
 - **G-I6 Open HTML + 历史 5 份 meta 卡**：web `:287-431,529-577`；壳历史列表无 meta 细节、无 Open HTML
   （HTML 报告文件明确留给 desktop-web，`insights.rs:1-8`）。**A 档（meta）/ 不补（HTML）**。
+  **✅ 交付 meta 半**（2026-10-15，A 批 3）****：历史区头「报告历史」+「仅保留最近 5 份报告」；每行 meta 卡 =
+  生成时间（本地 `YYYY-MM-DD HH:MM`）+ 窗口（ISO 前 10 字，`start → end`）+ 会话 `X / Y` + 消息数 +
+  小时 + 覆盖天数 + 生成用量 tokens + 生成模型（` + ` 连接）+ 目标/语言标签（去重、目标优先，同 web 取前 3）。
+  Open HTML 维持**不补**（需 `plugin-opener` 原生打开，HTML 报告文件归 desktop-web）。
+  **同 G-I5 的待复验项**：本机无报告数据，meta 卡只经纯函数测试（`history_range/history_timestamp/history_tags`），
+  未目视。
 
 ### 2.12 认知体 Trinity（G-Y）
 
@@ -346,9 +381,16 @@
 - **G-Y4 记忆导出 / 导入 JSON**：web `:965-1211,628-689`（导出 + 导入 + being_id 不匹配二次确认）；
   壳记忆面有回忆/记存/强化/两步遗忘，无导出导入。**A 档**。
 - **G-Y5 记忆行内编辑（memorize 修正）**：web `:1085-1190`；壳无行内编辑。**A 档**。
+  **✅ 交付**（2026-10-15，A 批 3）****：每行「修正」钮 → 行体换成预填当前内容的共享 textarea（`trinity_edit_content`，
+  窗口持有）+「保存修正 / 取消」（保存键在有内容时可用，空内容不得提交 = web 语义）；保存走
+  `memorize {content, target_id}`，runtime 读 daemon 的 `corrected` 回执（新增 `RuntimeEvent::TrinityCorrection`）
+  → 页面出「修正已应用。」或「原始记忆已不存在（可能已被遗忘）。」（web 的两条 toast 文案）。
+  冒烟：开编辑器 → 取消（**未提交修正，不动机器人记忆图**），取消后行像素级还原。证据帧 `a3-11`。
 - **G-Y6 认知态卡细节（小）**：web `:883-963`（emotion hero/focus、confidence、cycle #、needs、valence sparkline、
   记忆规模 nodes/triples/vocabulary）；壳已渲染 confidence / cycle # / nodes / triples（`trinity.rs:669-706`），
   仅缺 vocabulary 计数与 sparkline 粒度差异。动作：补 vocabulary 一行。**A 档（极小）**。
+  **✅ 交付 vocabulary 行**（2026-10-15，A 批 3）****：PSI 解析补 `memory.vocabulary_size` → 卡上第三计数「词汇量」
+  （本机实测 40519）；sparkline 粒度差异维持（`trinity.rs` 趋势条为既有形态，未在本批改）。证据帧 `a3-10`。
 
 ### 2.13 助理 / 角色面（G-N，未立项）
 
@@ -387,6 +429,19 @@
   G-SE19（子代理并发 UI）、G-SE30（归档分组）、G-SE31（异常退出提示）。共用同一套 SettingField 范式。
 - **A 批 3 = 场景小项**：G-P2/G-P3（任务日详情/徽标）、G-I1/G-I5/G-I6（洞察小项）、G-Y4/G-Y5/G-Y6（trinity 小项）、
   G-K5（技能搜索）、G-A3/G-A5/G-A6（智能体小项）、G-M2（MCP 粘贴导入）、G-Q1 的前置（action 目录投影）。
+  **⚠ 部分交付（2026-10-15，A 批 3，会话 74）**：G-P2、G-P3、G-I1、G-I5、G-I6(meta)、G-Y5、G-Y6、G-K5、G-A5 九项落地
+  （**提交内容本身**壳 305 lib 全绿，工作区并集含并发会话的设置测试为 307；5 PTY + 5 update 不受影响；`i18n:audit` 0 错 0 警、core-boundaries 绿；Xvfb :189 冒烟 0 panic/0 缺资产，
+  证据帧 `a3-01..11`）。**暂缓四项（附理由，下批首选）**：
+  - **G-Y4 记忆导出/导入 JSON**：web 两处都用原生文件对话框（`plugin-dialog` save/open），壳无文件选择器
+    （M24 已判「不放假入口」）——要么壳侧改用「固定导出目录 + 复制路径」范式（需先定设计，偏离 1:1 形态），
+    要么维持待点名。
+  - **G-A3 子代理模型覆盖**：需要 agent 编辑对话框加模型选择 + core `update_custom_entry_config(model, clear_model_override)`
+    写面接线（`custom.rs:401-445`），属对话框族改造，与 G-A1/G-A2 同批更省。
+  - **G-A6 Harness 概览区**：壳的 `AgentCatalog` 只投影 modes/subagents，harness 类 agent 未进目录 → 需先扩 core 投影
+    （比纯 UI 大，归 B 档口径）。
+  - **G-M2 MCP 粘贴/文件导入 + 预览**：粘贴解析 + 预览表（逐条勾选 + 目标 id 编辑 + 冲突提示 + 导入后强制 disabled）
+    是独立对话框族，单列一批更稳。
+  另 **G-I5/G-I6 的视觉复验待有洞察报告时补**（本机 store 为空）。
 - **A 批 4 = 会话/终端/杂项**：G-S1/G-S2（turn footer meta / copy 反馈）、G-T1/G-T2、G-F8、G-X6（通知中心）。
 
 验收：壳内锚点 + 无头断言（可测者）+ Xvfb 冒烟 0 panic/0 缺资产；视觉项出双端并排图。
@@ -470,8 +525,13 @@
   1000 已加载会话 RSS 底数、真机千并发压测；壳侧已修（SessionRefresh 调度器 / 事件泵批量化 / Lagged 自愈）。
 - **W-3 真机验收项**：splitter 拖拽、托盘菜单与角标、关闭行为、更新全链、玻璃观感/Shimmer 手感、IME 复验。
 - **W-4 未提交改动**：并发规模档（`runtime.rs`/`shell.rs` + `examples/session_scale_probe.rs`，HANDOFF-079）
-  **仍在工作区未提交**（该档提交需公子点头）。A 批 1 已在 `04a1675c5` 提交，且**只提交了本批 hunk**
-  （shell.rs 的 7 个 hunk，用 `git apply --cached` 拆出），HANDOFF-079 的改动原样留在工作区并保持可编译。
+  现存放于 `stash@{0}`（"gpui T13"，并发会话 `3c274e9e1` 提交前 stash；内容备份
+  `.relay/journal/handoff079-wip.patch`），**恢复时机需与创建它的会话核对，勿擅自 pop/丢弃**；该档提交仍需公子点头。
+  **工作区当前另有一份并发未提交改动 = 会话 73（`sess_efd8c36b`，活动）的 A 批 2 设置小字段 WIP**
+  （`settings.rs` G-SE31 上一轮异常退出提示 + `i18n.rs` + ftl×3 的配套键）——A 批 3 交付时按同一纪律
+  **只暂存自己的 hunk**，对方 WIP 原样留在工作区。
+- **W-5 A 批 3 未交付余项**：G-Y4（原生文件对话框）/ G-A3（子代理模型覆盖）/ G-A6（Harness 概览，需扩 core 投影）/
+  G-M2（MCP 粘贴导入预览）四项暂缓（理由见 §3.1 批 3 行）；G-I5/G-I6 的视觉复验待本机出现洞察报告时补。
 
 ### 6.2 小扫尾四项（原 R2c/R2d 余留，归 A 档批 1/批 4）
 
@@ -491,5 +551,6 @@ copy 成功态图标反馈（=G-S2）。
 
 | 日期 | 变更 |
 |---|---|
+| 2026-10-15 | **A 批 3（场景小项）部分交付**（会话 74，与 A 批 2 并发）：G-P2 日详情面板、G-P3 行徽标 + 不可执行分区、G-I1 范围 7/14/30/90 + 模型选择、G-I5 建议三段复制、G-I6 历史 meta 卡、G-Y5 记忆行内修正（含 `corrected` 回执）、G-Y6 词汇量、G-K5 技能搜索 + 隐藏重复项、G-A5 智能体搜索 + 来源/类型过滤；G-Y4/G-A3/G-A6/G-M2 暂缓（理由见 §3.1）；证据帧 `a3-01..11`；W-4 按 stash + 并发 WIP 现状重写并新增 W-5 |
 | 2026-10-15 | **A 批 1（Git + 文件）交付**（`04a1675c5`）：G-G1 非仓库态卡 + init 填 chat、G-G3 行内 discard/delete（两段式 + 远程降级）、G-G5 文件列↔diff 分隔条、G-G6 ahead/behind 徽标 + pull（顺带修 remotes 恒空）、G-FL2 文件树本地过滤；G-FL3 判为维持待点名。core 侧最小契约扩展：`GitRepositoryOverview` +`ahead`/`behind`、`GitPort` +`pull`/`discard_files`。证据帧 `g1-01..04`（Xvfb 冒烟：徽标/行内动作/armed 态/init 预填 + 执行态核验） |
 | 2026-10-15 | 首版：界面逐一盘点（框架层 8 行 / 主场景 21 项 / 设置 21 页 / 面板与对话框 18 行 / 壳侧独有 3 项 / 死面 5 项）；差距明细 80 余条编号条目（G-*）含双端源码锚点；整改计划 A/B/C 分档 + 不补清单（含拍板来源）；验收口径与建议执行顺序；T3 17-25 与本文编号的映射；工程性尾项（R7c 尾货 / 并发规模 / 真机 / 未提交改动）归并登记 |

@@ -375,6 +375,11 @@ pub(crate) enum RuntimeEvent {
     /// A memory mutation (memorize / forget / reinforce) or the recall
     /// failed; surfaced as the page's inline action error.
     TrinityActionFailed(String),
+    /// G-Y5: the daemon's verdict on a correction (`memorize` with a
+    /// `target_id`). `false` means the original memory no longer existed.
+    TrinityCorrection {
+        applied: bool,
+    },
     /// R7c: the plugin UI host channel is live and its initial describe
     /// landed; the named providers install into the projection now (each
     /// entry is the source key plus its provider).
@@ -1213,15 +1218,21 @@ impl RuntimeHandle {
         });
     }
 
-    /// Generates a fresh insight report over the last `days` days. The call
-    /// is long-running; the page shows its own generating state and can
-    /// cancel through [`RuntimeHandle::cancel_insights`].
-    pub(crate) fn generate_insights(&self, days: u32, tx: mpsc::UnboundedSender<RuntimeEvent>) {
+    /// Generates a fresh insight report over the last `days` days with the
+    /// page's model selector (`None` = the daemon's own default). The call is
+    /// long-running; the page shows its own generating state and can cancel
+    /// through [`RuntimeHandle::cancel_insights`].
+    pub(crate) fn generate_insights(
+        &self,
+        days: u32,
+        model_id: Option<String>,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+    ) {
         self.tokio.spawn(async move {
             let _ = tx.send(RuntimeEvent::InsightsGenerating);
             // Boxed: the generation future's concrete type is deep enough to
             // overflow the compiler's Send evaluation without the pin.
-            let generation = Box::pin(InsightsService::generate(days, None));
+            let generation = Box::pin(InsightsService::generate(days, model_id));
             match generation.await {
                 Ok(report) => {
                     let _ = tx.send(RuntimeEvent::InsightsReport(Box::new(report)));
@@ -2082,6 +2093,9 @@ impl RuntimeHandle {
         target_id: Option<String>,
     ) {
         self.tokio.spawn(async move {
+            // Only a correction is judged: the daemon answers a plain
+            // memorize without a `corrected` flag.
+            let correction = target_id.is_some();
             let mut params = serde_json::json!({ "content": content, "kind": "note" });
             if let Some(project) = project {
                 params["project"] = serde_json::json!(project);
@@ -2090,7 +2104,16 @@ impl RuntimeHandle {
                 params["target_id"] = serde_json::json!(target_id);
             }
             match crate::trinity::client().call("memorize", params).await {
-                Ok(_) => Self::load_memories_for(tx).await,
+                Ok(value) => {
+                    if correction {
+                        let applied = value
+                            .get("corrected")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(true);
+                        let _ = tx.send(RuntimeEvent::TrinityCorrection { applied });
+                    }
+                    Self::load_memories_for(tx).await
+                }
                 Err(error) => {
                     tracing::warn!("Trinity memorize failed: {error}");
                     let _ = tx.send(RuntimeEvent::TrinityActionFailed(error));

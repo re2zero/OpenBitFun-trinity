@@ -748,7 +748,7 @@ pub(crate) fn entry_group(
         SettingsEntry::Automation => automation_group(text),
         SettingsEntry::WebSearch => websearch_group(text, view, cx),
         SettingsEntry::Skills => crate::manage::skills_group(text),
-        SettingsEntry::Agents => crate::manage::agents_group(text, view),
+        SettingsEntry::Agents => crate::manage::agents_group(text, view, cx),
         SettingsEntry::Mcp => crate::manage::mcp_group(text, view),
         SettingsEntry::Usage => usage_group(text, view),
         SettingsEntry::Archived => archived_group(text, view),

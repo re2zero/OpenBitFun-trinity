@@ -103,6 +103,19 @@ pub(crate) struct ShellText {
     pub insights_whats_hindering: String,
     pub insights_quick_wins: String,
     pub insights_looking_ahead: String,
+    /// G-I1: the insights header controls.
+    pub insights_model_label: String,
+    pub insights_model_primary: String,
+    pub insights_range_label: String,
+    /// G-I6: the report-history section header and its retention hint.
+    pub insights_history: String,
+    pub insights_keep_latest: String,
+    /// G-I5: the suggestion sections and their copy affordance.
+    pub insights_md_additions: String,
+    pub insights_features_to_try: String,
+    pub insights_usage_patterns: String,
+    pub insights_try_this_prompt: String,
+    pub insights_copy: String,
     pub tasks_title: String,
     pub tasks_empty_title: String,
     pub tasks_empty: String,
@@ -127,6 +140,18 @@ pub(crate) struct ShellText {
     pub tasks_calendar_error: String,
     pub tasks_calendar_note: String,
     pub tasks_list_title: String,
+    /// G-P3: the web row badges (running / nearest upcoming run / overdue).
+    pub tasks_badge_running: String,
+    pub tasks_badge_next_run: String,
+    pub tasks_badge_overdue: String,
+    /// G-P3: the inactive partition's per-job reason chips.
+    pub tasks_inactive_paused: String,
+    pub tasks_inactive_done: String,
+    pub tasks_inactive_invalid: String,
+    /// G-P2: the selected-day panel (title date and empty line are composed
+    /// by the page; `tasks_day_title` is the parameterized helper).
+    pub tasks_day_clear: String,
+    pub tasks_day_empty: String,
     /// R2c docked resource panel chrome.
     pub panel_pop_out: String,
     pub panel_close: String,
@@ -366,6 +391,10 @@ pub(crate) struct ShellText {
     pub manage_skills_loading: String,
     pub manage_skills_empty_title: String,
     pub manage_skills_empty: String,
+    /// G-K5: the skills page's local filter row and its no-match state.
+    pub manage_skills_search_placeholder: String,
+    pub manage_skills_hide_shadowed: String,
+    pub manage_skills_no_match: String,
     pub manage_skill_builtin: String,
     pub manage_skill_user: String,
     pub manage_skill_project: String,
@@ -385,6 +414,16 @@ pub(crate) struct ShellText {
     pub manage_agents_loading: String,
     pub manage_agents_empty_title: String,
     pub manage_agents_empty: String,
+    /// G-A5: the agents page's search box, source and type filters, and its
+    /// no-match state.
+    pub manage_agents_search_placeholder: String,
+    pub manage_agents_source_label: String,
+    pub manage_agents_source_any: String,
+    pub manage_agents_kind_label: String,
+    pub manage_agents_kind_any: String,
+    pub manage_agents_kind_agent: String,
+    pub manage_agents_kind_subagent: String,
+    pub manage_agents_no_match: String,
     pub manage_agent_create_title: String,
     pub manage_agent_kind_mode: String,
     pub manage_agent_kind_subagent: String,
@@ -617,6 +656,8 @@ pub(crate) struct ShellText {
     pub trinity_label_cycles: String,
     pub trinity_label_memory_nodes: String,
     pub trinity_label_memory_triples: String,
+    /// G-Y6: the third memory-scale counter (web `trinity.status.vocabulary`).
+    pub trinity_label_vocabulary: String,
     pub trinity_trend_title: String,
     pub trinity_memory_title: String,
     pub trinity_memory_add: String,
@@ -632,6 +673,11 @@ pub(crate) struct ShellText {
     pub trinity_memory_forget: String,
     pub trinity_memory_forget_confirm: String,
     pub trinity_memory_reinforce: String,
+    /// G-Y5: the inline correction affordances on a memory row.
+    pub trinity_memory_edit: String,
+    pub trinity_memory_edit_save: String,
+    pub trinity_memory_edit_applied: String,
+    pub trinity_memory_edit_missing: String,
     pub trinity_action_refresh: String,
     pub trinity_loading: String,
     pub trinity_action_failed: String,
@@ -734,6 +780,82 @@ pub(crate) fn git_ahead(count: usize, cx: &App) -> String {
 pub(crate) fn git_behind(count: usize, cx: &App) -> String {
     resolve_with(
         "gpui-shell-git-behind",
+        TranslationArgs::new().with_number("count", count as f64),
+        cx,
+    )
+}
+
+/// G-I6: the history card's session count (web `analyzed / total`).
+pub(crate) fn insights_sessions_ratio(analyzed: usize, total: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-insights-sessions-ratio",
+        TranslationArgs::new()
+            .with_number("analyzed", analyzed as f64)
+            .with_number("total", total as f64),
+        cx,
+    )
+}
+
+/// G-I6: the history card's message count.
+pub(crate) fn insights_messages_count(count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-insights-messages-count",
+        TranslationArgs::new().with_number("count", count as f64),
+        cx,
+    )
+}
+
+/// G-I6: the history card's tracked hours (already formatted, so the locale
+/// keeps the number formatting the page chose).
+pub(crate) fn insights_hours(hours: String, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-insights-hours",
+        TranslationArgs::new().with_string("hours", &hours),
+        cx,
+    )
+}
+
+/// G-I6: the history card's covered-day count.
+pub(crate) fn insights_days_count(count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-insights-days-count",
+        TranslationArgs::new().with_number("count", count as f64),
+        cx,
+    )
+}
+
+/// G-I6: the history card's generation-token line.
+pub(crate) fn insights_generation_tokens(count: u64, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-insights-generation-tokens",
+        TranslationArgs::new().with_number("count", count as f64),
+        cx,
+    )
+}
+
+/// G-I1: one chip of the range control (web `7 Days`).
+pub(crate) fn insights_range_days(count: u32, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-insights-range-days",
+        TranslationArgs::new().with_number("count", count as f64),
+        cx,
+    )
+}
+
+/// G-P2: the selected-day panel's heading, naming the picked local date.
+pub(crate) fn tasks_day_title(date: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-tasks-day-title",
+        TranslationArgs::new().with_string("date", date),
+        cx,
+    )
+}
+
+/// G-P3: the inactive partition's subheader with its job count (web
+/// `inactive.title`).
+pub(crate) fn tasks_inactive_title(count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-tasks-inactive-title",
         TranslationArgs::new().with_number("count", count as f64),
         cx,
     )
@@ -1086,6 +1208,16 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         insights_whats_hindering: "What's hindering".to_string(),
         insights_quick_wins: "Quick wins".to_string(),
         insights_looking_ahead: "Looking ahead".to_string(),
+        insights_model_label: "Model".to_string(),
+        insights_model_primary: "Primary model".to_string(),
+        insights_range_label: "Range".to_string(),
+        insights_history: "Report history".to_string(),
+        insights_keep_latest: "Only the 5 most recent reports are kept".to_string(),
+        insights_md_additions: "OPENBITFUN.md Additions".to_string(),
+        insights_features_to_try: "Features to Try".to_string(),
+        insights_usage_patterns: "Usage Patterns".to_string(),
+        insights_try_this_prompt: "Try this prompt".to_string(),
+        insights_copy: "Copy".to_string(),
         tasks_title: "Task Board".to_string(),
         tasks_empty_title: "No scheduled jobs".to_string(),
         tasks_empty: "No scheduled jobs. Ask the agent to create one, or add it in the desktop app.".to_string(),
@@ -1109,6 +1241,14 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         tasks_calendar_error: "Error".to_string(),
         tasks_calendar_note: "Marks the next scheduled run and the latest run only; run history is not kept in this shell.".to_string(),
         tasks_list_title: "All jobs".to_string(),
+        tasks_badge_running: "Running now".to_string(),
+        tasks_badge_next_run: "Next run".to_string(),
+        tasks_badge_overdue: "Overdue".to_string(),
+        tasks_inactive_paused: "Paused".to_string(),
+        tasks_inactive_done: "Finished".to_string(),
+        tasks_inactive_invalid: "Invalid schedule".to_string(),
+        tasks_day_clear: "Clear".to_string(),
+        tasks_day_empty: "Nothing scheduled on this day.".to_string(),
         panel_pop_out: "Pop out to a tab".to_string(),
         panel_close: "Hide panel".to_string(),
         panel_open: "Show panel".to_string(),
@@ -1343,6 +1483,9 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         manage_skills_loading: "Loading skills…".to_string(),
         manage_skills_empty_title: "No skills".to_string(),
         manage_skills_empty: "No skills found.".to_string(),
+        manage_skills_search_placeholder: "Search skills…".to_string(),
+        manage_skills_hide_shadowed: "Hide duplicates".to_string(),
+        manage_skills_no_match: "No matching skills found.".to_string(),
         manage_skill_builtin: "Built-in".to_string(),
         manage_skill_user: "User".to_string(),
         manage_skill_project: "Project".to_string(),
@@ -1361,6 +1504,14 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         manage_agents_loading: "Loading agents…".to_string(),
         manage_agents_empty_title: "No agents".to_string(),
         manage_agents_empty: "No agents found.".to_string(),
+        manage_agents_search_placeholder: "Search agents by name or description…".to_string(),
+        manage_agents_source_label: "Source".to_string(),
+        manage_agents_source_any: "Any source".to_string(),
+        manage_agents_kind_label: "Type".to_string(),
+        manage_agents_kind_any: "Any type".to_string(),
+        manage_agents_kind_agent: "Agent".to_string(),
+        manage_agents_kind_subagent: "SubAgent".to_string(),
+        manage_agents_no_match: "No matching agents.".to_string(),
         manage_agent_create_title: "Create custom agent".to_string(),
         manage_agent_kind_mode: "Mode".to_string(),
         manage_agent_kind_subagent: "Subagent".to_string(),
@@ -1662,6 +1813,7 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         trinity_label_cycles: "Cycles".to_string(),
         trinity_label_memory_nodes: "Memory nodes".to_string(),
         trinity_label_memory_triples: "Triples".to_string(),
+        trinity_label_vocabulary: "Vocabulary".to_string(),
         trinity_trend_title: "Cognitive trend".to_string(),
         trinity_memory_title: "Her diary".to_string(),
         trinity_memory_add: "Add memory".to_string(),
@@ -1677,6 +1829,10 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         trinity_memory_forget: "Forget".to_string(),
         trinity_memory_forget_confirm: "Click again to confirm".to_string(),
         trinity_memory_reinforce: "Reinforce".to_string(),
+        trinity_memory_edit: "Correct".to_string(),
+        trinity_memory_edit_save: "Save correction".to_string(),
+        trinity_memory_edit_applied: "Correction applied.".to_string(),
+        trinity_memory_edit_missing: "The original memory no longer exists (it may have been forgotten).".to_string(),
         trinity_action_refresh: "Refresh".to_string(),
         trinity_loading: "Loading…".to_string(),
         trinity_action_failed: "Action failed".to_string(),
@@ -1808,6 +1964,16 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         insights_whats_hindering: service.t("gpui-shell-insights-whats-hindering").await,
         insights_quick_wins: service.t("gpui-shell-insights-quick-wins").await,
         insights_looking_ahead: service.t("gpui-shell-insights-looking-ahead").await,
+        insights_model_label: service.t("gpui-shell-insights-model-label").await,
+        insights_model_primary: service.t("gpui-shell-insights-model-primary").await,
+        insights_range_label: service.t("gpui-shell-insights-range-label").await,
+        insights_history: service.t("gpui-shell-insights-history").await,
+        insights_keep_latest: service.t("gpui-shell-insights-keep-latest").await,
+        insights_md_additions: service.t("gpui-shell-insights-md-additions").await,
+        insights_features_to_try: service.t("gpui-shell-insights-features-to-try").await,
+        insights_usage_patterns: service.t("gpui-shell-insights-usage-patterns").await,
+        insights_try_this_prompt: service.t("gpui-shell-insights-try-this-prompt").await,
+        insights_copy: service.t("gpui-shell-insights-copy").await,
         tasks_title: service.t("gpui-shell-tasks-title").await,
         tasks_empty_title: service.t("gpui-shell-tasks-empty-title").await,
         tasks_empty: service.t("gpui-shell-tasks-empty").await,
@@ -1831,6 +1997,14 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         tasks_calendar_error: service.t("gpui-shell-tasks-calendar-error").await,
         tasks_calendar_note: service.t("gpui-shell-tasks-calendar-note").await,
         tasks_list_title: service.t("gpui-shell-tasks-list-title").await,
+        tasks_badge_running: service.t("gpui-shell-tasks-badge-running").await,
+        tasks_badge_next_run: service.t("gpui-shell-tasks-badge-next-run").await,
+        tasks_badge_overdue: service.t("gpui-shell-tasks-badge-overdue").await,
+        tasks_inactive_paused: service.t("gpui-shell-tasks-inactive-paused").await,
+        tasks_inactive_done: service.t("gpui-shell-tasks-inactive-done").await,
+        tasks_inactive_invalid: service.t("gpui-shell-tasks-inactive-invalid").await,
+        tasks_day_clear: service.t("gpui-shell-tasks-day-clear").await,
+        tasks_day_empty: service.t("gpui-shell-tasks-day-empty").await,
         panel_pop_out: service.t("gpui-shell-panel-pop-out").await,
         panel_close: service.t("gpui-shell-panel-close").await,
         panel_open: service.t("gpui-shell-panel-open").await,
@@ -2058,6 +2232,11 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         manage_skills_loading: service.t("gpui-shell-manage-skills-loading").await,
         manage_skills_empty_title: service.t("gpui-shell-manage-skills-empty-title").await,
         manage_skills_empty: service.t("gpui-shell-manage-skills-empty").await,
+        manage_skills_search_placeholder: service
+            .t("gpui-shell-manage-skills-search-placeholder")
+            .await,
+        manage_skills_hide_shadowed: service.t("gpui-shell-manage-skills-hide-shadowed").await,
+        manage_skills_no_match: service.t("gpui-shell-manage-skills-no-match").await,
         manage_skill_builtin: service.t("gpui-shell-manage-skill-builtin").await,
         manage_skill_user: service.t("gpui-shell-manage-skill-user").await,
         manage_skill_project: service.t("gpui-shell-manage-skill-project").await,
@@ -2076,6 +2255,16 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         manage_agents_loading: service.t("gpui-shell-manage-agents-loading").await,
         manage_agents_empty_title: service.t("gpui-shell-manage-agents-empty-title").await,
         manage_agents_empty: service.t("gpui-shell-manage-agents-empty").await,
+        manage_agents_search_placeholder: service
+            .t("gpui-shell-manage-agents-search-placeholder")
+            .await,
+        manage_agents_source_label: service.t("gpui-shell-manage-agents-source-label").await,
+        manage_agents_source_any: service.t("gpui-shell-manage-agents-source-any").await,
+        manage_agents_kind_label: service.t("gpui-shell-manage-agents-kind-label").await,
+        manage_agents_kind_any: service.t("gpui-shell-manage-agents-kind-any").await,
+        manage_agents_kind_agent: service.t("gpui-shell-manage-agents-kind-agent").await,
+        manage_agents_kind_subagent: service.t("gpui-shell-manage-agents-kind-subagent").await,
+        manage_agents_no_match: service.t("gpui-shell-manage-agents-no-match").await,
         manage_agent_create_title: service.t("gpui-shell-manage-agent-create-title").await,
         manage_agent_kind_mode: service.t("gpui-shell-manage-agent-kind-mode").await,
         manage_agent_kind_subagent: service.t("gpui-shell-manage-agent-kind-subagent").await,
@@ -2395,6 +2584,7 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         trinity_label_cycles: service.t("gpui-shell-trinity-label-cycles").await,
         trinity_label_memory_nodes: service.t("gpui-shell-trinity-label-memory-nodes").await,
         trinity_label_memory_triples: service.t("gpui-shell-trinity-label-memory-triples").await,
+        trinity_label_vocabulary: service.t("gpui-shell-trinity-label-vocabulary").await,
         trinity_trend_title: service.t("gpui-shell-trinity-trend-title").await,
         trinity_memory_title: service.t("gpui-shell-trinity-memory-title").await,
         trinity_memory_add: service.t("gpui-shell-trinity-memory-add").await,
@@ -2414,6 +2604,10 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         trinity_memory_forget: service.t("gpui-shell-trinity-memory-forget").await,
         trinity_memory_forget_confirm: service.t("gpui-shell-trinity-memory-forget-confirm").await,
         trinity_memory_reinforce: service.t("gpui-shell-trinity-memory-reinforce").await,
+        trinity_memory_edit: service.t("gpui-shell-trinity-memory-edit").await,
+        trinity_memory_edit_save: service.t("gpui-shell-trinity-memory-edit-save").await,
+        trinity_memory_edit_applied: service.t("gpui-shell-trinity-memory-edit-applied").await,
+        trinity_memory_edit_missing: service.t("gpui-shell-trinity-memory-edit-missing").await,
         trinity_action_refresh: service.t("gpui-shell-trinity-action-refresh").await,
         trinity_loading: service.t("gpui-shell-trinity-loading").await,
         trinity_action_failed: service.t("gpui-shell-trinity-action-failed").await,

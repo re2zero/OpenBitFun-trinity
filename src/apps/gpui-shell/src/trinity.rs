@@ -254,6 +254,9 @@ pub(crate) struct PsiState {
     pub needs: Vec<(String, f64)>,
     pub memory_nodes: Option<i64>,
     pub memory_triples: Option<i64>,
+    /// G-Y6: the MindGraph vocabulary size the daemon reports alongside the
+    /// node/triple counters (`memory.vocabulary_size`).
+    pub memory_vocabulary: Option<i64>,
     pub cycle_count: Option<i64>,
 }
 
@@ -328,6 +331,10 @@ pub(crate) fn parse_psi(value: &Value) -> PsiState {
         memory_triples: value
             .get("memory")
             .and_then(|m| m.get("total_triples"))
+            .and_then(Value::as_i64),
+        memory_vocabulary: value
+            .get("memory")
+            .and_then(|m| m.get("vocabulary_size"))
             .and_then(Value::as_i64),
         cycle_count: int("cycle_count"),
     }
@@ -494,6 +501,12 @@ pub(crate) struct TrinityPageState {
     pub add_open: bool,
     /// Two-step forget: the armed entry id awaiting confirmation.
     pub forget_armed: Option<String>,
+    /// G-Y5: the entry whose content is being corrected inline (web
+    /// `editingId`); the shared edit textarea holds the draft.
+    pub editing: Option<String>,
+    /// G-Y5: the last correction verdict — `Some(true)` when the daemon
+    /// applied it, `Some(false)` when the original memory was gone.
+    pub correction: Option<bool>,
 }
 
 // ── Rendering ───────────────────────────────────────────────────────
@@ -505,6 +518,7 @@ pub(crate) fn render_page(
     recall_input: &gpui_kit::Entity<InputState>,
     add_content: &gpui_kit::Entity<TextareaState>,
     add_project: &gpui_kit::Entity<InputState>,
+    edit_content: &gpui_kit::Entity<TextareaState>,
     tx: &mpsc::UnboundedSender<RuntimeEvent>,
     text: &ShellText,
     cx: &App,
@@ -574,6 +588,7 @@ pub(crate) fn render_page(
         recall_input,
         add_content,
         add_project,
+        edit_content,
         tx,
         text,
         cx,
@@ -706,6 +721,15 @@ fn psi_card(
             cx,
         ));
     }
+    // G-Y6: the web card's third counter, in the same place the daemon's
+    // memory snapshot provides it (absent when the daemon omits the field).
+    if let Some(vocabulary) = psi.memory_vocabulary {
+        counters = counters.child(fact_row(
+            text.trinity_label_vocabulary.clone(),
+            vocabulary.to_string(),
+            cx,
+        ));
+    }
     card = card.child(counters);
 
     card = card.child(trend_strip(state, text, cx));
@@ -819,6 +843,7 @@ fn memory_section(
     recall_input: &gpui_kit::Entity<InputState>,
     add_content: &gpui_kit::Entity<TextareaState>,
     add_project: &gpui_kit::Entity<InputState>,
+    edit_content: &gpui_kit::Entity<TextareaState>,
     tx: &mpsc::UnboundedSender<RuntimeEvent>,
     text: &ShellText,
     cx: &App,
@@ -913,6 +938,23 @@ fn memory_section(
                 .text_xs()
                 .text_color(cx.theme().danger)
                 .child(format!("{}: {message}", text.trinity_action_failed)),
+        );
+    }
+
+    // G-Y5: the correction verdict. The web raises a toast; the shell keeps
+    // the line until the next correction or the next action starts.
+    if let Some(applied) = state.correction {
+        let (label, tone) = if applied {
+            (text.trinity_memory_edit_applied.clone(), cx.theme().success)
+        } else {
+            (text.trinity_memory_edit_missing.clone(), cx.theme().danger)
+        };
+        section = section.child(
+            div()
+                .text_xs()
+                .text_color(tone)
+                .debug_selector(|| "trinity-correction-notice".to_string())
+                .child(label),
         );
     }
 
@@ -1018,7 +1060,15 @@ fn memory_section(
 
     let mut list = div().flex().flex_col().gap_1().w_full();
     for entry in entries {
-        list = list.child(memory_row(state, view.clone(), entry, tx, text, cx));
+        list = list.child(memory_row(
+            state,
+            view.clone(),
+            edit_content,
+            entry,
+            tx,
+            text,
+            cx,
+        ));
     }
     section = section.child(list);
 
@@ -1070,6 +1120,7 @@ fn memory_section(
 fn memory_row(
     state: &TrinityPageState,
     view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    edit_content: &gpui_kit::Entity<TextareaState>,
     entry: &MemoryEntry,
     tx: &mpsc::UnboundedSender<RuntimeEvent>,
     text: &ShellText,
@@ -1125,6 +1176,85 @@ fn memory_row(
         row = row.child(head).child(content_line(entry, cx));
         return row.into_any_element();
     };
+
+    // G-Y5: the corrected row replaces the content line with the shared edit
+    // textarea and swaps the row actions for Save / Cancel, the way the web
+    // row keeps its chrome and only the body becomes editable.
+    if state.editing.as_deref() == Some(entry_id.as_str()) {
+        let save_view = view.clone();
+        let save_id = entry_id.clone();
+        let save_content = edit_content.clone();
+        let save_tx = tx.clone();
+        let cancel_view = view.clone();
+        let cancel_content = edit_content.clone();
+        row = row.child(head).child(
+            div()
+                .w_full()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(Textarea::new(edit_content).small())
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .justify_end()
+                        .gap_2()
+                        .child(
+                            Button::new(SharedString::from(format!(
+                                "trinity-edit-cancel-{entry_id}"
+                            )))
+                            .label(text.session_action_cancel.clone())
+                            .small()
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(move |_, window, cx| {
+                                cancel_content
+                                    .update(cx, |state, cx| state.set_value("", window, cx));
+                                if let Some(shell) = cancel_view.upgrade() {
+                                    shell.update(cx, |shell, cx| {
+                                        shell.trinity.editing = None;
+                                        cx.notify();
+                                    });
+                                }
+                            }),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!(
+                                "trinity-edit-save-{entry_id}"
+                            )))
+                            .label(text.trinity_memory_edit_save.clone())
+                            .small()
+                            .with_variant(ButtonVariant::Primary)
+                            .on_click(move |_, window, cx| {
+                                let content = save_content.read(cx).value().trim().to_string();
+                                if content.is_empty() {
+                                    return;
+                                }
+                                save_content
+                                    .update(cx, |state, cx| state.set_value("", window, cx));
+                                if let Some(shell) = save_view.upgrade() {
+                                    shell.update(cx, |shell, cx| {
+                                        shell.trinity.editing = None;
+                                        shell.trinity.correction = None;
+                                        shell.trinity.action_error = None;
+                                        cx.notify();
+                                    });
+                                }
+                                if let Some(handle) = runtime::runtime_handle() {
+                                    handle.trinity_memorize(
+                                        save_tx.clone(),
+                                        content,
+                                        None,
+                                        Some(save_id.clone()),
+                                    );
+                                }
+                            }),
+                        ),
+                ),
+        );
+        return row.into_any_element();
+    }
+
     let armed = state.forget_armed.as_deref() == Some(entry_id.as_str());
 
     let arm_view = view.clone();
@@ -1176,6 +1306,33 @@ fn memory_row(
             .on_click(move |_, _window, _cx| {
                 if let Some(handle) = runtime::runtime_handle() {
                     handle.trinity_reinforce(reinforce_tx.clone(), reinforce_id.clone());
+                }
+            }),
+    );
+
+    // G-Y5 entry point: opens the inline editor with the current content
+    // loaded, so Save submits the correction with `target_id` (web
+    // `trinity_memorize { content, target_id }`).
+    let edit_view = view.clone();
+    let edit_id = entry_id.clone();
+    let edit_content_entity = edit_content.clone();
+    let edit_seed = entry.content.clone().unwrap_or_default();
+    head = head.child(
+        Button::new(SharedString::from(format!("trinity-edit-{entry_id}")))
+            .label(text.trinity_memory_edit.clone())
+            .small()
+            .with_variant(ButtonVariant::Ghost)
+            .on_click(move |_, window, cx| {
+                edit_content_entity.update(cx, |state, cx| {
+                    state.set_value(edit_seed.clone(), window, cx)
+                });
+                if let Some(shell) = edit_view.upgrade() {
+                    shell.update(cx, |shell, cx| {
+                        shell.trinity.editing = Some(edit_id.clone());
+                        shell.trinity.forget_armed = None;
+                        shell.trinity.correction = None;
+                        cx.notify();
+                    });
                 }
             }),
     );
@@ -1287,7 +1444,7 @@ mod tests {
             "focus": "respond",
             "confidence": 0.96,
             "needs": {"competence": 1.0, "relatedness": 0.3, "growth": 0.6},
-            "memory": {"total_nodes": 42, "total_triples": 7},
+            "memory": {"total_nodes": 42, "total_triples": 7, "vocabulary_size": 133},
             "cycle_count": 11
         }));
         assert_eq!(psi.valence.as_deref(), Some("positive_mild"));
@@ -1303,6 +1460,13 @@ mod tests {
             ]
         );
         assert_eq!(psi.memory_nodes, Some(42));
+        assert_eq!(psi.memory_triples, Some(7));
+        // G-Y6: the third memory-scale counter, absent when the daemon omits it.
+        assert_eq!(psi.memory_vocabulary, Some(133));
+        assert_eq!(
+            parse_psi(&json!({"memory": {"total_nodes": 1}})).memory_vocabulary,
+            None
+        );
         assert_eq!(psi.cycle_count, Some(11));
 
         let status = parse_status(&json!({

@@ -1713,10 +1713,13 @@ pub(crate) struct ShellWindow {
     pub(crate) trinity_recall_input: Entity<InputState>,
     pub(crate) trinity_add_content: Entity<TextareaState>,
     pub(crate) trinity_add_project: Entity<InputState>,
+    /// G-Y5: the shared inline-edit draft for the memory timeline. One
+    /// textarea serves whichever row is being corrected.
+    pub(crate) trinity_edit_content: Entity<TextareaState>,
     /// Insights page state (M14): latest reports + the open report.
-    insights: crate::insights::InsightsPageState,
+    pub(crate) insights: crate::insights::InsightsPageState,
     /// Scheduled-jobs page state (M14).
-    tasks: crate::tasks::TasksPageState,
+    pub(crate) tasks: crate::tasks::TasksPageState,
     /// Workspaces the switcher offers: the active one first, then this
     /// process's visits, then the shared core catalog.
     workspaces: Vec<WorkspaceChoice>,
@@ -1878,6 +1881,7 @@ impl ShellWindow {
         let trinity_add_project = cx.new(|cx| {
             InputState::new(window, cx).placeholder(text.trinity_memory_add_project.clone())
         });
+        let trinity_edit_content = cx.new(|cx| TextareaState::new(window, cx));
         let profile_name_input = cx.new(|cx| InputState::new(window, cx));
         let profile_dir_input = cx.new(|cx| InputState::new(window, cx));
         let profile_command_input = cx.new(|cx| InputState::new(window, cx));
@@ -1903,6 +1907,9 @@ impl ShellWindow {
             },
         )
         .detach();
+        // G-K5/G-A5: the skills and agents pages filter from globals, so
+        // their search boxes are installed (and subscribed) here.
+        crate::manage::install_page_filters(window, cx);
         // R7b plugin UI contributions: the projection owns the installed
         // scenes; the fixture provider installs behind its env gate.
         let (plugin_ui, _fixture_scene) = crate::plugin_ui::setup_projection();
@@ -1952,6 +1959,7 @@ impl ShellWindow {
             trinity_recall_input,
             trinity_add_content,
             trinity_add_project,
+            trinity_edit_content,
             dock,
             terminal_height: TerminalPane::panel_height(),
             resource_panel: None,
@@ -2556,6 +2564,9 @@ impl ShellWindow {
                 tracing::warn!("Trinity action failed: {message}");
                 self.trinity.recall_busy = false;
                 self.trinity.action_error = Some(message);
+            }
+            RuntimeEvent::TrinityCorrection { applied } => {
+                self.trinity.correction = Some(applied);
             }
             RuntimeEvent::PluginUiBridgeReady { providers } => {
                 for install in providers {
@@ -8148,6 +8159,7 @@ impl Render for ShellWindow {
                 .overflow_y_scroll()
                 .child(crate::insights::render_page(
                     &self.insights,
+                    cx.entity().downgrade(),
                     &self.event_tx,
                     &text,
                     cx,
@@ -8161,6 +8173,7 @@ impl Render for ShellWindow {
                 .overflow_y_scroll()
                 .child(crate::tasks::render_page(
                     &self.tasks,
+                    cx.entity().downgrade(),
                     &self.event_tx,
                     &text,
                     cx,
@@ -8187,6 +8200,7 @@ impl Render for ShellWindow {
                     &self.trinity_recall_input,
                     &self.trinity_add_content,
                     &self.trinity_add_project,
+                    &self.trinity_edit_content,
                     &self.event_tx,
                     &text,
                     cx,
