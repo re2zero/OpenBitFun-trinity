@@ -139,6 +139,10 @@ pub(crate) struct ShellText {
     pub files_empty: String,
     pub files_empty_title: String,
     pub files_reload: String,
+    /// Local filter box above the tree (G-FL2); the full-workspace search
+    /// stays in the Ctrl K overlay.
+    pub files_filter_placeholder: String,
+    pub files_no_matches: String,
     pub files_too_large: String,
     pub files_binary: String,
     pub files_truncated: String,
@@ -279,9 +283,23 @@ pub(crate) struct ShellText {
     pub git_stage_all: String,
     pub git_stage: String,
     pub git_unstage: String,
+    /// Per-file discard/delete row actions (G-G3) with their two-step
+    /// confirm labels.
+    pub git_discard: String,
+    pub git_discard_confirm: String,
+    pub git_delete_file: String,
+    pub git_delete_confirm: String,
     pub git_commit: String,
     pub git_commit_placeholder: String,
     pub git_push: String,
+    /// Branch-sync surface (G-G6): pull action plus the not-a-repository
+    /// card's copy (G-G1).
+    pub git_pull: String,
+    pub git_not_repo_title: String,
+    pub git_not_repo_detail: String,
+    pub git_init_button: String,
+    pub git_init_hint: String,
+    pub git_init_prompt: String,
     pub git_history: String,
     pub git_files_view: String,
     pub git_no_commits: String,
@@ -704,6 +722,23 @@ pub(crate) fn failed_status(error: &str, cx: &App) -> String {
     )
 }
 
+/// G-G6: the ahead/behind badge tooltips of the branch chip.
+pub(crate) fn git_ahead(count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-git-ahead",
+        TranslationArgs::new().with_number("count", count as f64),
+        cx,
+    )
+}
+
+pub(crate) fn git_behind(count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-git-behind",
+        TranslationArgs::new().with_number("count", count as f64),
+        cx,
+    )
+}
+
 /// T2-11: the selected-count line in the per-mode skills dialog.
 pub(crate) fn mode_skills_selected_count(count: usize, cx: &App) -> String {
     resolve_with(
@@ -1083,6 +1118,8 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         files_empty: "No files in this workspace.".to_string(),
         files_empty_title: "No files".to_string(),
         files_reload: "Reload file tree".to_string(),
+        files_filter_placeholder: "Filter files…".to_string(),
+        files_no_matches: "No matching files".to_string(),
         files_too_large: "File is too large to display".to_string(),
         files_binary: "Binary file, no preview".to_string(),
         files_truncated: "Showing the first 1 MB of this file.".to_string(),
@@ -1227,9 +1264,21 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         git_stage_all: "Stage all changes".to_string(),
         git_stage: "Stage file".to_string(),
         git_unstage: "Unstage file".to_string(),
+        git_discard: "Discard changes".to_string(),
+        git_discard_confirm: "Confirm discard".to_string(),
+        git_delete_file: "Delete file".to_string(),
+        git_delete_confirm: "Confirm delete".to_string(),
         git_commit: "Commit".to_string(),
         git_commit_placeholder: "Commit message".to_string(),
         git_push: "Push to remote".to_string(),
+        git_pull: "Pull from remote".to_string(),
+        git_not_repo_title: "Initialize Git".to_string(),
+        git_not_repo_detail: "Current directory is not a Git repository".to_string(),
+        git_init_button: "Initialize Repository".to_string(),
+        git_init_hint: "The AI assistant runs the initialization for you".to_string(),
+        git_init_prompt:
+            "Please help me initialize a Git repository in the current workspace."
+                .to_string(),
         git_history: "History".to_string(),
         git_files_view: "Changes".to_string(),
         git_no_commits: "No commits yet.".to_string(),
@@ -1276,7 +1325,7 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
             .collect(),
         tool_action_command: "Run command".to_string(),
         tool_action_read: "Read file".to_string(),
-        tool_action_search: "Search".to_string(),
+        tool_action_search: "Search files".to_string(),
         tool_action_web: "Open page".to_string(),
         tool_action_write: "Write file".to_string(),
         tool_action_edit: "Edit file".to_string(),
@@ -1791,6 +1840,8 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         files_empty: service.t("gpui-shell-files-empty").await,
         files_empty_title: service.t("gpui-shell-files-empty-title").await,
         files_reload: service.t("gpui-shell-files-reload").await,
+        files_filter_placeholder: service.t("gpui-shell-files-filter-placeholder").await,
+        files_no_matches: service.t("gpui-shell-files-no-matches").await,
         files_too_large: service.t("gpui-shell-files-too-large").await,
         files_binary: service.t("gpui-shell-files-binary").await,
         files_truncated: service.t("gpui-shell-files-truncated").await,
@@ -1931,9 +1982,19 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         git_stage_all: service.t("gpui-shell-git-stage-all").await,
         git_stage: service.t("gpui-shell-git-stage").await,
         git_unstage: service.t("gpui-shell-git-unstage").await,
+        git_discard: service.t("gpui-shell-git-discard").await,
+        git_discard_confirm: service.t("gpui-shell-git-discard-confirm").await,
+        git_delete_file: service.t("gpui-shell-git-delete-file").await,
+        git_delete_confirm: service.t("gpui-shell-git-delete-confirm").await,
         git_commit: service.t("gpui-shell-git-commit").await,
         git_commit_placeholder: service.t("gpui-shell-git-commit-placeholder").await,
         git_push: service.t("gpui-shell-git-push").await,
+        git_pull: service.t("gpui-shell-git-pull").await,
+        git_not_repo_title: service.t("gpui-shell-git-not-repo-title").await,
+        git_not_repo_detail: service.t("gpui-shell-git-not-repo-detail").await,
+        git_init_button: service.t("gpui-shell-git-init-button").await,
+        git_init_hint: service.t("gpui-shell-git-init-hint").await,
+        git_init_prompt: service.t("gpui-shell-git-init-prompt").await,
         git_history: service.t("gpui-shell-git-history").await,
         git_files_view: service.t("gpui-shell-git-files-view").await,
         git_no_commits: service.t("gpui-shell-git-no-commits").await,

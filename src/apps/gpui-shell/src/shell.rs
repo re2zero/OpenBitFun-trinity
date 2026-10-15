@@ -1561,6 +1561,10 @@ fn image_format_for_extension(extension: &str) -> Option<ImageFormat> {
 
 pub(crate) struct ShellWindow {
     draft: Entity<TextareaState>,
+    /// Composer text staged by another surface for the next paint (G-G1: the
+    /// git panel's init card). `set_value` needs the window, which only the
+    /// render path holds, so the request parks here until render consumes it.
+    pending_composer_draft: Option<String>,
     phase: RuntimePhase,
     pub(crate) sessions: Vec<SessionRow>,
     list_error: Option<String>,
@@ -1920,6 +1924,7 @@ impl ShellWindow {
 
         Self {
             draft,
+            pending_composer_draft: None,
             phase: RuntimePhase::Starting,
             sessions: Vec::new(),
             list_error: None,
@@ -3685,6 +3690,14 @@ impl ShellWindow {
         self.set_git_view(crate::git::GitView::Snapshots, cx);
     }
 
+    /// G-G1: stages composer text for the next paint. The git panel's
+    /// not-a-repository card hands its init prompt through here; the composer
+    /// consumes it in render, where the window `set_value` needs exists.
+    pub(crate) fn prefill_composer(&mut self, draft: String, cx: &mut Context<Self>) {
+        self.pending_composer_draft = Some(draft);
+        cx.notify();
+    }
+
     /// Points the git panel at a view without touching its mount; a no-op
     /// while the panel is closed (the settings worktrees redirect pairs this
     /// with [`Self::open_git_panel`], R3).
@@ -3864,7 +3877,12 @@ impl ShellWindow {
             ResourcePanelKind::Git => {
                 if self.git.is_none() {
                     let active_session = self.active_chat().map(|chat| chat.session_id.clone());
-                    self.git = Some(cx.new(|cx| GitPanel::new(active_session, window, cx)));
+                    // The panel hands its not-a-repository init prompt back to
+                    // this window's composer (G-G1).
+                    let shell = cx.entity().downgrade();
+                    self.git = Some(
+                        cx.new(move |cx| GitPanel::new(active_session, Some(shell), window, cx)),
+                    );
                 }
             }
         }
@@ -8008,6 +8026,13 @@ fn permission_footer(
 
 impl Render for ShellWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(draft) = self.pending_composer_draft.take() {
+            // Composer text staged by another surface (G-G1 git init card):
+            // `set_value` needs the window, which only render holds.
+            cx.update_entity(&self.draft, |state, cx| {
+                state.set_value(draft, window, cx);
+            });
+        }
         let text: ShellText = i18n::current(cx);
         // Automation hooks: open one surface once the runtime is ready, so a
         // screenshot run can inspect it without synthesizing input events.
@@ -10974,13 +10999,45 @@ mod tests {
             cx.set_global(sample_shell_text());
         });
         let window = cx.add_empty_window();
-        let panel = window.update(|window, cx| cx.new(|cx| GitPanel::new(None, window, cx)));
+        let panel = window.update(|window, cx| cx.new(|cx| GitPanel::new(None, None, window, cx)));
         window.draw(
             point(px(0.), px(0.)),
             size(px(900.), px(600.)),
             move |_, _| panel.into_any_element(),
         );
         window.run_until_parked();
+    }
+
+    /// G-G1: the git panel's init hand-off stages composer text, and the next
+    /// render moves it into the composer input (render is the only place that
+    /// holds the window `set_value` needs).
+    #[gpui_kit::test]
+    fn prefill_composer_stages_the_draft_for_the_next_paint(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        window.update(|_, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.prefill_composer("git init please".into(), cx)
+            });
+        });
+        window.draw(point(px(0.), px(0.)), size(px(1200.), px(800.)), {
+            let shell = shell.clone();
+            move |_, _| shell.into_any_element()
+        });
+        window.run_until_parked();
+
+        window.update(|_, cx| {
+            shell.update(cx, |shell, cx| {
+                assert!(
+                    shell.pending_composer_draft.is_none(),
+                    "the render path consumes the staged draft"
+                );
+                assert_eq!(shell.draft.read(cx).value(), "git init please");
+            });
+        });
     }
 
     /// The M11 session-management events must project onto both surfaces: a

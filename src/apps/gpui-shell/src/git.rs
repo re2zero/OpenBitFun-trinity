@@ -17,11 +17,13 @@ use std::sync::Arc;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
 use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::{ActiveTheme, Disableable, Sizable, StyledExt};
+use gpui_kit::component::resizable::{h_resizable, resizable_panel, ResizableState};
+use gpui_kit::component::{ActiveTheme, Disableable, Icon, Sizable, StyledExt};
 use gpui_kit::{
     div, list, prelude::*, px, App, Context, Entity, IntoElement, ListAlignment, ListState, Pixels,
-    Render, SharedString, TextRun, Window,
+    Render, SharedString, TextRun, WeakEntity, Window,
 };
+use openbitfun_core::service::filesystem::FileSystemService;
 use openbitfun_core::service::snapshot::open_snapshot_manager_for_view;
 use openbitfun_core::service::workspace::WorkspaceKind;
 use openbitfun_core::service::worktree::{
@@ -40,6 +42,9 @@ use crate::i18n::{self, ShellText};
 
 /// Width of the changed-file column inside the panel.
 const FILE_COLUMN_WIDTH: f32 = 300.;
+/// Drag range of the main-tab file-column ↔ diff separator (G-G5).
+const MIN_FILE_COLUMN_WIDTH: f32 = 180.;
+const MAX_FILE_COLUMN_WIDTH: f32 = 560.;
 
 /// Diff row typography: `text_xs` (0.75rem) with the theme's monospace family,
 /// duplicated here so the unwrapped layout can shape a row at the same metrics.
@@ -261,6 +266,17 @@ pub(crate) fn worktree_row_view(summary: &WorktreeSummary) -> WorktreeRowView {
     }
 }
 
+/// A per-file row action awaiting confirmation (G-G3): the first click arms
+/// it, the second click runs it. At most one row action is armed at a time,
+/// and any refresh or other row click disarms it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileRowAction {
+    /// Restore the tracked path (index + worktree) back to HEAD.
+    Discard(usize),
+    /// Delete an untracked file from the worktree.
+    Delete(usize),
+}
+
 /// The docked changes view: a changed-file list on the left, the diff of the
 /// selected file on the right, plus the write path (stage/unstage, commit,
 /// push), a read-only history view, and the untrusted-repository banner.
@@ -326,6 +342,17 @@ pub(crate) struct GitPanel {
     /// the diff column is dropped — a 360px panel cannot fit the fixed 300px
     /// file column plus a readable diff. The main tab keeps both columns.
     compact: bool,
+    /// The active workspace is not a git repository at all (the port answered
+    /// `NotFound`): the body offers the init card instead of a bare error
+    /// (G-G1). Cleared by the next successful refresh.
+    not_a_repository: bool,
+    /// Row action waiting for its confirming second click (G-G3).
+    confirm_action: Option<FileRowAction>,
+    /// Shell handle for the "initialize repository" composer hand-off; `None`
+    /// when the panel is mounted standalone in tests (G-G1).
+    shell: Option<WeakEntity<crate::shell::ShellWindow>>,
+    /// Drag state of the main-tab file-column ↔ diff separator (G-G5).
+    file_split: Entity<ResizableState>,
 }
 
 impl GitPanel {
@@ -342,6 +369,7 @@ impl GitPanel {
 impl GitPanel {
     pub(crate) fn new(
         active_session: Option<String>,
+        shell: Option<WeakEntity<crate::shell::ShellWindow>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -389,6 +417,10 @@ impl GitPanel {
             active_session,
             remote_workspace,
             compact: false,
+            not_a_repository: false,
+            confirm_action: None,
+            shell,
+            file_split: cx.new(|_| ResizableState::default()),
         };
         panel.refresh(cx);
         panel
@@ -407,6 +439,7 @@ impl GitPanel {
         };
         self.loading = true;
         self.error = None;
+        self.confirm_action = None;
         cx.notify();
         // The port runs on the runtime thread (its provider may block on
         // libgit2); the gpui side only awaits the join handle.
@@ -422,13 +455,20 @@ impl GitPanel {
                 match outcome {
                     Ok((Ok(snapshot), overview)) => {
                         panel.action_error = None;
+                        panel.not_a_repository = false;
                         panel.overview = overview.ok();
                         panel.apply_snapshot(snapshot, cx);
                     }
                     Ok((Err(error), _)) => {
-                        tracing::warn!("Workspace diff failed: {}", error);
-                        panel.fail(&error.to_string(), cx);
-                        panel.handle_port_failure(&error, cx);
+                        // "Not a repository" is a state, not a failure: it
+                        // gets the init card instead of the error line (G-G1).
+                        if error.kind == PortErrorKind::NotFound {
+                            panel.enter_not_a_repository(cx);
+                        } else {
+                            tracing::warn!("Workspace diff failed: {}", error);
+                            panel.fail(&error.to_string(), cx);
+                            panel.handle_port_failure(&error, cx);
+                        }
                     }
                     Err(join_error) => {
                         tracing::error!("Workspace diff task failed: {}", join_error);
@@ -552,6 +592,121 @@ impl GitPanel {
             |_, _| {},
             cx,
         );
+    }
+
+    /// Pulls the current branch from its upstream (G-G6); the write path's
+    /// refresh brings the new ahead/behind counts back.
+    fn pull(&mut self, cx: &mut Context<Self>) {
+        self.run_write(
+            |git| async move { git.pull(None, None).await },
+            |_, _| {},
+            cx,
+        );
+    }
+
+    /// The port answered `NotFound`: the workspace is not a repository at all,
+    /// so the body switches to the init card instead of an error line (G-G1).
+    fn enter_not_a_repository(&mut self, cx: &mut Context<Self>) {
+        self.loading = false;
+        self.error = None;
+        self.action_error = None;
+        self.trust = None;
+        self.not_a_repository = true;
+        self.overview = None;
+        self.files.clear();
+        self.selected = 0;
+        self.diff = Rc::new(Vec::new());
+        self.truncated = false;
+        self.file_list.reset(0);
+        self.diff_list.reset(0);
+        cx.notify();
+    }
+
+    /// G-G1: hands the init prompt to the shell composer instead of running
+    /// the command — the same contract as the desktop scene, where the agent
+    /// performs the initialization with the user watching.
+    fn request_git_init(&mut self, cx: &mut Context<Self>) {
+        let Some(shell) = self.shell.clone() else {
+            return;
+        };
+        let prompt = i18n::current(cx).git_init_prompt.clone();
+        shell
+            .update(cx, |shell, cx| shell.prefill_composer(prompt, cx))
+            .ok();
+    }
+
+    /// First click arms the row action, the second runs it (G-G3). Arming a
+    /// different row moves the confirmation; refresh disarms everything.
+    fn row_action(&mut self, action: FileRowAction, cx: &mut Context<Self>) {
+        if self.confirm_action == Some(action) {
+            self.confirm_action = None;
+            match action {
+                FileRowAction::Discard(index) => self.discard_file(index, cx),
+                FileRowAction::Delete(index) => self.delete_file(index, cx),
+            }
+        } else {
+            self.confirm_action = Some(action);
+            cx.notify();
+        }
+    }
+
+    /// Restores one tracked path back to HEAD through the port (G-G3).
+    fn discard_file(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(path) = self.files.get(index).map(|file| file.path.clone()) else {
+            return;
+        };
+        self.run_write(
+            move |git| async move { git.discard_files(vec![path]).await },
+            |_, _| {},
+            cx,
+        );
+    }
+
+    /// Deletes an untracked file (G-G3). Untracked files are outside git's
+    /// model, so this goes through the workspace filesystem service — which
+    /// is exactly why the action stays disabled for remote workspaces, whose
+    /// files this process cannot reach.
+    fn delete_file(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.remote_workspace {
+            return;
+        }
+        let Some(file) = self.files.get(index).cloned() else {
+            return;
+        };
+        let Some(handle) = crate::runtime::runtime_handle() else {
+            return;
+        };
+        let target = handle
+            .workspace()
+            .root_path
+            .join(&file.path)
+            .to_string_lossy()
+            .to_string();
+        self.busy = true;
+        cx.notify();
+        let task = handle
+            .tokio_handle()
+            .spawn(async move { FileSystemService::default().delete_file(&target).await });
+        cx.spawn(async move |this, cx| {
+            let outcome = task.await;
+            this.update(cx, |panel, cx| {
+                panel.busy = false;
+                match outcome {
+                    Ok(Ok(())) => {
+                        panel.action_error = None;
+                        panel.refresh(cx);
+                    }
+                    Ok(Err(error)) => panel.action_error = Some(error.to_string()),
+                    Err(join_error) => {
+                        tracing::error!("Git file delete failed: {}", join_error);
+                        panel.action_error = Some("file delete task failed".to_string());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Probes repository trust without changing anything; the banner shows
@@ -1123,7 +1278,8 @@ fn render_header(panel: &GitPanel, text: &ShellText, cx: &mut Context<GitPanel>)
         }
     };
     // Without an overview yet the push stays enabled and fails loudly; with
-    // one, a remote-less repository disables it instead.
+    // one, a remote-less repository disables it instead. Pull shares the
+    // stance: both need a remote (G-G6).
     let push_enabled = !panel.busy
         && panel
             .overview
@@ -1172,8 +1328,13 @@ fn render_header(panel: &GitPanel, text: &ShellText, cx: &mut Context<GitPanel>)
                 .flex_shrink_0()
                 .when_some(panel.overview.as_ref(), |this, overview| {
                     let branch = overview.current_branch.clone();
+                    let ahead = overview.ahead;
+                    let behind = overview.behind;
                     this.child(
                         div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
                             .px_2()
                             .py_0p5()
                             .rounded(cx.theme().radius)
@@ -1181,9 +1342,40 @@ fn render_header(panel: &GitPanel, text: &ShellText, cx: &mut Context<GitPanel>)
                             .font_family(cx.theme().mono_font_family.clone())
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .truncate()
                             .max_w(px(200.))
-                            .child(branch),
+                            .child(div().truncate().child(branch))
+                            .when(ahead > 0, |this| {
+                                let label = i18n::git_ahead(ahead, cx);
+                                this.child(
+                                    div()
+                                        .id("git-ahead-badge")
+                                        .flex_shrink_0()
+                                        .text_color(cx.theme().success)
+                                        .child(format!("↑{ahead}"))
+                                        .tooltip(move |window, cx| {
+                                            gpui_kit::component::tooltip::Tooltip::new(
+                                                label.clone(),
+                                            )
+                                            .build(window, cx)
+                                        }),
+                                )
+                            })
+                            .when(behind > 0, |this| {
+                                let label = i18n::git_behind(behind, cx);
+                                this.child(
+                                    div()
+                                        .id("git-behind-badge")
+                                        .flex_shrink_0()
+                                        .text_color(cx.theme().warning)
+                                        .child(format!("↓{behind}"))
+                                        .tooltip(move |window, cx| {
+                                            gpui_kit::component::tooltip::Tooltip::new(
+                                                label.clone(),
+                                            )
+                                            .build(window, cx)
+                                        }),
+                                )
+                            }),
                     )
                 })
                 .child(
@@ -1230,8 +1422,8 @@ fn render_header(panel: &GitPanel, text: &ShellText, cx: &mut Context<GitPanel>)
                             this.set_view(GitView::Snapshots, cx);
                         })),
                 )
-                // Stage-all and push address the workspace diff; they hide
-                // outside the files view where they have no meaning.
+                // Stage-all, pull and push address the workspace diff; they
+                // hide outside the files view where they have no meaning.
                 .when(panel.view == GitView::Files, |this| {
                     this.child(
                         Button::new("git-stage-all")
@@ -1241,6 +1433,15 @@ fn render_header(panel: &GitPanel, text: &ShellText, cx: &mut Context<GitPanel>)
                             .tooltip(text.git_stage_all.clone())
                             .disabled(panel.busy)
                             .on_click(cx.listener(|this, _, _, cx| this.stage_all(cx))),
+                    )
+                    .child(
+                        Button::new("git-pull")
+                            .icon(IconName::ArrowDown)
+                            .small()
+                            .with_variant(ButtonVariant::Ghost)
+                            .tooltip(text.git_pull.clone())
+                            .disabled(!push_enabled)
+                            .on_click(cx.listener(|this, _, _, cx| this.pull(cx))),
                     )
                     .child(
                         Button::new("git-push")
@@ -1262,6 +1463,57 @@ fn render_header(panel: &GitPanel, text: &ShellText, cx: &mut Context<GitPanel>)
                         .on_click(cx.listener(|this, _, _, cx| this.refresh_current_view(cx))),
                 ),
         )
+}
+
+/// The not-a-repository card (G-G1): shown instead of the changes body when
+/// the port reports the workspace is no repository at all. The button does
+/// not run `git init` itself — it hands the prompt to the chat composer,
+/// matching the desktop scene, where the agent performs the initialization
+/// with the user watching.
+fn render_not_a_repository(text: &ShellText, cx: &mut Context<GitPanel>) -> gpui_kit::AnyElement {
+    div()
+        .debug_selector(|| "git-not-a-repository".to_string())
+        .flex_1()
+        .min_h_0()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap_3()
+        .child(
+            div()
+                .v_flex()
+                .items_center()
+                .gap_1()
+                .child(Icon::new(IconName::GitBranch).text_color(cx.theme().muted_foreground))
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().foreground)
+                        .child(text.git_not_repo_title.clone()),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(text.git_not_repo_detail.clone()),
+                ),
+        )
+        .child(
+            Button::new("git-init-repository")
+                .icon(IconName::Plus)
+                .label(text.git_init_button.clone())
+                .small()
+                .with_variant(ButtonVariant::Primary)
+                .on_click(cx.listener(|this, _, _, cx| this.request_git_init(cx))),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(text.git_init_hint.clone()),
+        )
+        .into_any_element()
 }
 
 /// The untrusted-repository banner: the port refused on ownership grounds,
@@ -1353,14 +1605,19 @@ fn render_action_error(error: &str, cx: &mut Context<GitPanel>) -> gpui_kit::Div
         )
 }
 
-/// One changed-file row: status letter, path, line counts, and the single
-/// staging action the row offers (stage when worktree content exists, unstage
-/// when the changes are fully staged).
+/// One changed-file row: status letter, path, line counts, the staging action
+/// (stage when worktree content exists, unstage when the changes are fully
+/// staged), and the destructive action the row's status allows — discard for
+/// tracked paths, delete for untracked files (G-G3). The destructive action
+/// is two-step: the first click arms it (button turns into a labelled danger
+/// button), the second runs it.
 fn render_file_row(
     index: usize,
     file: &WorkspaceDiffFile,
     selected: bool,
     busy: bool,
+    armed: Option<FileRowAction>,
+    remote_workspace: bool,
     panel: &Entity<GitPanel>,
     text: &ShellText,
     cx: &App,
@@ -1381,6 +1638,28 @@ fn render_file_row(
         StageAction::Unstage => (IconName::Minus, text.git_unstage.clone()),
     };
     let action_panel = panel.clone();
+    // Untracked files have no git-side restore: their destructive action is a
+    // filesystem delete, which cannot reach a remote workspace.
+    let row_action = if file.untracked {
+        FileRowAction::Delete(index)
+    } else {
+        FileRowAction::Discard(index)
+    };
+    let (row_icon, row_tooltip, row_confirm) = match row_action {
+        FileRowAction::Discard(_) => (
+            IconName::Undo2,
+            text.git_discard.clone(),
+            text.git_discard_confirm.clone(),
+        ),
+        FileRowAction::Delete(_) => (
+            IconName::Trash,
+            text.git_delete_file.clone(),
+            text.git_delete_confirm.clone(),
+        ),
+    };
+    let row_armed = armed == Some(row_action);
+    let row_disabled = busy || (remote_workspace && matches!(row_action, FileRowAction::Delete(_)));
+    let row_panel = panel.clone();
     div()
         .id(gpui_kit::SharedString::from(format!("git-file-{}", index)))
         .cursor_pointer()
@@ -1442,7 +1721,35 @@ fn render_file_row(
                             StageAction::Unstage => panel.unstage_file(index, cx),
                         });
                     }),
-                ),
+                )
+                .child({
+                    let mut button = Button::new(gpui_kit::SharedString::from(format!(
+                        "git-row-action-{}",
+                        index
+                    )))
+                    .small()
+                    .with_variant(if row_armed {
+                        ButtonVariant::Danger
+                    } else {
+                        ButtonVariant::Ghost
+                    })
+                    // The confirm click must not bubble into the row's
+                    // selection handler (the component library does not stop
+                    // propagation on its own).
+                    .on_click(move |_, _, cx| {
+                        cx.stop_propagation();
+                        row_panel.update(cx, |panel, cx| panel.row_action(row_action, cx));
+                    });
+                    button = if row_armed {
+                        button.label(row_confirm).tooltip(row_tooltip)
+                    } else {
+                        button.icon(row_icon).tooltip(row_tooltip)
+                    };
+                    if row_disabled {
+                        button = button.disabled(true);
+                    }
+                    button
+                }),
         )
         .child(
             div()
@@ -1560,6 +1867,8 @@ impl Render for GitPanel {
                     file,
                     index == panel.selected,
                     panel.busy,
+                    panel.confirm_action,
+                    panel.remote_workspace,
                     &this,
                     &text,
                     cx,
@@ -1721,20 +2030,19 @@ impl Render for GitPanel {
             }
         };
 
-        let body = match view {
-            GitView::Files if !self.loading && self.files.is_empty() => crate::shell::brand_empty(
-                IconName::GitBranch,
-                &text.git_empty_title,
-                &text.git_empty,
-            ),
-            GitView::Files => div()
-                .flex_1()
-                .min_h_0()
-                .flex()
-                .flex_row()
-                .min_w_0()
-                .child(
-                    div()
+        let body = if self.not_a_repository {
+            render_not_a_repository(&text, cx)
+        } else {
+            match view {
+                GitView::Files if !self.loading && self.files.is_empty() => {
+                    crate::shell::brand_empty(
+                        IconName::GitBranch,
+                        &text.git_empty_title,
+                        &text.git_empty,
+                    )
+                }
+                GitView::Files => {
+                    let file_column = div()
                         .when(self.compact, |this| this.flex_1().min_w_0())
                         .when(!self.compact, |this| {
                             this.w(px(FILE_COLUMN_WIDTH)).flex_shrink_0()
@@ -1758,26 +2066,39 @@ impl Render for GitPanel {
                                     .text_color(cx.theme().warning)
                                     .child(text.git_truncated.clone()),
                             )
-                        }),
-                )
-                // The diff column is a main-tab luxury: the docked panel
-                // shows the file list (selection still works) and the diff
-                // comes back when the panel pops out to a tab.
-                .when(!self.compact, |this| {
-                    this.child(
-                        div()
+                        });
+                    // The diff column is a main-tab luxury: the docked panel
+                    // shows the file list (selection still works) and the diff
+                    // comes back when the panel pops out to a tab. In the main
+                    // tab the two columns share one draggable separator (G-G5).
+                    if self.compact {
+                        file_column.into_any_element()
+                    } else {
+                        let diff_column = div()
                             .flex_1()
                             .min_w_0()
                             .min_h_0()
                             .v_flex()
                             .when_some(diff_header, |this, header| this.child(header))
-                            .child(files_body),
-                    )
-                })
-                .into_any_element(),
-            GitView::History => render_history(self, &text, cx),
-            GitView::Worktrees => render_worktrees(self, &text, cx),
-            GitView::Snapshots => render_snapshots(self, &text, cx),
+                            .child(files_body);
+                        h_resizable("git-files-split")
+                            .with_state(&self.file_split)
+                            .children([
+                                resizable_panel()
+                                    .size(px(FILE_COLUMN_WIDTH))
+                                    .size_range(
+                                        px(MIN_FILE_COLUMN_WIDTH)..px(MAX_FILE_COLUMN_WIDTH),
+                                    )
+                                    .child(file_column),
+                                resizable_panel().child(diff_column),
+                            ])
+                            .into_any_element()
+                    }
+                }
+                GitView::History => render_history(self, &text, cx),
+                GitView::Worktrees => render_worktrees(self, &text, cx),
+                GitView::Snapshots => render_snapshots(self, &text, cx),
+            }
         };
 
         div()
@@ -2386,7 +2707,7 @@ mod tests {
         let window = cx.add_empty_window();
         let panel = window.update(|window, cx| {
             cx.new(|cx| {
-                let mut panel = GitPanel::new(None, window, cx);
+                let mut panel = GitPanel::new(None, None, window, cx);
                 // The panel is driven with a fixture snapshot instead of the
                 // git port so the render path is exercised without a runtime.
                 panel.error = None;
@@ -2428,7 +2749,7 @@ mod tests {
             ));
         });
         let window = cx.add_empty_window();
-        let panel = window.update(|window, cx| cx.new(|cx| GitPanel::new(None, window, cx)));
+        let panel = window.update(|window, cx| cx.new(|cx| GitPanel::new(None, None, window, cx)));
         window.update(|_, cx| {
             panel.update(cx, |panel, cx| {
                 panel.commits = vec![GitCommitSummary {
@@ -2566,7 +2887,7 @@ mod tests {
             ));
         });
         let window = cx.add_empty_window();
-        let panel = window.update(|window, cx| cx.new(|cx| GitPanel::new(None, window, cx)));
+        let panel = window.update(|window, cx| cx.new(|cx| GitPanel::new(None, None, window, cx)));
         window.update(|_, cx| {
             panel.update(cx, |panel, cx| {
                 panel.worktrees = vec![
@@ -2607,5 +2928,68 @@ mod tests {
             move |_, _| panel.into_any_element(),
         );
         window.run_until_parked();
+    }
+
+    /// G-G1: the not-a-repository answer empties the changes view and renders
+    /// the init card instead of an error, and G-G3's row action is two-step —
+    /// the first click arms, a different row moves the arming, and the
+    /// confirming click clears it and runs the action.
+    #[gpui_kit::test]
+    fn not_a_repository_card_and_row_actions(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(crate::i18n::fallback_text(
+                openbitfun_core::service::i18n::LocaleId::EnUS,
+            ));
+        });
+        let window = cx.add_empty_window();
+        let panel = window.update(|window, cx| cx.new(|cx| GitPanel::new(None, None, window, cx)));
+        window.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.files = vec![sample_file("")];
+                panel.selected = 0;
+                panel.file_list.reset(1);
+                panel.enter_not_a_repository(cx);
+                assert!(panel.not_a_repository);
+                assert!(panel.files.is_empty(), "the card replaces the changes");
+                assert!(panel.overview.is_none());
+                assert!(
+                    panel.error.is_none(),
+                    "a missing repository is a state, not an error"
+                );
+            });
+        });
+        {
+            let panel = panel.clone();
+            window.draw(
+                gpui_kit::point(px(0.), px(0.)),
+                gpui_kit::size(px(900.), px(600.)),
+                move |_, _| panel.into_any_element(),
+            );
+            window.run_until_parked();
+        }
+        assert!(
+            window.debug_bounds("git-not-a-repository").is_some(),
+            "the not-a-repository card lays out"
+        );
+
+        window.update(|_, cx| {
+            panel.update(cx, |panel, cx| {
+                panel.not_a_repository = false;
+                panel.files = vec![sample_file("")];
+                panel.file_list.reset(1);
+                panel.confirm_action = None;
+
+                panel.row_action(FileRowAction::Discard(0), cx);
+                assert_eq!(panel.confirm_action, Some(FileRowAction::Discard(0)));
+                // Arming another action moves the confirmation.
+                panel.row_action(FileRowAction::Delete(0), cx);
+                assert_eq!(panel.confirm_action, Some(FileRowAction::Delete(0)));
+                // The confirming click clears the arming; without a runtime
+                // the run itself is a safe no-op.
+                panel.row_action(FileRowAction::Delete(0), cx);
+                assert_eq!(panel.confirm_action, None);
+            });
+        });
     }
 }

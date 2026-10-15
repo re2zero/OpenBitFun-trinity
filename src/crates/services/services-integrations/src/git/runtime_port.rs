@@ -12,8 +12,8 @@ use openbitfun_runtime_ports::{
     WorkspaceDiffFile, WorkspaceDiffFileStatus, WorkspaceDiffSnapshot,
 };
 
-use super::types::{GitAddParams, GitCommitParams, GitLogParams, GitPushParams};
-use super::utils::discover_repository;
+use super::types::{GitAddParams, GitCommitParams, GitLogParams, GitPullParams, GitPushParams};
+use super::utils::{discover_repository, get_current_branch};
 use super::{GitError, GitService};
 
 const MAX_WORKSPACE_DIFF_FILES: usize = 256;
@@ -75,6 +75,20 @@ impl GitPort for GitWorkspaceDiffPort {
             .map_err(map_git_error)
     }
 
+    async fn discard_files(&self, files: Vec<String>) -> PortResult<()> {
+        // Unstage first so a staged-then-edited path lands back at HEAD
+        // (no-op for paths without staged changes), then restore the
+        // working-tree copy from the index.
+        let root = &self.workspace_root;
+        GitService::reset_files(root, &files, true)
+            .await
+            .map_err(map_git_error)?;
+        GitService::reset_files(root, &files, false)
+            .await
+            .map(|_| ())
+            .map_err(map_git_error)
+    }
+
     async fn commit_staged(&self, message: String, stage_all: bool) -> PortResult<()> {
         GitService::commit(
             &self.workspace_root,
@@ -111,6 +125,20 @@ impl GitPort for GitWorkspaceDiffPort {
         .map_err(map_git_error)
     }
 
+    async fn pull(&self, remote: Option<String>, branch: Option<String>) -> PortResult<()> {
+        GitService::pull(
+            &self.workspace_root,
+            GitPullParams {
+                remote,
+                branch,
+                rebase: None,
+            },
+        )
+        .await
+        .map(|_| ())
+        .map_err(map_git_error)
+    }
+
     async fn commit_history(&self, limit: usize) -> PortResult<Vec<GitCommitSummary>> {
         let commits = GitService::get_commits(
             &self.workspace_root,
@@ -139,14 +167,11 @@ impl GitPort for GitWorkspaceDiffPort {
     }
 
     async fn repository_overview(&self) -> PortResult<GitRepositoryOverview> {
-        let repository = GitService::get_repository_basic(&self.workspace_root)
+        let workspace_root = self.workspace_root.clone();
+        tokio::task::spawn_blocking(move || overview_of(&workspace_root))
             .await
-            .map_err(map_git_error)?;
-        Ok(GitRepositoryOverview {
-            current_branch: repository.current_branch,
-            has_changes: repository.has_changes,
-            remotes: repository.remotes,
-        })
+            .map_err(|error| PortError::new(PortErrorKind::Backend, error.to_string()))?
+            .map_err(map_git_error)
     }
 
     async fn trust_report(&self) -> PortResult<GitTrustSnapshot> {
@@ -180,6 +205,30 @@ fn trust_state(state: super::trust::GitTrustState) -> GitTrustState {
         super::trust::GitTrustState::TrustRequired => GitTrustState::TrustRequired,
         super::trust::GitTrustState::NotARepository => GitTrustState::NotARepository,
     }
+}
+
+/// Repository facts read straight from libgit2: the branch, its remotes, and
+/// the ahead/behind counts against its upstream. `has_changes` stays `false`
+/// on purpose — the diff snapshot is the changes surface, and rescanning the
+/// worktree here would double that cost on every refresh.
+fn overview_of(workspace_root: &Path) -> Result<GitRepositoryOverview, GitError> {
+    let repository = discover_repository(workspace_root)?;
+    let current_branch = get_current_branch(&repository)?;
+    let remotes = repository
+        .remotes()
+        .map_err(|error| GitError::CommandFailed(error.to_string()))?
+        .iter()
+        .filter_map(|name| name.ok().flatten().map(str::to_string))
+        .collect();
+    let (ahead, behind) =
+        GitService::get_ahead_behind_count(&repository, &current_branch).unwrap_or((0, 0));
+    Ok(GitRepositoryOverview {
+        current_branch,
+        has_changes: false,
+        remotes,
+        ahead: ahead.max(0) as usize,
+        behind: behind.max(0) as usize,
+    })
 }
 
 fn collect_workspace_diff(workspace_root: &Path) -> Result<WorkspaceDiffSnapshot, GitError> {

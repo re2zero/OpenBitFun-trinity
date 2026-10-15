@@ -90,6 +90,13 @@ pub struct GitRepositoryOverview {
     pub current_branch: String,
     pub has_changes: bool,
     pub remotes: Vec<String>,
+    /// Commits the current branch carries on top of its upstream. Zero when
+    /// the branch has no upstream or the count cannot be read.
+    #[serde(default)]
+    pub ahead: usize,
+    /// Commits the upstream carries on top of the current branch.
+    #[serde(default)]
+    pub behind: usize,
 }
 
 #[async_trait::async_trait]
@@ -121,6 +128,18 @@ pub trait GitPort: RuntimeServicePort {
         ))
     }
 
+    /// Discards the changes of the named tracked paths: staged entries are
+    /// unstaged first, then the working-tree copy is restored from the index
+    /// (`git restore`). Untracked files are not affected — deleting those is a
+    /// filesystem action, not a git one.
+    async fn discard_files(&self, files: Vec<String>) -> PortResult<()> {
+        let _ = files;
+        Err(PortError::new(
+            PortErrorKind::NotAvailable,
+            "discarding file changes is not supported by this provider",
+        ))
+    }
+
     /// Commits the staged snapshot; `stage_all` mirrors `git commit -a`.
     async fn commit_staged(&self, message: String, stage_all: bool) -> PortResult<()> {
         let _ = (message, stage_all);
@@ -142,6 +161,16 @@ pub trait GitPort: RuntimeServicePort {
         Err(PortError::new(
             PortErrorKind::NotAvailable,
             "push is not supported by this provider",
+        ))
+    }
+
+    /// Pulls the current branch from its upstream (`git pull`). `remote` /
+    /// `branch` fall back to Git's own defaults when omitted.
+    async fn pull(&self, remote: Option<String>, branch: Option<String>) -> PortResult<()> {
+        let _ = (remote, branch);
+        Err(PortError::new(
+            PortErrorKind::NotAvailable,
+            "pull is not supported by this provider",
         ))
     }
 
@@ -230,13 +259,32 @@ mod tests {
             current_branch: "gpui-frontend".into(),
             has_changes: true,
             remotes: vec!["origin".into()],
+            ahead: 2,
+            behind: 1,
         };
         let json = serde_json::to_value(&overview).expect("serialize overview");
         assert_eq!(json["currentBranch"], "gpui-frontend");
         assert_eq!(json["hasChanges"], true);
+        assert_eq!(json["ahead"], 2);
+        assert_eq!(json["behind"], 1);
         let round_tripped: GitRepositoryOverview =
             serde_json::from_value(json).expect("deserialize overview");
         assert_eq!(round_tripped, overview);
+    }
+
+    /// Overview payloads written before the ahead/behind fields existed must
+    /// keep deserializing.
+    #[test]
+    fn git_repository_overview_reads_a_legacy_payload() {
+        let legacy = serde_json::json!({
+            "currentBranch": "main",
+            "hasChanges": false,
+            "remotes": ["origin"],
+        });
+        let overview: GitRepositoryOverview =
+            serde_json::from_value(legacy).expect("deserialize legacy overview");
+        assert_eq!(overview.ahead, 0);
+        assert_eq!(overview.behind, 0);
     }
 
     /// The default port is a capability marker: every new operation reports
@@ -264,8 +312,10 @@ mod tests {
             .await
             .is_err());
         assert!(port.unstage_files(vec!["a.txt".into()]).await.is_err());
+        assert!(port.discard_files(vec!["a.txt".into()]).await.is_err());
         assert!(port.commit_staged("msg".into(), false).await.is_err());
         assert!(port.push(None, None, false).await.is_err());
+        assert!(port.pull(None, None).await.is_err());
         assert!(port.commit_history(10).await.is_err());
         assert!(port.repository_overview().await.is_err());
         assert!(port.trust_report().await.is_err());

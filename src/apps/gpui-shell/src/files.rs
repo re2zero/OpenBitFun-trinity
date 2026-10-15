@@ -21,11 +21,12 @@ use std::sync::{Arc, LazyLock};
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
+use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::{ActiveTheme, Icon, Sizable};
 use gpui_kit::InteractiveElement as _;
 use gpui_kit::{
-    div, img, list, prelude::*, px, App, Context, FontStyle, HighlightStyle, Hsla, Image,
+    div, img, list, prelude::*, px, App, Context, Entity, FontStyle, HighlightStyle, Hsla, Image,
     ImageFormat, IntoElement, ListAlignment, ListOffset, ListState, Render, Rgba, SharedString,
     StyledText, TextStyle, Window,
 };
@@ -395,6 +396,13 @@ pub(crate) struct FilesPage {
     /// viewer column is dropped — a 360px panel cannot fit the fixed 300px
     /// tree plus a readable preview. The main tab keeps the two-column form.
     compact: bool,
+    /// Local filter box above the tree (G-FL2). Created lazily on the first
+    /// render because the page entity is also built from paths that carry no
+    /// window (`open_file_in_files_view_at`).
+    filter: Option<Entity<InputState>>,
+    /// The filter query the list's item count was last reset for; render
+    /// compares it so the list resets once per real change.
+    filter_applied: String,
 }
 
 impl FilesPage {
@@ -425,6 +433,8 @@ impl FilesPage {
             pending_line: None,
             code_list: ListState::new(0, ListAlignment::Top, px(CODE_ROW_OVERSCAN)),
             compact: false,
+            filter: None,
+            filter_applied: String::new(),
         };
         page.load_root(cx);
         page
@@ -479,6 +489,7 @@ impl FilesPage {
         self.expanded.remove(path);
         self.children.remove(path);
         self.rebuild_rows();
+        self.sync_tree_count();
     }
 
     fn load_dir(&mut self, path: String, cx: &mut Context<Self>) {
@@ -535,7 +546,7 @@ impl FilesPage {
             self.children.insert(dir.to_string(), nodes);
         }
         self.rebuild_rows();
-        self.tree_list.reset(self.rows.len());
+        self.sync_tree_count();
     }
 
     fn rebuild_rows(&mut self) {
@@ -561,6 +572,29 @@ impl FilesPage {
         }
         walk(&self.top, 0, &self.children, &self.expanded, &mut rows);
         self.rows = rows;
+    }
+
+    /// Re-syncs the tree list's item count with the active filter after the
+    /// row set changes (a listing landed, a directory folded).
+    fn sync_tree_count(&mut self) {
+        let count = self.visible_rows(&self.filter_applied).len();
+        self.tree_list.reset(count);
+    }
+
+    /// Rows the tree renders: with an active filter only the loaded rows
+    /// whose path matches. The tree is lazy, so the match set is bounded by
+    /// what has been expanded — the workspace-wide indexed search stays in
+    /// the Ctrl K overlay (G-FL2 keeps this box local on purpose).
+    fn visible_rows(&self, query: &str) -> Vec<TreeRow> {
+        let query = query.trim().to_lowercase();
+        if query.is_empty() {
+            return self.rows.clone();
+        }
+        self.rows
+            .iter()
+            .filter(|row| row.node.path.to_lowercase().contains(&query))
+            .cloned()
+            .collect()
     }
 
     fn fail(&mut self, error: &str, cx: &mut Context<Self>) {
@@ -727,7 +761,7 @@ impl FilesPage {
 }
 
 impl Render for FilesPage {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let text = i18n::current(cx);
         let this = cx.entity();
 
@@ -782,6 +816,15 @@ impl Render for FilesPage {
             );
         }
 
+        // G-FL2: the filter box is created on first render (it needs the
+        // window) and its query drives the list's item count.
+        let filter = self.ensure_filter(window, &text, cx);
+        let query = filter.read(cx).value().trim().to_lowercase();
+        if query != self.filter_applied {
+            self.filter_applied = query;
+            let count = self.visible_rows(&self.filter_applied).len();
+            self.tree_list.reset(count);
+        }
         let this = cx.entity();
         let tree = div()
             .when(self.compact, |this| this.flex_1().min_w_0())
@@ -794,6 +837,7 @@ impl Render for FilesPage {
             .when(!self.compact, |this| {
                 this.border_r_1().border_color(cx.theme().border).pr_1()
             })
+            .child(self.render_filter_row(&filter, cx))
             .child(self.render_tree(this.clone(), &text, cx));
         let viewer = div()
             .flex_1()
@@ -825,6 +869,26 @@ impl Render for FilesPage {
 }
 
 impl FilesPage {
+    /// Creates the filter box on first render and returns it (the window
+    /// `InputState::new` needs only exists on the render path).
+    fn ensure_filter(
+        &mut self,
+        window: &mut Window,
+        text: &ShellText,
+        cx: &mut Context<Self>,
+    ) -> Entity<InputState> {
+        if self.filter.is_none() {
+            let placeholder = text.files_filter_placeholder.clone();
+            self.filter = Some(cx.new(|cx| InputState::new(window, cx).placeholder(placeholder)));
+        }
+        self.filter.clone().expect("filter input created above")
+    }
+
+    /// The local filter box above the tree (G-FL2).
+    fn render_filter_row(&self, filter: &Entity<InputState>, _cx: &App) -> gpui_kit::AnyElement {
+        div().pb_1().child(Input::new(filter)).into_any_element()
+    }
+
     fn render_tree(
         &self,
         this: gpui_kit::Entity<Self>,
@@ -857,7 +921,20 @@ impl FilesPage {
             );
         }
 
-        let rows = self.rows.clone();
+        let query = self
+            .filter
+            .as_ref()
+            .map(|filter| filter.read(cx).value().trim().to_lowercase())
+            .unwrap_or_default();
+        let rows = self.visible_rows(&query);
+        if !query.is_empty() && rows.is_empty() {
+            return div()
+                .p_2()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(text.files_no_matches.clone())
+                .into_any_element();
+        }
         list(self.tree_list.clone(), move |index, _window, cx| {
             let Some(row) = rows.get(index) else {
                 return div().into_any_element();
@@ -1371,6 +1448,47 @@ mod tests {
             pending_line: None,
             code_list: ListState::new(0, ListAlignment::Top, px(CODE_ROW_OVERSCAN)),
             compact: false,
+            filter: None,
+            filter_applied: String::new(),
         }
+    }
+
+    /// G-FL2: the tree filter keeps the loaded rows whose path matches
+    /// (case-insensitive, trimmed) and leaves the unfiltered tree intact.
+    #[test]
+    fn tree_filter_narrows_loaded_rows() {
+        let mut page = tree_page();
+        page.rows = vec![
+            TreeRow {
+                node: node("src", "/w/src", true),
+                depth: 0,
+            },
+            TreeRow {
+                node: node("main.rs", "/w/src/main.rs", false),
+                depth: 1,
+            },
+            TreeRow {
+                node: node("README.md", "/w/README.md", false),
+                depth: 0,
+            },
+        ];
+
+        assert_eq!(
+            page.visible_rows("").len(),
+            3,
+            "an empty query keeps every row"
+        );
+        assert_eq!(page.visible_rows("   ").len(), 3, "a blank query is empty");
+
+        let hits = page.visible_rows("  MAIN  ");
+        assert_eq!(hits.len(), 1, "the match is trimmed and case-insensitive");
+        assert_eq!(hits[0].node.path, "/w/src/main.rs");
+
+        assert_eq!(
+            page.visible_rows("src").len(),
+            2,
+            "a directory path matches its rows"
+        );
+        assert!(page.visible_rows("nope").is_empty());
     }
 }
