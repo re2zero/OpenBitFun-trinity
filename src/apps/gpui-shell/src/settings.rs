@@ -85,6 +85,29 @@ pub(crate) const WEB_SEARCH_HTTP_HEADER_NAME_PATH: &str =
 /// Runtime log level (`app.logging.level`), applied live through the tracing
 /// reload handle.
 pub(crate) const LOGGING_LEVEL_PATH: &str = "app.logging.level";
+/// A2: the web `FontPreference` document (`{ uiSize: { level, customPx? } }`).
+pub(crate) const FONT_PREFERENCE_PATH: &str = "font";
+/// A2: the streaming-timeout pair (`null` = wait indefinitely).
+pub(crate) const STREAM_TTFT_TIMEOUT_PATH: &str = "ai.stream_ttft_timeout_secs";
+pub(crate) const STREAM_IDLE_TIMEOUT_PATH: &str = "ai.stream_idle_timeout_secs";
+/// A2: the global proxy document (`{ enabled, url, username?, password? }`).
+pub(crate) const PROXY_PATH: &str = "ai.proxy";
+/// A2: the runtime-timeout pair and the subagent/swarm knobs.
+pub(crate) const TOOL_EXECUTION_TIMEOUT_PATH: &str = "ai.tool_execution_timeout_secs";
+pub(crate) const USER_QUESTION_TIMEOUT_PATH: &str = "ai.user_question_timeout_secs";
+/// A2: one subagent-model document (`{ kind: inherit | fixed, model_id? }`).
+pub(crate) const SUBAGENT_DEFAULT_MODEL_PATH: &str = "ai.agent_model_defaults.subagents.default";
+/// A2: the subagent batch policy, kept as the same snake_case strings the
+/// shared enum serializes to.
+pub(crate) const SUBAGENT_BATCH_POLICY_PATH: &str = "ai.subagent_batch_execution_policy";
+pub(crate) const SUBAGENT_MAX_CONCURRENCY_PATH: &str = "ai.subagent_max_concurrency";
+pub(crate) const SWARM_MAX_CONCURRENCY_PATH: &str = "ai.swarm_max_concurrency";
+/// A2: the deferred tool loading switch and the argument-JSON repair switch.
+pub(crate) const DEFERRED_TOOL_LOADING_PATH: &str = "ai.enable_deferred_tool_loading";
+pub(crate) const TOOL_JSON_REPAIR_PATH: &str = "ai.allow_tool_json_repair";
+/// A2: the default review team (`ai.review_teams.default`); the page edits two
+/// of its keys and round-trips the rest verbatim.
+pub(crate) const REVIEW_TEAM_PATH: &str = "ai.review_teams.default";
 
 /// The measure a settings row's control column carries before the row's own
 /// label column would be squeezed; status sentences wrap inside it instead of
@@ -209,6 +232,39 @@ pub(crate) struct ShellConfig {
     pub(crate) web_search_http_header_name: String,
     /// `app.logging.level`, one of the tracing level names.
     pub(crate) logging_level: String,
+    /// A2 (G-SE5): `font.uiSize.level`, kept verbatim; an unknown id renders
+    /// as the default size (see [`ui_font_base_px`]).
+    pub(crate) ui_font_level: String,
+    /// A2 (G-SE5): `font.uiSize.customPx`, only read on the custom level.
+    pub(crate) ui_font_custom_px: Option<u32>,
+    /// A2 (G-SE10): `ai.stream_ttft_timeout_secs`; `None` waits indefinitely.
+    pub(crate) stream_ttft_timeout_secs: Option<u64>,
+    /// A2 (G-SE10): `ai.stream_idle_timeout_secs`; `None` waits indefinitely.
+    pub(crate) stream_idle_timeout_secs: Option<u64>,
+    /// A2 (G-SE11): `ai.proxy` as the stored document — the page edits single
+    /// keys and the write merges them back (see [`persist_object_key`]).
+    pub(crate) proxy: serde_json::Value,
+    /// A2 (G-SE18): `ai.tool_execution_timeout_secs`; `None` never times out.
+    pub(crate) tool_execution_timeout_secs: Option<u64>,
+    /// A2 (G-SE18): `ai.user_question_timeout_secs`; zero waits indefinitely.
+    pub(crate) user_question_timeout_secs: Option<u32>,
+    /// A2 (G-SE19): `ai.agent_model_defaults.subagents.default`.
+    pub(crate) subagent_default_model:
+        openbitfun_core::service::config::types::SubagentModelSelection,
+    /// A2 (G-SE19): `ai.subagent_batch_execution_policy`, verbatim so an
+    /// unlisted policy (the core enum's `serial`) shows what is stored.
+    pub(crate) subagent_batch_policy: String,
+    /// A2 (G-SE19): `ai.subagent_max_concurrency`.
+    pub(crate) subagent_max_concurrency: u32,
+    /// A2 (G-SE19): `ai.swarm_max_concurrency`.
+    pub(crate) swarm_max_concurrency: u32,
+    /// A2 (G-SE20): `ai.enable_deferred_tool_loading`.
+    pub(crate) deferred_tool_loading: bool,
+    /// A2 (G-SE21): `ai.allow_tool_json_repair`.
+    pub(crate) allow_tool_json_repair: bool,
+    /// A2 (G-SE22): `ai.review_teams.default` as the stored document; read for
+    /// the two capacity keys, written back per key.
+    pub(crate) review_team: serde_json::Value,
 }
 
 impl Global for ShellConfig {}
@@ -255,6 +311,40 @@ impl ShellConfig {
                 .header_name
                 .clone(),
             logging_level: config.app.logging.level.clone(),
+            ui_font_level: config
+                .font
+                .as_ref()
+                .map(|font| font.ui_size.level.clone())
+                .unwrap_or_else(|| UI_FONT_LEVELS[2].0.to_string()),
+            ui_font_custom_px: config.font.as_ref().and_then(|font| font.ui_size.custom_px),
+            stream_ttft_timeout_secs: config.ai.stream_ttft_timeout_secs,
+            stream_idle_timeout_secs: config.ai.stream_idle_timeout_secs,
+            proxy: serde_json::to_value(&config.ai.proxy).unwrap_or(serde_json::Value::Null),
+            tool_execution_timeout_secs: config.ai.tool_execution_timeout_secs,
+            user_question_timeout_secs: config.ai.user_question_timeout_secs,
+            subagent_default_model: config
+                .ai
+                .agent_model_defaults
+                .subagents
+                .default_selection
+                .clone(),
+            subagent_batch_policy: serde_json::to_value(config.ai.subagent_batch_execution_policy)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_string))
+                .unwrap_or_else(|| SUBAGENT_BATCH_POLICIES[0].to_string()),
+            subagent_max_concurrency: config.ai.subagent_max_concurrency as u32,
+            swarm_max_concurrency: config.ai.swarm_max_concurrency as u32,
+            deferred_tool_loading: config.ai.enable_deferred_tool_loading,
+            allow_tool_json_repair: config.ai.allow_tool_json_repair,
+            review_team: serde_json::to_value(
+                config
+                    .ai
+                    .review_teams
+                    .get("default")
+                    .cloned()
+                    .unwrap_or_default(),
+            )
+            .unwrap_or(serde_json::Value::Null),
         }
     }
 
@@ -293,6 +383,21 @@ impl ShellConfig {
             web_search_http_auth_mode: "none".to_string(),
             web_search_http_header_name: String::new(),
             logging_level: "info".to_string(),
+            ui_font_level: UI_FONT_LEVELS[2].0.to_string(),
+            ui_font_custom_px: None,
+            stream_ttft_timeout_secs: None,
+            stream_idle_timeout_secs: None,
+            proxy: serde_json::Value::Null,
+            tool_execution_timeout_secs: None,
+            user_question_timeout_secs: None,
+            subagent_default_model:
+                openbitfun_core::service::config::types::SubagentModelSelection::Inherit,
+            subagent_batch_policy: SUBAGENT_BATCH_POLICIES[0].to_string(),
+            subagent_max_concurrency: DEFAULT_SUBAGENT_CONCURRENCY,
+            swarm_max_concurrency: DEFAULT_SWARM_CONCURRENCY,
+            deferred_tool_loading: true,
+            allow_tool_json_repair: true,
+            review_team: serde_json::Value::Null,
         }
     }
 }
@@ -345,6 +450,167 @@ fn clamp_scrollback(value: f64) -> Option<u32> {
         return None;
     }
     valid_scrollback(value.round() as u32)
+}
+
+/// A2 (G-SE5): the UI size levels the shared `font` document can carry, with
+/// the base pixel size the web `PRESET_UI_BASE_PX` maps them to. `custom` is
+/// the one level that takes its size from `uiSize.customPx` instead.
+pub(crate) const UI_FONT_LEVELS: &[(&str, u32)] = &[
+    ("compact", 12),
+    ("small", 13),
+    ("default", 14),
+    ("medium", 15),
+    ("large", 16),
+];
+pub(crate) const UI_FONT_CUSTOM_LEVEL: &str = "custom";
+pub(crate) const MIN_UI_FONT_PX: u32 = 12;
+pub(crate) const MAX_UI_FONT_PX: u32 = 20;
+pub(crate) const DEFAULT_UI_FONT_PX: u32 = 14;
+/// The window's em size as gpui starts it; the `default` level keeps it, so
+/// the setting starts out as a no-op on a fresh install.
+pub(crate) const SHELL_BASE_REM_PX: f32 = 16.;
+
+/// A2 (G-SE5): the base pixel size of one stored preference. An unknown level
+/// (a newer surface's, or a hand-edited document) falls back to the default
+/// size instead of failing the page — the same tolerance the other appearance
+/// values get.
+pub(crate) fn ui_font_base_px(level: &str, custom_px: Option<u32>) -> u32 {
+    if level == UI_FONT_CUSTOM_LEVEL {
+        return custom_px
+            .unwrap_or(DEFAULT_UI_FONT_PX)
+            .clamp(MIN_UI_FONT_PX, MAX_UI_FONT_PX);
+    }
+    UI_FONT_LEVELS
+        .iter()
+        .find(|(id, _)| *id == level)
+        .map(|(_, px)| *px)
+        .unwrap_or(DEFAULT_UI_FONT_PX)
+}
+
+/// A2 (G-SE5): the window em size for one preference. The shell scales from
+/// its own 16px base by the same ratio the level has to the web's 14px base,
+/// so every level means the same relative size on both surfaces and `default`
+/// renders exactly what the shell rendered before the setting existed.
+pub(crate) fn ui_font_rem_px(level: &str, custom_px: Option<u32>) -> f32 {
+    let base = ui_font_base_px(level, custom_px) as f32;
+    SHELL_BASE_REM_PX * base / DEFAULT_UI_FONT_PX as f32
+}
+
+/// A2 (G-SE5): the `font` document written back, in the shape the web
+/// `FontPreferenceService` persists (`customPx` only on the custom level).
+pub(crate) fn ui_font_preference_value(level: &str, custom_px: Option<u32>) -> serde_json::Value {
+    let mut ui_size = serde_json::Map::new();
+    ui_size.insert(
+        "level".to_string(),
+        serde_json::Value::String(level.to_string()),
+    );
+    if level == UI_FONT_CUSTOM_LEVEL {
+        ui_size.insert(
+            "customPx".to_string(),
+            serde_json::json!(ui_font_base_px(level, custom_px)),
+        );
+    }
+    serde_json::json!({ "uiSize": serde_json::Value::Object(ui_size) })
+}
+
+/// A2 (G-SE5): applies the persisted UI size to one window. Called from the
+/// render path, which is the only place every window (first frame, config
+/// snapshot, live switch) passes through with a `&mut Window`.
+pub(crate) fn apply_ui_font_size(window: &mut gpui_kit::Window, cx: &App) {
+    let config = ShellConfig::current(cx);
+    let rem = ui_font_rem_px(&config.ui_font_level, config.ui_font_custom_px);
+    if window.rem_size() != px(rem) {
+        window.set_rem_size(px(rem));
+    }
+}
+
+/// A2 (G-SE19): the batch policies the shared enum serializes today. The web
+/// runtime page exposes exactly these two; a stored `serial` (another surface
+/// can write it, the core enum has it) stays verbatim in the page instead of
+/// being rewritten.
+pub(crate) const SUBAGENT_BATCH_POLICIES: &[&str] = &["safe_only", "force_parallel"];
+pub(crate) const MIN_SUBAGENT_CONCURRENCY: u32 = 1;
+/// The web page's `SUBAGENT_MAX_CONCURRENCY_LIMIT`; the core normalizes to 64,
+/// so a larger stored value stays displayable but is never written back by the
+/// shell.
+pub(crate) const MAX_SUBAGENT_CONCURRENCY: u32 = 32;
+pub(crate) const MAX_SWARM_CONCURRENCY: u32 = 64;
+pub(crate) const DEFAULT_SUBAGENT_CONCURRENCY: u32 = 5;
+pub(crate) const DEFAULT_SWARM_CONCURRENCY: u32 = 16;
+
+/// Rounds a number-field value onto one concurrency domain (`min..=max`).
+pub(crate) fn clamp_concurrency(value: f64, max: u32) -> Option<usize> {
+    if !value.is_finite() {
+        return None;
+    }
+    let rounded = value.round();
+    if rounded < f64::from(MIN_SUBAGENT_CONCURRENCY) || rounded > f64::from(max) {
+        return None;
+    }
+    Some(rounded as usize)
+}
+
+/// A2 (G-SE19): the dropdown value of one stored subagent-model selection —
+/// `inherit` or the model id (`fast` / `primary` / a configured model).
+pub(crate) fn subagent_model_choice(
+    selection: &openbitfun_core::service::config::types::SubagentModelSelection,
+) -> String {
+    match selection {
+        openbitfun_core::service::config::types::SubagentModelSelection::Inherit => {
+            "inherit".to_string()
+        }
+        openbitfun_core::service::config::types::SubagentModelSelection::Fixed { model_id } => {
+            model_id.clone()
+        }
+    }
+}
+
+/// A2 (G-SE19): the stored document for one dropdown choice, in the shape the
+/// web page writes.
+pub(crate) fn subagent_model_selection(
+    choice: &str,
+) -> openbitfun_core::service::config::types::SubagentModelSelection {
+    use openbitfun_core::service::config::types::SubagentModelSelection;
+    if choice == "inherit" {
+        SubagentModelSelection::Inherit
+    } else {
+        SubagentModelSelection::fixed(choice)
+    }
+}
+
+/// A2 (G-SE22): the review-capacity bounds the web section renders.
+pub(crate) const MIN_REVIEW_PARALLELISM: u32 = 1;
+pub(crate) const MAX_REVIEW_PARALLELISM: u32 = 2;
+pub(crate) const MAX_REVIEW_QUEUE_WAIT_SECS: u32 = 3600;
+/// The shared `ReviewTeamConfig` defaults, used for the display of a team
+/// document that does not carry the key yet.
+pub(crate) const DEFAULT_REVIEW_PARALLELISM: u64 = 2;
+pub(crate) const DEFAULT_REVIEW_QUEUE_WAIT_SECS: u64 = 1200;
+
+/// A2 (G-SE22): merges one key into a persisted object document. The shell
+/// writes back the whole object, so it must not drop keys this build does not
+/// know — a newer desktop or web build may have written them, and the shared
+/// document has to survive a round trip through an older shell.
+pub(crate) fn merged_object_value(
+    current: &serde_json::Value,
+    key: &str,
+    value: serde_json::Value,
+) -> serde_json::Value {
+    let mut object = match current {
+        serde_json::Value::Object(map) => map.clone(),
+        _ => serde_json::Map::new(),
+    };
+    object.insert(key.to_string(), value);
+    serde_json::Value::Object(object)
+}
+
+/// A2 (G-SE22): one numeric key of an object document, or `fallback` when the
+/// document, the key, or the value type is not there (the shared default).
+pub(crate) fn object_u64(document: &serde_json::Value, key: &str, fallback: u64) -> u64 {
+    document
+        .get(key)
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(fallback)
 }
 
 /// One theme choice: the product appearance id (the value stored in
@@ -477,6 +743,96 @@ pub(crate) fn persist(path: &'static str, value: serde_json::Value) {
             Err(error) => tracing::error!("Failed to persist {}: {}", path, error),
         }
     });
+}
+
+/// Persists one key of an object document under `path`. The stored document
+/// is read first and the key merged into it, so keys this build does not know
+/// — written by a newer desktop or web build — survive the write instead of
+/// being dropped by an older shell.
+fn persist_object_key(path: &'static str, key: &str, value: serde_json::Value) {
+    let Some(handle) = crate::runtime::runtime_handle() else {
+        tracing::error!(
+            "Cannot persist {}.{} before the runtime is ready",
+            path,
+            key
+        );
+        return;
+    };
+    let key = key.to_string();
+    handle.tokio_handle().spawn(async move {
+        let service = match get_global_config_service().await {
+            Ok(service) => service,
+            Err(error) => {
+                tracing::error!(
+                    "Config service unavailable while persisting {}.{}: {}",
+                    path,
+                    key,
+                    error
+                );
+                return;
+            }
+        };
+        let current = service
+            .get_config::<serde_json::Value>(Some(path))
+            .await
+            .unwrap_or(serde_json::Value::Null);
+        let merged = merged_object_value(&current, &key, value);
+        match service.set_config(path, merged).await {
+            Ok(()) => tracing::info!("Setting persisted: {}.{}", path, key),
+            Err(error) => tracing::error!("Failed to persist {}.{}: {}", path, key, error),
+        }
+    });
+}
+
+/// A2 (G-SE5): stores one UI size preference (mirror, then document) and
+/// repaints; the em size itself is applied per window in the render path.
+pub(crate) fn set_ui_font(level: &str, custom_px: Option<u32>, cx: &mut App) {
+    let stored_custom = (level == UI_FONT_CUSTOM_LEVEL).then(|| ui_font_base_px(level, custom_px));
+    {
+        let config = cx.global_mut::<ShellConfig>();
+        config.ui_font_level = level.to_string();
+        config.ui_font_custom_px = stored_custom;
+    }
+    persist(
+        FONT_PREFERENCE_PATH,
+        ui_font_preference_value(level, custom_px),
+    );
+    cx.refresh_windows();
+}
+
+/// A2 (G-SE11): stores one proxy key, keeping every other key of the stored
+/// document.
+pub(crate) fn set_proxy_key(key: &str, value: serde_json::Value, cx: &mut App) {
+    let merged = merged_object_value(&ShellConfig::current(cx).proxy, key, value.clone());
+    cx.global_mut::<ShellConfig>().proxy = merged;
+    persist_object_key(PROXY_PATH, key, value);
+    cx.refresh_windows();
+}
+
+/// A2 (G-SE22): stores one review-capacity key of the default team document.
+pub(crate) fn set_review_capacity(key: &str, value: serde_json::Value, cx: &mut App) {
+    let merged = merged_object_value(&ShellConfig::current(cx).review_team, key, value.clone());
+    cx.global_mut::<ShellConfig>().review_team = merged;
+    persist_object_key(REVIEW_TEAM_PATH, key, value);
+    cx.refresh_windows();
+}
+
+/// Whether the stored proxy document has the proxy enabled (`false` for a
+/// missing document, matching the shared default).
+pub(crate) fn proxy_enabled(document: &serde_json::Value) -> bool {
+    document
+        .get("enabled")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// One string key of the stored proxy document (`""` when absent).
+pub(crate) fn proxy_text(document: &serde_json::Value, key: &str) -> String {
+    document
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// Inserts or replaces one terminal profile in the shared mirror and
@@ -739,7 +1095,7 @@ pub(crate) fn entry_group(
 ) -> SettingGroup {
     match entry {
         SettingsEntry::General => general_group(text, view, cx),
-        SettingsEntry::Appearance => appearance_group(text),
+        SettingsEntry::Appearance => appearance_group(text, cx),
         SettingsEntry::Terminal => terminal_group(text, view),
         SettingsEntry::Models => models_group(text, cx),
         SettingsEntry::SessionSearch => session_search_group(text, view),
@@ -1215,7 +1571,7 @@ fn worktrees_git_group(
     )])
 }
 
-fn appearance_group(text: &ShellText) -> SettingGroup {
+fn appearance_group(text: &ShellText, cx: &App) -> SettingGroup {
     let language_options = vec![
         (SharedString::from("zh-CN"), SharedString::from("简体中文")),
         (SharedString::from("zh-TW"), SharedString::from("繁體中文")),
@@ -1243,12 +1599,103 @@ fn appearance_group(text: &ShellText) -> SettingGroup {
         SettingField::render(move |_options, _window, cx| theme_button(&text, cx))
     };
 
-    SettingGroup::new().items(vec![
+    // G-SE5: the web page's UI size levels. A stored id the shell does not
+    // know stays verbatim in the menu, like every other verbatim value here.
+    let current_level = ShellConfig::current(cx).ui_font_level.clone();
+    let level_options = ui_font_level_options(&current_level, text);
+    let level_field = SettingField::dropdown(
+        level_options,
+        |cx: &App| SharedString::from(ShellConfig::current(cx).ui_font_level.clone()),
+        |value: SharedString, cx: &mut App| {
+            let value = value.to_string();
+            if !ui_font_level_known(&value) {
+                tracing::warn!("Ignoring unsupported UI font level: {value}");
+                return;
+            }
+            set_ui_font(&value, ShellConfig::current(cx).ui_font_custom_px, cx);
+        },
+    );
+    let custom_field = SettingField::number_input(
+        NumberFieldOptions {
+            min: f64::from(MIN_UI_FONT_PX),
+            max: f64::from(MAX_UI_FONT_PX),
+            step: 1.,
+        },
+        |cx: &App| {
+            f64::from(ui_font_base_px(
+                &ShellConfig::current(cx).ui_font_level,
+                ShellConfig::current(cx).ui_font_custom_px,
+            ))
+        },
+        |value: f64, cx: &mut App| {
+            if !value.is_finite() {
+                return;
+            }
+            let px = (value.round() as u32).clamp(MIN_UI_FONT_PX, MAX_UI_FONT_PX);
+            set_ui_font(UI_FONT_CUSTOM_LEVEL, Some(px), cx);
+        },
+    );
+
+    let mut items = vec![
         SettingItem::new(text.language.clone(), language_field)
             .description(text.settings_language_description.clone()),
         SettingItem::new(text.theme.clone(), theme_field)
             .description(text.settings_theme_description.clone()),
-    ])
+        SettingItem::new(text.settings_ui_font.clone(), level_field)
+            .description(text.settings_ui_font_description.clone()),
+    ];
+    // The custom size row is the web page's conditional second row: only the
+    // custom level reads it.
+    if ShellConfig::current(cx).ui_font_level == UI_FONT_CUSTOM_LEVEL {
+        items.push(
+            SettingItem::new(text.settings_ui_font_custom.clone(), custom_field)
+                .description(text.settings_ui_font_custom_description.clone()),
+        );
+    }
+    SettingGroup::new().items(items)
+}
+
+/// G-SE5: the UI size menu — the shared levels, then the custom entry, then a
+/// stored id outside the list so the page shows what is persisted.
+fn ui_font_level_options(current: &str, text: &ShellText) -> Vec<(SharedString, SharedString)> {
+    let mut options: Vec<(SharedString, SharedString)> = UI_FONT_LEVELS
+        .iter()
+        .map(|(id, _)| {
+            (
+                SharedString::from(*id),
+                SharedString::from(ui_font_level_label(id, text)),
+            )
+        })
+        .collect();
+    options.push((
+        SharedString::from(UI_FONT_CUSTOM_LEVEL),
+        SharedString::from(text.ui_font_level_custom.clone()),
+    ));
+    if !ui_font_level_known(current) {
+        options.insert(
+            0,
+            (
+                SharedString::from(current.to_string()),
+                SharedString::from(format!("{current} ({})", text.value_unsupported)),
+            ),
+        );
+    }
+    options
+}
+
+fn ui_font_level_known(level: &str) -> bool {
+    level == UI_FONT_CUSTOM_LEVEL || UI_FONT_LEVELS.iter().any(|(id, _)| *id == level)
+}
+
+fn ui_font_level_label(level: &str, text: &ShellText) -> String {
+    match level {
+        "compact" => text.ui_font_level_compact.clone(),
+        "small" => text.ui_font_level_small.clone(),
+        "default" => text.ui_font_level_default.clone(),
+        "medium" => text.ui_font_level_medium.clone(),
+        "large" => text.ui_font_level_large.clone(),
+        _ => text.ui_font_level_custom.clone(),
+    }
 }
 
 /// General group (M22): launch-at-login, the close-button behavior, and the
@@ -1584,11 +2031,134 @@ fn models_group(text: &ShellText, cx: &App) -> SettingGroup {
         text.models_default_description.clone()
     };
 
+    // G-SE10: the streaming-timeout pair. Zero means "no timeout" on both
+    // rows, which persists the same `null` the web page's empty input writes.
+    let ttft_field = stream_timeout_field(
+        STREAM_TTFT_TIMEOUT_PATH,
+        |config| config.stream_ttft_timeout_secs,
+        |config, value| config.stream_ttft_timeout_secs = value,
+    );
+    let idle_field = stream_timeout_field(
+        STREAM_IDLE_TIMEOUT_PATH,
+        |config| config.stream_idle_timeout_secs,
+        |config, value| config.stream_idle_timeout_secs = value,
+    );
+
+    // G-SE11: the proxy document, one row per stored key.
+    let proxy = ShellConfig::current(cx).proxy;
+    let proxy_on = proxy_enabled(&proxy);
+    let proxy_enable_field = SettingField::switch(
+        |cx: &App| proxy_enabled(&ShellConfig::current(cx).proxy),
+        |value: bool, cx: &mut App| {
+            set_proxy_key("enabled", serde_json::json!(value), cx);
+        },
+    );
+    let proxy_url_field = proxy_text_field("url");
+    let proxy_username_field = proxy_text_field("username");
+    let proxy_password_field = proxy_text_field("password");
+
     SettingGroup::new().items(vec![
         SettingItem::new(text.models_default.clone(), default_field)
             .description(default_description),
         SettingItem::new(text.models_configured.clone(), list_field),
+        section_heading_item(
+            "stream",
+            text.settings_stream_section.clone(),
+            text.settings_stream_section_note.clone(),
+        ),
+        SettingItem::new(text.settings_stream_ttft.clone(), ttft_field)
+            .description(text.settings_stream_ttft_description.clone()),
+        SettingItem::new(text.settings_stream_idle.clone(), idle_field)
+            .description(text.settings_stream_idle_description.clone()),
+        section_heading_item(
+            "proxy",
+            text.settings_proxy_section.clone(),
+            text.settings_proxy_section_note.clone(),
+        ),
+        SettingItem::new(text.settings_proxy_enable.clone(), proxy_enable_field)
+            .description(text.settings_proxy_enable_description.clone()),
+        SettingItem::new(text.settings_proxy_url.clone(), proxy_url_field)
+            .description(text.settings_proxy_url_description.clone())
+            .disabled(!proxy_on),
+        SettingItem::new(text.settings_proxy_username.clone(), proxy_username_field)
+            .disabled(!proxy_on),
+        SettingItem::new(text.settings_proxy_password.clone(), proxy_password_field)
+            .description(text.settings_proxy_password_description.clone())
+            .disabled(!proxy_on),
     ])
+}
+
+/// One in-page section heading, standing in for the web `ConfigPageSection`
+/// title a flat shell group has no equivalent for. The slug is the element id
+/// the headless layout tests assert on.
+fn section_heading_item(slug: &'static str, title: String, note: String) -> SettingItem {
+    SettingItem::render(move |_options, _window, cx| {
+        let mut heading = div()
+            .debug_selector(move || format!("settings-section-{slug}"))
+            .v_flex()
+            .w_full()
+            .gap_0p5()
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(cx.theme().foreground)
+                    .child(title.clone()),
+            );
+        if !note.is_empty() {
+            heading = heading.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(note.clone()),
+            );
+        }
+        heading.into_any_element()
+    })
+}
+
+/// G-SE10: one streaming-timeout number field. Zero writes `null`, the shared
+/// "wait indefinitely" value; a positive value writes the seconds.
+fn stream_timeout_field(
+    path: &'static str,
+    read: fn(&ShellConfig) -> Option<u64>,
+    write: fn(&mut ShellConfig, Option<u64>),
+) -> SettingField<f64> {
+    SettingField::number_input(
+        NumberFieldOptions {
+            min: 0.,
+            max: MAX_STREAM_TIMEOUT_SECS,
+            step: 30.,
+        },
+        move |cx: &App| read(&ShellConfig::current(cx)).unwrap_or(0) as f64,
+        move |value: f64, cx: &mut App| {
+            if !value.is_finite() {
+                return;
+            }
+            let secs = (value.round() as u64).min(MAX_STREAM_TIMEOUT_SECS as u64);
+            let stored = (secs > 0).then_some(secs);
+            write(cx.global_mut::<ShellConfig>(), stored);
+            persist(
+                path,
+                match stored {
+                    Some(secs) => serde_json::json!(secs),
+                    None => serde_json::Value::Null,
+                },
+            );
+            cx.refresh_windows();
+        },
+    )
+}
+
+/// G-SE11: one proxy string field, written back as a single key of the stored
+/// document.
+fn proxy_text_field(key: &'static str) -> SettingField<SharedString> {
+    SettingField::input(
+        move |cx: &App| SharedString::from(proxy_text(&ShellConfig::current(cx).proxy, key)),
+        move |value: SharedString, cx: &mut App| {
+            set_proxy_key(key, serde_json::json!(value.to_string()), cx);
+        },
+    )
 }
 
 /// Terminal preferences for the built-in terminal (M7 pane). The values are
@@ -1979,6 +2549,161 @@ fn open_profile_dialog(
     });
 }
 
+/// A2 (G-SE10): the streaming-timeout rows clamp to a day; the shared service
+/// has no upper bound, the field needs one.
+pub(crate) const MAX_STREAM_TIMEOUT_SECS: f64 = 86_400.;
+/// A2 (G-SE18): the runtime-timeout rows, the web `NumberInput` range.
+pub(crate) const MAX_RUNTIME_TIMEOUT_SECS: f64 = 3_600.;
+
+/// A2 (G-SE18): one runtime timeout field. `null_when_zero` distinguishes the
+/// two shared contracts: the tool timeout stores `null` for "never", the
+/// unattended-question timeout stores the zero the web page writes.
+fn runtime_timeout_field(
+    path: &'static str,
+    read: fn(&ShellConfig) -> Option<u64>,
+    write: fn(&mut ShellConfig, Option<u64>),
+    null_when_zero: bool,
+) -> SettingField<f64> {
+    SettingField::number_input(
+        NumberFieldOptions {
+            min: 0.,
+            max: MAX_RUNTIME_TIMEOUT_SECS,
+            step: 5.,
+        },
+        move |cx: &App| read(&ShellConfig::current(cx)).unwrap_or(0) as f64,
+        move |value: f64, cx: &mut App| {
+            if !value.is_finite() {
+                return;
+            }
+            let secs = (value.round() as u64).min(MAX_RUNTIME_TIMEOUT_SECS as u64);
+            let stored = if null_when_zero && secs == 0 {
+                None
+            } else {
+                Some(secs)
+            };
+            write(cx.global_mut::<ShellConfig>(), stored);
+            let value = match stored {
+                Some(secs) => serde_json::json!(secs),
+                None => serde_json::Value::Null,
+            };
+            persist(path, value);
+            cx.refresh_windows();
+        },
+    )
+}
+
+/// A2 (G-SE19): one concurrency field, clamped onto the domain the web page
+/// grants its number inputs.
+fn concurrency_field(
+    max: u32,
+    read: fn(&ShellConfig) -> u32,
+    write: fn(&mut ShellConfig, u32),
+    path: &'static str,
+) -> SettingField<f64> {
+    SettingField::number_input(
+        NumberFieldOptions {
+            min: f64::from(MIN_SUBAGENT_CONCURRENCY),
+            max: f64::from(max),
+            step: 1.,
+        },
+        move |cx: &App| f64::from(read(&ShellConfig::current(cx))),
+        move |value: f64, cx: &mut App| {
+            let Some(limit) = clamp_concurrency(value, max) else {
+                tracing::warn!("Ignoring out-of-range concurrency value: {}", value);
+                return;
+            };
+            write(cx.global_mut::<ShellConfig>(), limit as u32);
+            persist(path, serde_json::json!(limit));
+            cx.refresh_windows();
+        },
+    )
+}
+
+/// A2 (G-SE19): the subagent-model menu — the two shared aliases first, then
+/// every enabled configured model, then the stored id when it is unavailable
+/// (the web combobox appends the same entry).
+fn subagent_model_options(
+    catalog: &[crate::runtime::ModelChoice],
+    current: &str,
+    text: &ShellText,
+) -> Vec<(SharedString, SharedString)> {
+    let mut options: Vec<(SharedString, SharedString)> = vec![
+        (
+            SharedString::from("inherit"),
+            SharedString::from(text.settings_subagent_model_inherit.clone()),
+        ),
+        (
+            SharedString::from("fast"),
+            SharedString::from(text.settings_subagent_model_fast.clone()),
+        ),
+        (
+            SharedString::from("primary"),
+            SharedString::from(text.settings_subagent_model_primary.clone()),
+        ),
+    ];
+    for model in catalog.iter().filter(|model| model.enabled) {
+        options.push((model.id.clone().into(), model.label().into()));
+    }
+    if !options.iter().any(|(id, _)| id.as_ref() == current) {
+        options.push((
+            SharedString::from(current.to_string()),
+            SharedString::from(format!("{current} ({})", text.value_unsupported)),
+        ));
+    }
+    options
+}
+
+/// The batch-policy menu: the two shared policies, then a stored policy this
+/// build does not render so the row shows what is actually persisted.
+fn subagent_batch_options(current: &str, text: &ShellText) -> Vec<(SharedString, SharedString)> {
+    let mut options: Vec<(SharedString, SharedString)> = SUBAGENT_BATCH_POLICIES
+        .iter()
+        .map(|policy| {
+            let label = match *policy {
+                "safe_only" => text.settings_subagent_batch_safe.clone(),
+                _ => text.settings_subagent_batch_parallel.clone(),
+            };
+            (SharedString::from(*policy), SharedString::from(label))
+        })
+        .collect();
+    if !SUBAGENT_BATCH_POLICIES.contains(&current) {
+        options.insert(
+            0,
+            (
+                SharedString::from(current.to_string()),
+                SharedString::from(format!("{current} ({})", text.value_unsupported)),
+            ),
+        );
+    }
+    options
+}
+
+/// A2 (G-SE22): one review-capacity number field over the stored team
+/// document; every other key of the document is kept by the write.
+fn review_capacity_field(
+    key: &'static str,
+    min: u32,
+    max: u32,
+    step: f64,
+    fallback: u64,
+) -> SettingField<f64> {
+    SettingField::number_input(
+        NumberFieldOptions {
+            min: f64::from(min),
+            max: f64::from(max),
+            step,
+        },
+        move |cx: &App| object_u64(&ShellConfig::current(cx).review_team, key, fallback) as f64,
+        move |value: f64, cx: &mut App| {
+            if !value.is_finite() {
+                return;
+            }
+            let clamped = (value.round() as u64).clamp(u64::from(min), u64::from(max));
+            set_review_capacity(key, serde_json::json!(clamped), cx);
+        },
+    )
+}
+
 fn permissions_group(text: &ShellText, cx: &App) -> SettingGroup {
     let preset_options = vec![
         (
@@ -2021,12 +2746,181 @@ fn permissions_group(text: &ShellText, cx: &App) -> SettingGroup {
     let auto_approve_disabled =
         ShellConfig::current(cx).permission_preset == PermissionPolicyPreset::FullAccess;
 
+    // G-SE18: the two runtime timeouts.
+    let tool_timeout_field = runtime_timeout_field(
+        TOOL_EXECUTION_TIMEOUT_PATH,
+        |config| config.tool_execution_timeout_secs,
+        |config, value| config.tool_execution_timeout_secs = value,
+        true,
+    );
+    let question_timeout_field = runtime_timeout_field(
+        USER_QUESTION_TIMEOUT_PATH,
+        |config| config.user_question_timeout_secs.map(u64::from),
+        |config, value| config.user_question_timeout_secs = value.map(|secs| secs as u32),
+        false,
+    );
+
+    // G-SE19: default subagent model, batch policy, and the two concurrency
+    // limits (regular subagents and the swarm).
+    let catalog = cx
+        .try_global::<crate::runtime::ModelCatalog>()
+        .cloned()
+        .unwrap_or_default();
+    let current_model = subagent_model_choice(&ShellConfig::current(cx).subagent_default_model);
+    let subagent_model_field = SettingField::dropdown(
+        subagent_model_options(&catalog.models, &current_model, text),
+        |cx: &App| {
+            SharedString::from(subagent_model_choice(
+                &ShellConfig::current(cx).subagent_default_model,
+            ))
+        },
+        |value: SharedString, cx: &mut App| {
+            let value = value.to_string();
+            if value.is_empty() {
+                return;
+            }
+            let selection = subagent_model_selection(&value);
+            cx.global_mut::<ShellConfig>().subagent_default_model = selection.clone();
+            match serde_json::to_value(&selection) {
+                Ok(document) => persist(SUBAGENT_DEFAULT_MODEL_PATH, document),
+                Err(error) => tracing::error!("Failed to serialize the subagent model: {error}"),
+            }
+            cx.refresh_windows();
+        },
+    );
+
+    let current_policy = ShellConfig::current(cx).subagent_batch_policy.clone();
+    let batch_field = SettingField::dropdown(
+        subagent_batch_options(&current_policy, text),
+        |cx: &App| SharedString::from(ShellConfig::current(cx).subagent_batch_policy.clone()),
+        |value: SharedString, cx: &mut App| {
+            let value = value.to_string();
+            if !SUBAGENT_BATCH_POLICIES.contains(&value.as_str()) {
+                tracing::warn!("Ignoring unsupported subagent batch policy: {value}");
+                return;
+            }
+            cx.global_mut::<ShellConfig>().subagent_batch_policy = value.clone();
+            persist(SUBAGENT_BATCH_POLICY_PATH, serde_json::json!(value));
+            cx.refresh_windows();
+        },
+    );
+
+    let subagent_concurrency_field = concurrency_field(
+        MAX_SUBAGENT_CONCURRENCY,
+        |config| config.subagent_max_concurrency,
+        |config, value| config.subagent_max_concurrency = value,
+        SUBAGENT_MAX_CONCURRENCY_PATH,
+    );
+    let swarm_concurrency_field = concurrency_field(
+        MAX_SWARM_CONCURRENCY,
+        |config| config.swarm_max_concurrency,
+        |config, value| config.swarm_max_concurrency = value,
+        SWARM_MAX_CONCURRENCY_PATH,
+    );
+
+    // G-SE20/G-SE21: the two tool-runtime switches.
+    let deferred_field = SettingField::switch(
+        |cx: &App| ShellConfig::current(cx).deferred_tool_loading,
+        |value: bool, cx: &mut App| {
+            cx.global_mut::<ShellConfig>().deferred_tool_loading = value;
+            persist(DEFERRED_TOOL_LOADING_PATH, serde_json::json!(value));
+            cx.refresh_windows();
+        },
+    );
+    let json_repair_field = SettingField::switch(
+        |cx: &App| ShellConfig::current(cx).allow_tool_json_repair,
+        |value: bool, cx: &mut App| {
+            cx.global_mut::<ShellConfig>().allow_tool_json_repair = value;
+            persist(TOOL_JSON_REPAIR_PATH, serde_json::json!(value));
+            cx.refresh_windows();
+        },
+    );
+
+    // G-SE22: the two review-capacity keys.
+    let review_parallelism_field = review_capacity_field(
+        "max_parallel_reviewers",
+        MIN_REVIEW_PARALLELISM,
+        MAX_REVIEW_PARALLELISM,
+        1.,
+        DEFAULT_REVIEW_PARALLELISM,
+    );
+    let review_queue_field = review_capacity_field(
+        "max_queue_wait_seconds",
+        0,
+        MAX_REVIEW_QUEUE_WAIT_SECS,
+        60.,
+        DEFAULT_REVIEW_QUEUE_WAIT_SECS,
+    );
+
+    let deferred_warning = (!ShellConfig::current(cx).deferred_tool_loading)
+        .then(|| text.settings_deferred_tools_warning.clone());
+    let mut deferred_item =
+        SettingItem::new(text.settings_deferred_tools_enable.clone(), deferred_field);
+    if let Some(warning) = deferred_warning {
+        deferred_item = deferred_item.description(warning);
+    }
+
     SettingGroup::new().items(vec![
         SettingItem::new(text.settings_policy.clone(), preset_field)
             .description(text.settings_policy_description.clone()),
         SettingItem::new(text.settings_auto_approve.clone(), auto_approve_field)
             .description(text.settings_auto_approve_description.clone())
             .disabled(auto_approve_disabled),
+        section_heading_item(
+            "execution",
+            text.settings_execution_section.clone(),
+            text.settings_execution_section_note.clone(),
+        ),
+        SettingItem::new(text.settings_tool_timeout.clone(), tool_timeout_field)
+            .description(text.settings_tool_timeout_description.clone()),
+        SettingItem::new(
+            text.settings_question_timeout.clone(),
+            question_timeout_field,
+        )
+        .description(text.settings_question_timeout_description.clone()),
+        section_heading_item(
+            "subagents",
+            text.settings_subagents_section.clone(),
+            text.settings_subagents_section_note.clone(),
+        ),
+        SettingItem::new(text.settings_subagent_model.clone(), subagent_model_field)
+            .description(text.settings_subagent_model_description.clone()),
+        SettingItem::new(text.settings_subagent_batch.clone(), batch_field),
+        SettingItem::new(
+            text.settings_subagent_concurrency.clone(),
+            subagent_concurrency_field,
+        )
+        .description(text.settings_subagent_concurrency_description.clone()),
+        SettingItem::new(
+            text.settings_swarm_concurrency.clone(),
+            swarm_concurrency_field,
+        )
+        .description(text.settings_swarm_concurrency_description.clone()),
+        section_heading_item(
+            "deferred-tools",
+            text.settings_deferred_tools_section.clone(),
+            text.settings_deferred_tools_section_note.clone(),
+        ),
+        deferred_item,
+        section_heading_item(
+            "json-repair",
+            text.settings_json_repair_section.clone(),
+            text.settings_json_repair_section_note.clone(),
+        ),
+        SettingItem::new(text.settings_json_repair.clone(), json_repair_field)
+            .description(text.settings_json_repair_description.clone()),
+        section_heading_item(
+            "review-capacity",
+            text.settings_review_capacity_section.clone(),
+            text.settings_review_capacity_section_note.clone(),
+        ),
+        SettingItem::new(
+            text.settings_review_parallelism.clone(),
+            review_parallelism_field,
+        )
+        .description(text.settings_review_parallelism_description.clone()),
+        SettingItem::new(text.settings_review_queue_wait.clone(), review_queue_field)
+            .description(text.settings_review_queue_wait_description.clone()),
     ])
 }
 
@@ -3918,6 +4812,35 @@ mod tests {
             .auth
             .header_name = "X-Search-Key".to_string();
         config.app.logging.level = "debug".to_string();
+        // A2: the appearance font preference and the model/execution fields.
+        config.font = Some(
+            openbitfun_core::service::config::types::FontPreferenceSnapshot {
+                ui_size: openbitfun_core::service::config::types::UiFontSizeSnapshot {
+                    level: "custom".to_string(),
+                    custom_px: Some(15),
+                },
+            },
+        );
+        config.ai.stream_ttft_timeout_secs = Some(90);
+        config.ai.stream_idle_timeout_secs = None;
+        config.ai.proxy.enabled = true;
+        config.ai.proxy.url = "http://127.0.0.1:7890".to_string();
+        config.ai.proxy.username = Some("proxy-user".to_string());
+        config.ai.proxy.password = Some("proxy-secret".to_string());
+        config.ai.tool_execution_timeout_secs = Some(600);
+        config.ai.user_question_timeout_secs = Some(240);
+        config.ai.agent_model_defaults.subagents.default_selection =
+            openbitfun_core::service::config::types::SubagentModelSelection::fixed("model-b");
+        config.ai.subagent_batch_execution_policy =
+            openbitfun_core::service::config::types::SubagentBatchExecutionPolicy::SafeOnly;
+        config.ai.subagent_max_concurrency = 7;
+        config.ai.swarm_max_concurrency = 20;
+        config.ai.enable_deferred_tool_loading = false;
+        config.ai.allow_tool_json_repair = false;
+        if let Some(team) = config.ai.review_teams.get_mut("default") {
+            team.max_parallel_reviewers = 1;
+            team.max_queue_wait_seconds = 300;
+        }
 
         let snapshot = ShellConfig::from_global(&config);
         assert_eq!(snapshot.language, LocaleId::EnUS);
@@ -3949,6 +4872,221 @@ mod tests {
         assert_eq!(snapshot.quick_actions.len(), 1);
         assert_eq!(snapshot.quick_actions[0].id, "commit");
         assert!(!snapshot.quick_actions[0].enabled);
+        // A2.
+        assert_eq!(snapshot.ui_font_level, "custom");
+        assert_eq!(snapshot.ui_font_custom_px, Some(15));
+        assert_eq!(snapshot.stream_ttft_timeout_secs, Some(90));
+        assert_eq!(snapshot.stream_idle_timeout_secs, None);
+        assert!(proxy_enabled(&snapshot.proxy));
+        assert_eq!(proxy_text(&snapshot.proxy, "url"), "http://127.0.0.1:7890");
+        assert_eq!(proxy_text(&snapshot.proxy, "username"), "proxy-user");
+        assert_eq!(proxy_text(&snapshot.proxy, "password"), "proxy-secret");
+        assert_eq!(snapshot.tool_execution_timeout_secs, Some(600));
+        assert_eq!(snapshot.user_question_timeout_secs, Some(240));
+        assert_eq!(
+            subagent_model_choice(&snapshot.subagent_default_model),
+            "model-b"
+        );
+        assert_eq!(snapshot.subagent_batch_policy, "safe_only");
+        assert_eq!(snapshot.subagent_max_concurrency, 7);
+        assert_eq!(snapshot.swarm_max_concurrency, 20);
+        assert!(!snapshot.deferred_tool_loading);
+        assert!(!snapshot.allow_tool_json_repair);
+        assert_eq!(
+            object_u64(
+                &snapshot.review_team,
+                "max_parallel_reviewers",
+                DEFAULT_REVIEW_PARALLELISM
+            ),
+            1
+        );
+        assert_eq!(
+            object_u64(
+                &snapshot.review_team,
+                "max_queue_wait_seconds",
+                DEFAULT_REVIEW_QUEUE_WAIT_SECS
+            ),
+            300
+        );
+    }
+
+    /// A2 (G-SE5): every level keeps the ratio it has to the default level on
+    /// the web, and `default` is the shell's own base so the setting starts as
+    /// a no-op.
+    #[test]
+    fn ui_font_levels_scale_from_the_shell_base() {
+        assert_eq!(ui_font_rem_px("default", None), SHELL_BASE_REM_PX);
+        let compact = ui_font_rem_px("compact", None);
+        assert!((compact - SHELL_BASE_REM_PX * 12. / 14.).abs() < 1e-6);
+        assert!(compact < ui_font_rem_px("small", None));
+        assert!(ui_font_rem_px("small", None) < ui_font_rem_px("medium", None));
+        assert!(ui_font_rem_px("medium", None) < ui_font_rem_px("large", None));
+        // An unknown level renders as the default size rather than failing.
+        assert_eq!(ui_font_rem_px("future-level", None), SHELL_BASE_REM_PX);
+        // The custom level reads `customPx`, clamped onto the web's 12-20.
+        assert_eq!(ui_font_base_px("custom", Some(17)), 17);
+        assert_eq!(ui_font_base_px("custom", Some(4)), MIN_UI_FONT_PX);
+        assert_eq!(ui_font_base_px("custom", Some(99)), MAX_UI_FONT_PX);
+        assert_eq!(ui_font_base_px("custom", None), DEFAULT_UI_FONT_PX);
+    }
+
+    /// A2 (G-SE5): the persisted document matches the web `FontPreference`
+    /// shape — `customPx` only on the custom level.
+    #[test]
+    fn ui_font_preference_document_matches_the_web_shape() {
+        assert_eq!(
+            ui_font_preference_value("large", None),
+            serde_json::json!({ "uiSize": { "level": "large" } })
+        );
+        assert_eq!(
+            ui_font_preference_value("custom", Some(21)),
+            serde_json::json!({ "uiSize": { "level": "custom", "customPx": 20 } })
+        );
+    }
+
+    /// A2 (G-SE5): a stored level the shell does not render stays selectable
+    /// verbatim, the same tolerance the close-behavior and appearance rows
+    /// give their own unsupported values.
+    #[test]
+    fn ui_font_level_options_keep_a_stored_unknown_level() {
+        let text = sample_text();
+        let known = ui_font_level_options("medium", &text);
+        assert_eq!(known[0].0.as_ref(), "compact");
+        assert_eq!(known[1].1.as_ref(), text.ui_font_level_small);
+        assert_eq!(known.last().map(|(id, _)| id.as_ref()), Some("custom"));
+
+        let unknown = ui_font_level_options("gigantic", &text);
+        assert_eq!(unknown[0].0.as_ref(), "gigantic");
+        assert!(unknown[0].1.contains(&text.value_unsupported));
+        assert_eq!(unknown.len(), UI_FONT_LEVELS.len() + 2);
+    }
+
+    /// A2 (G-SE19): both concurrency rows accept exactly the web range.
+    #[test]
+    fn concurrency_limits_cover_the_web_domains() {
+        assert_eq!(clamp_concurrency(1., MAX_SUBAGENT_CONCURRENCY), Some(1));
+        assert_eq!(clamp_concurrency(5., MAX_SUBAGENT_CONCURRENCY), Some(5));
+        assert_eq!(clamp_concurrency(32., MAX_SUBAGENT_CONCURRENCY), Some(32));
+        assert_eq!(clamp_concurrency(0., MAX_SUBAGENT_CONCURRENCY), None);
+        assert_eq!(clamp_concurrency(33., MAX_SUBAGENT_CONCURRENCY), None);
+        assert_eq!(clamp_concurrency(f64::NAN, MAX_SUBAGENT_CONCURRENCY), None);
+        assert_eq!(clamp_concurrency(64., MAX_SWARM_CONCURRENCY), Some(64));
+        assert_eq!(clamp_concurrency(65., MAX_SWARM_CONCURRENCY), None);
+        assert_eq!(clamp_concurrency(5.6, MAX_SWARM_CONCURRENCY), Some(6));
+    }
+
+    /// A2 (G-SE19): the model choice round-trips through the shared document
+    /// shape (`inherit` | a model id).
+    #[test]
+    fn subagent_model_choices_round_trip_through_the_shared_shape() {
+        use openbitfun_core::service::config::types::SubagentModelSelection;
+        assert_eq!(
+            subagent_model_choice(&subagent_model_selection("inherit")),
+            "inherit"
+        );
+        assert_eq!(
+            subagent_model_choice(&subagent_model_selection("fast")),
+            "fast"
+        );
+        assert_eq!(
+            subagent_model_choice(&subagent_model_selection("primary")),
+            "primary"
+        );
+        assert_eq!(
+            serde_json::to_value(subagent_model_selection("inherit")).unwrap(),
+            serde_json::json!({ "kind": "inherit" })
+        );
+        assert_eq!(
+            serde_json::to_value(subagent_model_selection("model-x")).unwrap(),
+            serde_json::json!({ "kind": "fixed", "model_id": "model-x" })
+        );
+        assert_eq!(
+            subagent_model_choice(&SubagentModelSelection::fixed("model-y")),
+            "model-y"
+        );
+    }
+
+    /// A2 (G-SE19): a stored batch policy outside the two the web renders (the
+    /// core enum's `serial`) stays visible instead of being rewritten.
+    #[test]
+    fn subagent_batch_options_keep_an_unlisted_policy() {
+        let text = sample_text();
+        let listed = subagent_batch_options("force_parallel", &text);
+        assert_eq!(listed.len(), SUBAGENT_BATCH_POLICIES.len());
+        assert_eq!(listed[0].0.as_ref(), "safe_only");
+        assert_eq!(listed[0].1.as_ref(), text.settings_subagent_batch_safe);
+
+        let unlisted = subagent_batch_options("serial", &text);
+        assert_eq!(unlisted.len(), SUBAGENT_BATCH_POLICIES.len() + 1);
+        assert_eq!(unlisted[0].0.as_ref(), "serial");
+        assert!(unlisted[0].1.contains(&text.value_unsupported));
+    }
+
+    /// A2 (G-SE11/G-SE22): the merge keeps keys this build does not know, so a
+    /// document written by a newer surface survives an older shell's edit.
+    #[test]
+    fn object_merges_keep_keys_this_build_does_not_know() {
+        let stored = serde_json::json!({ "url": "http://old", "future_key": { "a": 1 } });
+        let merged = merged_object_value(&stored, "url", serde_json::json!("http://new"));
+        assert_eq!(merged["url"], serde_json::json!("http://new"));
+        assert_eq!(merged["future_key"], serde_json::json!({ "a": 1 }));
+
+        // A missing document starts one; a non-object value is replaced.
+        assert_eq!(
+            merged_object_value(&serde_json::Value::Null, "enabled", serde_json::json!(true)),
+            serde_json::json!({ "enabled": true })
+        );
+        assert_eq!(
+            merged_object_value(
+                &serde_json::json!("junk"),
+                "enabled",
+                serde_json::json!(false)
+            ),
+            serde_json::json!({ "enabled": false })
+        );
+    }
+
+    /// A2 (G-SE22): the capacity readers fall back to the shared defaults for
+    /// a missing document or a value of the wrong type.
+    #[test]
+    fn object_readers_fall_back_to_the_shared_defaults() {
+        assert_eq!(
+            object_u64(&serde_json::Value::Null, "max_parallel_reviewers", 2),
+            2
+        );
+        assert_eq!(
+            object_u64(&serde_json::json!({}), "max_queue_wait_seconds", 1200),
+            1200
+        );
+        assert_eq!(
+            object_u64(
+                &serde_json::json!({ "max_queue_wait_seconds": "soon" }),
+                "max_queue_wait_seconds",
+                1200
+            ),
+            1200
+        );
+        assert_eq!(
+            object_u64(
+                &serde_json::json!({ "max_parallel_reviewers": 1 }),
+                "max_parallel_reviewers",
+                2
+            ),
+            1
+        );
+    }
+
+    /// A2 (G-SE11): the proxy readers treat a missing document as "off with
+    /// empty fields", the same defaults the shared type carries.
+    #[test]
+    fn proxy_readers_tolerate_a_missing_document() {
+        assert!(!proxy_enabled(&serde_json::Value::Null));
+        assert!(!proxy_enabled(&serde_json::json!({})));
+        assert!(!proxy_enabled(&serde_json::json!({ "enabled": "yes" })));
+        assert!(proxy_enabled(&serde_json::json!({ "enabled": true })));
+        assert_eq!(proxy_text(&serde_json::Value::Null, "url"), "");
+        assert_eq!(proxy_text(&serde_json::json!({ "url": 7 }), "url"), "");
+        assert_eq!(proxy_text(&serde_json::json!({ "url": "x" }), "url"), "x");
     }
 
     #[test]

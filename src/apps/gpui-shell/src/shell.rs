@@ -8037,6 +8037,10 @@ fn permission_footer(
 
 impl Render for ShellWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // G-SE5: every path that can change the UI size (first frame, config
+        // snapshot, live switch) repaints, so the em size is applied here —
+        // the one place each window passes through with a mutable window.
+        settings::apply_ui_font_size(window, cx);
         if let Some(draft) = self.pending_composer_draft.take() {
             // Composer text staged by another surface (G-G1 git init card):
             // `set_value` needs the window, which only render holds.
@@ -10501,6 +10505,81 @@ mod tests {
             },
         );
         window.run_until_parked();
+    }
+
+    /// A2: the pages that gained fields (appearance font size, model
+    /// timeouts/proxy, execution timeouts/subagents/tool switches/review
+    /// capacity) build and lay out against the shell globals. Rendering the
+    /// page runs every field's getter, so a broken read shows up here rather
+    /// than in the Xvfb smoke; the section headings carry the selectors.
+    #[gpui_kit::test]
+    fn settings_new_field_pages_lay_out(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            let presets = theme::load_presets();
+            let active = presets
+                .iter()
+                .position(|preset| preset.id == DEFAULT_PRESET_ID)
+                .unwrap_or(0);
+            if let Some(preset) = presets.get(active) {
+                preset.apply(cx);
+            }
+            cx.set_global(ShellState {
+                presets,
+                active_preset: active,
+            });
+            cx.set_global(settings::ShellConfig::startup_default(LocaleId::ZhCN));
+            cx.set_global(sample_shell_text());
+        });
+        let text = sample_shell_text();
+        let (ttx, trx) = mpsc::unbounded_channel();
+        let shell_view = cx.add_empty_window().update(|window, cx| {
+            cx.new(|cx| ShellWindow::new(ttx, trx, window, cx))
+                .downgrade()
+        });
+
+        let cases: &[(settings::SettingsEntry, &[&str])] = &[
+            (settings::SettingsEntry::Appearance, &[]),
+            (
+                settings::SettingsEntry::Models,
+                &["settings-section-stream", "settings-section-proxy"],
+            ),
+            (
+                settings::SettingsEntry::Permissions,
+                &[
+                    "settings-section-execution",
+                    "settings-section-subagents",
+                    "settings-section-deferred-tools",
+                    "settings-section-json-repair",
+                    "settings-section-review-capacity",
+                ],
+            ),
+        ];
+        for (page, sections) in cases {
+            let mut window = cx.add_empty_window();
+            let text = text.clone();
+            let view = shell_view.clone();
+            let page = *page;
+            window.draw(
+                point(px(0.), px(0.)),
+                size(px(900.), px(600.)),
+                move |_, cx| {
+                    cx.new(|_| SettingsHarness {
+                        text: text.clone(),
+                        view: view.clone(),
+                        page,
+                    })
+                    .into_any_element()
+                },
+            );
+            window.run_until_parked();
+            for selector in *sections {
+                assert!(
+                    window.debug_bounds(selector).is_some(),
+                    "{page:?} renders {selector}"
+                );
+            }
+        }
     }
 
     /// The settings scene owns the nav column: the tree lists the registry

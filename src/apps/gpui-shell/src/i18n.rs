@@ -703,6 +703,69 @@ pub(crate) struct ShellText {
     pub plugin_ui_removed: String,
     pub plugin_ui_rejected: String,
     pub plugin_ui_timeout: String,
+    /// A2 (settings small fields, G-SE5/G-SE10/G-SE11/G-SE18..G-SE22): the
+    /// appearance, model, and execution-page copy.
+    pub settings_ui_font: String,
+    pub settings_ui_font_description: String,
+    pub ui_font_level_compact: String,
+    pub ui_font_level_small: String,
+    pub ui_font_level_default: String,
+    pub ui_font_level_medium: String,
+    pub ui_font_level_large: String,
+    pub ui_font_level_custom: String,
+    pub settings_ui_font_custom: String,
+    pub settings_ui_font_custom_description: String,
+    pub settings_stream_section: String,
+    pub settings_stream_section_note: String,
+    pub settings_stream_ttft: String,
+    pub settings_stream_ttft_description: String,
+    pub settings_stream_idle: String,
+    pub settings_stream_idle_description: String,
+    pub settings_proxy_section: String,
+    pub settings_proxy_section_note: String,
+    pub settings_proxy_enable: String,
+    pub settings_proxy_enable_description: String,
+    pub settings_proxy_url: String,
+    pub settings_proxy_url_description: String,
+    pub settings_proxy_username: String,
+    pub settings_proxy_password: String,
+    pub settings_proxy_password_description: String,
+    pub settings_execution_section: String,
+    pub settings_execution_section_note: String,
+    pub settings_tool_timeout: String,
+    pub settings_tool_timeout_description: String,
+    pub settings_question_timeout: String,
+    pub settings_question_timeout_description: String,
+    pub settings_subagents_section: String,
+    pub settings_subagents_section_note: String,
+    pub settings_subagent_model: String,
+    pub settings_subagent_model_description: String,
+    pub settings_subagent_model_inherit: String,
+    pub settings_subagent_model_fast: String,
+    pub settings_subagent_model_primary: String,
+    pub settings_subagent_batch: String,
+    pub settings_subagent_batch_safe: String,
+    pub settings_subagent_batch_safe_description: String,
+    pub settings_subagent_batch_parallel: String,
+    pub settings_subagent_batch_parallel_description: String,
+    pub settings_subagent_concurrency: String,
+    pub settings_subagent_concurrency_description: String,
+    pub settings_swarm_concurrency: String,
+    pub settings_swarm_concurrency_description: String,
+    pub settings_deferred_tools_section: String,
+    pub settings_deferred_tools_section_note: String,
+    pub settings_deferred_tools_enable: String,
+    pub settings_deferred_tools_warning: String,
+    pub settings_json_repair_section: String,
+    pub settings_json_repair_section_note: String,
+    pub settings_json_repair: String,
+    pub settings_json_repair_description: String,
+    pub settings_review_capacity_section: String,
+    pub settings_review_capacity_section_note: String,
+    pub settings_review_parallelism: String,
+    pub settings_review_parallelism_description: String,
+    pub settings_review_queue_wait: String,
+    pub settings_review_queue_wait_description: String,
 }
 
 impl Global for ShellText {}
@@ -1856,6 +1919,67 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         plugin_ui_removed: "Contribution removed".to_string(),
         plugin_ui_rejected: "Plugin UI update rejected".to_string(),
         plugin_ui_timeout: "Plugin interaction timed out".to_string(),
+        settings_ui_font: "Interface and chat".to_string(),
+        settings_ui_font_description: "Applies to the interface and chat text; the default level is the size the shell used before this setting.".to_string(),
+        ui_font_level_compact: "Compact".to_string(),
+        ui_font_level_small: "Small".to_string(),
+        ui_font_level_default: "Default".to_string(),
+        ui_font_level_medium: "Medium".to_string(),
+        ui_font_level_large: "Large".to_string(),
+        ui_font_level_custom: "Custom".to_string(),
+        settings_ui_font_custom: "Custom size (12-20 px)".to_string(),
+        settings_ui_font_custom_description: "Interface text size in device pixels; the web interface stores and applies the same value.".to_string(),
+        settings_stream_section: "Model response timeouts".to_string(),
+        settings_stream_section_note: "Changes take effect on the next turn.".to_string(),
+        settings_stream_ttft: "First response timeout (seconds)".to_string(),
+        settings_stream_ttft_description: "Longest wait for the first streamed chunk; 0 waits indefinitely.".to_string(),
+        settings_stream_idle: "Response idle timeout (seconds)".to_string(),
+        settings_stream_idle_description: "Longest gap between streamed chunks; 0 waits indefinitely.".to_string(),
+        settings_proxy_section: "Proxy".to_string(),
+        settings_proxy_section_note: "When enabled, AI requests are sent through the proxy.".to_string(),
+        settings_proxy_enable: "Enable proxy".to_string(),
+        settings_proxy_enable_description: "Applies to new requests; a turn already streaming keeps its connection.".to_string(),
+        settings_proxy_url: "Proxy URL".to_string(),
+        settings_proxy_url_description: "HTTP / HTTPS / SOCKS5, e.g. http://127.0.0.1:7890 or socks5://127.0.0.1:1080".to_string(),
+        settings_proxy_username: "Username (optional)".to_string(),
+        settings_proxy_password: "Password (optional)".to_string(),
+        settings_proxy_password_description: "Proxy authentication password, stored in the shared config file and shown here in clear text.".to_string(),
+        settings_execution_section: "Tool execution".to_string(),
+        settings_execution_section_note: "Tool execution and waiting for an answer have separate timers; 0 removes that limit.".to_string(),
+        settings_tool_timeout: "Tool timeout (seconds)".to_string(),
+        settings_tool_timeout_description: "Longest a single tool operation may run; 0 waits indefinitely.".to_string(),
+        settings_question_timeout: "Question timeout (seconds)".to_string(),
+        settings_question_timeout_description: "Longest wait for you to start answering a question; 0 waits indefinitely.".to_string(),
+        settings_subagents_section: "Subagents".to_string(),
+        settings_subagents_section_note: "Regular subagents and Swarm use separate concurrency limits.".to_string(),
+        settings_subagent_model: "Default subagent model".to_string(),
+        settings_subagent_model_description: "Used by subagents without an individual model override.".to_string(),
+        settings_subagent_model_inherit: "Inherit parent session".to_string(),
+        settings_subagent_model_fast: "Fast model".to_string(),
+        settings_subagent_model_primary: "Primary model".to_string(),
+        settings_subagent_batch: "Task concurrency".to_string(),
+        settings_subagent_batch_safe: "Safe parallel".to_string(),
+        settings_subagent_batch_safe_description: "Run tasks together only when they do not modify content.".to_string(),
+        settings_subagent_batch_parallel: "Prefer parallel".to_string(),
+        settings_subagent_batch_parallel_description: "Run multiple tasks together whenever possible.".to_string(),
+        settings_subagent_concurrency: "Concurrent task limit".to_string(),
+        settings_subagent_concurrency_description: "Maximum number of regular subagent tasks running at once.".to_string(),
+        settings_swarm_concurrency: "Swarm worker concurrency".to_string(),
+        settings_swarm_concurrency_description: "Concurrency limit for worker and reviewer agents in Swarm.".to_string(),
+        settings_deferred_tools_section: "Load tools as needed".to_string(),
+        settings_deferred_tools_section_note: "Provide tool details to the model on demand to reduce context usage.".to_string(),
+        settings_deferred_tools_enable: "Enable".to_string(),
+        settings_deferred_tools_warning: "Turning this off loads every tool definition and may increase model usage.".to_string(),
+        settings_json_repair_section: "Tool Argument JSON Repair".to_string(),
+        settings_json_repair_section_note: "Applies to the next model round.".to_string(),
+        settings_json_repair: "Repair malformed tool arguments".to_string(),
+        settings_json_repair_description: "Attempt to repair argument JSON only after the provider reports a completed tool call; repair runs before normal tool validation.".to_string(),
+        settings_review_capacity_section: "Review capacity".to_string(),
+        settings_review_capacity_section_note: "Control how supplemental reviews use model capacity; changing concurrency keeps the review scope unchanged.".to_string(),
+        settings_review_parallelism: "Review parallelism".to_string(),
+        settings_review_parallelism_description: "Run supplemental review tasks one at a time or two at once.".to_string(),
+        settings_review_queue_wait: "Capacity wait time".to_string(),
+        settings_review_queue_wait_description: "How long optional reviews wait for provider capacity; excludes checks already running.".to_string(),
     }
 }
 
@@ -2631,6 +2755,111 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         plugin_ui_removed: service.t("gpui-shell-plugin-ui-removed").await,
         plugin_ui_rejected: service.t("gpui-shell-plugin-ui-rejected").await,
         plugin_ui_timeout: service.t("gpui-shell-plugin-ui-timeout").await,
+        settings_ui_font: service.t("gpui-shell-settings-ui-font").await,
+        settings_ui_font_description: service.t("gpui-shell-settings-ui-font-desc").await,
+        ui_font_level_compact: service.t("gpui-shell-ui-font-level-compact").await,
+        ui_font_level_small: service.t("gpui-shell-ui-font-level-small").await,
+        ui_font_level_default: service.t("gpui-shell-ui-font-level-default").await,
+        ui_font_level_medium: service.t("gpui-shell-ui-font-level-medium").await,
+        ui_font_level_large: service.t("gpui-shell-ui-font-level-large").await,
+        ui_font_level_custom: service.t("gpui-shell-ui-font-level-custom").await,
+        settings_ui_font_custom: service.t("gpui-shell-settings-ui-font-custom").await,
+        settings_ui_font_custom_description: service
+            .t("gpui-shell-settings-ui-font-custom-desc")
+            .await,
+        settings_stream_section: service.t("gpui-shell-settings-stream-section").await,
+        settings_stream_section_note: service.t("gpui-shell-settings-stream-section-note").await,
+        settings_stream_ttft: service.t("gpui-shell-settings-stream-ttft").await,
+        settings_stream_ttft_description: service.t("gpui-shell-settings-stream-ttft-desc").await,
+        settings_stream_idle: service.t("gpui-shell-settings-stream-idle").await,
+        settings_stream_idle_description: service.t("gpui-shell-settings-stream-idle-desc").await,
+        settings_proxy_section: service.t("gpui-shell-settings-proxy-section").await,
+        settings_proxy_section_note: service.t("gpui-shell-settings-proxy-section-note").await,
+        settings_proxy_enable: service.t("gpui-shell-settings-proxy-enable").await,
+        settings_proxy_enable_description: service.t("gpui-shell-settings-proxy-enable-desc").await,
+        settings_proxy_url: service.t("gpui-shell-settings-proxy-url").await,
+        settings_proxy_url_description: service.t("gpui-shell-settings-proxy-url-desc").await,
+        settings_proxy_username: service.t("gpui-shell-settings-proxy-username").await,
+        settings_proxy_password: service.t("gpui-shell-settings-proxy-password").await,
+        settings_proxy_password_description: service
+            .t("gpui-shell-settings-proxy-password-desc")
+            .await,
+        settings_execution_section: service.t("gpui-shell-settings-execution-section").await,
+        settings_execution_section_note: service
+            .t("gpui-shell-settings-execution-section-note")
+            .await,
+        settings_tool_timeout: service.t("gpui-shell-settings-tool-timeout").await,
+        settings_tool_timeout_description: service.t("gpui-shell-settings-tool-timeout-desc").await,
+        settings_question_timeout: service.t("gpui-shell-settings-question-timeout").await,
+        settings_question_timeout_description: service
+            .t("gpui-shell-settings-question-timeout-desc")
+            .await,
+        settings_subagents_section: service.t("gpui-shell-settings-subagents-section").await,
+        settings_subagents_section_note: service
+            .t("gpui-shell-settings-subagents-section-note")
+            .await,
+        settings_subagent_model: service.t("gpui-shell-settings-subagent-model").await,
+        settings_subagent_model_description: service
+            .t("gpui-shell-settings-subagent-model-desc")
+            .await,
+        settings_subagent_model_inherit: service
+            .t("gpui-shell-settings-subagent-model-inherit")
+            .await,
+        settings_subagent_model_fast: service.t("gpui-shell-settings-subagent-model-fast").await,
+        settings_subagent_model_primary: service
+            .t("gpui-shell-settings-subagent-model-primary")
+            .await,
+        settings_subagent_batch: service.t("gpui-shell-settings-subagent-batch").await,
+        settings_subagent_batch_safe: service.t("gpui-shell-settings-subagent-batch-safe").await,
+        settings_subagent_batch_safe_description: service
+            .t("gpui-shell-settings-subagent-batch-safe-desc")
+            .await,
+        settings_subagent_batch_parallel: service
+            .t("gpui-shell-settings-subagent-batch-parallel")
+            .await,
+        settings_subagent_batch_parallel_description: service
+            .t("gpui-shell-settings-subagent-batch-parallel-desc")
+            .await,
+        settings_subagent_concurrency: service.t("gpui-shell-settings-subagent-concurrency").await,
+        settings_subagent_concurrency_description: service
+            .t("gpui-shell-settings-subagent-concurrency-desc")
+            .await,
+        settings_swarm_concurrency: service.t("gpui-shell-settings-swarm-concurrency").await,
+        settings_swarm_concurrency_description: service
+            .t("gpui-shell-settings-swarm-concurrency-desc")
+            .await,
+        settings_deferred_tools_section: service
+            .t("gpui-shell-settings-deferred-tools-section")
+            .await,
+        settings_deferred_tools_section_note: service
+            .t("gpui-shell-settings-deferred-tools-section-note")
+            .await,
+        settings_deferred_tools_enable: service
+            .t("gpui-shell-settings-deferred-tools-enable")
+            .await,
+        settings_deferred_tools_warning: service
+            .t("gpui-shell-settings-deferred-tools-warning")
+            .await,
+        settings_json_repair_section: service.t("gpui-shell-settings-json-repair-section").await,
+        settings_json_repair_section_note: service
+            .t("gpui-shell-settings-json-repair-section-note")
+            .await,
+        settings_json_repair: service.t("gpui-shell-settings-json-repair").await,
+        settings_json_repair_description: service.t("gpui-shell-settings-json-repair-desc").await,
+        settings_review_capacity_section: service
+            .t("gpui-shell-settings-review-capacity-section")
+            .await,
+        settings_review_capacity_section_note: service
+            .t("gpui-shell-settings-review-capacity-section-note")
+            .await,
+        settings_review_parallelism: service.t("gpui-shell-settings-review-parallelism").await,
+        settings_review_parallelism_description: service
+            .t("gpui-shell-settings-review-parallelism-desc")
+            .await,
+        settings_review_queue_wait: service.t("gpui-shell-settings-review-queue-wait").await,
+        settings_review_queue_wait_description: service
+            .t("gpui-shell-settings-review-queue-wait-desc")
+            .await,
     }
 }
 

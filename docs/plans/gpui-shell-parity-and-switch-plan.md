@@ -103,12 +103,12 @@ trinity/desktop-control/acp 八类**不出树**（无假入口；后续补页时
 
 | 类别 | 页面 | 状态 |
 |---|---|---|
-| application | general、appearance、terminal | 已支持（general：启动自启/关闭行为/任务完成通知开关/更新检查每日门控；appearance：语言/主题/appearance id；terminal：4 个共享键） |
+| application | general、appearance、terminal | 已支持（general：启动自启/关闭行为/任务完成通知开关/更新检查每日门控；appearance：语言/主题/appearance id/**界面字号档位 G-SE5**；terminal：4 个共享键） |
 | application | pet、voice、shortcuts、editor | 缺（pet/voice 与壳定位无关；shortcuts / editor 后置） |
-| ai | models | 已支持（provider/key/模型选择页） |
+| ai | models | 已支持（provider/key/模型选择页/**流空闲与首字超时 G-SE10、代理 G-SE11**） |
 | ai | memory、trinity engine | 缺（trinity 属 T2-15） |
 | workspace | 会话/工作区搜索、worktrees | 缺（会话搜索已走全局搜索面；worktrees 走 Git 面板） |
-| tools | execution、automation、webSearch、mcp | 已支持（execution：预设 + 自动批准；automation：hooks 总开关/项目级开关/git co-author，quick actions 经聊天头部菜单只读消费 T2-10；webSearch：provider/HTTP 端点表单 T2-9；mcp：管理页 + 交互 + JSON 编辑 T2-7） |
+| tools | execution、automation、webSearch、mcp | 已支持（execution：预设 + 自动批准/**工具与提问超时、子智能体默认模型与批量策略、两个并发上限、按需加载工具、参数 JSON 修复、审核容量 G-SE18–G-SE22**；automation：hooks 总开关/项目级开关/git co-author，quick actions 经聊天头部菜单只读消费 T2-10；webSearch：provider/HTTP 端点表单 T2-9；mcp：管理页 + 交互 + JSON 编辑 T2-7） |
 | tools | acp、desktop-control | 缺 |
 | data | usage statistics、archived sessions、diagnostics/logging | 已支持（usage：数字面 + 趋势图/热力图；archived：列表/恢复/删除/全删 T1-4；diagnostics：日志级别 + 会话日志目录 + 导出诊断包 T2-13。壳日志无敏感数据门控，web 的 include_sensitive_diagnostics 开关不复制——该开关在壳内无对应行为，复制即假开关） |
 
@@ -343,6 +343,7 @@ domain prism token；② 工具栏锚位 = 组件右上动作簇（语言标签�
 
 | 日期 | 变更 |
 |---|---|
+| 2026-10-15 | **界面 1:1 整改 A 批 2（设置小字段）部分交付**：外观页界面字号（G-SE5，渲染侧 `set_rem_size`，默认档 = 壳原有字号）、模型页流超时 + 代理（G-SE10/G-SE11）、执行与权限页工具/提问超时 + 子智能体四键 + 按需加载工具 + JSON 修复 + 审核容量（G-SE18–G-SE22）；G-SE30 暂缓（需跨工作区归档投影）、G-SE31 因未登记 WIP 未动（见整改计划 §6.1 W-4）；ftl 800→861 ×3；证据帧 `a2-01..09`（Xvfb :190 冒烟 0 panic/0 缺资产，含切「大」档整壳放大与代理/子代理模型写面落盘核对）；§2.1 三行按本批改判并补注 |
 | 2026-10-15 | **界面 1:1 整改 A 批 3（场景小项）交付**（`5867bdf25`，会话 74）：任务看板日详情面板 + 行徽标/不可执行分区（G-P2/G-P3）、洞察范围 7/14/30/90 + 模型选择 + 历史 meta 卡 + 建议三段复制（G-I1/G-I5/G-I6）、技能搜索 + 隐藏重复项（G-K5）、智能体搜索 + 来源/类型过滤（G-A5）、Trinity 记忆行内修正 + 词汇量（G-Y5/G-Y6）；G-Y4（原生文件对话框）/G-A3/G-A6/G-M2 判为暂缓（理由见整改计划 §3.1）；§2 行 17/18/19/20/36 按本批改判并补注 |
 | 2026-10-09 | 首个基线（M10 第 1 会话）：704 命令域统计、19 场景矩阵、P0/P1/P2 分级、M-A/B/C 机制设计 |
 | 2026-10-09 | **三项拍板（M10 收口，公子亲手选定）**：① P0 立项为里程碑 M11（验收于开工时冻结）；② feed 维持显式 `--update-manifest`，切换拍板时同批接入 + minisign；③ 机制 = M-B（落地为里程碑 M12）。切换动作本身待 P0 闭合后终审 |
