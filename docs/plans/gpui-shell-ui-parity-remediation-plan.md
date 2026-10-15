@@ -165,22 +165,36 @@
 - **G-G1 非仓库态（not-a-repository）**：web `GitScene.tsx:143-182` 有 init 引导（把 init 指令填进 chat）；
   壳只有 trust 横幅（`git.rs` trust 族），无 not-a-repo 态。
   动作：读状态失败分类补「非仓库」态与「初始化」动入口。**A 档**。
+  **✅ 交付（2026-10-15，A 批 1，`04a1675c5`）**：port 的 `NotFound` 分类进 `not_a_repository`
+  态，正文换 init 卡（`git.rs::render_not_a_repository`）；按钮经 `ShellWindow::prefill_composer`
+  把 prompt 交给 composer（渲染期才拿得到 `set_value` 要的 window）。证据帧 `g1-02`（卡片）、
+  `g1-03`（点击后 composer 预填）。
 - **G-G2 AI 生成 commit message / quick commit**：web `WorkingCopyView.tsx:157-201,428-470`；
   壳 commit 输入 + 提交已有（`git.rs:536`），无 AI 生成。
   动作：接 core 的 commit-message 生成能力（需确认 SDK 通路）或点名后做。**B 档**。
 - **G-G3 按文件 discard / delete**：web `WorkingCopyView.tsx:477-673` 逐文件 stage/unstage/discard/delete；
   壳已 `stage_file`/`unstage_file`/`stage_all`（`git.rs:505-535`），无 discard/delete。
   动作：补两动作 + 危险确认（远程工作区门控）。**B 档**。
+  **✅ 交付（2026-10-15，A 批 1，`04a1675c5`）**：两段式行内动作（首击「确认恢复/确认删除」danger 钮，
+  次击执行）；tracked 走新 port 方法 `discard_files`（先 unstage 再 restore），untracked 走工作区
+  `FileSystemService::delete_file`（故远程工作区显式禁用）。证据帧 `g1-01`/`g1-04` + 冒烟执行态
+  （`git status` 与工作区文件核验）。
 - **G-G4 branches / graph**：T3-22。web 侧不可达（§1.6），壳侧补 = 净新增；core API 已有。
   动作：壳内补 Branches（创建/切换/删除/复制 hash/重置到提交）与 Graph 视图；如需 1:1 语义，可随后在 web 侧接线同享。
   **B 档（原 T3 大项，因 web 亦不可达降级为 B）**。
 - **G-G5 文件列表 ↔ diff 分隔条拖拽 + 快捷键**：web `WorkingCopyView.tsx:283-380`；
   壳 diff 与列表为固定布局（`git.rs` 无 resizable）。
   动作：主 tab 形态加 `h_resizable`；紧凑面板维持定宽。**A 档**。
+  **✅ 交付（2026-10-15，A 批 1，`04a1675c5`）**：主 tab 文件列 ↔ diff 列共用一条可拖分隔条
+  （`git-files-split`，180–560px），停靠面板仍是单列定宽。
 - **G-G6 pull 与 ahead/behind**：web `WorkingCopyView.tsx:396-425`（分支名 + ahead/behind + pull/push 三件套）；
   壳有分支名展示（`git.rs:1173` 读 `overview.current_branch`）与 push（`git.rs:549`），**无 pull、无 ahead/behind**
   （`git.rs` 全文 grep 零命中）。
   动作：补 `repository_overview` 的 ahead/behind 读数与 pull 动作（远程工作区按既有降级口径）。**A 档**。
+  **✅ 交付（2026-10-15，A 批 1，`04a1675c5`）**：`GitRepositoryOverview` 增 `ahead`/`behind`
+  （`serde(default)`，旧载荷可读），`GitPort` 增 `pull`；overview 改为直读 libgit2（**顺带修掉
+  remotes 恒空的旧缺陷**——它让 push 钮在 overview 落地后恒禁用）。壳侧分支 chip 带 ↑/↓ 徽标
+  （tooltip 说明）+ pull 钮，与 push 同门槛（无 remote 即禁用）。证据帧 `g1-01`（`main ↑1`）。
 
 ### 2.4 文件（G-FL）
 
@@ -189,8 +203,13 @@
   动作：走 core `FileSystemService` 写面（本地工作区）＋远程/peer 显式降级（不做静默）。**B 档**。
 - **G-FL2 树/搜索视图切换**：web FilesPanel 有树 ↔ 搜索两态；壳无（全库搜索在 overlay，文件树无内嵌搜索）。
   动作：files 页加过滤/搜索输入（本地过滤即可，全库搜索已有）。**A 档**。
+  **✅ 交付（2026-10-15，A 批 1，`04a1675c5`）**：树顶过滤框（`files-filter-placeholder`），
+  对已加载行按路径做大小写不敏感过滤（树是懒加载的，全库匹配仍归 Ctrl K overlay），
+  无匹配时出 `files-no-matches` 提示；列表计数随过滤同步重置。
 - **G-FL3 pdf 查看**：web 有（parity §2 行 9）；壳只 text/code/markdown/image（`files.rs:139,153`）。
   动作：pdf 渲染器选型（gpui 无内置）→ 或显式不补。**B 档 / 待点名**。
+  **本轮判定（2026-10-15，A 批 1）：维持待点名**——gpui 无内置渲染器，要补得引入
+  pdfium/mupdf 级原生依赖（远超 A 档），先出选型结论再动；本轮不改。
 - **G-FL4 右面板形态：web = 文件 + 终端上下分栏**（`WorkspaceResourcePanel.tsx:173-199`，可拖拽）；
   壳 = 文件 / 变更（tab 互斥），终端在底部。
   动作：记录为已签形态分歧；若公子要求 1:1，则把终端列表并入右面板（需同时保留底部分栏）。**不补（默认）/ 待点名**。
@@ -360,6 +379,10 @@
 
 - **A 批 1 = Git + 文件**：G-G1（非仓库态）、G-G3 的 discard/delete（若判定可行）、G-G5（splitter）、G-G6（pull/ahead-behind）、
   G-FL2（树搜索）、G-FL3 判定（pdf 选型或显式不补）。
+  **✅ 交付（2026-10-15，`04a1675c5`）**：G-G1 / G-G3 / G-G5 / G-G6 / G-FL2 五项落地，
+  G-FL3 判为维持待点名（见 §2.4）。含 core 侧最小契约扩展（`ahead`/`behind` + `pull` + `discard_files`），
+  壳 298 lib + 5 PTY + 5 update、git 契约 30、runtime-ports 12、i18n:audit 全绿；Xvfb 冒烟 0 panic
+  （证据帧 `docs/plans/assets/gpui-shell-layout-parity/g1-*.png`）。
 - **A 批 2 = 设置小字段**：G-SE5（字号）、G-SE10/G-SE11（流超时/代理）、G-SE18、G-SE20/G-SE21/G-SE22、
   G-SE19（子代理并发 UI）、G-SE30（归档分组）、G-SE31（异常退出提示）。共用同一套 SettingField 范式。
 - **A 批 3 = 场景小项**：G-P2/G-P3（任务日详情/徽标）、G-I1/G-I5/G-I6（洞察小项）、G-Y4/G-Y5/G-Y6（trinity 小项）、
@@ -446,8 +469,9 @@
 - **W-2 并发规模档**：内核血缘批量 API（322ms→~15ms，需动核心）、`ai.max_active_sessions` 配置化、
   1000 已加载会话 RSS 底数、真机千并发压测；壳侧已修（SessionRefresh 调度器 / 事件泵批量化 / Lagged 自愈）。
 - **W-3 真机验收项**：splitter 拖拽、托盘菜单与角标、关闭行为、更新全链、玻璃观感/Shimmer 手感、IME 复验。
-- **W-4 未提交改动**：工作区现有并发规模档改动（`runtime.rs`/`shell.rs` + `examples/session_scale_probe.rs`，HANDOFF-079）
-  待提交，勿与本计划的文档改动混提。
+- **W-4 未提交改动**：并发规模档（`runtime.rs`/`shell.rs` + `examples/session_scale_probe.rs`，HANDOFF-079）
+  **仍在工作区未提交**（该档提交需公子点头）。A 批 1 已在 `04a1675c5` 提交，且**只提交了本批 hunk**
+  （shell.rs 的 7 个 hunk，用 `git apply --cached` 拆出），HANDOFF-079 的改动原样留在工作区并保持可编译。
 
 ### 6.2 小扫尾四项（原 R2c/R2d 余留，归 A 档批 1/批 4）
 
@@ -467,4 +491,5 @@ copy 成功态图标反馈（=G-S2）。
 
 | 日期 | 变更 |
 |---|---|
+| 2026-10-15 | **A 批 1（Git + 文件）交付**（`04a1675c5`）：G-G1 非仓库态卡 + init 填 chat、G-G3 行内 discard/delete（两段式 + 远程降级）、G-G5 文件列↔diff 分隔条、G-G6 ahead/behind 徽标 + pull（顺带修 remotes 恒空）、G-FL2 文件树本地过滤；G-FL3 判为维持待点名。core 侧最小契约扩展：`GitRepositoryOverview` +`ahead`/`behind`、`GitPort` +`pull`/`discard_files`。证据帧 `g1-01..04`（Xvfb 冒烟：徽标/行内动作/armed 态/init 预填 + 执行态核验） |
 | 2026-10-15 | 首版：界面逐一盘点（框架层 8 行 / 主场景 21 项 / 设置 21 页 / 面板与对话框 18 行 / 壳侧独有 3 项 / 死面 5 项）；差距明细 80 余条编号条目（G-*）含双端源码锚点；整改计划 A/B/C 分档 + 不补清单（含拍板来源）；验收口径与建议执行顺序；T3 17-25 与本文编号的映射；工程性尾项（R7c 尾货 / 并发规模 / 真机 / 未提交改动）归并登记 |

@@ -60,7 +60,7 @@
 | 11 | 全局搜索（files / sessions / actions / entities） | search_api(3) + web-ui 全局搜索 | 已支持（子集） | files / sessions 两路已落地（`search.rs`）；actions / entities 两路缺 |
 | 12 | 编辑器与 inline AI | editor_ai_api(2) + web-ui 编辑器 | 缺 | 壳内无编辑器定位，明确后置 |
 | 13 | 终端面板 | terminal_api(14) | 已支持 | 多会话标签 + 停靠分栏 + 命名 profile 编辑（M17；共享 `terminal.*` 键与 desktop 同域） |
-| 14 | Git 面板 | git_api(31)、git_agent_api(3)、diff_api(3) | 已支持（子集） | 状态 + diff + 写操作（stage/commit/push 族）+ history + worktree + 快照恢复 + 信任横幅；graph / branches 图形面缺 |
+| 14 | Git 面板 | git_api(31)、git_agent_api(3)、diff_api(3) | 已支持（子集） | 状态 + diff + 写操作（stage/commit/push 族 + **pull**，2026-10-15）+ history + worktree + 快照恢复 + 信任横幅 + **非仓库态 init 引导**；分支 chip 带 ahead/behind 徽标、行内按文件 discard/delete、文件列↔diff 可拖分隔条（`04a1675c5`）；graph / branches 图形面缺 |
 | 15 | Worktree 管理 | worktree_api(8) | 已支持 | 全生命周期（list/create/remove/recreate/promote/bind）经 git 面板落地 |
 | 16 | 设置页（21 页 / 5 类） | config_api(21)、i18n_api(5) | 部分（13/21） | 🔶见 §2.1 设置缺口明细 |
 | 17 | 定时任务 / 任务看板 | cron_api(5) | 已支持 | 定时任务页 + 看板（`tasks.rs`，core `service/cron` 直调） |
@@ -354,4 +354,5 @@ domain prism token；② 工具栏锚位 = 组件右上动作簇（语言标签�
 | 2026-10-14 | **R9 设置布局 1:1（`d4920fe35`，公子点名：左侧项覆盖侧栏、内容右侧居中）**：设置场景改为「场景导航列」——设置导航替换侧栏（`settings::render_nav`：搜索设置 + 五组分类树，`SettingsNav` 同构；查询折平结果 + 诚实空态）、内容列 680px 居中（`ConfigPageLayout` 同构）、页头改 24px 粗标题 + 新增 15 条页副标题文案（×3 语言，ftl 616→633）、组卡 `GroupBoxVariant::Fill`、去掉重复页名的组标题；顺带修控制列长文案溢出与导航搜索不重绘。壳 282 测绿（+1 无头导航测试、+2 投影断言）；证据 `r9-01..03`（§2.3 证据段）。刻意分歧按矩阵第 10 行「理由」栏在案（单卡片无子分节 / 行内语言随组件 / 列宽 300 / 无脏标记 / 搜索索引面） |
 | 2026-10-13 | **§2.3 矩阵 R8 两行（会话列表投影 + 工作区组头操作）**：侧栏 1:1 尾项落地——分组切换 grouped/all（全平铺跨工作区全局排序 + 行首工作区名 + 无折叠上限）、过滤菜单（排序/显示/筛选 运行中/重置/全部折叠/全部标为已读）、组头 ＋/⋯（新建会话/文件面板/复制路径/在文件管理器打开，异工作区先切后动）。刻意分歧按矩阵各行「理由」栏在案（web-only 段：状态排序、需要处理、工作树/环境/来源、计划任务/项目权限/端口转发/批量管理/助理重置删除）。子项数不变量跨视图保持（平铺 = 首子项 + 空占位子项）；Xvfb 冒烟见 §6 次行 |
 | 2026-10-13 | **§2.3 矩阵第 17 行（侧栏固定区）**：公子点名「要补」——会话区头与视图切换/过滤钮在侧栏滚动后不可达。修法 = 搜索/导航/会话区头整块进 `Sidebar` 固定头槽（列表只剩工作区分组，顺带把子项数常量 +2 也去掉）。先试过「读组件列表偏移、滚过再钉同款行」：`ListState` 键含完整元素 id 栈，壳外读不到（探针实测恒为未滚动），弃用；同源分歧（导航行不随滚动移出）已记入该行 |
+| 2026-10-15 | **A 批 1 落地**（`04a1675c5`，见 `gpui-shell-ui-parity-remediation-plan.md` §2.3/§2.4）：Git 面板补 pull 与 ahead/behind 徽标、非仓库态 init 卡（按钮把 prompt 交给 composer）、按文件 discard/delete（两段式确认）；点 14 行状态同步；`GitPort` 增 `pull`/`discard_files`，`GitRepositoryOverview` 增 `ahead`/`behind`（并修掉 overview remotes 恒空） |
 | 2026-10-15 | **界面逐一 1:1 差距全量盘点 + 整改计划另立新文件**（`gpui-shell-ui-parity-remediation-plan.md`，本文件 §2/§2.3 的能力域与布局矩阵仍为真相源，新文件是其上的界面粒度展开）：逐界面核对双端源码锚点，新增死面考据（GitNav branches/graph、ShellNav、file-viewer scene、trinity-memory 在 web 侧不可达，不作为 1:1 目标）、8 个设置缺页与从未立项的新缺口（助理 persona 面、记忆设置页、Trinity 引擎页、语音输入）、Git pull/ahead-behind 与 not-a-repo 态、任务编辑器、洞察图表/TOC 等；A/B/C 分档 + 每项锚点/动作/验收口径，并登记 T3 17-25 与本文编号的映射。§2 若干行（行 17/18/19/20/21）待下次整表刷新时按新文件差额改判为「子集」 |
