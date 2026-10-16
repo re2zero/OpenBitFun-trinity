@@ -20,12 +20,12 @@ use std::time::Duration;
 use chrono::{Local, TimeZone};
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
 use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
-use gpui_kit::component::{ActiveTheme, Disableable, Sizable};
-use gpui_kit::{div, prelude::*, px, App, SharedString};
+use gpui_kit::component::{ActiveTheme, Disableable, Sizable, StyledExt, WindowExt};
+use gpui_kit::{div, prelude::*, px, App, SharedString, Window};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use crate::i18n::ShellText;
+use crate::i18n::{self, ShellText};
 use crate::runtime::{self, RuntimeEvent};
 
 const FRAME_HEADER_LEN: usize = 4;
@@ -459,6 +459,50 @@ pub(crate) fn need_state(value: f64) -> NeedState {
     }
 }
 
+// ── G-Y4: memory export / import ────────────────────────────────────
+
+/// The outcome of one memory transfer RPC (web T10 `memory.export` /
+/// `memory.import`).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum MemoryTransferOutcome {
+    Exported {
+        nodes: u64,
+        triples: u64,
+        path: String,
+    },
+    Imported {
+        added: u64,
+    },
+    /// The container belongs to another being; the daemon wants an explicit
+    /// retry with `confirm_being_id`.
+    Mismatch {
+        container: String,
+        local: String,
+        path: String,
+    },
+    Failed(String),
+}
+
+/// Extracts both being ids from the daemon's cross-identity guard error (web
+/// `parseBeingIdMismatch` matches the same message).
+pub(crate) fn parse_being_id_mismatch(message: &str) -> Option<(String, String)> {
+    const MARKER: &str = "being_id mismatch: container '";
+    let rest = message.split(MARKER).nth(1)?;
+    let (container, rest) = rest.split_once("' vs local '")?;
+    let (local, _) = rest.split_once('\'')?;
+    Some((container.to_string(), local.to_string()))
+}
+
+/// The default export destination (web `exportFileName`): the trinity-graph
+/// container name under the user's home directory.
+pub(crate) fn default_export_path() -> String {
+    let name = format!("trinity-graph-{}.json", Local::now().format("%Y-%m-%d"));
+    match dirs::home_dir() {
+        Some(home) => home.join(name).display().to_string(),
+        None => name,
+    }
+}
+
 /// Compact `MM-DD HH:mm` rendering for a seconds timestamp.
 pub(crate) fn format_memory_time(timestamp: i64) -> String {
     // Daemon sends seconds; guard against ms-level values anyway.
@@ -507,6 +551,22 @@ pub(crate) struct TrinityPageState {
     /// G-Y5: the last correction verdict — `Some(true)` when the daemon
     /// applied it, `Some(false)` when the original memory was gone.
     pub correction: Option<bool>,
+    /// G-Y4: which transfer dialog is open, and its phase.
+    pub memory_transfer: Option<MemoryTransferKind>,
+    pub memory_transfer_busy: bool,
+    pub memory_transfer_error: Option<String>,
+    /// The cross-identity confirmation awaiting the user
+    /// (container id, local id, path).
+    pub memory_mismatch: Option<(String, String, String)>,
+    /// The last successful transfer line shown inside the section.
+    pub memory_transfer_notice: Option<String>,
+}
+
+/// G-Y4: which memory transfer the dialog performs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MemoryTransferKind {
+    Export,
+    Import,
 }
 
 // ── Rendering ───────────────────────────────────────────────────────
@@ -929,6 +989,38 @@ fn memory_section(
                 }
             }),
     );
+    // G-Y4: export / import through the daemon (web memory section actions;
+    // the shell types the path instead of using a native file dialog).
+    let export_view = view.clone();
+    actions = actions.child(
+        Button::new("trinity-memory-export")
+            .label(text.trinity_memory_export.clone())
+            .small()
+            .with_variant(ButtonVariant::Ghost)
+            .on_click(move |_, window, cx| {
+                open_memory_transfer_dialog(
+                    export_view.clone(),
+                    MemoryTransferKind::Export,
+                    window,
+                    cx,
+                );
+            }),
+    );
+    let import_view = view.clone();
+    actions = actions.child(
+        Button::new("trinity-memory-import")
+            .label(text.trinity_memory_import.clone())
+            .small()
+            .with_variant(ButtonVariant::Ghost)
+            .on_click(move |_, window, cx| {
+                open_memory_transfer_dialog(
+                    import_view.clone(),
+                    MemoryTransferKind::Import,
+                    window,
+                    cx,
+                );
+            }),
+    );
     header = header.child(actions);
     section = section.child(header);
 
@@ -955,6 +1047,17 @@ fn memory_section(
                 .text_color(tone)
                 .debug_selector(|| "trinity-correction-notice".to_string())
                 .child(label),
+        );
+    }
+
+    // G-Y4: the last export/import result (the web raises a toast).
+    if let Some(notice) = &state.memory_transfer_notice {
+        section = section.child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().success)
+                .debug_selector(|| "trinity-memory-transfer-notice".to_string())
+                .child(notice.clone()),
         );
     }
 
@@ -1385,10 +1488,218 @@ fn need_label(key: &str, text: &ShellText) -> String {
     }
 }
 
+/// G-Y4: opens the memory export/import dialog. The daemon owns the file and
+/// the shell supplies a typed path (the native file picker is unavailable in
+/// the shell — the 打开项目 dialog takes the same stand-in). A cross-identity
+/// import re-renders this dialog as an explicit confirmation instead of
+/// retrying on the fly.
+pub(crate) fn open_memory_transfer_dialog(
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    kind: MemoryTransferKind,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(shell) = view.upgrade() else {
+        return;
+    };
+    let path_input = shell.read(cx).trinity_transfer_path.clone();
+    let prefill = if kind == MemoryTransferKind::Export {
+        default_export_path()
+    } else {
+        String::new()
+    };
+    path_input.update(cx, |state, cx| state.set_value(prefill, window, cx));
+    shell.update(cx, |shell, cx| {
+        shell.trinity.memory_transfer = Some(kind);
+        shell.trinity.memory_transfer_busy = false;
+        shell.trinity.memory_transfer_error = None;
+        shell.trinity.memory_mismatch = None;
+        shell.trinity.memory_transfer_notice = None;
+        cx.notify();
+    });
+
+    let cancel_view = view.clone();
+    let cancel = move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
+        if let Some(shell) = cancel_view.upgrade() {
+            shell.update(cx, |shell, cx| {
+                shell.trinity.memory_transfer = None;
+                shell.trinity.memory_mismatch = None;
+                shell.trinity.memory_transfer_error = None;
+                shell.trinity.memory_transfer_busy = false;
+                cx.notify();
+            });
+        }
+        window.close_dialog(cx);
+    };
+    let confirm_view = view.clone();
+    let confirm_path = path_input.clone();
+    let confirm = move |_: &gpui_kit::ClickEvent, _window: &mut Window, cx: &mut App| {
+        let Some(shell) = confirm_view.upgrade() else {
+            return;
+        };
+        let (kind, mismatch) = {
+            let shell = shell.read(cx);
+            (
+                shell.trinity.memory_transfer,
+                shell.trinity.memory_mismatch.clone(),
+            )
+        };
+        let Some(kind) = kind else {
+            return;
+        };
+        let Some(handle) = runtime::runtime_handle() else {
+            tracing::error!("Runtime unavailable during a trinity memory transfer");
+            return;
+        };
+        // The confirmation phase retries the same path with the daemon's
+        // force flag (web `importFromPath(path, true)`).
+        if let Some((_, _, path)) = mismatch {
+            shell.update(cx, |shell, cx| {
+                shell.trinity.memory_transfer_busy = true;
+                shell.trinity.memory_transfer_error = None;
+                cx.notify();
+            });
+            handle.trinity_memory_import(path, true);
+            return;
+        }
+        let path = confirm_path.read(cx).value().trim().to_string();
+        if path.is_empty() {
+            let message = i18n::current(cx).trinity_memory_path_required.clone();
+            shell.update(cx, |shell, cx| {
+                shell.trinity.memory_transfer_error = Some(message);
+                cx.notify();
+            });
+            return;
+        }
+        shell.update(cx, |shell, cx| {
+            shell.trinity.memory_transfer_busy = true;
+            shell.trinity.memory_transfer_error = None;
+            cx.notify();
+        });
+        match kind {
+            MemoryTransferKind::Export => handle.trinity_memory_export(path),
+            MemoryTransferKind::Import => handle.trinity_memory_import(path, false),
+        }
+    };
+
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let text = i18n::current(cx);
+        let Some(shell) = view.upgrade() else {
+            return dialog;
+        };
+        let (kind, busy, error, mismatch) = {
+            let shell = shell.read(cx);
+            (
+                shell.trinity.memory_transfer,
+                shell.trinity.memory_transfer_busy,
+                shell.trinity.memory_transfer_error.clone(),
+                shell.trinity.memory_mismatch.clone(),
+            )
+        };
+        let Some(kind) = kind else {
+            return dialog;
+        };
+        let title = match kind {
+            MemoryTransferKind::Export => text.trinity_memory_export_title.clone(),
+            MemoryTransferKind::Import => text.trinity_memory_import_title.clone(),
+        };
+        let mut content = div().w(px(460.)).v_flex().gap_2();
+        let confirming = mismatch.is_some();
+        if let Some((container, local, _)) = mismatch {
+            content = content
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().foreground)
+                        .child(text.trinity_memory_import_confirm_title.clone()),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(i18n::trinity_memory_import_confirm_message(
+                            &container, &local, cx,
+                        )),
+                );
+        } else {
+            content = content.child(
+                div()
+                    .v_flex()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(text.trinity_memory_path.clone()),
+                    )
+                    .child(Input::new(&path_input)),
+            );
+        }
+        if let Some(error) = error {
+            content = content.child(div().text_xs().text_color(cx.theme().danger).child(error));
+        }
+        let confirm_label = if confirming {
+            text.trinity_memory_import_confirm.clone()
+        } else {
+            match kind {
+                MemoryTransferKind::Export => text.trinity_memory_export.clone(),
+                MemoryTransferKind::Import => text.trinity_memory_import.clone(),
+            }
+        };
+        // 448px default panel width clips a 460px body.
+        dialog.w(px(492.)).title(div().child(title)).child(content).footer(
+            div()
+                .flex()
+                .flex_row()
+                .justify_end()
+                .gap_2()
+                .child(
+                    Button::new("trinity-transfer-cancel")
+                        .label(text.session_action_cancel.clone())
+                        .with_variant(ButtonVariant::Ghost)
+                        .disabled(busy)
+                        .on_click(cancel.clone()),
+                )
+                .child(
+                    Button::new("trinity-transfer-confirm")
+                        .label(confirm_label)
+                        .with_variant(ButtonVariant::Primary)
+                        .disabled(busy)
+                        .on_click(confirm.clone()),
+                ),
+        )
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// G-Y4: the daemon's cross-identity guard message parses into both ids
+    /// (same fixture the web `parseBeingIdMismatch` test uses).
+    #[test]
+    fn being_id_mismatch_parses_both_ids() {
+        let message = "being_id mismatch: container 'being-alpha' vs local 'being-beta' — retry with confirm_being_id=true to force";
+        assert_eq!(
+            parse_being_id_mismatch(message),
+            Some(("being-alpha".to_string(), "being-beta".to_string()))
+        );
+        assert_eq!(parse_being_id_mismatch("no such file or directory"), None);
+        assert_eq!(
+            parse_being_id_mismatch("being_id mismatch: container 'x'"),
+            None
+        );
+    }
+
+    /// G-Y4: the export prefill is the web container name under the home
+    /// directory (or a bare name when no home is known).
+    #[test]
+    fn default_export_path_names_the_container() {
+        let path = default_export_path();
+        assert!(path.contains("trinity-graph-"));
+        assert!(path.ends_with(".json"));
+    }
 
     fn temp_config(tag: &str, content: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(

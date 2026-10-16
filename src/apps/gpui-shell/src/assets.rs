@@ -160,12 +160,41 @@ const SUBAGENT_AVATARS: [(&str, &[u8]); 20] = [
     ),
 ];
 
+/// Harness strategy glyphs (web `HARNESS_PRESENTATION` icons). They are
+/// OpenBitFun artwork, not Lucide, so it resolves through the same embedded
+/// file chain as the subagent avatars instead of the icon catalog. Rendered
+/// by [`crate::manage`]'s harness zone via `Icon::default().path(...)`.
+pub(crate) const HARNESS_ICONS: [(&str, &[u8]); 4] = [
+    (
+        "harness/minimal.svg",
+        include_bytes!("../assets/harness/minimal.svg"),
+    ),
+    (
+        "harness/standard.svg",
+        include_bytes!("../assets/harness/standard.svg"),
+    ),
+    (
+        "harness/ultimate.svg",
+        include_bytes!("../assets/harness/ultimate.svg"),
+    ),
+    (
+        "harness/creative.svg",
+        include_bytes!("../assets/harness/creative.svg"),
+    ),
+];
+
 /// Asset source registered for the shell window.
 pub(crate) struct ShellAssets;
 
 impl AssetSource for ShellAssets {
     fn load(&self, path: &str) -> gpui_kit::Result<Option<Cow<'static, [u8]>>> {
         if let Some((_, bytes)) = SUBAGENT_AVATARS
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(path))
+        {
+            return Ok(Some(Cow::Borrowed(*bytes)));
+        }
+        if let Some((_, bytes)) = HARNESS_ICONS
             .iter()
             .find(|(name, _)| name.eq_ignore_ascii_case(path))
         {
@@ -182,6 +211,12 @@ impl AssetSource for ShellAssets {
         paths.extend(ExtraIcons.list(path)?);
         paths.extend(
             SUBAGENT_AVATARS
+                .iter()
+                .map(|(name, _)| (*name).into())
+                .filter(|name: &gpui_kit::SharedString| name.starts_with(path)),
+        );
+        paths.extend(
+            HARNESS_ICONS
                 .iter()
                 .map(|(name, _)| (*name).into())
                 .filter(|name: &gpui_kit::SharedString| name.starts_with(path)),

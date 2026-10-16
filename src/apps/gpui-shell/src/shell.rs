@@ -1716,6 +1716,9 @@ pub(crate) struct ShellWindow {
     /// G-Y5: the shared inline-edit draft for the memory timeline. One
     /// textarea serves whichever row is being corrected.
     pub(crate) trinity_edit_content: Entity<TextareaState>,
+    /// G-Y4: the typed path of the open memory export/import dialog (the shell
+    /// has no native file picker; the daemon reads/writes the file).
+    pub(crate) trinity_transfer_path: Entity<InputState>,
     /// Insights page state (M14): latest reports + the open report.
     pub(crate) insights: crate::insights::InsightsPageState,
     /// Scheduled-jobs page state (M14).
@@ -1797,6 +1800,18 @@ pub(crate) struct ShellWindow {
     pub(crate) mcp_json_fingerprint: Option<String>,
     pub(crate) mcp_json_loading: bool,
     pub(crate) mcp_json_error: Option<String>,
+    /// G-M2: the paste/file import dialog (paste box, typed file path, the
+    /// parsed preview rows with their target-id inputs, and the shared config
+    /// snapshot the merge writes back into).
+    pub(crate) mcp_import_text: Entity<TextareaState>,
+    pub(crate) mcp_import_path: Entity<InputState>,
+    pub(crate) mcp_import_active: bool,
+    pub(crate) mcp_import_loading: bool,
+    pub(crate) mcp_import_error: Option<String>,
+    pub(crate) mcp_import_document: Option<serde_json::Value>,
+    pub(crate) mcp_import_fingerprint: Option<String>,
+    pub(crate) mcp_import_candidates: Vec<crate::manage::McpImportCandidate>,
+    pub(crate) mcp_import_id_inputs: Vec<Entity<InputState>>,
     /// T2-7 pending or finished resource read in the browse dialog.
     pub(crate) mcp_resource_view: Option<crate::manage::McpResourceView>,
     /// M22 self-update state machine; the general settings page projects it.
@@ -1882,6 +1897,7 @@ impl ShellWindow {
             InputState::new(window, cx).placeholder(text.trinity_memory_add_project.clone())
         });
         let trinity_edit_content = cx.new(|cx| TextareaState::new(window, cx));
+        let trinity_transfer_path = cx.new(|cx| InputState::new(window, cx));
         let profile_name_input = cx.new(|cx| InputState::new(window, cx));
         let profile_dir_input = cx.new(|cx| InputState::new(window, cx));
         let profile_command_input = cx.new(|cx| InputState::new(window, cx));
@@ -1891,6 +1907,8 @@ impl ShellWindow {
         let agent_prompt_input = cx.new(|cx| TextareaState::new(window, cx));
         let mcp_interaction_result_input = cx.new(|cx| TextareaState::new(window, cx));
         let mcp_json_state = cx.new(|cx| TextareaState::new(window, cx));
+        let mcp_import_text = cx.new(|cx| TextareaState::new(window, cx));
+        let mcp_import_path = cx.new(|cx| InputState::new(window, cx));
         let websearch_credential_input = cx.new(|cx| InputState::new(window, cx));
         let settings_search_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(text.settings_nav_search_placeholder.clone())
@@ -1960,6 +1978,7 @@ impl ShellWindow {
             trinity_add_content,
             trinity_add_project,
             trinity_edit_content,
+            trinity_transfer_path,
             dock,
             terminal_height: TerminalPane::panel_height(),
             resource_panel: None,
@@ -2028,6 +2047,15 @@ impl ShellWindow {
             mcp_json_fingerprint: None,
             mcp_json_loading: false,
             mcp_json_error: None,
+            mcp_import_text,
+            mcp_import_path,
+            mcp_import_active: false,
+            mcp_import_loading: false,
+            mcp_import_error: None,
+            mcp_import_document: None,
+            mcp_import_fingerprint: None,
+            mcp_import_candidates: Vec::new(),
+            mcp_import_id_inputs: Vec::new(),
             mcp_resource_view: None,
             update_state: Default::default(),
             archived_delete_target: None,
@@ -2210,6 +2238,69 @@ impl ShellWindow {
 
     fn chat_for(&self, session_id: &str) -> Option<&ChatView> {
         self.chats.iter().find(|chat| chat.matches(session_id))
+    }
+
+    /// G-Y4: applies one memory-transfer outcome. Returns whether the dialog
+    /// closes on it — success only; the cross-identity guard and failures stay
+    /// on screen.
+    fn apply_trinity_transfer(
+        &mut self,
+        outcome: crate::trinity::MemoryTransferOutcome,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        match outcome {
+            crate::trinity::MemoryTransferOutcome::Exported {
+                nodes,
+                triples,
+                path,
+            } => {
+                self.trinity.memory_transfer = None;
+                self.trinity.memory_transfer_busy = false;
+                self.trinity.memory_mismatch = None;
+                self.trinity.memory_transfer_error = None;
+                self.trinity.memory_transfer_notice =
+                    Some(i18n::trinity_memory_export_done(nodes, triples, &path, cx));
+                true
+            }
+            crate::trinity::MemoryTransferOutcome::Imported { added } => {
+                self.trinity.memory_transfer = None;
+                self.trinity.memory_transfer_busy = false;
+                self.trinity.memory_mismatch = None;
+                self.trinity.memory_transfer_error = None;
+                self.trinity.memory_transfer_notice =
+                    Some(i18n::trinity_memory_import_done(added, cx));
+                true
+            }
+            crate::trinity::MemoryTransferOutcome::Mismatch {
+                container,
+                local,
+                path,
+            } => {
+                self.trinity.memory_transfer_busy = false;
+                self.trinity.memory_mismatch = Some((container, local, path));
+                false
+            }
+            crate::trinity::MemoryTransferOutcome::Failed(message) => {
+                self.trinity.memory_transfer_busy = false;
+                self.trinity.memory_transfer_error = Some(message);
+                false
+            }
+        }
+    }
+
+    /// G-M2: replaces the import paste box with one file's content and clears
+    /// the previous preview (web `readImportFile`).
+    fn mcp_import_update_text(
+        &mut self,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.mcp_import_error = None;
+        self.mcp_import_candidates.clear();
+        self.mcp_import_id_inputs.clear();
+        self.mcp_import_text
+            .update(cx, |state, cx| state.set_value(text, window, cx));
     }
 
     fn chat_mut_for(&mut self, session_id: &str) -> Option<&mut ChatView> {
@@ -2568,6 +2659,48 @@ impl ShellWindow {
             RuntimeEvent::TrinityCorrection { applied } => {
                 self.trinity.correction = Some(applied);
             }
+            // G-Y4: memory export/import outcomes. Only the cross-identity
+            // guard keeps the dialog open — as the explicit confirmation.
+            RuntimeEvent::TrinityTransfer(outcome) => {
+                let imported = matches!(
+                    *outcome,
+                    crate::trinity::MemoryTransferOutcome::Imported { .. }
+                );
+                let close = self.apply_trinity_transfer(*outcome, cx);
+                if close {
+                    window.close_dialog(cx);
+                }
+                if imported {
+                    // The imported memories belong in the visible timeline.
+                    if let Some(handle) = crate::runtime::runtime_handle() {
+                        handle.trinity_load_memories(self.event_tx.clone(), None);
+                    }
+                }
+                cx.refresh_windows();
+            }
+            // G-A3: a subagent model write failed; the banner names the
+            // operation (web `modelSelector.updateFailed`).
+            RuntimeEvent::AgentModelFailed(message) => {
+                tracing::warn!("Subagent model update failed: {message}");
+                let text = i18n::current(cx);
+                crate::manage::ManageNotice::set(
+                    Some(format!("{}: {message}", text.manage_agent_model_failed)),
+                    cx,
+                );
+                cx.refresh_windows();
+            }
+            // G-M2: one typed import path's content landed; it replaces the
+            // paste box and clears the previous preview.
+            RuntimeEvent::McpImportFile(Ok(text)) => {
+                self.mcp_import_update_text(text, window, cx);
+                cx.refresh_windows();
+            }
+            RuntimeEvent::McpImportFile(Err(message)) => {
+                tracing::warn!("MCP import file read failed: {message}");
+                self.mcp_import_error =
+                    Some(i18n::current(cx).manage_mcp_import_file_failed.clone());
+                cx.refresh_windows();
+            }
             RuntimeEvent::PluginUiBridgeReady { providers } => {
                 for install in providers {
                     let crate::runtime::PluginUiProviderInstall {
@@ -2716,16 +2849,28 @@ impl ShellWindow {
             }
             RuntimeEvent::McpJsonConfig(result) => {
                 self.mcp_json_loading = false;
+                self.mcp_import_loading = false;
                 match result {
                     Ok(snapshot) => {
-                        self.mcp_json_fingerprint = Some(snapshot.fingerprint);
+                        self.mcp_json_fingerprint = Some(snapshot.fingerprint.clone());
                         self.mcp_json_state.update(cx, |state, cx| {
-                            state.set_value(snapshot.json_config, window, cx)
+                            state.set_value(snapshot.json_config.clone(), window, cx)
                         });
+                        // G-M2: the same snapshot backs the import merge — the
+                        // dialog parses it and writes back under this
+                        // fingerprint.
+                        if self.mcp_import_active {
+                            self.mcp_import_document =
+                                serde_json::from_str(&snapshot.json_config).ok();
+                            self.mcp_import_fingerprint = Some(snapshot.fingerprint);
+                        }
                     }
                     Err(message) => {
                         tracing::warn!("Failed to load MCP JSON config: {message}");
-                        self.mcp_json_error = Some(message);
+                        self.mcp_json_error = Some(message.clone());
+                        if self.mcp_import_active {
+                            self.mcp_import_error = Some(message);
+                        }
                     }
                 }
                 cx.refresh_windows();
@@ -2736,12 +2881,19 @@ impl ShellWindow {
                         let saved = i18n::current(cx).manage_mcp_json_saved;
                         self.mcp_json_fingerprint = None;
                         self.mcp_json_error = None;
+                        self.mcp_import_active = false;
+                        self.mcp_import_error = None;
+                        self.mcp_import_candidates.clear();
+                        self.mcp_import_id_inputs.clear();
                         window.close_dialog(cx);
                         crate::manage::ManageNotice::set(Some(saved), cx);
                     }
                     Err(message) => {
                         tracing::warn!("Failed to save MCP JSON config: {message}");
-                        self.mcp_json_error = Some(message);
+                        self.mcp_json_error = Some(message.clone());
+                        if self.mcp_import_active {
+                            self.mcp_import_error = Some(message);
+                        }
                     }
                 }
                 cx.refresh_windows();
@@ -10204,6 +10356,227 @@ mod tests {
             );
 
             assert!(crate::manage::ManageNotice::current(cx).is_some());
+        });
+    }
+
+    /// G-A6/G-A3: the agents page renders the harness zone from the catalog
+    /// (four profile cards) and keeps the four builtin harness profiles out of
+    /// the modes list, while a subagent row carries its model menu.
+    #[gpui_kit::test]
+    fn harness_zone_and_subagent_model_menu_lay_out(cx: &mut gpui_kit::TestAppContext) {
+        use openbitfun_core::service::config::types::SubagentModelSelection;
+        install_shell_globals(cx);
+        let text = sample_shell_text();
+        let card = |id: &str, source: crate::manage::AgentSourceKind, subagent: bool| {
+            crate::manage::AgentCardRow {
+                id: id.to_string(),
+                name: id.to_string(),
+                description: String::new(),
+                tool_count: 1,
+                readonly: false,
+                review: false,
+                source,
+                enabled: subagent.then_some(true),
+                skills_manageable: false,
+                skills_mode_id: id.to_string(),
+                model_override: subagent.then_some(SubagentModelSelection::Inherit),
+            }
+        };
+        let catalog = crate::manage::AgentCatalog {
+            loaded: true,
+            modes: vec![
+                card("Minimal", crate::manage::AgentSourceKind::Builtin, false),
+                card("Standard", crate::manage::AgentSourceKind::Builtin, false),
+                card("Ultimate", crate::manage::AgentSourceKind::Builtin, false),
+                card("Creative", crate::manage::AgentSourceKind::Builtin, false),
+                card("Claw", crate::manage::AgentSourceKind::Builtin, false),
+            ],
+            subagents: vec![card("Explorer", crate::manage::AgentSourceKind::User, true)],
+        };
+        cx.update(|cx| {
+            cx.set_global(catalog);
+            cx.set_global(crate::runtime::ModelCatalog {
+                loaded: true,
+                models: vec![crate::runtime::ModelChoice {
+                    id: "claude-sonnet".to_string(),
+                    name: "Claude Sonnet".to_string(),
+                    provider: "anthropic".to_string(),
+                    enabled: true,
+                }],
+            });
+        });
+        let (ttx, trx) = mpsc::unbounded_channel();
+        let shell_view = cx.add_empty_window().update(|window, cx| {
+            cx.new(|cx| ShellWindow::new(ttx, trx, window, cx))
+                .downgrade()
+        });
+        let view = shell_view.clone();
+        {
+            let mut window = cx.add_empty_window();
+            window.draw(point(px(0.), px(0.)), size(px(1100.), px(900.)), {
+                let text = text.clone();
+                let view = view.clone();
+                move |_, cx| {
+                    cx.new(|_| SettingsHarness {
+                        text: text.clone(),
+                        view: view.clone(),
+                        page: settings::SettingsEntry::Agents,
+                    })
+                    .into_any_element()
+                }
+            });
+            window.run_until_parked();
+            for selector in [
+                "manage-harness-zone",
+                "manage-harness-Minimal",
+                "manage-harness-Standard",
+                "manage-harness-Ultimate",
+                "manage-harness-Creative",
+            ] {
+                assert!(
+                    window.debug_bounds(selector).is_some(),
+                    "the harness zone renders {selector}"
+                );
+            }
+            let zone = window
+                .debug_bounds("manage-harness-zone")
+                .expect("harness zone bounds");
+            // Four cards share the grid row: their left edges are distinct and
+            // every card sits inside the zone.
+            let mut lefts: Vec<f32> = Vec::new();
+            for (profile, selector) in [
+                ("Minimal", "manage-harness-Minimal"),
+                ("Standard", "manage-harness-Standard"),
+                ("Ultimate", "manage-harness-Ultimate"),
+                ("Creative", "manage-harness-Creative"),
+            ] {
+                let bounds = window.debug_bounds(selector).expect("card bounds");
+                assert!(bounds.left() >= zone.left(), "{profile} inside the zone");
+                assert!(
+                    bounds.bottom() <= zone.bottom(),
+                    "{profile} inside the zone height"
+                );
+                lefts.push(bounds.left().into());
+            }
+            lefts.sort_by(f32::total_cmp);
+            lefts.dedup();
+            assert_eq!(lefts.len(), 4, "the four profiles lay out side by side");
+        }
+        // The subagent list only renders when the type filter keeps it (the
+        // settings pane virtualizes below the fold), so the menu is asserted
+        // on that view.
+        cx.update(|cx| {
+            cx.set_global(crate::manage::AgentsFilterState {
+                kind: crate::manage::AgentKindFilter::SubAgent,
+                ..Default::default()
+            });
+        });
+        let mut window = cx.add_empty_window();
+        window.draw(point(px(0.), px(0.)), size(px(1100.), px(900.)), {
+            let text = text.clone();
+            let view = view.clone();
+            move |_, cx| {
+                cx.new(|_| SettingsHarness {
+                    text: text.clone(),
+                    view: view.clone(),
+                    page: settings::SettingsEntry::Agents,
+                })
+                .into_any_element()
+            }
+        });
+        window.run_until_parked();
+        assert!(
+            window.debug_bounds("agent-model-Explorer").is_some(),
+            "the subagent row carries its model menu"
+        );
+        assert!(
+            window.debug_bounds("manage-harness-zone").is_some(),
+            "the harness zone stays above the filtered catalog"
+        );
+    }
+
+    /// G-Y4: transfer outcomes land on the window — success closes the dialog
+    /// and writes the notice, the cross-identity guard re-arms the
+    /// confirmation, and failures stay inline.
+    #[gpui_kit::test]
+    fn trinity_transfer_events_land_in_window_state(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.trinity.memory_transfer = Some(crate::trinity::MemoryTransferKind::Export);
+                // The cross-identity guard stays on screen as the explicit
+                // confirmation.
+                let close = shell.apply_trinity_transfer(
+                    crate::trinity::MemoryTransferOutcome::Mismatch {
+                        container: "being-alpha".to_string(),
+                        local: "being-beta".to_string(),
+                        path: "/tmp/graph.json".to_string(),
+                    },
+                    cx,
+                );
+                assert!(!close);
+                assert!(shell.trinity.memory_transfer.is_some());
+                assert_eq!(
+                    shell.trinity.memory_mismatch,
+                    Some((
+                        "being-alpha".to_string(),
+                        "being-beta".to_string(),
+                        "/tmp/graph.json".to_string()
+                    ))
+                );
+                // Failures keep the dialog open with the inline error.
+                let close = shell.apply_trinity_transfer(
+                    crate::trinity::MemoryTransferOutcome::Failed("boom".to_string()),
+                    cx,
+                );
+                assert!(!close);
+                assert!(shell.trinity.memory_transfer_error.is_some());
+                assert!(shell.trinity.memory_mismatch.is_some());
+                // Success closes and writes the notice line.
+                let close = shell.apply_trinity_transfer(
+                    crate::trinity::MemoryTransferOutcome::Exported {
+                        nodes: 3,
+                        triples: 2,
+                        path: "/tmp/graph.json".to_string(),
+                    },
+                    cx,
+                );
+                assert!(close);
+                assert!(shell.trinity.memory_transfer.is_none());
+                assert!(shell.trinity.memory_mismatch.is_none());
+                assert!(shell.trinity.memory_transfer_error.is_none());
+                let notice = shell
+                    .trinity
+                    .memory_transfer_notice
+                    .as_deref()
+                    .expect("export notice");
+                // The test host has no i18n service, so the resolver answers
+                // with the key; the smoke run covers the rendered copy.
+                assert!(
+                    notice.contains("trinity-memory-export-done")
+                        || notice.contains("/tmp/graph.json"),
+                    "export notice carries the outcome: {notice}"
+                );
+                let close = shell.apply_trinity_transfer(
+                    crate::trinity::MemoryTransferOutcome::Imported { added: 7 },
+                    cx,
+                );
+                assert!(close);
+                let notice = shell
+                    .trinity
+                    .memory_transfer_notice
+                    .as_deref()
+                    .expect("import notice");
+                assert!(
+                    notice.contains("trinity-memory-import-done") || notice.contains('7'),
+                    "import notice carries the outcome: {notice}"
+                );
+                let _ = window;
+            });
         });
     }
 

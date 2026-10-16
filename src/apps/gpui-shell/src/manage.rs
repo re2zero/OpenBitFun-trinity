@@ -19,7 +19,9 @@ use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, StyledExt, WindowExt};
 use gpui_kit::{
-    div, prelude::*, px, Anchor, App, Context, FontWeight, Global, SharedString, WeakEntity, Window,
+    canvas, div, point, prelude::*, px, size, Anchor, App, Background, BorderStyle, Bounds,
+    Context, Corners, Edges, FontWeight, Global, Hsla, PathBuilder, SharedString, WeakEntity,
+    Window,
 };
 
 use crate::i18n::{self, ShellText};
@@ -29,6 +31,171 @@ use crate::shell::ShellWindow;
 const MCP_TARGET_LIMIT: usize = 120;
 /// Longest interaction `params` JSON rendered in the dialog before truncation.
 const INTERACTION_PARAMS_LIMIT: usize = 4_000;
+
+// ---------------------------------------------------------------------------
+// G-A6: harness overview zone
+// ---------------------------------------------------------------------------
+
+/// The four builtin harness profiles, in web `HARNESS_IDS` order.
+pub(crate) const HARNESS_IDS: [&str; 4] = ["Minimal", "Standard", "Ultimate", "Creative"];
+
+/// The web card's route viewBox (`STRATEGY_ROUTES`, `preserveAspectRatio`
+/// stretched over the strip).
+const HARNESS_ROUTE_WIDTH: f32 = 320.;
+const HARNESS_ROUTE_HEIGHT: f32 = 44.;
+
+/// One drawing command of a strategy route in the 320×44 route box.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum HarnessRouteCmd {
+    MoveTo(f32, f32),
+    LineTo(f32, f32),
+    /// Cubic Bézier: control A x/y, control B x/y, end point x/y.
+    CurveTo(f32, f32, f32, f32, f32, f32),
+}
+
+/// One harness profile's route: the paths plus the node dots (web
+/// `STRATEGY_ROUTES` path `d` strings and `nodes` tuples).
+pub(crate) struct HarnessRouteSpec {
+    pub(crate) paths: &'static [&'static [HarnessRouteCmd]],
+    pub(crate) nodes: &'static [(f32, f32)],
+}
+
+const HARNESS_MINIMAL_PATH: &[HarnessRouteCmd] = &[
+    HarnessRouteCmd::MoveTo(0., 22.),
+    HarnessRouteCmd::LineTo(320., 22.),
+];
+const HARNESS_STANDARD_PATH: &[HarnessRouteCmd] = &[
+    HarnessRouteCmd::MoveTo(0., 22.),
+    HarnessRouteCmd::LineTo(320., 22.),
+];
+const HARNESS_ULTIMATE_PATH_MAIN: &[HarnessRouteCmd] = &[
+    HarnessRouteCmd::MoveTo(0., 22.),
+    HarnessRouteCmd::LineTo(48., 22.),
+    HarnessRouteCmd::CurveTo(68., 22., 70., 7., 92., 7.),
+    HarnessRouteCmd::LineTo(222., 7.),
+    HarnessRouteCmd::CurveTo(242., 7., 245., 22., 267., 22.),
+    HarnessRouteCmd::LineTo(320., 22.),
+];
+const HARNESS_ULTIMATE_PATH_BRANCH: &[HarnessRouteCmd] = &[
+    HarnessRouteCmd::MoveTo(48., 22.),
+    HarnessRouteCmd::CurveTo(68., 22., 70., 37., 92., 37.),
+    HarnessRouteCmd::LineTo(222., 37.),
+    HarnessRouteCmd::CurveTo(242., 37., 245., 22., 267., 22.),
+];
+const HARNESS_CREATIVE_PATH: &[HarnessRouteCmd] = &[
+    HarnessRouteCmd::MoveTo(0., 22.),
+    HarnessRouteCmd::CurveTo(20., 22., 24., 18., 48., 18.),
+    HarnessRouteCmd::CurveTo(88., 18., 96., 34., 144., 34.),
+    HarnessRouteCmd::CurveTo(184., 34., 192., 10., 224., 10.),
+    HarnessRouteCmd::CurveTo(252., 10., 256., 22., 280., 22.),
+    HarnessRouteCmd::LineTo(320., 22.),
+];
+
+const HARNESS_MINIMAL_ROUTE: HarnessRouteSpec = HarnessRouteSpec {
+    paths: &[HARNESS_MINIMAL_PATH],
+    nodes: &[(160., 22.)],
+};
+const HARNESS_STANDARD_ROUTE: HarnessRouteSpec = HarnessRouteSpec {
+    paths: &[HARNESS_STANDARD_PATH],
+    nodes: &[(64., 22.), (128., 22.), (192., 22.), (256., 22.)],
+};
+const HARNESS_ULTIMATE_ROUTE: HarnessRouteSpec = HarnessRouteSpec {
+    paths: &[HARNESS_ULTIMATE_PATH_MAIN, HARNESS_ULTIMATE_PATH_BRANCH],
+    nodes: &[
+        (48., 22.),
+        (116., 7.),
+        (174., 7.),
+        (124., 37.),
+        (192., 37.),
+        (267., 22.),
+    ],
+};
+const HARNESS_CREATIVE_ROUTE: HarnessRouteSpec = HarnessRouteSpec {
+    paths: &[HARNESS_CREATIVE_PATH],
+    nodes: &[(48., 18.), (144., 34.), (280., 22.)],
+};
+
+/// The route spec for one harness id; unknown ids fall back to Minimal so the
+/// zone never renders a blank strip.
+pub(crate) fn harness_route_spec(profile: &str) -> &'static HarnessRouteSpec {
+    match profile {
+        "Standard" => &HARNESS_STANDARD_ROUTE,
+        "Ultimate" => &HARNESS_ULTIMATE_ROUTE,
+        "Creative" => &HARNESS_CREATIVE_ROUTE,
+        _ => &HARNESS_MINIMAL_ROUTE,
+    }
+}
+
+/// G-A6: the harness id of a catalog row, or `None` for a regular mode.
+/// Builtin source only — a user agent may reuse the id (web `primaryAgentKind`).
+pub(crate) fn harness_profile_of(row: &AgentCardRow) -> Option<&'static str> {
+    if row.source != AgentSourceKind::Builtin {
+        return None;
+    }
+    HARNESS_IDS.iter().copied().find(|id| *id == row.id)
+}
+
+/// The icon asset path of one harness profile (web `HARNESS_PRESENTATION`).
+fn harness_icon_path(profile: &str) -> &'static str {
+    match profile {
+        "Standard" => "harness/standard.svg",
+        "Ultimate" => "harness/ultimate.svg",
+        "Creative" => "harness/creative.svg",
+        _ => "harness/minimal.svg",
+    }
+}
+
+/// The web card's strategy route: the stretched path plus its node dots.
+fn harness_route(profile: &'static str, cx: &App) -> gpui_kit::AnyElement {
+    let spec = harness_route_spec(profile);
+    let line = cx.theme().border;
+    let dot = cx.theme().muted_foreground;
+    let stroke: Hsla = line;
+    let dot_color: Hsla = dot;
+    canvas(
+        |_, _, _| (),
+        move |bounds, (), window, _cx| {
+            let sx = bounds.size.width / px(HARNESS_ROUTE_WIDTH);
+            let sy = bounds.size.height / px(HARNESS_ROUTE_HEIGHT);
+            let map = move |x: f32, y: f32| {
+                point(bounds.origin.x + px(x) * sx, bounds.origin.y + px(y) * sy)
+            };
+            for commands in spec.paths {
+                let mut builder = PathBuilder::stroke(px(1.));
+                for command in *commands {
+                    match *command {
+                        HarnessRouteCmd::MoveTo(x, y) => builder.move_to(map(x, y)),
+                        HarnessRouteCmd::LineTo(x, y) => builder.line_to(map(x, y)),
+                        HarnessRouteCmd::CurveTo(a_x, a_y, b_x, b_y, x, y) => {
+                            builder.cubic_bezier_to(map(x, y), map(a_x, a_y), map(b_x, b_y));
+                        }
+                    }
+                }
+                if let Ok(path) = builder.build() {
+                    window.paint_path(path, stroke);
+                }
+            }
+            for (x, y) in spec.nodes {
+                let center = map(*x, *y);
+                let radius = px(3.5);
+                window.paint_quad(gpui_kit::PaintQuad {
+                    bounds: Bounds::new(
+                        point(center.x - radius, center.y - radius),
+                        size(radius * 2., radius * 2.),
+                    ),
+                    corner_radii: Corners::all(radius),
+                    background: Background::from(dot_color),
+                    border_widths: Edges::default(),
+                    border_color: gpui_kit::transparent_black(),
+                    border_style: BorderStyle::default(),
+                });
+            }
+        },
+    )
+    .h(px(HARNESS_ROUTE_HEIGHT))
+    .w_full()
+    .into_any_element()
+}
 
 // ---------------------------------------------------------------------------
 // Skill catalog
@@ -115,6 +282,10 @@ pub(crate) struct AgentCardRow {
     pub(crate) enabled: Option<bool>,
     pub(crate) skills_manageable: bool,
     pub(crate) skills_mode_id: String,
+    /// G-A3: the subagent's stored model override (`None` = the default
+    /// SubAgent model). Always `None` for modes and external subagents.
+    pub(crate) model_override:
+        Option<openbitfun_core::service::config::types::SubagentModelSelection>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -1646,6 +1817,10 @@ pub(crate) fn agents_group(
     let modes_field = SettingField::render(move |_options, _window, cx| {
         agent_cards(AgentListKind::Modes, &modes_text, modes_view.clone(), cx)
     });
+    // G-A6: the harness profile zone (cloned here — `view` moves into the
+    // create field below).
+    let harness_text = text.clone();
+    let harness_view = view.clone();
     let subagents_text = text.clone();
     let subagents_view = view.clone();
     let subagents_field = SettingField::render(move |_options, _window, cx| {
@@ -1682,6 +1857,11 @@ pub(crate) fn agents_group(
         .unwrap_or_default();
 
     let mut items = vec![controls_item];
+    // G-A6: the harness profile zone leads the page (web renders
+    // `AgentHarnessOverview` above the catalog zone, outside its filters).
+    items.push(SettingItem::render(move |_options, _window, cx| {
+        harness_zone(&harness_text, harness_view.clone(), cx)
+    }));
     if kind.matches(AgentListKind::Modes) {
         items.push(SettingItem::new(
             text.manage_agents_modes.clone(),
@@ -1708,6 +1888,265 @@ pub(crate) enum AgentListKind {
     Subagents,
 }
 
+// ---------------------------------------------------------------------------
+// G-A3: subagent model override
+// ---------------------------------------------------------------------------
+
+/// The label of the menu entry that clears the override (web
+/// `DEFAULT_SUBAGENT_MODEL_OVERRIDE_VALUE`); only used to name the row, the
+/// stored value is the absence of the override.
+pub(crate) const AGENT_MODEL_DEFAULT_CHOICE: &str = "__default_subagent_model__";
+
+/// G-A3: the trigger label of one stored override (web
+/// `subagentModelDisplayName`): the default entry, the two aliases, parent
+/// inheritance, or the configured model's display name.
+pub(crate) fn agent_model_label(
+    model_override: Option<&openbitfun_core::service::config::types::SubagentModelSelection>,
+    models: &[crate::runtime::ModelChoice],
+    text: &ShellText,
+) -> String {
+    use openbitfun_core::service::config::types::SubagentModelSelection;
+    match model_override {
+        None => text.manage_agent_model_default.clone(),
+        Some(SubagentModelSelection::Inherit) => text.settings_subagent_model_inherit.clone(),
+        Some(SubagentModelSelection::Fixed { model_id }) => match model_id.as_str() {
+            "fast" => text.settings_subagent_model_fast.clone(),
+            "primary" => text.settings_subagent_model_primary.clone(),
+            id => models
+                .iter()
+                .find(|model| model.id == id)
+                .map(crate::runtime::ModelChoice::label)
+                .unwrap_or_else(|| id.to_string()),
+        },
+    }
+}
+
+/// G-A3: the menu choices in web order — default, inherit, fast, primary,
+/// then every enabled configured model. The value is the choice string the
+/// runtime write path stores; [`AGENT_MODEL_DEFAULT_CHOICE`] means "clear".
+/// Web additionally filters to `text_chat` capable models; the shell catalog
+/// carries no capabilities (same recorded gap as G-I1).
+pub(crate) fn agent_model_options(
+    models: &[crate::runtime::ModelChoice],
+    text: &ShellText,
+) -> Vec<(String, String)> {
+    let mut options = vec![
+        (
+            AGENT_MODEL_DEFAULT_CHOICE.to_string(),
+            text.manage_agent_model_default.clone(),
+        ),
+        (
+            "inherit".to_string(),
+            text.settings_subagent_model_inherit.clone(),
+        ),
+        (
+            "fast".to_string(),
+            text.settings_subagent_model_fast.clone(),
+        ),
+        (
+            "primary".to_string(),
+            text.settings_subagent_model_primary.clone(),
+        ),
+    ];
+    for model in models.iter().filter(|model| model.enabled) {
+        options.push((model.id.clone(), model.label()));
+    }
+    options
+}
+
+/// G-A3: one subagent row's model menu (web `agentCard.modelSelector`, which
+/// the web renders on the detail dialog's model tab; the shell has no detail
+/// dialog, so the control sits on the row).
+fn agent_model_menu(row: &AgentCardRow, text: &ShellText, cx: &App) -> gpui_kit::AnyElement {
+    let models = cx
+        .try_global::<crate::runtime::ModelCatalog>()
+        .map(|catalog| catalog.models.clone())
+        .unwrap_or_default();
+    let current_choice = row.model_override.as_ref().map(|selection| {
+        use openbitfun_core::service::config::types::SubagentModelSelection;
+        match selection {
+            SubagentModelSelection::Inherit => "inherit".to_string(),
+            SubagentModelSelection::Fixed { model_id } => model_id.clone(),
+        }
+    });
+    let current_label = agent_model_label(row.model_override.as_ref(), &models, text);
+    let options = agent_model_options(&models, text);
+    let builtin = row.source == AgentSourceKind::Builtin;
+    let row_id = row.id.clone();
+    Button::new(SharedString::from(format!("agent-model-{}", row.id)))
+        .label(format!("{}: {current_label}", text.manage_agent_model))
+        .small()
+        .with_variant(ButtonVariant::Secondary)
+        .dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, _window, _cx| {
+            let mut popup = menu;
+            for (value, label) in options.clone() {
+                let selected = if value == AGENT_MODEL_DEFAULT_CHOICE {
+                    current_choice.is_none()
+                } else {
+                    current_choice.as_deref() == Some(value.as_str())
+                };
+                let row_id = row_id.clone();
+                popup = popup.item(PopupMenuItem::new(label).checked(selected).on_click(
+                    move |_: &gpui_kit::ClickEvent, _window, _cx| {
+                        let choice = if value == AGENT_MODEL_DEFAULT_CHOICE {
+                            None
+                        } else {
+                            Some(value.clone())
+                        };
+                        let Some(handle) = crate::runtime::runtime_handle() else {
+                            tracing::error!("Runtime unavailable while setting a subagent model");
+                            return;
+                        };
+                        handle.set_subagent_model(row_id.clone(), builtin, choice);
+                    },
+                ));
+            }
+            popup
+        })
+        .into_any_element()
+}
+
+/// G-A6: the harness zone heading plus one card per builtin harness profile.
+/// Web opens the agent detail dialog from a profile card; the shell has no
+/// detail dialog, so a card keeps the shell's row action (the skills dialog)
+/// and stays display-only otherwise.
+fn harness_zone(
+    text: &ShellText,
+    view: WeakEntity<ShellWindow>,
+    cx: &mut App,
+) -> gpui_kit::AnyElement {
+    if let Some(message) = ManageNotice::current(cx) {
+        return notice_banner(text, &message, cx);
+    }
+    let Some(catalog) = AgentCatalog::try_current(cx) else {
+        return div()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .child(text.manage_agents_loading.clone())
+            .into_any_element();
+    };
+    let heading = div()
+        .debug_selector(|| "manage-harness-heading".to_string())
+        .v_flex()
+        .w_full()
+        .gap_0p5()
+        .child(
+            div()
+                .text_sm()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(cx.theme().foreground)
+                .child(text.manage_harness_title.clone()),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(text.manage_harness_subtitle.clone()),
+        );
+    let mut grid = div()
+        .grid()
+        .grid_cols(HARNESS_IDS.len() as u16)
+        .gap_2()
+        .w_full();
+    for profile in HARNESS_IDS {
+        let row = catalog
+            .modes
+            .iter()
+            .find(|row| harness_profile_of(row) == Some(profile));
+        grid = grid.child(harness_card(profile, row, text, view.clone(), cx));
+    }
+    div()
+        .debug_selector(|| "manage-harness-zone".to_string())
+        .v_flex()
+        .w_full()
+        .gap_3()
+        .child(heading)
+        .child(grid)
+        .into_any_element()
+}
+
+/// G-A6: one harness profile card — glyph, localized name, purpose, and the
+/// strategy route strip.
+fn harness_card(
+    profile: &'static str,
+    row: Option<&AgentCardRow>,
+    text: &ShellText,
+    view: WeakEntity<ShellWindow>,
+    cx: &App,
+) -> gpui_kit::AnyElement {
+    let purpose = match profile {
+        "Standard" => text.manage_harness_purpose_standard.clone(),
+        "Ultimate" => text.manage_harness_purpose_ultimate.clone(),
+        "Creative" => text.manage_harness_purpose_creative.clone(),
+        _ => text.manage_harness_purpose_minimal.clone(),
+    };
+    let mut card = div()
+        .debug_selector(move || format!("manage-harness-{profile}"))
+        .v_flex()
+        .min_w_0()
+        .gap_2()
+        .p_3()
+        .rounded(cx.theme().radius)
+        .border_1()
+        .border_color(cx.theme().border)
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .min_w_0()
+                .child(
+                    gpui_kit::component::Icon::default()
+                        .path(harness_icon_path(profile))
+                        .with_size(px(20.))
+                        .text_color(cx.theme().foreground),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .min_w_0()
+                        .line_clamp(1)
+                        .text_color(cx.theme().foreground)
+                        .child(i18n::shared_agent_name(profile, cx)),
+                ),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .line_clamp(2)
+                .child(purpose),
+        )
+        .child(harness_route(profile, cx));
+    // The shell's existing per-mode action stays reachable now that the four
+    // profiles moved out of the modes list.
+    if let Some(row) = row {
+        if row.skills_manageable {
+            let mode_id = row.skills_mode_id.clone();
+            let mode_name = row.name.clone();
+            card = card.child(
+                div().flex().flex_row().justify_end().child(
+                    Button::new(SharedString::from(format!("harness-skills-{profile}")))
+                        .label(text.mode_skills_open.clone())
+                        .small()
+                        .with_variant(ButtonVariant::Secondary)
+                        .on_click(move |_, window, cx| {
+                            open_mode_skills_dialog(
+                                view.clone(),
+                                mode_id.clone(),
+                                mode_name.clone(),
+                                window,
+                                cx,
+                            );
+                        }),
+                ),
+            );
+        }
+    }
+    card.into_any_element()
+}
+
 fn agent_cards(
     kind: AgentListKind,
     text: &ShellText,
@@ -1725,7 +2164,13 @@ fn agent_cards(
             .into_any_element();
     };
     let rows = match kind {
-        AgentListKind::Modes => catalog.modes,
+        // G-A6: the four builtin harness profiles render in the harness zone,
+        // not in the catalog list (web `isAgentInOverviewZone`).
+        AgentListKind::Modes => catalog
+            .modes
+            .into_iter()
+            .filter(|row| harness_profile_of(row).is_none())
+            .collect(),
         AgentListKind::Subagents => catalog.subagents,
     };
     // G-A5: the search and source filters narrow whichever list is showing.
@@ -1802,6 +2247,16 @@ fn agent_cards(
                             cx,
                         );
                     }),
+            );
+        }
+        // G-A3: every non-external subagent gets the model-override menu
+        // (web shows it on the detail dialog's model tab).
+        if kind == AgentListKind::Subagents && card.source != AgentSourceKind::External {
+            let anchor = SharedString::from(format!("agent-model-{}", card.id));
+            badges = badges.child(
+                div()
+                    .debug_selector(move || anchor.to_string())
+                    .child(agent_model_menu(&card, text, cx)),
             );
         }
         if agent_card_manageable(card.source) {
@@ -1886,13 +2341,646 @@ fn agent_cards(
     column.into_any_element()
 }
 
-/// The MCP page: one row per configured server with lifecycle, enablement,
-/// browse, and delete actions, plus the raw JSON config editor.
+// ---------------------------------------------------------------------------
+// G-M2: MCP paste / file import
+// ---------------------------------------------------------------------------
+
+/// One parsed import candidate (web `McpImportCandidate` plus the entry the
+/// merge writes back).
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct McpImportCandidate {
+    pub(crate) source_id: String,
+    pub(crate) target_id: String,
+    pub(crate) selected: bool,
+    pub(crate) entry: serde_json::Value,
+}
+
+/// The import validation failures the shell renders (web `McpConfigFormError`
+/// codes reachable through the import path).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum McpImportError {
+    InvalidJson,
+    InvalidConfig,
+    /// The entry uses fields the import path cannot carry or connect with
+    /// (web `advancedRequired` / `commandRequired` / `urlInvalid`).
+    Shape,
+    SelectServers,
+    IdRequired,
+    InvalidId,
+    IdConflict,
+}
+
+impl McpImportError {
+    pub(crate) fn text(self, text: &ShellText) -> String {
+        match self {
+            Self::InvalidJson => text.manage_mcp_import_invalid_json.clone(),
+            Self::InvalidConfig => text.manage_mcp_import_invalid_config.clone(),
+            Self::Shape => text.manage_mcp_import_shape.clone(),
+            Self::SelectServers => text.manage_mcp_import_select_servers.clone(),
+            Self::IdRequired => text.manage_mcp_import_id_required.clone(),
+            Self::InvalidId => text.manage_mcp_import_invalid_id.clone(),
+            Self::IdConflict => text.manage_mcp_import_id_conflict.clone(),
+        }
+    }
+}
+
+/// The transport aliases the import understands (web `transportFromConfig`).
+fn mcp_transport_alias(value: &str) -> Option<&'static str> {
+    match value.to_lowercase().as_str() {
+        "local" | "stdio" => Some("stdio"),
+        "remote" | "http" | "streamable-http" | "streamable_http" | "streamablehttp" => {
+            Some("streamable-http")
+        }
+        "sse" => Some("sse"),
+        _ => None,
+    }
+}
+
+/// The entry-shape gate for one imported server (web `transportFromConfig`
+/// plus the connection checks `updateMcpServerConfig` runs): a recognizable
+/// transport with its required connection input, and no conflicting fields.
+fn validate_mcp_import_entry(entry: &serde_json::Value) -> Result<(), McpImportError> {
+    let field = |key: &str| {
+        entry
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    };
+    let type_value = field("type").to_lowercase();
+    let explicit_transport = field("transport").to_lowercase();
+    let explicit_source = field("source").to_lowercase();
+    for (declared, kind) in [
+        (type_value.as_str(), "type"),
+        (explicit_transport.as_str(), "transport"),
+        (explicit_source.as_str(), "source"),
+    ] {
+        if declared.is_empty() {
+            continue;
+        }
+        if mcp_transport_alias(declared).is_none()
+            || (kind == "transport" && matches!(declared, "local" | "remote"))
+        {
+            return Err(McpImportError::Shape);
+        }
+    }
+    let legacy_source = if type_value.is_empty() || type_value == "stdio" {
+        None
+    } else if type_value == "local" {
+        Some("local")
+    } else {
+        Some("remote")
+    };
+    let source = if explicit_source.is_empty() {
+        legacy_source
+    } else {
+        Some(explicit_source.as_str())
+    };
+    let has_command = !field("command").is_empty();
+    let has_url = !field("url").is_empty();
+    let declared_transport = if explicit_transport.is_empty() {
+        type_value.as_str()
+    } else {
+        explicit_transport.as_str()
+    };
+    let transport =
+        mcp_transport_alias(declared_transport).unwrap_or(if has_url || source == Some("remote") {
+            "streamable-http"
+        } else {
+            "stdio"
+        });
+    if (has_command && has_url)
+        || (source == Some("remote") && has_command)
+        || (source == Some("local") && has_url)
+        || (transport == "stdio" && (has_url || source == Some("remote")))
+        || (transport != "stdio" && (has_command || source == Some("local")))
+    {
+        return Err(McpImportError::Shape);
+    }
+    // The rest of `updateMcpServerConfig`'s field checks: args must be a
+    // string list, env/headers string maps, timeouts an object, and the
+    // connection input present and usable.
+    if let Some(args) = entry.get("args") {
+        match args.as_array() {
+            Some(items) if items.iter().all(serde_json::Value::is_string) => {}
+            _ => return Err(McpImportError::Shape),
+        }
+    }
+    for key in ["env", "headers"] {
+        if let Some(value) = entry.get(key) {
+            match value.as_object() {
+                Some(map) if map.values().all(serde_json::Value::is_string) => {}
+                _ => return Err(McpImportError::Shape),
+            }
+        }
+    }
+    if let Some(timeouts) = entry.get("timeouts") {
+        if !timeouts.is_object() {
+            return Err(McpImportError::Shape);
+        }
+    }
+    if transport == "stdio" {
+        if field("command").is_empty() || field("command").contains('\0') {
+            return Err(McpImportError::Shape);
+        }
+        if let Some(args) = entry.get("args").and_then(serde_json::Value::as_array) {
+            if args
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .any(|arg| arg.contains('\0'))
+            {
+                return Err(McpImportError::Shape);
+            }
+        }
+    } else {
+        let url = field("url");
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return Err(McpImportError::Shape);
+        }
+    }
+    Ok(())
+}
+
+/// Parses pasted or loaded MCP config into import candidates (web
+/// `parseMcpImport`): the document must carry an `mcpServers` object of
+/// object entries, every entry must pass the shape gate, and a candidate whose
+/// id already exists starts unselected.
+pub(crate) fn parse_mcp_import(
+    text: &str,
+    existing_ids: &[String],
+) -> Result<Vec<McpImportCandidate>, McpImportError> {
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|_| McpImportError::InvalidJson)?;
+    let servers = match value.get("mcpServers") {
+        Some(serde_json::Value::Object(map)) => map,
+        _ => return Err(McpImportError::InvalidConfig),
+    };
+    if servers.is_empty() {
+        return Err(McpImportError::SelectServers);
+    }
+    let mut candidates = Vec::with_capacity(servers.len());
+    for (id, entry) in servers {
+        if !entry.is_object() {
+            return Err(McpImportError::InvalidConfig);
+        }
+        validate_mcp_import_entry(entry)?;
+        candidates.push(McpImportCandidate {
+            source_id: id.clone(),
+            target_id: id.clone(),
+            selected: !existing_ids.iter().any(|existing| existing == id),
+            entry: entry.clone(),
+        });
+    }
+    Ok(candidates)
+}
+
+/// Web `validateId`: 1-128 letters, digits, dots, hyphens, or underscores.
+/// G-M2: the warning a preview row shows for the id currently in its input —
+/// empty, malformed, or already taken (by the document or by a sibling row).
+/// `None` means the row is importable under that id.
+pub(crate) fn mcp_import_row_problem<'a>(
+    current: &str,
+    sibling_ids: &[String],
+    existing_ids: &[String],
+    text: &'a ShellText,
+) -> Option<&'a str> {
+    if current.is_empty() {
+        Some(&text.manage_mcp_import_id_required)
+    } else if !valid_mcp_server_id(current) {
+        Some(&text.manage_mcp_import_invalid_id)
+    } else if existing_ids.iter().any(|taken| taken == current)
+        || sibling_ids.iter().any(|sibling| sibling == current)
+    {
+        Some(&text.manage_mcp_import_conflict)
+    } else {
+        None
+    }
+}
+
+pub(crate) fn valid_mcp_server_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+}
+
+/// Merges the selected candidates into the config document (web
+/// `importMcpServers`): ids are validated, a taken id is an error, the
+/// untrusted-origin marker is stripped, and every imported entry lands
+/// **disabled** — importing a configuration is never permission to run a
+/// program.
+pub(crate) fn merge_mcp_import(
+    document: &serde_json::Value,
+    selection: &[(String, serde_json::Value)],
+) -> Result<serde_json::Value, McpImportError> {
+    if selection.is_empty() {
+        return Err(McpImportError::SelectServers);
+    }
+    let mut merged = document.clone();
+    let servers = merged
+        .get_mut("mcpServers")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or(McpImportError::InvalidConfig)?;
+    for (target_id, entry) in selection {
+        let id = target_id.trim();
+        if id.is_empty() {
+            return Err(McpImportError::IdRequired);
+        }
+        if !valid_mcp_server_id(id) {
+            return Err(McpImportError::InvalidId);
+        }
+        if servers.contains_key(id) {
+            return Err(McpImportError::IdConflict);
+        }
+        let mut entry = entry
+            .as_object()
+            .cloned()
+            .ok_or(McpImportError::InvalidConfig)?;
+        entry.remove("_openbitfunImport");
+        entry.insert("enabled".to_string(), serde_json::Value::Bool(false));
+        servers.insert(id.to_string(), serde_json::Value::Object(entry));
+    }
+    Ok(merged)
+}
+
+/// G-M2: opens the MCP import dialog (web `MCPServerConfigDialog`'s import
+/// mode). The snapshot load goes through the JSON editor's pipeline so the
+/// merge is written back under the same fingerprint guard.
+pub(crate) fn open_mcp_import_dialog(
+    view: WeakEntity<ShellWindow>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(shell) = view.upgrade() else {
+        return;
+    };
+    let (text_state, path_input) = {
+        let shell = shell.read(cx);
+        (shell.mcp_import_text.clone(), shell.mcp_import_path.clone())
+    };
+    text_state.update(cx, |state, cx| state.set_value("", window, cx));
+    path_input.update(cx, |state, cx| state.set_value(String::new(), window, cx));
+    shell.update(cx, |shell, cx| {
+        shell.mcp_import_active = true;
+        shell.mcp_import_loading = true;
+        shell.mcp_import_error = None;
+        shell.mcp_import_document = None;
+        shell.mcp_import_fingerprint = None;
+        shell.mcp_import_candidates.clear();
+        shell.mcp_import_id_inputs.clear();
+        cx.notify();
+    });
+    if let Some(handle) = crate::runtime::runtime_handle() {
+        handle.load_mcp_json_config();
+    }
+
+    let cancel_view = view.clone();
+    let cancel = move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
+        if let Some(shell) = cancel_view.upgrade() {
+            shell.update(cx, |shell, cx| {
+                shell.mcp_import_active = false;
+                shell.mcp_import_error = None;
+                shell.mcp_import_candidates.clear();
+                shell.mcp_import_id_inputs.clear();
+                cx.notify();
+            });
+        }
+        window.close_dialog(cx);
+    };
+    let preview_view = view.clone();
+    let preview = move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
+        preview_mcp_import(&preview_view, window, cx);
+    };
+    let read_view = view.clone();
+    let read = move |_: &gpui_kit::ClickEvent, _window: &mut Window, cx: &mut App| {
+        let Some(shell) = read_view.upgrade() else {
+            return;
+        };
+        let path = shell
+            .read(cx)
+            .mcp_import_path
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        let Some(handle) = crate::runtime::runtime_handle() else {
+            return;
+        };
+        shell.update(cx, |shell, cx| {
+            shell.mcp_import_error = None;
+            cx.notify();
+        });
+        handle.read_mcp_import_file(path);
+    };
+    let import_view = view.clone();
+    let import = move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
+        let Some(shell) = import_view.upgrade() else {
+            return;
+        };
+        let (document, fingerprint, candidates) = {
+            let shell = shell.read(cx);
+            (
+                shell.mcp_import_document.clone(),
+                shell.mcp_import_fingerprint.clone(),
+                shell.mcp_import_candidates.clone(),
+            )
+        };
+        let text = i18n::current(cx);
+        let Some(document) = document else {
+            let message = text.manage_mcp_import_invalid_config.clone();
+            shell.update(cx, |shell, cx| {
+                shell.mcp_import_error = Some(message);
+                cx.notify();
+            });
+            return;
+        };
+        // The edited target ids live in the per-row inputs, not in the
+        // snapshot the preview stored.
+        let mut selection = Vec::new();
+        for (index, candidate) in candidates.iter().enumerate() {
+            if !candidate.selected {
+                continue;
+            }
+            let target_id = shell
+                .read(cx)
+                .mcp_import_id_inputs
+                .get(index)
+                .map(|input| input.read(cx).value().trim().to_string())
+                .unwrap_or_else(|| candidate.target_id.clone());
+            selection.push((target_id, candidate.entry.clone()));
+        }
+        match merge_mcp_import(&document, &selection) {
+            Ok(merged) => {
+                let Some(fingerprint) = fingerprint else {
+                    let message = text.manage_mcp_import_invalid_config.clone();
+                    shell.update(cx, |shell, cx| {
+                        shell.mcp_import_error = Some(message);
+                        cx.notify();
+                    });
+                    return;
+                };
+                let raw = serde_json::to_string_pretty(&merged).unwrap_or_default();
+                if let Some(handle) = crate::runtime::runtime_handle() {
+                    shell.update(cx, |shell, cx| {
+                        shell.mcp_import_error = None;
+                        cx.notify();
+                    });
+                    handle.save_mcp_json_config(raw, fingerprint);
+                }
+            }
+            Err(error) => {
+                let message = error.text(&text);
+                shell.update(cx, |shell, cx| {
+                    shell.mcp_import_error = Some(message);
+                    cx.notify();
+                });
+            }
+        }
+        let _ = window;
+    };
+
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let text = i18n::current(cx);
+        let Some(shell) = view.upgrade() else {
+            return dialog;
+        };
+        let (loading, error, candidates) = {
+            let shell = shell.read(cx);
+            (
+                shell.mcp_import_loading,
+                shell.mcp_import_error.clone(),
+                shell.mcp_import_candidates.clone(),
+            )
+        };
+        let existing_ids: Vec<String> = shell
+            .read(cx)
+            .mcp_import_document
+            .as_ref()
+            .and_then(|document| document.get("mcpServers"))
+            .and_then(serde_json::Value::as_object)
+            .map(|servers| servers.keys().cloned().collect())
+            .unwrap_or_default();
+        let mut content = div().w(px(560.)).v_flex().gap_2();
+        if loading {
+            content = content.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(text.manage_mcp_loading.clone()),
+            );
+        }
+        content = content
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(text.manage_mcp_import_hint.clone()),
+            )
+            .child(dialog_field(
+                &text.manage_mcp_import_paste,
+                cx.theme().muted_foreground,
+                Textarea::new(&text_state).h(px(160.)),
+            ))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_end()
+                    .gap_2()
+                    .child(div().flex_1().min_w_0().child(dialog_field(
+                        &text.manage_mcp_import_path,
+                        cx.theme().muted_foreground,
+                        Input::new(&path_input),
+                    )))
+                    .child(
+                        Button::new("mcp-import-read")
+                            .label(text.manage_mcp_import_read.clone())
+                            .small()
+                            .with_variant(ButtonVariant::Secondary)
+                            .on_click(read.clone()),
+                    ),
+            )
+            .child(
+                div().flex().flex_row().justify_end().child(
+                    Button::new("mcp-import-preview")
+                        .label(text.manage_mcp_import_preview.clone())
+                        .small()
+                        .with_variant(ButtonVariant::Secondary)
+                        .on_click(preview.clone()),
+                ),
+            );
+        let live_ids: Vec<String> = shell
+            .read(cx)
+            .mcp_import_id_inputs
+            .iter()
+            .map(|input| input.read(cx).value().trim().to_string())
+            .collect();
+        for (index, candidate) in candidates.iter().enumerate() {
+            // The rows validate the *live* id input, not the preview snapshot:
+            // renaming a conflicted id has to clear its warning immediately
+            // (web re-validates on every keystroke).
+            let current = live_ids
+                .get(index)
+                .cloned()
+                .unwrap_or_else(|| candidate.target_id.trim().to_string());
+            let siblings: Vec<String> = live_ids
+                .iter()
+                .enumerate()
+                .filter(|(other_index, _)| *other_index != index)
+                .map(|(_, value)| value.clone())
+                .collect();
+            let problem =
+                mcp_import_row_problem(&current, &siblings, &existing_ids, &text).map(str::to_string);
+            let toggle_view = view.clone();
+            let mut row = div()
+                .v_flex()
+                .gap_1()
+                .p_2()
+                .rounded(cx.theme().radius)
+                .bg(cx.theme().muted)
+                .child(
+                    Checkbox::new(SharedString::from(format!(
+                        "mcp-import-{}",
+                        candidate.source_id
+                    )))
+                    .label(candidate.source_id.clone())
+                    .checked(candidate.selected)
+                    .on_click(move |checked: &bool, _window, cx| {
+                        let checked = *checked;
+                        if let Some(shell) = toggle_view.upgrade() {
+                            shell.update(cx, |shell, cx| {
+                                if let Some(target) = shell.mcp_import_candidates.get_mut(index) {
+                                    target.selected = checked;
+                                }
+                                cx.notify();
+                            });
+                        }
+                    }),
+                );
+            if let Some(input) = shell.read(cx).mcp_import_id_inputs.get(index) {
+                row = row.child(
+                    div()
+                        .v_flex()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(i18n::manage_mcp_import_id(&candidate.source_id, cx)),
+                        )
+                        .child(Input::new(input).small()),
+                );
+            }
+            if let Some(problem) = problem {
+                row = row.child(div().text_xs().text_color(cx.theme().danger).child(problem));
+            }
+            content = content.child(row);
+        }
+        if let Some(error) = error {
+            content = content.child(div().text_xs().text_color(cx.theme().danger).child(error));
+        }
+
+        dialog
+            // The gpui-component dialog defaults to 448px and clips its body
+            // (`overflow_hidden`), so the panel has to be told the content
+            // width explicitly: this body is 560px wide, plus the 16px
+            // paddings on both sides.
+            .w(px(592.))
+            .title(div().child(text.manage_mcp_import.clone()))
+            .child(content)
+            .footer(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("mcp-import-cancel")
+                            .label(text.session_action_cancel.clone())
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(cancel.clone()),
+                    )
+                    .child(
+                        Button::new("mcp-import-confirm")
+                            .label(text.manage_mcp_import_selected.clone())
+                            .with_variant(ButtonVariant::Primary)
+                            .on_click(import.clone()),
+                    ),
+            )
+    });
+}
+
+/// G-M2: parses the paste box into preview candidates, creating one target-id
+/// input per row.
+fn preview_mcp_import(view: &WeakEntity<ShellWindow>, window: &mut Window, cx: &mut App) {
+    let Some(shell) = view.upgrade() else {
+        return;
+    };
+    let (raw, existing_ids) = {
+        let shell = shell.read(cx);
+        (
+            shell.mcp_import_text.read(cx).value().to_string(),
+            shell
+                .mcp_import_document
+                .as_ref()
+                .and_then(|document| document.get("mcpServers"))
+                .and_then(serde_json::Value::as_object)
+                .map(|servers| servers.keys().cloned().collect::<Vec<_>>())
+                .unwrap_or_default(),
+        )
+    };
+    let text = i18n::current(cx);
+    match parse_mcp_import(&raw, &existing_ids) {
+        Ok(candidates) => {
+            let mut inputs = Vec::with_capacity(candidates.len());
+            for candidate in &candidates {
+                let target_id = candidate.target_id.clone();
+                let input = cx.new(|cx| InputState::new(window, cx));
+                input.update(cx, |state, cx| state.set_value(target_id, window, cx));
+                inputs.push(input);
+            }
+            shell.update(cx, |shell, cx| {
+                shell.mcp_import_error = None;
+                shell.mcp_import_candidates = candidates;
+                shell.mcp_import_id_inputs = inputs;
+                cx.notify();
+            });
+        }
+        Err(error) => {
+            let message = error.text(&text);
+            shell.update(cx, |shell, cx| {
+                shell.mcp_import_candidates.clear();
+                shell.mcp_import_id_inputs.clear();
+                shell.mcp_import_error = Some(message);
+                cx.notify();
+            });
+        }
+    }
+}
+
+/// The MCP page: one row per configured server with lifecycle, enablement,/// browse, and delete actions, plus the raw JSON config editor.
 pub(crate) fn mcp_group(text: &ShellText, view: WeakEntity<ShellWindow>) -> SettingGroup {
     let list_view = view.clone();
     let list_text = text.clone();
     let servers_field = SettingField::render(move |_options, _window, cx| {
         mcp_server_list(&list_text, list_view.clone(), cx)
+    });
+    // G-M2: the paste/file import entry (web `MCPServerConfigDialog`'s import
+    // mode; the shell types the file path instead of using a native picker).
+    let import_view = view.clone();
+    let import_text = text.clone();
+    let import_field = SettingField::render(move |_options, _window, _cx| {
+        Button::new("mcp-import")
+            .label(import_text.manage_mcp_import.clone())
+            .small()
+            .with_variant(ButtonVariant::Secondary)
+            .on_click({
+                let view = import_view.clone();
+                move |_, window, cx| open_mcp_import_dialog(view.clone(), window, cx)
+            })
+            .into_any_element()
     });
     let json_view = view;
     let json_text = text.clone();
@@ -1911,6 +2999,8 @@ pub(crate) fn mcp_group(text: &ShellText, view: WeakEntity<ShellWindow>) -> Sett
     SettingGroup::new().items(vec![
         SettingItem::new(text.manage_mcp_servers.clone(), servers_field)
             .description(text.manage_mcp_description.clone()),
+        SettingItem::new(text.manage_mcp_import.clone(), import_field)
+            .description(text.manage_mcp_import_hint.clone()),
         SettingItem::new(text.manage_mcp_json_item.clone(), json_field)
             .description(text.manage_mcp_json_description.clone()),
     ])
@@ -2775,7 +3865,9 @@ pub(crate) fn open_mode_skills_dialog(
                 ),
         };
 
+        // 448px default panel width clips a 560px body.
         dialog
+            .w(px(592.))
             .title(div().child(format!("{} · {}", text.mode_skills_title, state.mode_name)))
             .child(content)
             .footer(footer)
@@ -3011,7 +4103,9 @@ pub(crate) fn open_json_editor_dialog(
             content = content.child(div().text_xs().text_color(cx.theme().danger).child(error));
         }
 
+        // 448px default panel width clips a 560px body.
         dialog
+            .w(px(592.))
             .title(div().child(text.manage_mcp_json_item.clone()))
             .child(content)
             .footer(
@@ -3279,7 +4373,9 @@ pub(crate) fn open_browse_dialog(
             let _ = loading;
         }
 
+        // 448px default panel width clips a 520px body.
         dialog
+            .w(px(552.))
             .title(div().child(text.manage_mcp_browse_title.clone()))
             .child(content)
     });
@@ -4207,6 +5303,7 @@ mod tests {
             enabled: None,
             skills_manageable: false,
             skills_mode_id: String::new(),
+            model_override: None,
         }
     }
 
@@ -4281,5 +5378,336 @@ mod tests {
         assert!(!AgentKindFilter::Agent.matches(AgentListKind::Subagents));
         assert!(!AgentKindFilter::SubAgent.matches(AgentListKind::Modes));
         assert!(AgentKindFilter::SubAgent.matches(AgentListKind::Subagents));
+    }
+
+    /// G-A6: the harness zone reads web `STRATEGY_ROUTES` — one route per
+    /// profile with the same node counts, every node inside the 320x44 box,
+    /// and an unknown profile falling back to Minimal.
+    #[test]
+    fn harness_routes_mirror_the_web_specs() {
+        let expected_nodes: [(&str, usize); 4] = [
+            ("Minimal", 1),
+            ("Standard", 4),
+            ("Ultimate", 6),
+            ("Creative", 3),
+        ];
+        for (profile, nodes) in expected_nodes {
+            let spec = harness_route_spec(profile);
+            assert_eq!(spec.nodes.len(), nodes, "{profile} node count");
+            assert!(!spec.paths.is_empty(), "{profile} has a path");
+            for (x, y) in spec.nodes {
+                assert!(
+                    (0.0..=HARNESS_ROUTE_WIDTH).contains(x)
+                        && (0.0..=HARNESS_ROUTE_HEIGHT).contains(y),
+                    "{profile} node ({x},{y}) stays in the route box"
+                );
+            }
+            // The main path spans the box from its left edge; Ultimate's
+            // second path branches off mid-box (web `M 48 22 C ...`).
+            assert!(matches!(
+                spec.paths[0].first(),
+                Some(HarnessRouteCmd::MoveTo(0., _))
+            ));
+        }
+        // Ultimate is the only two-path profile; a cubic keeps its two
+        // controls (web `C c1 c2 end`).
+        assert_eq!(harness_route_spec("Ultimate").paths.len(), 2);
+        assert!(matches!(
+            harness_route_spec("Ultimate").paths[1].first(),
+            Some(HarnessRouteCmd::MoveTo(48., 22.))
+        ));
+        assert!(harness_route_spec("Ultimate")
+            .paths
+            .iter()
+            .flat_map(|path| path.iter())
+            .any(|command| matches!(command, HarnessRouteCmd::CurveTo(..))));
+        assert_eq!(
+            harness_route_spec("Nope").nodes,
+            harness_route_spec("Minimal").nodes
+        );
+    }
+
+    /// G-A6: only builtin harness ids count as harness profiles — a user
+    /// agent reusing the id stays in the modes list.
+    #[test]
+    fn harness_profile_requires_builtin_source() {
+        assert_eq!(
+            harness_profile_of(&agent_card("Minimal", "", AgentSourceKind::Builtin)),
+            Some("Minimal")
+        );
+        assert_eq!(
+            harness_profile_of(&agent_card("Minimal", "", AgentSourceKind::User)),
+            None
+        );
+        assert_eq!(
+            harness_profile_of(&agent_card("Claw", "", AgentSourceKind::Builtin)),
+            None
+        );
+    }
+
+    /// G-A3: the model menu labels the stored override the web way — the
+    /// default entry, the two aliases, inheritance, and the configured
+    /// model's display name.
+    #[test]
+    fn agent_model_labels_follow_the_selection() {
+        use openbitfun_core::service::config::types::SubagentModelSelection;
+        let text = crate::i18n::fallback_text(openbitfun_core::service::i18n::LocaleId::EnUS);
+        let models = vec![
+            crate::runtime::ModelChoice {
+                id: "claude-sonnet".to_string(),
+                name: "Claude Sonnet".to_string(),
+                provider: "anthropic".to_string(),
+                enabled: true,
+            },
+            crate::runtime::ModelChoice {
+                id: "gpt-5".to_string(),
+                name: "GPT-5".to_string(),
+                provider: "openai".to_string(),
+                enabled: false,
+            },
+        ];
+        assert_eq!(
+            agent_model_label(None, &models, &text),
+            text.manage_agent_model_default
+        );
+        assert_eq!(
+            agent_model_label(Some(&SubagentModelSelection::Inherit), &models, &text),
+            text.settings_subagent_model_inherit
+        );
+        assert_eq!(
+            agent_model_label(Some(&SubagentModelSelection::fixed("fast")), &models, &text),
+            text.settings_subagent_model_fast
+        );
+        assert_eq!(
+            agent_model_label(
+                Some(&SubagentModelSelection::fixed("claude-sonnet")),
+                &models,
+                &text
+            ),
+            "Claude Sonnet · anthropic"
+        );
+        // A model that left the catalog keeps its id readable.
+        assert_eq!(
+            agent_model_label(Some(&SubagentModelSelection::fixed("gone")), &models, &text),
+            "gone"
+        );
+    }
+
+    /// G-A3: the menu lists the default entry, the three aliases, then only
+    /// enabled configured models (same `enabled` filter the shell model menus
+    /// use).
+    #[test]
+    fn agent_model_options_skip_disabled_models() {
+        let text = crate::i18n::fallback_text(openbitfun_core::service::i18n::LocaleId::EnUS);
+        let models = vec![
+            crate::runtime::ModelChoice {
+                id: "claude-sonnet".to_string(),
+                name: "Claude Sonnet".to_string(),
+                provider: String::new(),
+                enabled: true,
+            },
+            crate::runtime::ModelChoice {
+                id: "gpt-5".to_string(),
+                name: "GPT-5".to_string(),
+                provider: String::new(),
+                enabled: false,
+            },
+        ];
+        let options = agent_model_options(&models, &text);
+        let values: Vec<&str> = options.iter().map(|(value, _)| value.as_str()).collect();
+        assert_eq!(
+            values,
+            vec![
+                AGENT_MODEL_DEFAULT_CHOICE,
+                "inherit",
+                "fast",
+                "primary",
+                "claude-sonnet"
+            ]
+        );
+    }
+
+    /// G-M2: the paste parser mirrors web `parseMcpImport` — the document
+    /// shape, the per-entry shape gate, and the "existing id starts
+    /// unselected" rule.
+    #[test]
+    fn mcp_import_parser_mirrors_the_web_rules() {
+        let existing = vec!["taken".to_string()];
+        let candidates = parse_mcp_import(
+            r#"{"mcpServers":{"fresh":{"command":"npx","args":["-y","srv"]},
+                "taken":{"url":"https://example.com/mcp"}}}"#,
+            &existing,
+        )
+        .expect("valid document");
+        assert_eq!(candidates.len(), 2);
+        let fresh = candidates
+            .iter()
+            .find(|candidate| candidate.source_id == "fresh")
+            .expect("fresh candidate");
+        assert!(fresh.selected);
+        assert_eq!(fresh.target_id, "fresh");
+        let taken = candidates
+            .iter()
+            .find(|candidate| candidate.source_id == "taken")
+            .expect("taken candidate");
+        assert!(!taken.selected, "an existing id imports unselected");
+
+        assert_eq!(
+            parse_mcp_import("not json", &existing).unwrap_err(),
+            McpImportError::InvalidJson
+        );
+        assert_eq!(
+            parse_mcp_import("[]", &existing).unwrap_err(),
+            McpImportError::InvalidConfig
+        );
+        assert_eq!(
+            parse_mcp_import(r#"{"servers":{}}"#, &existing).unwrap_err(),
+            McpImportError::InvalidConfig
+        );
+        assert_eq!(
+            parse_mcp_import(r#"{"mcpServers":{}}"#, &existing).unwrap_err(),
+            McpImportError::SelectServers
+        );
+        assert_eq!(
+            parse_mcp_import(r#"{"mcpServers":{"a":"nope"}}"#, &existing).unwrap_err(),
+            McpImportError::InvalidConfig
+        );
+        // Shape gate: no transport and no connection input.
+        assert_eq!(
+            parse_mcp_import(r#"{"mcpServers":{"a":{}}}"#, &existing).unwrap_err(),
+            McpImportError::Shape
+        );
+        // Shape gate: web `advancedRequired` conflicts.
+        assert_eq!(
+            parse_mcp_import(
+                r#"{"mcpServers":{"a":{"command":"npx","url":"https://example.com"}}}"#,
+                &existing
+            )
+            .unwrap_err(),
+            McpImportError::Shape
+        );
+        assert_eq!(
+            parse_mcp_import(
+                r#"{"mcpServers":{"a":{"transport":"carrier","command":"npx"}}}"#,
+                &existing
+            )
+            .unwrap_err(),
+            McpImportError::Shape
+        );
+        assert_eq!(
+            parse_mcp_import(r#"{"mcpServers":{"a":{"url":"ftp://x"}}}"#, &existing).unwrap_err(),
+            McpImportError::Shape
+        );
+        assert_eq!(
+            parse_mcp_import(
+                r#"{"mcpServers":{"a":{"command":"npx","env":{"TOKEN":1}}}}"#,
+                &existing
+            )
+            .unwrap_err(),
+            McpImportError::Shape
+        );
+        // A declared stdio transport still needs its command.
+        assert_eq!(
+            parse_mcp_import(r#"{"mcpServers":{"a":{"transport":"stdio"}}}"#, &existing)
+                .unwrap_err(),
+            McpImportError::Shape
+        );
+    }
+
+    /// G-M2: the merge mirrors web `importMcpServers` — ids validated, taken
+    /// ids rejected, the untrusted marker stripped, and every imported entry
+    /// forced disabled while the rest of the document survives.
+    #[test]
+    /// G-M2: each preview row warns about the id it currently holds — the
+    /// live input, so renaming a conflicted id clears the warning (the smoke
+    /// found the snapshot-based version leaving a stale one).
+    #[test]
+    fn mcp_import_row_problem_follows_the_live_id() {
+        let text = crate::i18n::fallback_text(openbitfun_core::service::i18n::LocaleId::EnUS);
+        let existing = vec!["kept".to_string()];
+        let none: Vec<String> = Vec::new();
+        assert_eq!(
+            mcp_import_row_problem("fresh", &none, &existing, &text),
+            None
+        );
+        assert_eq!(
+            mcp_import_row_problem("", &none, &existing, &text),
+            Some(text.manage_mcp_import_id_required.as_str())
+        );
+        assert_eq!(
+            mcp_import_row_problem("bad id", &none, &existing, &text),
+            Some(text.manage_mcp_import_invalid_id.as_str())
+        );
+        assert_eq!(
+            mcp_import_row_problem("kept", &none, &existing, &text),
+            Some(text.manage_mcp_import_conflict.as_str())
+        );
+        // A sibling row holding the same id collides too, and the renamed id
+        // that no longer collides is clean again.
+        assert_eq!(
+            mcp_import_row_problem("twin", &["twin".to_string()], &existing, &text),
+            Some(text.manage_mcp_import_conflict.as_str())
+        );
+        assert_eq!(
+            mcp_import_row_problem("smoke-http-2", &["smoke-fs".to_string()], &existing, &text),
+            None
+        );
+    }
+
+    #[test]
+    fn mcp_import_merge_forces_disabled_and_keeps_the_rest() {
+        let document = serde_json::json!({
+            "mcpServers": {"kept": {"command": "srv"}},
+            "otherKey": {"untouched": true},
+        });
+        let entry = serde_json::json!({
+            "command": "npx",
+            "args": ["-y", "srv"],
+            "enabled": true,
+            "_openbitfunImport": {"from": "elsewhere"},
+        });
+        let merged =
+            merge_mcp_import(&document, &[("fresh".to_string(), entry)]).expect("merge succeeds");
+        let fresh = &merged["mcpServers"]["fresh"];
+        assert_eq!(fresh["enabled"], serde_json::Value::Bool(false));
+        assert!(fresh.get("_openbitfunImport").is_none());
+        assert_eq!(fresh["args"], serde_json::json!(["-y", "srv"]));
+        assert!(merged["mcpServers"].get("kept").is_some());
+        assert_eq!(merged["otherKey"], document["otherKey"]);
+
+        let err = |document: &serde_json::Value, selection: Vec<(String, serde_json::Value)>| {
+            merge_mcp_import(document, &selection).unwrap_err()
+        };
+        assert_eq!(err(&document, vec![]), McpImportError::SelectServers);
+        assert_eq!(
+            err(&document, vec![("  ".to_string(), serde_json::json!({}))]),
+            McpImportError::IdRequired
+        );
+        assert_eq!(
+            err(
+                &document,
+                vec![("bad id".to_string(), serde_json::json!({}))]
+            ),
+            McpImportError::InvalidId
+        );
+        assert_eq!(
+            err(&document, vec![("kept".to_string(), serde_json::json!({}))]),
+            McpImportError::IdConflict
+        );
+        // The same id selected twice collides with itself.
+        assert_eq!(
+            err(
+                &document,
+                vec![
+                    ("fresh".to_string(), serde_json::json!({})),
+                    ("fresh".to_string(), serde_json::json!({})),
+                ]
+            ),
+            McpImportError::IdConflict
+        );
+        assert!(valid_mcp_server_id("a.b-c_d1"));
+        assert!(!valid_mcp_server_id("a b"));
+        assert!(!valid_mcp_server_id(""));
+        assert!(!valid_mcp_server_id(&"a".repeat(129)));
     }
 }

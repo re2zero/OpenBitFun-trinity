@@ -917,3 +917,50 @@ gpui-shell-settings-review-parallelism = 審核並行數
 gpui-shell-settings-review-parallelism-desc = 補充審核任務可逐個執行或同時執行兩個。
 gpui-shell-settings-review-queue-wait = 容量等待時間
 gpui-shell-settings-review-queue-wait-desc = 可選審核任務等待供應商可用容量的時長，不包含已開始執行的檢查耗時。
+
+# ==================== A3 tail batch (G-A6 / G-A3 / G-M2 / G-Y4) ====================
+
+# Agent harness overview zone (web harnessZone).
+gpui-shell-manage-harness-title = 智能體執行框架
+gpui-shell-manage-harness-subtitle = 定義會話如何執行任務，各自管理工具與協作策略
+gpui-shell-manage-harness-purpose-minimal = 精簡流程，快速推進
+gpui-shell-manage-harness-purpose-standard = 平衡效率與品質
+gpui-shell-manage-harness-purpose-ultimate = 深度拆解與智能協同
+gpui-shell-manage-harness-purpose-creative = OpenBitFun 的定製與創造
+
+# Subagent model override (web agentCard.modelSelector).
+gpui-shell-manage-agent-model = 模型
+gpui-shell-manage-agent-model-default = 使用預設子智能體模型
+gpui-shell-manage-agent-model-failed = 更新子智能體模型失敗
+
+# MCP import. The shell reads a typed path instead of a native file picker.
+gpui-shell-manage-mcp-import = 匯入設定
+gpui-shell-manage-mcp-import-paste = 貼上 MCP 設定
+gpui-shell-manage-mcp-import-path = JSON 檔案路徑
+gpui-shell-manage-mcp-import-read = 讀取檔案
+gpui-shell-manage-mcp-import-file-failed = 無法讀取該檔案，請檢查路徑，或改為貼上 JSON 內容。
+gpui-shell-manage-mcp-import-preview = 預覽匯入
+gpui-shell-manage-mcp-import-hint = 支援 mcpServers JSON 格式。預覽後勾選服務；匯入的服務保持停用，不會覆寫已有項目。
+gpui-shell-manage-mcp-import-selected = 匯入所選服務
+gpui-shell-manage-mcp-import-conflict = ID 已存在，請重新命名後匯入為獨立服務。
+gpui-shell-manage-mcp-import-id = { $name } 的目標 ID
+gpui-shell-manage-mcp-import-select-servers = 請至少選擇一個要匯入的服務。
+gpui-shell-manage-mcp-import-invalid-json = JSON 格式無效，請檢查語法。
+gpui-shell-manage-mcp-import-invalid-config = 設定需要包含 mcpServers 物件，且每個服務設定必須是物件。
+gpui-shell-manage-mcp-import-id-required = 請填寫服務 ID。
+gpui-shell-manage-mcp-import-invalid-id = 新 ID 需為 1-128 位字母、數字、點、連字號或底線。
+gpui-shell-manage-mcp-import-id-conflict = 此 ID 已存在或被重複選取，請使用其他 ID。
+gpui-shell-manage-mcp-import-shape = 此設定包含殼無法安全匯入的欄位，請繼續使用 JSON 編輯器維護。
+
+# Trinity memory transfer.
+gpui-shell-trinity-memory-export = 匯出
+gpui-shell-trinity-memory-import = 匯入
+gpui-shell-trinity-memory-export-title = 匯出記憶
+gpui-shell-trinity-memory-import-title = 匯入記憶
+gpui-shell-trinity-memory-path = 檔案路徑
+gpui-shell-trinity-memory-path-required = 請填寫檔案路徑。
+gpui-shell-trinity-memory-export-done = 已匯出 { $nodes } 條記憶、{ $triples } 條關聯 → { $path }
+gpui-shell-trinity-memory-import-done = 已匯入，新增 { $added } 條記憶。
+gpui-shell-trinity-memory-import-confirm-title = 跨身份記憶遷移
+gpui-shell-trinity-memory-import-confirm-message = 這個記憶容器屬於「{ $container }」，而本機認知體是「{ $local }」。合併會把另一段人生的記憶遷入本機。確認繼續？
+gpui-shell-trinity-memory-import-confirm = 確認合併

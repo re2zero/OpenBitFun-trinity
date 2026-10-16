@@ -311,11 +311,18 @@ pub(crate) enum RuntimeEvent {
     /// T2-7: a JSON config save finished; `Ok` means the file landed and the
     /// running servers were reconciled.
     McpJsonSaved(Result<(), String>),
+    /// G-M2: one typed import path's file content, for the paste box.
+    McpImportFile(Result<String, String>),
     /// T2-7: one resources/read call finished for the browse dialog.
     McpResourceRead(Box<crate::manage::McpResourceReadOutcome>),
     /// A management action (agent creation, MCP lifecycle) failed; the
     /// settings pages surface it as a dismissible banner.
     ManageFailed(String),
+    /// G-A3: a subagent model-override write failed (its own banner line so
+    /// the page can name the operation, web `modelSelector.updateFailed`).
+    AgentModelFailed(String),
+    /// G-Y4: one trinity memory transfer finished (web T10 RPCs).
+    TrinityTransfer(Box<crate::trinity::MemoryTransferOutcome>),
     /// M22 tray: show (and focus) the main window. Left click or the tray
     /// menu; there is no per-window hide in gpui, so this is activate-only.
     TrayShowWindow,
@@ -1710,8 +1717,80 @@ impl RuntimeHandle {
         });
     }
 
+    /// G-A3: stores one subagent's model override (web
+    /// `updateSubagentConfig`). Builtin subagents persist under the shared
+    /// `ai.agent_model_defaults.subagents.builtin` map; custom file-backed
+    /// subagents rewrite their own definition. `choice == None` clears the
+    /// override back to the default SubAgent model.
+    pub(crate) fn set_subagent_model(
+        &self,
+        subagent_id: String,
+        builtin: bool,
+        choice: Option<String>,
+    ) {
+        let workspace = self.workspace();
+        self.tokio.spawn(async move {
+            let result: Result<(), String> = if builtin {
+                match get_global_config_service().await {
+                    Ok(service) => {
+                        let mut builtin_models: std::collections::HashMap<
+                            String,
+                            openbitfun_core::service::config::types::SubagentModelSelection,
+                        > = service
+                            .get_config(Some("ai.agent_model_defaults.subagents.builtin"))
+                            .await
+                            .unwrap_or_default();
+                        match &choice {
+                            None => {
+                                builtin_models.remove(&subagent_id);
+                            }
+                            Some(value) => {
+                                builtin_models.insert(
+                                    subagent_id.clone(),
+                                    crate::settings::subagent_model_selection(value),
+                                );
+                            }
+                        }
+                        service
+                            .set_config(
+                                "ai.agent_model_defaults.subagents.builtin",
+                                &builtin_models,
+                            )
+                            .await
+                            .map_err(|error| error.to_string())
+                    }
+                    Err(error) => Err(error.to_string()),
+                }
+            } else {
+                let (model, clear) = match &choice {
+                    None => (None, true),
+                    Some(value) => (Some(value.clone()), false),
+                };
+                openbitfun_core::agentic::agents::get_agent_registry()
+                    .update_and_save_custom_subagent_config(
+                        &subagent_id,
+                        model,
+                        clear,
+                        Some(&workspace.id),
+                    )
+                    .map_err(|error| error.to_string())
+            };
+            if let Err(message) = result {
+                tracing::warn!("Failed to set the model of subagent {subagent_id}: {message}");
+                publish(RuntimeEvent::AgentModelFailed(message));
+                return;
+            }
+            if let Err(error) = openbitfun_core::service::config::reload_global_config().await {
+                tracing::warn!(
+                    "Failed to reload global config after a subagent model change: {error}"
+                );
+            }
+            let catalog = fetch_agent_catalog(Some(&workspace.id)).await;
+            publish(RuntimeEvent::AgentCatalog(catalog));
+        });
+    }
+
     /// T2-12: the desktop `delete_custom_agent` pipeline — remove the
-    /// registry entry and its file, clean the agent profile and flow-chat
     /// mode references from the shared config, reload the global config,
     /// then refetch the catalog (the delete confirm closes immediately;
     /// failures surface as the banner).
@@ -1878,6 +1957,85 @@ impl RuntimeHandle {
             }
             publish(RuntimeEvent::McpJsonSaved(result));
             publish(RuntimeEvent::McpCatalog(fetch_mcp_catalog().await));
+        });
+    }
+
+    /// G-M2: reads one typed import path's file content (the shell's stand-in
+    /// for the web file picker) and routes it into the paste box.
+    pub(crate) fn read_mcp_import_file(&self, path: String) {
+        self.tokio.spawn(async move {
+            if path.trim().is_empty() {
+                publish(RuntimeEvent::McpImportFile(Err(
+                    "The import file path is empty".to_string(),
+                )));
+                return;
+            }
+            let result = tokio::fs::read_to_string(&path)
+                .await
+                .map_err(|error| format!("{error}"));
+            publish(RuntimeEvent::McpImportFile(result));
+        });
+    }
+
+    /// G-Y4: exports the whole MindGraph through the daemon (`memory.export`),
+    /// which reads the graph and writes the file at `path` (web T10).
+    pub(crate) fn trinity_memory_export(&self, path: String) {
+        self.tokio.spawn(async move {
+            let result = crate::trinity::client()
+                .call("memory.export", serde_json::json!({ "path": path.clone() }))
+                .await;
+            let outcome = match result {
+                Ok(value) => crate::trinity::MemoryTransferOutcome::Exported {
+                    nodes: value
+                        .get("nodes")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0),
+                    triples: value
+                        .get("triples")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0),
+                    path,
+                },
+                Err(error) => {
+                    tracing::warn!("Trinity memory.export failed: {error}");
+                    crate::trinity::MemoryTransferOutcome::Failed(error)
+                }
+            };
+            publish(RuntimeEvent::TrinityTransfer(Box::new(outcome)));
+        });
+    }
+
+    /// G-Y4: imports a trinity-graph container through the daemon
+    /// (`memory.import`). A cross-identity container is rejected with both
+    /// being ids; the retry after explicit confirmation sets
+    /// `confirm_being_id` (web T10 migration gate).
+    pub(crate) fn trinity_memory_import(&self, path: String, confirm_being_id: bool) {
+        self.tokio.spawn(async move {
+            let mut params = serde_json::json!({ "path": path.clone() });
+            if confirm_being_id {
+                params["confirm_being_id"] = serde_json::json!(true);
+            }
+            let result = crate::trinity::client().call("memory.import", params).await;
+            let outcome = match result {
+                Ok(value) => crate::trinity::MemoryTransferOutcome::Imported {
+                    added: value
+                        .get("added")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0),
+                },
+                Err(error) => match crate::trinity::parse_being_id_mismatch(&error) {
+                    Some((container, local)) => crate::trinity::MemoryTransferOutcome::Mismatch {
+                        container,
+                        local,
+                        path,
+                    },
+                    None => {
+                        tracing::warn!("Trinity memory.import failed: {error}");
+                        crate::trinity::MemoryTransferOutcome::Failed(error)
+                    }
+                },
+            };
+            publish(RuntimeEvent::TrinityTransfer(Box::new(outcome)));
         });
     }
 
@@ -2423,6 +2581,23 @@ async fn fetch_agent_catalog(workspace_id: Option<&str>) -> crate::manage::Agent
     let modes_info = registry
         .get_modes_info_for_workspace(workspace_id, false)
         .await;
+    // G-A3: builtin subagents keep their model override in the shared config
+    // map (web reads `ai.agent_model_defaults.subagents.builtin`).
+    let builtin_model_overrides: std::collections::HashMap<
+        String,
+        openbitfun_core::service::config::types::SubagentModelSelection,
+    > = match openbitfun_core::service::config::get_global_config_service().await {
+        Ok(service) => service
+            .get_config(Some("ai.agent_model_defaults.subagents.builtin"))
+            .await
+            .unwrap_or_default(),
+        Err(error) => {
+            tracing::warn!(
+                "Config service unavailable while reading builtin model overrides: {error}"
+            );
+            Default::default()
+        }
+    };
     // T2-11: overrides persist under the profile representative — the first
     // mode in list order for each config profile (web `buildProfileMap`).
     let profiles: Vec<(String, Option<String>)> = modes_info
@@ -2450,6 +2625,8 @@ async fn fetch_agent_catalog(workspace_id: Option<&str>) -> crate::manage::Agent
                 // tool set is the shell-visible truth (web hasSkillTool).
                 skills_manageable: info.default_tools.iter().any(|tool| tool == "Skill"),
                 skills_mode_id,
+                // G-A3: model overrides apply to subagents only.
+                model_override: None,
             }
         })
         .collect();
@@ -2459,6 +2636,22 @@ async fn fetch_agent_catalog(workspace_id: Option<&str>) -> crate::manage::Agent
         .into_iter()
         .map(|info| {
             let external = matches!(info.source, AgentSource::External);
+            // G-A3: the override the row menu shows — builtin overrides live
+            // in the shared config map, custom ones in the agent file (web
+            // `subagentModelOverride`).
+            let model_override = if external {
+                None
+            } else if matches!(info.source, AgentSource::Builtin) {
+                builtin_model_overrides.get(&info.id).cloned()
+            } else if info.model_is_explicit.unwrap_or(false) {
+                info.model
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|model| !model.is_empty())
+                    .map(crate::settings::subagent_model_selection)
+            } else {
+                None
+            };
             crate::manage::AgentCardRow {
                 id: info.id.clone(),
                 name: info.name,
@@ -2473,6 +2666,7 @@ async fn fetch_agent_catalog(workspace_id: Option<&str>) -> crate::manage::Agent
                 // Subagents persist under their own id (web falls back to
                 // the agent id when no mode profile exists).
                 skills_mode_id: info.id,
+                model_override,
             }
         })
         .collect();

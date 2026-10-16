@@ -424,6 +424,18 @@ pub(crate) struct ShellText {
     pub manage_agents_kind_agent: String,
     pub manage_agents_kind_subagent: String,
     pub manage_agents_no_match: String,
+    /// A3 tail: the harness profile zone (web `harnessZone`) and the subagent
+    /// model override menu (web `agentCard.modelSelector`; inherit/fast/
+    /// primary reuse the settings subagent-model keys above).
+    pub manage_harness_title: String,
+    pub manage_harness_subtitle: String,
+    pub manage_harness_purpose_minimal: String,
+    pub manage_harness_purpose_standard: String,
+    pub manage_harness_purpose_ultimate: String,
+    pub manage_harness_purpose_creative: String,
+    pub manage_agent_model: String,
+    pub manage_agent_model_default: String,
+    pub manage_agent_model_failed: String,
     pub manage_agent_create_title: String,
     pub manage_agent_kind_mode: String,
     pub manage_agent_kind_subagent: String,
@@ -502,6 +514,24 @@ pub(crate) struct ShellText {
     pub manage_mcp_json_loading: String,
     pub manage_mcp_json_save: String,
     pub manage_mcp_json_saved: String,
+    /// G-M2: the paste/file import dialog (web `MCPServerConfigDialog` import
+    /// mode; the shell reads a typed path instead of the native picker).
+    pub manage_mcp_import: String,
+    pub manage_mcp_import_paste: String,
+    pub manage_mcp_import_path: String,
+    pub manage_mcp_import_read: String,
+    pub manage_mcp_import_file_failed: String,
+    pub manage_mcp_import_preview: String,
+    pub manage_mcp_import_hint: String,
+    pub manage_mcp_import_selected: String,
+    pub manage_mcp_import_conflict: String,
+    pub manage_mcp_import_select_servers: String,
+    pub manage_mcp_import_invalid_json: String,
+    pub manage_mcp_import_invalid_config: String,
+    pub manage_mcp_import_id_required: String,
+    pub manage_mcp_import_invalid_id: String,
+    pub manage_mcp_import_id_conflict: String,
+    pub manage_mcp_import_shape: String,
     pub manage_mcp_resource_hint: String,
     pub manage_mcp_resource_loading: String,
     pub manage_mcp_resource_binary: String,
@@ -678,6 +708,16 @@ pub(crate) struct ShellText {
     pub trinity_memory_edit_save: String,
     pub trinity_memory_edit_applied: String,
     pub trinity_memory_edit_missing: String,
+    /// G-Y4: memory export/import (web T10 RPCs; the daemon reads/writes the
+    /// file and the shell supplies a typed path).
+    pub trinity_memory_export: String,
+    pub trinity_memory_import: String,
+    pub trinity_memory_export_title: String,
+    pub trinity_memory_import_title: String,
+    pub trinity_memory_path: String,
+    pub trinity_memory_path_required: String,
+    pub trinity_memory_import_confirm_title: String,
+    pub trinity_memory_import_confirm: String,
     pub trinity_action_refresh: String,
     pub trinity_loading: String,
     pub trinity_action_failed: String,
@@ -920,6 +960,59 @@ pub(crate) fn tasks_inactive_title(count: usize, cx: &App) -> String {
     resolve_with(
         "gpui-shell-tasks-inactive-title",
         TranslationArgs::new().with_number("count", count as f64),
+        cx,
+    )
+}
+
+/// G-A6: the localized name of a builtin agent (web `agentName` over the
+/// shared `shared:agents.*` terms).
+pub(crate) fn shared_agent_name(id: &str, cx: &App) -> String {
+    resolve_with(&format!("shared.agents.{id}"), TranslationArgs::new(), cx)
+}
+
+/// G-M2: the per-candidate target-id field label (web `visual.importId`).
+pub(crate) fn manage_mcp_import_id(name: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-manage-mcp-import-id",
+        TranslationArgs::new().with_string("name", name),
+        cx,
+    )
+}
+
+/// G-Y4: the export success line (web `trinity.memory.exportDone`), naming the
+/// exported node/triple counts and the file path.
+pub(crate) fn trinity_memory_export_done(nodes: u64, triples: u64, path: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-trinity-memory-export-done",
+        TranslationArgs::new()
+            .with_number("nodes", nodes as f64)
+            .with_number("triples", triples as f64)
+            .with_string("path", path),
+        cx,
+    )
+}
+
+/// G-Y4: the import success line (web `trinity.memory.importDone`).
+pub(crate) fn trinity_memory_import_done(added: u64, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-trinity-memory-import-done",
+        TranslationArgs::new().with_number("added", added as f64),
+        cx,
+    )
+}
+
+/// G-Y4: the cross-identity import warning (web
+/// `trinity.memory.importConfirmMessage`).
+pub(crate) fn trinity_memory_import_confirm_message(
+    container: &str,
+    local: &str,
+    cx: &App,
+) -> String {
+    resolve_with(
+        "gpui-shell-trinity-memory-import-confirm-message",
+        TranslationArgs::new()
+            .with_string("container", container)
+            .with_string("local", local),
         cx,
     )
 }
@@ -1575,6 +1668,15 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         manage_agents_kind_agent: "Agent".to_string(),
         manage_agents_kind_subagent: "SubAgent".to_string(),
         manage_agents_no_match: "No matching agents.".to_string(),
+        manage_harness_title: "Agent Harness".to_string(),
+        manage_harness_subtitle: "Choose how a session executes work; each Harness owns its tool and collaboration policy".to_string(),
+        manage_harness_purpose_minimal: "Lean flow, fast progress".to_string(),
+        manage_harness_purpose_standard: "Balance speed and quality".to_string(),
+        manage_harness_purpose_ultimate: "Deep planning and collaboration".to_string(),
+        manage_harness_purpose_creative: "Customize and build on OpenBitFun".to_string(),
+        manage_agent_model: "Model".to_string(),
+        manage_agent_model_default: "Use default SubAgent model".to_string(),
+        manage_agent_model_failed: "Failed to update the SubAgent model".to_string(),
         manage_agent_create_title: "Create custom agent".to_string(),
         manage_agent_kind_mode: "Mode".to_string(),
         manage_agent_kind_subagent: "Subagent".to_string(),
@@ -1660,6 +1762,42 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         manage_mcp_json_loading: "Loading configuration…".to_string(),
         manage_mcp_json_save: "Save".to_string(),
         manage_mcp_json_saved: "MCP configuration saved.".to_string(),
+        manage_mcp_import: "Import config".to_string(),
+        manage_mcp_import_paste: "Paste an MCP configuration".to_string(),
+        manage_mcp_import_path: "JSON file path".to_string(),
+        manage_mcp_import_read: "Read file".to_string(),
+        manage_mcp_import_file_failed: {
+            "Could not read the file. Check the path, or paste the JSON content instead."
+                .to_string()
+        },
+        manage_mcp_import_preview: "Preview import".to_string(),
+        manage_mcp_import_hint: {
+            "Use the mcpServers JSON format. Select servers below; imported servers stay \
+             disabled. Existing entries are never overwritten."
+                .to_string()
+        },
+        manage_mcp_import_selected: "Import selected servers".to_string(),
+        manage_mcp_import_conflict: "ID exists. Change it to import a separate server.".to_string(),
+        manage_mcp_import_select_servers: "Select at least one server to import.".to_string(),
+        manage_mcp_import_invalid_json: {
+            "Invalid JSON. Check the syntax and try again.".to_string()
+        },
+        manage_mcp_import_invalid_config: {
+            "Expected an object containing an mcpServers object with server entries."
+                .to_string()
+        },
+        manage_mcp_import_id_required: "Enter a service ID.".to_string(),
+        manage_mcp_import_invalid_id: {
+            "Use 1-128 letters, digits, dots, hyphens, or underscores for a new ID.".to_string()
+        },
+        manage_mcp_import_id_conflict: {
+            "This ID already exists or is selected twice. Choose a different ID.".to_string()
+        },
+        manage_mcp_import_shape: {
+            "This configuration uses fields the shell cannot import safely. Keep it in the \
+             JSON editor."
+                .to_string()
+        },
         manage_mcp_resource_hint: "Click a resource to read its content.".to_string(),
         manage_mcp_resource_loading: "Reading resource…".to_string(),
         manage_mcp_resource_binary: "(Binary content not shown)".to_string(),
@@ -1896,6 +2034,14 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         trinity_memory_edit_save: "Save correction".to_string(),
         trinity_memory_edit_applied: "Correction applied.".to_string(),
         trinity_memory_edit_missing: "The original memory no longer exists (it may have been forgotten).".to_string(),
+        trinity_memory_export: "Export".to_string(),
+        trinity_memory_import: "Import".to_string(),
+        trinity_memory_export_title: "Export memories".to_string(),
+        trinity_memory_import_title: "Import memories".to_string(),
+        trinity_memory_path: "File path".to_string(),
+        trinity_memory_path_required: "Enter a file path.".to_string(),
+        trinity_memory_import_confirm_title: "Cross-identity memory import".to_string(),
+        trinity_memory_import_confirm: "Merge anyway".to_string(),
         trinity_action_refresh: "Refresh".to_string(),
         trinity_loading: "Loading…".to_string(),
         trinity_action_failed: "Action failed".to_string(),
@@ -2419,6 +2565,23 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
             .t("gpui-shell-manage-agent-error-mode-project")
             .await,
         manage_agent_edit_title: service.t("gpui-shell-manage-agent-edit-title").await,
+        manage_agent_model: service.t("gpui-shell-manage-agent-model").await,
+        manage_agent_model_default: service.t("gpui-shell-manage-agent-model-default").await,
+        manage_agent_model_failed: service.t("gpui-shell-manage-agent-model-failed").await,
+        manage_harness_title: service.t("gpui-shell-manage-harness-title").await,
+        manage_harness_subtitle: service.t("gpui-shell-manage-harness-subtitle").await,
+        manage_harness_purpose_minimal: service
+            .t("gpui-shell-manage-harness-purpose-minimal")
+            .await,
+        manage_harness_purpose_standard: service
+            .t("gpui-shell-manage-harness-purpose-standard")
+            .await,
+        manage_harness_purpose_ultimate: service
+            .t("gpui-shell-manage-harness-purpose-ultimate")
+            .await,
+        manage_harness_purpose_creative: service
+            .t("gpui-shell-manage-harness-purpose-creative")
+            .await,
         manage_agent_delete: service.t("gpui-shell-manage-agent-delete").await,
         manage_agent_delete_title: service.t("gpui-shell-manage-agent-delete-title").await,
         // "Edit" is a shared term; a dedicated key would trip the shared-term
@@ -2481,6 +2644,28 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         manage_mcp_json_loading: service.t("gpui-shell-manage-mcp-json-loading").await,
         manage_mcp_json_save: service.t("gpui-shell-manage-mcp-json-save").await,
         manage_mcp_json_saved: service.t("gpui-shell-manage-mcp-json-saved").await,
+        manage_mcp_import: service.t("gpui-shell-manage-mcp-import").await,
+        manage_mcp_import_paste: service.t("gpui-shell-manage-mcp-import-paste").await,
+        manage_mcp_import_path: service.t("gpui-shell-manage-mcp-import-path").await,
+        manage_mcp_import_read: service.t("gpui-shell-manage-mcp-import-read").await,
+        manage_mcp_import_file_failed: service.t("gpui-shell-manage-mcp-import-file-failed").await,
+        manage_mcp_import_preview: service.t("gpui-shell-manage-mcp-import-preview").await,
+        manage_mcp_import_hint: service.t("gpui-shell-manage-mcp-import-hint").await,
+        manage_mcp_import_selected: service.t("gpui-shell-manage-mcp-import-selected").await,
+        manage_mcp_import_conflict: service.t("gpui-shell-manage-mcp-import-conflict").await,
+        manage_mcp_import_select_servers: service
+            .t("gpui-shell-manage-mcp-import-select-servers")
+            .await,
+        manage_mcp_import_invalid_json: service
+            .t("gpui-shell-manage-mcp-import-invalid-json")
+            .await,
+        manage_mcp_import_invalid_config: service
+            .t("gpui-shell-manage-mcp-import-invalid-config")
+            .await,
+        manage_mcp_import_id_required: service.t("gpui-shell-manage-mcp-import-id-required").await,
+        manage_mcp_import_invalid_id: service.t("gpui-shell-manage-mcp-import-invalid-id").await,
+        manage_mcp_import_id_conflict: service.t("gpui-shell-manage-mcp-import-id-conflict").await,
+        manage_mcp_import_shape: service.t("gpui-shell-manage-mcp-import-shape").await,
         manage_mcp_resource_hint: service.t("gpui-shell-manage-mcp-resource-hint").await,
         manage_mcp_resource_loading: service.t("gpui-shell-manage-mcp-resource-loading").await,
         manage_mcp_resource_binary: service.t("gpui-shell-manage-mcp-resource-binary").await,
@@ -2732,6 +2917,16 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         trinity_memory_edit_save: service.t("gpui-shell-trinity-memory-edit-save").await,
         trinity_memory_edit_applied: service.t("gpui-shell-trinity-memory-edit-applied").await,
         trinity_memory_edit_missing: service.t("gpui-shell-trinity-memory-edit-missing").await,
+        trinity_memory_export: service.t("gpui-shell-trinity-memory-export").await,
+        trinity_memory_import: service.t("gpui-shell-trinity-memory-import").await,
+        trinity_memory_export_title: service.t("gpui-shell-trinity-memory-export-title").await,
+        trinity_memory_import_title: service.t("gpui-shell-trinity-memory-import-title").await,
+        trinity_memory_path: service.t("gpui-shell-trinity-memory-path").await,
+        trinity_memory_path_required: service.t("gpui-shell-trinity-memory-path-required").await,
+        trinity_memory_import_confirm_title: service
+            .t("gpui-shell-trinity-memory-import-confirm-title")
+            .await,
+        trinity_memory_import_confirm: service.t("gpui-shell-trinity-memory-import-confirm").await,
         trinity_action_refresh: service.t("gpui-shell-trinity-action-refresh").await,
         trinity_loading: service.t("gpui-shell-trinity-loading").await,
         trinity_action_failed: service.t("gpui-shell-trinity-action-failed").await,

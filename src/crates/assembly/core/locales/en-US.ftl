@@ -947,3 +947,53 @@ gpui-shell-settings-review-parallelism = Review parallelism
 gpui-shell-settings-review-parallelism-desc = Run supplemental review tasks one at a time or two at once.
 gpui-shell-settings-review-queue-wait = Capacity wait time
 gpui-shell-settings-review-queue-wait-desc = How long optional reviews wait for provider capacity; excludes checks already running.
+
+# ==================== A3 tail batch (G-A6 / G-A3 / G-M2 / G-Y4) ====================
+
+# Agent harness overview zone (web harnessZone).
+gpui-shell-manage-harness-title = Agent Harness
+gpui-shell-manage-harness-subtitle = Choose how a session executes work; each Harness owns its tool and collaboration policy
+gpui-shell-manage-harness-purpose-minimal = Lean flow, fast progress
+gpui-shell-manage-harness-purpose-standard = Balance speed and quality
+gpui-shell-manage-harness-purpose-ultimate = Deep planning and collaboration
+gpui-shell-manage-harness-purpose-creative = Customize and build on OpenBitFun
+
+# Subagent model override (web agentCard.modelSelector). Inherit / fast /
+# primary reuse the settings subagent-model keys.
+gpui-shell-manage-agent-model = Model
+gpui-shell-manage-agent-model-default = Use default SubAgent model
+gpui-shell-manage-agent-model-failed = Failed to update the SubAgent model
+
+# MCP import (web MCPServerConfigDialog import mode). The shell reads a typed
+# path instead of a native file picker.
+gpui-shell-manage-mcp-import = Import config
+gpui-shell-manage-mcp-import-paste = Paste an MCP configuration
+gpui-shell-manage-mcp-import-path = JSON file path
+gpui-shell-manage-mcp-import-read = Read file
+gpui-shell-manage-mcp-import-file-failed = Could not read the file. Check the path, or paste the JSON content instead.
+gpui-shell-manage-mcp-import-preview = Preview import
+gpui-shell-manage-mcp-import-hint = Use the mcpServers JSON format. Select servers below; imported servers stay disabled. Existing entries are never overwritten.
+gpui-shell-manage-mcp-import-selected = Import selected servers
+gpui-shell-manage-mcp-import-conflict = ID exists. Change it to import a separate server.
+gpui-shell-manage-mcp-import-id = Target ID for { $name }
+gpui-shell-manage-mcp-import-select-servers = Select at least one server to import.
+gpui-shell-manage-mcp-import-invalid-json = Invalid JSON. Check the syntax and try again.
+gpui-shell-manage-mcp-import-invalid-config = Expected an object containing an mcpServers object with server entries.
+gpui-shell-manage-mcp-import-id-required = Enter a service ID.
+gpui-shell-manage-mcp-import-invalid-id = Use 1-128 letters, digits, dots, hyphens, or underscores for a new ID.
+gpui-shell-manage-mcp-import-id-conflict = This ID already exists or is selected twice. Choose a different ID.
+gpui-shell-manage-mcp-import-shape = This configuration uses fields the shell cannot import safely. Keep it in the JSON editor.
+
+# Trinity memory transfer (web T10 RPCs). The daemon reads/writes the file;
+# the shell supplies a typed path.
+gpui-shell-trinity-memory-export = Export
+gpui-shell-trinity-memory-import = Import
+gpui-shell-trinity-memory-export-title = Export memories
+gpui-shell-trinity-memory-import-title = Import memories
+gpui-shell-trinity-memory-path = File path
+gpui-shell-trinity-memory-path-required = Enter a file path.
+gpui-shell-trinity-memory-export-done = Exported { $nodes } memories and { $triples } associations -> { $path }
+gpui-shell-trinity-memory-import-done = Import finished - { $added } memories added.
+gpui-shell-trinity-memory-import-confirm-title = Cross-identity memory import
+gpui-shell-trinity-memory-import-confirm-message = This memory container belongs to "{ $container }" while this machine's being is "{ $local }". Merging brings another life's memories into this being. Continue?
+gpui-shell-trinity-memory-import-confirm = Merge anyway
