@@ -155,6 +155,9 @@ pub(crate) struct ShellText {
     /// R2c docked resource panel chrome.
     pub panel_pop_out: String,
     pub panel_close: String,
+    pub panel_maximize: String,
+    pub panel_restore: String,
+    pub panel_swap: String,
     /// Top-bar resource panel toggle (opens the panel when none is docked).
     pub panel_open: String,
     /// Sidebar drawer toggle (nav top bar + collapsed strip).
@@ -264,6 +267,13 @@ pub(crate) struct ShellText {
     pub new_project_error_create: String,
     pub terminal_title: String,
     pub terminal_close: String,
+    pub terminal_reveal: String,
+    pub notifications_title: String,
+    pub notifications_empty: String,
+    pub notifications_clear_all: String,
+    pub terminal_mode_compact: String,
+    pub terminal_mode_comfortable: String,
+    pub terminal_mode_expanded: String,
     pub terminal_exited: String,
     pub settings_open: String,
     /// Settings tab title (R1a), resolved from the shared `features.settings`
@@ -354,6 +364,9 @@ pub(crate) struct ShellText {
     pub rollback_at_turn: String,
     pub turn_menu: String,
     pub turn_copy: String,
+    pub turn_meta_completed: String,
+    pub turn_meta_stopped: String,
+    pub turn_meta_duration: String,
     pub turn_copy_full: String,
     pub turn_copy_result: String,
     /// Fenced-code toolbar (web `markdown.copyCode` / `markdown.copySuccess`).
@@ -362,6 +375,7 @@ pub(crate) struct ShellText {
     /// Tool-row affordances (web `tooltip.openDetails` / `tooltip.copy`).
     pub tool_open_details: String,
     pub tool_copy: String,
+    pub tool_copied: String,
     pub turn_copy_user_label: String,
     pub subagent_badge: String,
     pub subagent_open: String,
@@ -652,6 +666,8 @@ pub(crate) struct ShellText {
     pub settings_archived_list: String,
     pub settings_archived_description: String,
     pub settings_archived_empty: String,
+    pub settings_archived_loading: String,
+    pub settings_archived_refresh: String,
     pub settings_archived_restore: String,
     pub settings_archived_delete_title: String,
     pub settings_archived_delete_all: String,
@@ -1163,12 +1179,104 @@ pub(crate) fn permission_subagent_label(subagent_type: &str, cx: &App) -> String
     )
 }
 
-/// Resolves the delete-all-archived confirmation body for the count the
-/// dialog was opened with.
-pub(crate) fn archived_delete_all_confirm_message(count: usize, cx: &App) -> String {
+/// Resolves the delete-all-archived confirmation body for the counts the
+/// dialog was opened with (G-SE30: every workspace the page groups).
+pub(crate) fn archived_delete_all_confirm_message(
+    count: usize,
+    workspace_count: usize,
+    cx: &App,
+) -> String {
     resolve_with(
         "gpui-shell-settings-archived-delete-all-confirm-message",
+        TranslationArgs::new()
+            .with_number("count", count as f64)
+            .with_number("workspaceCount", workspace_count as f64),
+        cx,
+    )
+}
+
+/// Resolves one workspace's archived-sessions load failure (web
+/// `loadArchivedFailedForWorkspace`).
+pub(crate) fn archived_load_failed(workspace: &str, path: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-settings-archived-load-failed",
+        TranslationArgs::new()
+            .with_string("workspace", workspace)
+            .with_string("path", path),
+        cx,
+    )
+}
+
+/// G-X6: one notification-center row, naming the session and how many turns
+/// finished in it while the user was elsewhere.
+pub(crate) fn notifications_row(name: &str, count: u32, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-notifications-row",
+        TranslationArgs::new()
+            .with_string("name", name)
+            .with_number("count", count as f64),
+        cx,
+    )
+}
+
+/// G-T1: the dock divider's tooltip (web `layout.resizer.title`): drag to
+/// resize, double-click to switch mode, and the mode the panel is in now.
+pub(crate) fn terminal_resizer_title(mode: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-terminal-resizer-title",
+        TranslationArgs::new().with_string("mode", mode),
+        cx,
+    )
+}
+
+/// G-T1: one terminal size tier's label (web `layout.panelMode.*`).
+pub(crate) fn terminal_tier_label(tier: crate::shell::TerminalTier, text: &ShellText) -> String {
+    match tier {
+        crate::shell::TerminalTier::Compact => text.terminal_mode_compact.clone(),
+        crate::shell::TerminalTier::Comfortable => text.terminal_mode_comfortable.clone(),
+        crate::shell::TerminalTier::Expanded => text.terminal_mode_expanded.clone(),
+    }
+}
+
+/// Resolves the archived row actions' inline receipts (web
+/// `restoreSucceeded` / `deleteArchivedSucceeded` / `deleteAllArchivedSucceeded`)
+/// with the row's name and its workspace label.
+pub(crate) fn archived_restore_succeeded(name: &str, workspace: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-settings-archived-restore-succeeded",
+        TranslationArgs::new()
+            .with_string("name", name)
+            .with_string("workspace", workspace),
+        cx,
+    )
+}
+
+pub(crate) fn archived_delete_succeeded(name: &str, workspace: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-settings-archived-delete-succeeded",
+        TranslationArgs::new()
+            .with_string("name", name)
+            .with_string("workspace", workspace),
+        cx,
+    )
+}
+
+pub(crate) fn archived_delete_all_succeeded(count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-settings-archived-delete-all-succeeded",
         TranslationArgs::new().with_number("count", count as f64),
+        cx,
+    )
+}
+
+/// Resolves the single-row delete confirmation body, which names the session
+/// and the workspace it is deleted from (web `deleteArchivedConfirmMessage`).
+pub(crate) fn archived_delete_message(name: &str, workspace: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-settings-archived-delete-message",
+        TranslationArgs::new()
+            .with_string("name", name)
+            .with_string("workspace", workspace),
         cx,
     )
 }
@@ -1407,6 +1515,9 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         tasks_day_empty: "Nothing scheduled on this day.".to_string(),
         panel_pop_out: "Pop out to a tab".to_string(),
         panel_close: "Hide panel".to_string(),
+        panel_maximize: "Maximize panel".to_string(),
+        panel_restore: "Restore panel".to_string(),
+        panel_swap: "Swap panes".to_string(),
         panel_open: "Show panel".to_string(),
         sidebar_toggle: "Toggle sidebar".to_string(),
         files_title: "Files".to_string(),
@@ -1512,6 +1623,13 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         new_project_error_create: "Failed to create project".to_string(),
         terminal_title: "Terminal".to_string(),
         terminal_close: "Close terminal".to_string(),
+        terminal_reveal: "Show in file manager".to_string(),
+        notifications_title: "Notification Center".to_string(),
+        notifications_empty: "No notifications".to_string(),
+        notifications_clear_all: "Clear All".to_string(),
+        terminal_mode_compact: "Compact".to_string(),
+        terminal_mode_comfortable: "Comfortable".to_string(),
+        terminal_mode_expanded: "Expanded".to_string(),
         terminal_exited: "process exited".to_string(),
         settings_open: "Open settings".to_string(),
         settings_title: "Settings".to_string(),
@@ -1606,12 +1724,16 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         rollback_at_turn: "Roll back to this turn".to_string(),
         turn_menu: "Turn actions".to_string(),
         turn_copy: "Copy dialog".to_string(),
+        turn_meta_completed: "Completed".to_string(),
+        turn_meta_stopped: "Stopped".to_string(),
+        turn_meta_duration: "Duration".to_string(),
         turn_copy_full: "Copy full transcript".to_string(),
         turn_copy_result: "Copy result".to_string(),
         code_copy: "Copy code".to_string(),
         code_copied: "Copy success".to_string(),
         tool_open_details: "Open details".to_string(),
         tool_copy: "Copy".to_string(),
+        tool_copied: "Copy success".to_string(),
         turn_copy_user_label: "\u{1f464} User:".to_string(),
         subagent_badge: "Subagent run".to_string(),
         subagent_open: "View run".to_string(),
@@ -1956,12 +2078,14 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         usage_activity_fri: "Fri".to_string(),
         usage_activity_sun: "Sun".to_string(),
         settings_archived: "Archived sessions".to_string(),
-        settings_archived_list: "This workspace".to_string(),
+        settings_archived_list: "Archived Sessions".to_string(),
         settings_archived_description: {
-            "Sessions archived from the sidebar; restore them or delete them for good."
+            "Grouped by workspace; restore a session to continue it, or delete it permanently with no undo"
                 .to_string()
         },
-        settings_archived_empty: "No archived sessions in this workspace.".to_string(),
+        settings_archived_empty: "No archived sessions".to_string(),
+        settings_archived_loading: "Loading".to_string(),
+        settings_archived_refresh: "Refresh".to_string(),
         settings_archived_restore: "Restore".to_string(),
         settings_archived_delete_title: "Delete archived session".to_string(),
         settings_archived_delete_all: "Delete All Archived".to_string(),
@@ -2277,6 +2401,9 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         tasks_day_empty: service.t("gpui-shell-tasks-day-empty").await,
         panel_pop_out: service.t("gpui-shell-panel-pop-out").await,
         panel_close: service.t("gpui-shell-panel-close").await,
+        panel_maximize: service.t("gpui-shell-panel-maximize").await,
+        panel_restore: service.t("gpui-shell-panel-restore").await,
+        panel_swap: service.t("gpui-shell-panel-swap").await,
         panel_open: service.t("gpui-shell-panel-open").await,
         sidebar_toggle: service.t("gpui-shell-sidebar-toggle").await,
         files_title: service.t("gpui-shell-files-title").await,
@@ -2377,6 +2504,13 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         new_project_error_create: service.t("gpui-shell-new-project-error-create").await,
         terminal_title: service.t("gpui-shell-terminal-title").await,
         terminal_close: service.t("gpui-shell-terminal-close").await,
+        terminal_reveal: service.t("gpui-shell-terminal-reveal").await,
+        notifications_title: service.t("gpui-shell-notifications-title").await,
+        notifications_empty: service.t("gpui-shell-notifications-empty").await,
+        notifications_clear_all: service.t("gpui-shell-notifications-clear-all").await,
+        terminal_mode_compact: service.t("gpui-shell-terminal-mode-compact").await,
+        terminal_mode_comfortable: service.t("gpui-shell-terminal-mode-comfortable").await,
+        terminal_mode_expanded: service.t("gpui-shell-terminal-mode-expanded").await,
         terminal_exited: service.t("gpui-shell-terminal-exited").await,
         settings_open: service.t("gpui-shell-settings-open").await,
         settings_title: service.t("shared.features.settings").await,
@@ -2472,12 +2606,16 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         rollback_at_turn: service.t("gpui-shell-rollback-at-turn").await,
         turn_menu: service.t("gpui-shell-turn-menu").await,
         turn_copy: service.t("gpui-shell-turn-copy").await,
+        turn_meta_completed: service.t("gpui-shell-turn-meta-completed").await,
+        turn_meta_stopped: service.t("gpui-shell-turn-meta-stopped").await,
+        turn_meta_duration: service.t("gpui-shell-turn-meta-duration").await,
         turn_copy_full: service.t("gpui-shell-turn-copy-full").await,
         turn_copy_result: service.t("gpui-shell-turn-copy-result").await,
         code_copy: service.t("gpui-shell-code-copy").await,
         code_copied: service.t("gpui-shell-code-copied").await,
         tool_open_details: service.t("gpui-shell-tool-open-details").await,
         tool_copy: service.t("gpui-shell-tool-copy").await,
+        tool_copied: service.t("gpui-shell-tool-copied").await,
         turn_copy_user_label: service.t("gpui-shell-turn-copy-user-label").await,
         subagent_badge: service.t("gpui-shell-subagent-badge").await,
         subagent_open: service.t("gpui-shell-subagent-open").await,
@@ -2839,6 +2977,8 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         settings_archived_list: service.t("gpui-shell-settings-archived-list").await,
         settings_archived_description: service.t("gpui-shell-settings-archived-description").await,
         settings_archived_empty: service.t("gpui-shell-settings-archived-empty").await,
+        settings_archived_loading: service.t("gpui-shell-settings-archived-loading").await,
+        settings_archived_refresh: service.t("gpui-shell-settings-archived-refresh").await,
         settings_archived_restore: service.t("gpui-shell-settings-archived-restore").await,
         settings_archived_delete_title: service
             .t("gpui-shell-settings-archived-delete-title")

@@ -39,7 +39,7 @@
 | F5 | 全局状态栏 / 侧栏 footer（用户槽 + trinity 芯片 + 终端/工作区/齿轮） | `render_sidebar_footer` | `PersistentFooterActions` + 用户槽 | 同构 |
 | F6 | 窗口钮 / 客户端装饰 | `render_window_controls` | 桌面窗口钮 | 同构（Xvfb 无 WM 不渲染属正常） |
 | F7 | 欢迎面（无 tab 落地面） | `render_welcome_face` | `WelcomeScene` | 同构；打字机轮播不补（静态 = web reduced-motion 形态，在案） |
-| F8 | 会话页分栏动作（AuxPane split/swap/maximize、底部终端位置偏好 bottom/right） | 壳 = 固定右面板（文件/变更）+ 底部终端；无换位/最大化动作 | `SessionScene.tsx:206-276`、`AuxPane.tsx:162-203` | 子集 → **G-F8**（A 档，可选） |
+| F8 | 会话页分栏动作（AuxPane split/swap/maximize、底部终端位置偏好 bottom/right） | 壳 = 固定右面板（文件/变更）+ 底部终端；无换位/最大化动作 | `SessionScene.tsx:206-276`、`AuxPane.tsx:162-203` | **✅ 交付**（G-F8，A 批 4 `<commit>`）：位置偏好 = G-T1；面板头补最大化/还原 + 换位（每方位一份分割状态），见 §2.1 尾注 |
 
 ### 1.2 主场景（web `SceneTabId` 全量对照）
 
@@ -146,19 +146,44 @@
   锚点：web `session/ChatPane.tsx` 派生链；壳 `shell.rs` `turn_footer_plan`。
   动作：事件层补 turn 时间戳（现事件无时间戳、重载无来源）后渲染 meta；或显式记为不补。
   **A 档（需事件层小改）**。
+  **✅ 交付（2026-10-16，A 批 4，`<commit>`）**：`TurnFinished` 增 `duration_ms`/`cancelled`（四个产生点各自带值），
+  `OpenedSession` 增 `turn_times`（`transcript_turn_times` 由转写消息的 `timestamp_ms` 逐 turn 取最小/最大，重载路径同源），
+  footer meta 行渲染「完成时刻 + 耗时」（`format_elapsed_duration` 对齐 web `formatElapsedDuration` 的
+  0ms/820ms/12s/12.3s/1m30s/2m/2h5m/2h 形状；取消的 turn 出 `stopped` 文案）。证据帧 `a5-05`（`20:00:31 1m35s`）。
 - **G-S2 copy 成功态反馈（工具行）**：代码块复制已有 2s 勾选反馈（`shell.rs:5365` 一带），工具行「复制」钮无成功态。
   动作：复用同一 2s 勾选模式。**A 档**。
+  **✅ 交付（2026-10-16，A 批 4，`<commit>`）**：反馈收进 `markdown::CopiedThing`（`Block(hash)` / `ToolRow(key)`）+
+  `CopiedFeedback` 全局 + `copy_with_feedback`，工具行复制与代码块复制共用同一 2s 窗口且只清自己那一份；
+  新增无头断言 `copy_feedback_arms_only_the_thing_copied`。证据帧 `a5-06`（勾选）/`a5-07`（2s 后复位）——
+  工具行复制的**勾选**与代码块共用同一渲染器，帧取代码块（持久转写里 `ExecCommand` 恒并入探索运行、无独立命令行，
+  工具行路径由上述无头断言覆盖）。
 - **G-S3 用户行 hover 动作（edit/rollback）**：web `UserMessageItem` hover 显「编辑/回滚」；壳 R2d 已判「edit 无命令、rollback 已在 fork 菜单」。
   动作：维持不补（在案），只登记。**不补**。
+
+- **G-F8 会话页分栏动作（AuxPane split/swap/maximize）**：见 §1.1 行 F8。**A 档（可选）**。
+  **✅ 交付（2026-10-16，A 批 4，`<commit>`）**：位置偏好半项由 G-T1 交付（`terminal.terminal_panel_position`）；
+  资源面板头补最大化/还原（`toggleMaximized` → 面板独占场景体、聊天列让位，关面板即复位）与换位
+  （`swapPanes` → 面板移到聊天列左侧，每方位一份 `ResizableState`，边线随侧切换），
+  与既有的弹出/收起并列（顺序：最大化 · 换位 · 弹出 · 收起）。证据帧 `a5-12`（停靠 + 四个头钮）/`a5-13`（最大化）/
+  `a5-14`（换位后面板在聊天列左侧）。**冒烟另修**：顶栏面板钮直接 `dock_resource_panel` 而未先
+  `ensure_resource_page`，首次从该钮打开时面板体空白（HEAD 既有缺陷）——已补 ensure，并把该路径写进无头断言。
 
 ### 2.2 终端（G-T）
 
 - **G-T1 底部终端位置偏好（bottom/right）与双击尺寸档**：web `BottomTerminalPane` 有 bottom/right 偏好 + 双击在
   collapsed/compact/comfortable/expanded 间切换（`SessionScene.tsx:49-53,244-276`）；壳只有拖高 + 记忆高度。
   动作：加位置偏好与双击档位（纯壳侧布局状态）。**A 档**。
+  **✅ 交付（2026-10-16，A 批 4，`<commit>`）**：读共享键 `terminal.terminal_panel_position`（`right` 走右列、
+  其余值含旧配置空串回落底部），每个方位一份 `ResizableState`（各自记忆尺寸）；分隔条双击按 web `getNextMode`
+  走 紧凑 180 → 舒适 300 → 展开 420 → 舒适，分隔条 tooltip 报当前档（`layout.resizer.title` 同文案）。
+  **已签分歧**：web 把 `right` 的终端挂在它的辅助面板里，壳的辅助面板是文件/变更，故壳把它作为场景体自身的右列。
+  证据帧 `a5-01`（右列默认态）/`a5-02`（悬停报「舒适」）/`a5-03`（双击后「展开」）。
 - **G-T2 终端条目动作（停止/在文件管理器显示/启动命令徽标）**：web `WorkspaceTerminals.tsx:23-101` 与
   `ShellNavEntryItem.tsx:50-127`；壳终端标签有标题（OSC/profile）与关闭，无「在文件管理器显示」等行内动作。
   动作：标签右键/行内菜单补「在文件管理器显示」；其余按需。**A 档（可选）**。
+  **✅ 交付（2026-10-16，A 批 4，`<commit>`）**：标签行内补「在文件管理器显示」（`open_path_in_file_manager`，
+  目标是该标签的启动目录——面板不跟踪实时 cwd）与启动命令徽标（带 startup command 的标签出终端图标 +
+  tooltip 显示命令）；`TerminalTab` 增 `directory`/`startup_command`。证据帧 `a5-04`（tooltip「在文件管理器中显示」）。
 
 ### 2.3 Git（G-G）
 
@@ -302,6 +327,14 @@
   **⏳ 暂缓（2026-10-15，A 批 2 判）**：该页在 web 侧是**跨全部已打开工作区**拉归档会话再分组，而壳的归档列表只持当前工作区的行
   （`ShellWindow::sessions`；其它工作区的请求明确 `include_archived: false`）。1:1 需要先加一条「按工作区列归档会话」的运行时投影
   （新事件 + 页内折叠状态），属数据面而非设置字段，单列一小批更稳（与 A 批 4 会话面同批更省）。
+  **✅ 交付（2026-10-16，A 批 4，`<commit>`）**：按上面的判据先补投影——`RuntimeHandle::load_archived_sessions`
+  对每个已知工作区各读一次元数据（只留 `Archived`，单工作区失败只影响该行并出失败行）、事件 `ArchivedSessions`/`ArchivedChanged`，
+  恢复/删除走新的 `set_session_archived_in`/`delete_session_in`（带 workspace_id，不必先切工作区），删多行时按 dirty 标志合并重读；
+  页内按工作区分组（`name · path` 标签 + 计数 + 可折叠，新载入全折叠、保留用户折叠、失败工作区保留旧行），
+  行内恢复/删除 + 行内回执（web 的 toast 在此面没有 toast 系统，改常驻回执）。证据帧 `a5-08`（两个工作区分组）/
+  `a5-09`（展开行 + 恢复/删除）/`a5-10`（恢复回执 + 该组消失）。**冒烟另修**：该页此前把整张列表塞进设置项的
+  右侧控件槽（标签占 3/5），行内动作被列宽裁掉——改 `SettingItem::layout(Axis::Vertical)` 后列表拿到整页宽度，
+  无头断言改为经真实页面（640px 包装）比对动作右缘，且已验证去掉该布局即红。
 - **G-SE31 异常退出提示**：web `ApplicationSettingsPages.tsx:478-495`（上次崩溃 Alert）；壳已有
   run-state/clean-shutdown 落盘（`diagnostics.rs`）与 `gpui-` 前缀隔离（T2-13），诊断页未展示该状态。
   动作：诊断页读 run-state 展示「上次非正常退出」。**A 档**。
@@ -468,6 +501,11 @@
 - **G-X5 内容画布 / Canvas / Mission Control / QuickLook**（T3-20）：web `content-canvas/`；
   壳无。**C 档**。
 - **G-X6 通知中心面板**：web `NotificationCenter`；壳有 OS 通知 + 托盘角标即可，面板本身缺。**A 档**。
+  **✅ 交付（2026-10-16，A 批 4，`<commit>`）**：场景顶栏加铃铛（未读>0 出圆点，有失败转 danger 色），
+  下拉按会话列未读完成行（`名称 · 条数`，失败行用警示图标），点行开该会话（即清它的未读），末项「清除所有」一次清空；
+  空态出「暂无通知」。面板只投壳真有的完成事实（无通用通知历史）。证据帧 `a5-11`（空态）。
+  **证据缺口**：带行的面板与圆点要有「窗口非前台时完成的 turn」才能出现，隔离冒烟无模型（0 models）跑不出真 turn，
+  该路径由无头断言覆盖（`notification_button_lists_and_clears_unread_turns`），待真机复验。
 
 ## 3. 整改计划（分档与建议排序）
 
@@ -511,6 +549,12 @@
   6 个 460–560 宽的壳对话框把右侧按钮排到裁切之外；逐个显式声明宽度，证据帧 `a4-15`）。
   另 **G-I5/G-I6 的视觉复验待有洞察报告时补**（本机 store 为空）。
 - **A 批 4 = 会话/终端/杂项**：G-S1/G-S2（turn footer meta / copy 反馈）、G-T1/G-T2、G-F8、G-X6（通知中心）。
+  **✅ 交付（2026-10-16，`<commit>`）**：七项全部落地（含 A 批 2 暂缓的 G-SE30，按当时的判据先补跨工作区归档投影再分组）——
+  逐项注见 §2.1（G-S1/G-S2/G-F8）、§2.2（G-T1/G-T2）、§2.6（G-SE30）、§2.10（G-X6）。ftl 898→921 ×3；
+  **提交内容**壳 337 lib 全绿（工作区并集 339），审计四件套全绿，Xvfb :253 冒烟 0 panic/0 缺资产，证据帧 `a5-01..14`。
+  另：本批冒烟顺带修掉两个既有缺陷——归档页整表被塞进设置项右侧控件槽（行内动作被列宽裁掉，改
+  `SettingItem::layout(Axis::Vertical)`）、顶栏面板钮缺 `ensure_resource_page`（首次从该钮打开时面板体空白），
+  两者都补了无头断言（前者已验证去掉修复即红）。
 
 验收：壳内锚点 + 无头断言（可测者）+ Xvfb 冒烟 0 panic/0 缺资产；视觉项出双端并排图。
 每批完成后回写 parity §2/§2.3 对应行与本文勾选状态。
@@ -629,6 +673,7 @@ copy 成功态图标反馈（=G-S2）。
 
 | 日期 | 变更 |
 |---|---|
+| 2026-10-16 | **A 批 4（会话/终端/杂项）交付**（`<commit>`）：G-S1 turn footer 完成时刻/耗时 meta（`TurnFinished` +`duration_ms`/`cancelled`、`OpenedSession` +`turn_times` 由转写时间戳派生）、G-S2 copy 成功态反馈扩到工具行（`CopiedThing::Block/ToolRow` + 共享 2s 窗口）、G-T1 终端位置偏好 `bottom/right` + 分隔条双击尺寸档（180/300/420，每方位一份分割状态）、G-T2 标签行内「在文件管理器显示」+ 启动命令徽标、G-F8 资源面板最大化/还原 + 换位、G-X6 通知中心（铃铛 + 未读圆点 + 按会话列行 + 清除所有）、G-SE30 归档页按工作区分组（先补跨工作区归档投影：新事件 + 带 workspace_id 的恢复/删除 + 合并重读；分组头计数可折叠 + 行内回执）。ftl 898→921 ×3；**提交内容**壳 337 lib 全绿（工作区并集 339）。Xvfb :253 冒烟 0 panic/0 缺资产（唯一 ERROR = Xvfb xinput 既有噪声），证据帧 `a5-01..14`：终端右列 / 档位悬停（舒适·展开）/ 标签揭示 tooltip / footer meta `20:00:31 1m35s` / 复制勾选与 2s 复位 / 归档两工作区分组 / 展开行 + 恢复删除 / 恢复回执 / 通知中心空态 / 面板停靠四钮 / 最大化 / 换位。**顺带修2**（均为冒烟发现，HEAD 既有）：① 归档页整表塞进设置项右侧控件槽导致行内动作被列宽裁掉（改 `SettingItem::layout(Axis::Vertical)`，断言经真实 640px 页面比对动作右缘并已验证去掉修复即红）；② 顶栏面板钮未 `ensure_resource_page` 导致首次打开面板体空白（补 ensure + 断言）。另记：`settings.rs` 诊断横幅 WIP 与 `stash@{0}`（079 并发规模档）仍未动 |
 | 2026-10-15 | **A 批 2（设置小字段）部分交付**（`4ba07163a`）：G-SE5 界面字号（外观页档位下拉 + 自定义 12–20 px，渲染侧 `set_rem_size`，默认档 = 壳原有字号）、G-SE10 流空闲/首字超时、G-SE11 代理（按 key 合并写、未知键不丢）、G-SE18 工具/提问超时、G-SE19 子智能体默认模型 + 批量策略 + 两个并发上限（只写配置、不动核心并发；证据帧 `a2-06`/`a2-07`/`a2-09`）、G-SE20 按需加载工具、G-SE21 参数 JSON 修复、G-SE22 审核容量（证据帧 `a2-08`）；G-SE30 暂缓（壳归档列表只持当前工作区，1:1 需先加跨工作区归档投影）；G-SE31 因工作区那份未登记 WIP 正是该语义而按纪律未动（见 §6.1 W-4）。ftl 800→861 ×3、壳 315 lib（提交内容）/317（工作区并集）全绿。Xvfb :190 冒烟 0 panic/0 缺资产（唯一 ERROR = Xvfb xinput 既有噪声），证据帧 `a2-01..09`：字号行 / 六档菜单 / 切「大」后整壳等比放大 / 模型页两分节（超时 600·600 与禁用态代理）/ 代理启用并写入地址后落盘 / 执行页工具与超时 / 子智能体与两个开关 / 审核容量 / 子智能体默认模型菜单（继承父会话·快速模型·主力模型） |
 | 2026-10-16 | **A 批 3 尾车交付**（`b402be1a9`）：G-A6 Harness 概览区（四卡 + 共享词标题 + 内置 SVG + canvas 路线图 + harness 行不再混进模式列表）、G-A3 子代理行内模型菜单（四档 + 具体模型；builtin 走 `ai.agent_model_defaults.subagents.builtin` 读-合并-写，custom 走 `update_and_save_custom_subagent_config`，成功重拉目录、失败出 notice）、G-M2 MCP 导入对话框（粘贴或键入路径读文件 → 预览勾选 + 目标 id 改名 + 空/非法/占用三类实时警示 → 合并写：强制 `enabled:false`、不覆盖、剥导入标记）、G-Y4 记忆导出/导入（daemon `memory.export`/`memory.import` + 键入路径；空路径拦、daemon 错误内联、跨身份容器重绘为二次确认后带 `confirm_being_id` 重试）。ftl 865→902 ×3（37 键 ×3）；**提交内容**壳 327 lib（并集 329，含 MCP 纯函数/布局/事件新测）。Xvfb :241 冒烟 0 panic/0 缺资产，证据帧 `a4-01..15`：四卡 harness 区 / 模型菜单（选 快速模型 落盘 `Explore={"kind":"fixed","model_id":"fast"}`，再清档回落并删键）/ MCP 读文件+预览 / 导入落盘两条 `enabled:false` / 撞 id 预览 + 改名实时消警 / 再导一处新 URL 后列表 3 行 / Trinity 导出真库 1215 节点回执 / 空路径与 daemon 错误内联 / stub daemon 跨身份确认两段式。**顺带修2**：① 6 个既有对话框的 448px 裁切（§6.1 W-6）；② MCP 预览行的警示改为跟随输入实时变化（冒烟中发现改名后旧警示仍在）。另记两条无主 WIP 现状：`settings.rs` 诊断横幅 WIP 与 `stash@{0}`（079 并发规模档）均未动 |
 | 2026-10-15 | **A 批 3（场景小项）部分交付**（会话 74，与 A 批 2 并发）：G-P2 日详情面板、G-P3 行徽标 + 不可执行分区、G-I1 范围 7/14/30/90 + 模型选择、G-I5 建议三段复制、G-I6 历史 meta 卡、G-Y5 记忆行内修正（含 `corrected` 回执）、G-Y6 词汇量、G-K5 技能搜索 + 隐藏重复项、G-A5 智能体搜索 + 来源/类型过滤；G-Y4/G-A3/G-A6/G-M2 暂缓（理由见 §3.1）；证据帧 `a3-01..11`；W-4 按 stash + 并发 WIP 现状重写并新增 W-5 |

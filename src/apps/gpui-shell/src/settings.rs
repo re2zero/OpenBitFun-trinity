@@ -17,9 +17,9 @@ use gpui_kit::component::setting::{
     NumberFieldOptions, SelectIndex, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
 };
 use gpui_kit::component::sidebar::{Sidebar, SidebarFooter, SidebarItem};
-use gpui_kit::component::{ActiveTheme, Collapsible, Sizable, StyledExt, WindowExt};
+use gpui_kit::component::{ActiveTheme, Collapsible, Disableable, Sizable, StyledExt, WindowExt};
 use gpui_kit::{
-    div, prelude::*, px, Anchor, App, Entity, FontWeight, Global, IntoElement, SharedString,
+    div, prelude::*, px, Anchor, App, Axis, Entity, FontWeight, Global, IntoElement, SharedString,
     StyleRefinement, WeakEntity, Window, WindowAppearance,
 };
 use openbitfun_core::service::config::get_global_config_service;
@@ -131,6 +131,24 @@ impl DiagnosticsNotice {
     }
 }
 
+/// The archived page's inline action receipt (G-SE30) as
+/// `(succeeded, message)` — the shell's stand-in for the web's toasts, which
+/// this surface does not have. Same global-holding pattern as
+/// [`DiagnosticsNotice`], and the same reason: the page is rebuilt from `cx`.
+pub(crate) struct ArchivedNotice(pub Option<(bool, String)>);
+
+impl Global for ArchivedNotice {}
+
+impl ArchivedNotice {
+    pub(crate) fn current(cx: &App) -> Option<(bool, String)> {
+        cx.try_global::<Self>().and_then(|notice| notice.0.clone())
+    }
+
+    pub(crate) fn set(message: Option<(bool, String)>, cx: &mut App) {
+        cx.set_global(Self(message));
+    }
+}
+
 /// Serialized close-button values the shell offers.
 pub(crate) const CLOSE_QUIT: &str = "quit";
 pub(crate) const CLOSE_MINIMIZE: &str = "minimize_to_tray";
@@ -161,6 +179,10 @@ pub(crate) struct TerminalSettings {
     pub(crate) font_family: String,
     pub(crate) scrollback: u32,
     pub(crate) default_shell: String,
+    /// G-T1: `terminal.terminal_panel_position` (`right` | `bottom`), the same
+    /// shared key the web writes. Kept verbatim; the shell's dock resolves
+    /// unknown values to its bottom dock.
+    pub(crate) panel_position: String,
     /// Named launch profiles (M17); the shared document type carries them so
     /// the desktop terminal can adopt the same list later.
     pub(crate) profiles: Vec<openbitfun_core::service::config::types::TerminalProfile>,
@@ -181,6 +203,7 @@ impl TerminalSettings {
             font_family: config.font_family.clone(),
             scrollback: config.scrollback,
             default_shell: config.default_shell.clone(),
+            panel_position: config.terminal_panel_position.clone(),
             profiles: config.profiles.clone(),
         }
     }
@@ -3957,11 +3980,22 @@ fn archived_group(
         text.settings_archived_list.clone(),
         list_field,
     )
-    .description(text.settings_archived_description.clone())])
+    .description(text.settings_archived_description.clone())
+    // The list is a page body, not a control: the default horizontal
+    // item would hand it the narrow control slot beside the label, and
+    // a row (name + date + two actions) does not fit there. Stacking
+    // gives the rows the page's full width.
+    .layout(Axis::Vertical)])
 }
 
 /// The archived list body, exposed for the headless render test; the page
 /// itself stays private behind [`render_page`].
+///
+/// G-SE30: the body renders the shell's cross-workspace projection — one
+/// collapsible header per workspace (label + count) over its rows (name,
+/// last-active date, restore/delete) — plus the page's loading, per-workspace
+/// failure, receipt, and empty states (web `ArchivedSessionsConfig`; the web's
+/// toasts become the inline receipt because this surface has no toast system).
 pub(crate) fn archived_sessions_field(
     view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
     text: &ShellText,
@@ -3971,147 +4005,350 @@ pub(crate) fn archived_sessions_field(
     let Some(shell) = view.upgrade() else {
         return div().into_any_element();
     };
-    let rows: Vec<(String, String)> = shell
-        .read(cx)
-        .sessions
-        .iter()
-        .filter(|row| row.archived)
-        .map(|row| (row.id.clone(), row.name.clone()))
-        .collect();
+    let (groups, failures, loading, collapsed, busy) = {
+        let shell = shell.read(cx);
+        (
+            shell.archived_groups.clone(),
+            shell.archived_failures.clone(),
+            shell.archived_loading,
+            shell.archived_collapsed.clone(),
+            shell.archived_pending.is_some(),
+        )
+    };
+    let has_rows = groups.iter().any(|group| !group.rows.is_empty());
 
-    let mut column = div().v_flex().gap_2().w_full();
-    if rows.is_empty() {
-        column = column.child(
-            div()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child(text.settings_archived_empty.clone()),
+    // Header actions (web `headerExtra`): a refresh always, the bulk delete
+    // while something can be deleted.
+    let refresh_view = view.clone();
+    let mut actions = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_end()
+        .gap_2()
+        .child(
+            Button::new("archived-refresh")
+                .label(text.settings_archived_refresh.clone())
+                .small()
+                .with_variant(ButtonVariant::Ghost)
+                .disabled(loading || busy)
+                .on_click(move |_, _window, cx| {
+                    if let Some(target) = refresh_view.upgrade() {
+                        target.update(cx, |this, cx| this.reload_archived_groups(cx));
+                    }
+                }),
         );
-        return column.into_any_element();
-    }
-    // The bulk action sits above the list, same slot as the web page's header
-    // button; the destructive step goes through its own confirm dialog.
-    let delete_all_view = view.clone();
-    column = column.child(
-        div().flex().justify_end().child(
+    if has_rows {
+        let delete_all_view = view.clone();
+        actions = actions.child(
             Button::new("archived-delete-all")
                 .label(text.settings_archived_delete_all.clone())
                 .small()
                 .with_variant(ButtonVariant::Ghost)
+                .disabled(busy)
                 .on_click(move |_, window, cx| {
                     open_archived_delete_all_dialog(delete_all_view.clone(), window, cx);
                 }),
-        ),
-    );
-    for (session_id, name) in rows {
-        let restore_view = view.clone();
-        let restore_id = session_id.clone();
-        let delete_view = view.clone();
-        let delete_id = session_id.clone();
+        );
+    }
+    let mut column = div().v_flex().gap_3().w_full().child(actions);
+
+    // The last row action's receipt. The web toasts it; this surface has no
+    // toast system, so it stays until the next action replaces it.
+    if let Some((succeeded, message)) = ArchivedNotice::current(cx) {
         column = column.child(
             div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap_2()
-                .child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_sm()
-                        .text_color(cx.theme().foreground)
-                        .child(name),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .flex_shrink_0()
-                        .child(
-                            Button::new(SharedString::from(format!(
-                                "archived-restore-{session_id}"
-                            )))
-                            .label(text.settings_archived_restore.clone())
-                            .small()
-                            .with_variant(ButtonVariant::Ghost)
-                            .on_click(move |_, _window, cx| {
-                                let Some(target) = restore_view.upgrade() else {
-                                    return;
-                                };
-                                let tx = target.read(cx).event_tx.clone();
-                                if let Some(handle) = crate::runtime::runtime_handle() {
-                                    tracing::info!("Restoring archived session {restore_id}");
-                                    handle.set_session_archived(restore_id.clone(), false, tx);
-                                }
-                            }),
-                        )
-                        .child(
-                            Button::new(SharedString::from(format!(
-                                "archived-delete-{session_id}"
-                            )))
-                            .label(text.session_delete.clone())
-                            .small()
-                            .with_variant(ButtonVariant::Ghost)
-                            .on_click(move |_, window, cx| {
-                                open_archived_delete_dialog(
-                                    delete_view.clone(),
-                                    delete_id.clone(),
-                                    window,
-                                    cx,
-                                );
-                            }),
-                        ),
-                ),
+                .min_w_0()
+                .text_sm()
+                .text_color(if succeeded {
+                    cx.theme().foreground
+                } else {
+                    cx.theme().danger
+                })
+                .child(message),
         );
+    }
+
+    // The first read shows the web's loading line; later reads refresh in
+    // place behind the disabled refresh button.
+    if loading && groups.is_empty() && failures.is_empty() {
+        return column
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(text.settings_archived_loading.clone()),
+            )
+            .into_any_element();
+    }
+
+    for failure in &failures {
+        column = column.child(
+            div()
+                .min_w_0()
+                .text_sm()
+                .text_color(cx.theme().danger)
+                .child(failure.clone()),
+        );
+    }
+
+    if !has_rows {
+        if !loading {
+            column = column.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(text.settings_archived_empty.clone()),
+            );
+        }
+        return column.into_any_element();
+    }
+
+    for group in &groups {
+        if group.rows.is_empty() {
+            continue;
+        }
+        column = column.child(archived_group_section(
+            group,
+            view.clone(),
+            text,
+            collapsed.iter().any(|root| root == &group.root_path),
+            busy,
+            cx,
+        ));
     }
     column.into_any_element()
 }
 
+/// One workspace's group on the archived page: the collapsible header (fold
+/// chevron, folder glyph, label, count chip) and, expanded, its rows.
+fn archived_group_section(
+    group: &crate::shell::ArchivedGroupView,
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    text: &ShellText,
+    collapsed: bool,
+    busy: bool,
+    cx: &mut App,
+) -> gpui_kit::AnyElement {
+    let root = group.root_path.clone();
+    let header_id = SharedString::from(format!("archived-group-{root}"));
+    let toggle_view = view.clone();
+    let toggle_root = root.clone();
+    let mut section = div().v_flex().w_full().child(
+        div()
+            .id(header_id)
+            .cursor_pointer()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .p_2()
+            .rounded(cx.theme().radius)
+            .text_sm()
+            .hover(|style| style.bg(cx.theme().muted))
+            .on_click(move |_, _window, cx| {
+                if let Some(target) = toggle_view.upgrade() {
+                    target.update(cx, |this, cx| this.toggle_archived_group(&toggle_root, cx));
+                }
+            })
+            .child(
+                gpui_kit::component::Icon::new(if collapsed {
+                    IconName::ChevronRight
+                } else {
+                    IconName::ChevronDown
+                })
+                .small(),
+            )
+            .child(gpui_kit::component::Icon::new(IconName::Folder).small())
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .font_medium()
+                    .truncate()
+                    .child(SharedString::from(group.label.clone())),
+            )
+            .child(archived_count_chip(group.rows.len(), cx)),
+    );
+    if !collapsed {
+        let mut rows = div().v_flex().w_full();
+        for row in &group.rows {
+            rows = rows.child(archived_row(row, group, view.clone(), text, busy, cx));
+        }
+        section = section.child(rows);
+    }
+    section.into_any_element()
+}
+
+/// A group header's count chip (web
+/// `archived-sessions-config__group-count`).
+fn archived_count_chip(count: usize, cx: &App) -> gpui_kit::AnyElement {
+    div()
+        .flex_shrink_0()
+        .min_w(px(18.))
+        .h(px(18.))
+        .px_1()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_full()
+        .bg(cx.theme().muted)
+        .text_xs()
+        .text_color(cx.theme().muted_foreground)
+        .child(SharedString::from(count.to_string()))
+        .into_any_element()
+}
+
+/// One archived row: the name over its last-active date, then the restore and
+/// delete actions (web `ArchivedRow`; both stay disabled while another row
+/// action is settling).
+fn archived_row(
+    row: &crate::shell::ArchivedRowView,
+    group: &crate::shell::ArchivedGroupView,
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    text: &ShellText,
+    busy: bool,
+    cx: &mut App,
+) -> gpui_kit::AnyElement {
+    let date = crate::runtime::format_last_active(row.last_active_at);
+    let restore_view = view.clone();
+    let restore_workspace = group.workspace_id.clone();
+    let restore_session = row.session_id.clone();
+    let restore_name = row.name.clone();
+    let restore_label = group.label.clone();
+    let delete_view = view;
+    let delete_workspace = group.workspace_id.clone();
+    let delete_session = row.session_id.clone();
+    let delete_name = row.name.clone();
+    let delete_label = group.label.clone();
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap_2()
+        .w_full()
+        .px_2()
+        .py_1()
+        .child(
+            div()
+                // `flex_1` (not just `min_w_0`): without it the name block keeps
+                // its natural width, the row outgrows the settings column, and
+                // the row's own actions — and every later header's count chip —
+                // are laid out past the visible edge.
+                .flex_1()
+                .min_w_0()
+                .v_flex()
+                .child(
+                    div()
+                        .truncate()
+                        .text_sm()
+                        .text_color(cx.theme().foreground)
+                        .child(SharedString::from(row.name.clone())),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(SharedString::from(date)),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1()
+                .flex_shrink_0()
+                .child(
+                    Button::new(SharedString::from(format!(
+                        "archived-restore-{}",
+                        row.session_id
+                    )))
+                    .debug_selector(|| "archived-restore".to_string())
+                    .label(text.settings_archived_restore.clone())
+                    .small()
+                    .with_variant(ButtonVariant::Ghost)
+                    .disabled(busy)
+                    .on_click(move |_, _window, cx| {
+                        let Some(target) = restore_view.upgrade() else {
+                            return;
+                        };
+                        let tx = target.read(cx).event_tx.clone();
+                        let success =
+                            i18n::archived_restore_succeeded(&restore_name, &restore_label, cx);
+                        target.update(cx, |this, cx| this.begin_archived_action(success, cx));
+                        if let Some(handle) = crate::runtime::runtime_handle() {
+                            tracing::info!("Restoring archived session {restore_session}");
+                            handle.set_session_archived_in(
+                                restore_workspace.clone(),
+                                restore_session.clone(),
+                                false,
+                                tx,
+                            );
+                        }
+                    }),
+                )
+                .child(
+                    Button::new(SharedString::from(format!(
+                        "archived-delete-{}",
+                        row.session_id
+                    )))
+                    .debug_selector(|| "archived-delete".to_string())
+                    .label(text.session_delete.clone())
+                    .small()
+                    .with_variant(ButtonVariant::Ghost)
+                    .disabled(busy)
+                    .on_click(move |_, window, cx| {
+                        open_archived_delete_dialog(
+                            delete_view.clone(),
+                            delete_workspace.clone(),
+                            delete_session.clone(),
+                            delete_name.clone(),
+                            delete_label.clone(),
+                            window,
+                            cx,
+                        );
+                    }),
+                ),
+        )
+        .into_any_element()
+}
+
 /// Confirm dialog for deleting one archived session; the destructive action
 /// never runs from the row directly (same shape as the MCP delete dialog).
+/// The body names the session and its workspace because the page spans every
+/// recent workspace and the delete is scoped to the owning one.
 fn open_archived_delete_dialog(
     view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    workspace_id: String,
     session_id: String,
+    name: String,
+    label: String,
     window: &mut gpui_kit::Window,
     cx: &mut App,
 ) {
-    let Some(shell) = view.upgrade() else {
-        return;
-    };
-    shell.update(cx, |this, cx| {
-        this.archived_delete_target = Some(session_id.clone());
-        cx.notify();
-    });
-
     let confirm_view = view.clone();
     let cancel_view = view.clone();
+    let confirm_view_name = name.clone();
+    let confirm_view_label = label.clone();
     let confirm = move |_: &gpui_kit::ClickEvent, window: &mut gpui_kit::Window, cx: &mut App| {
         let Some(target) = confirm_view.upgrade() else {
             return;
         };
-        let pending = target.read(cx).archived_delete_target.clone();
-        target.update(cx, |this, cx| {
-            this.archived_delete_target = None;
-            cx.notify();
-        });
-        if let Some(session_id) = pending {
-            let tx = confirm_view
-                .upgrade()
-                .map(|target| target.read(cx).event_tx.clone());
-            if let (Some(handle), Some(tx)) = (crate::runtime::runtime_handle(), tx) {
-                tracing::info!("Deleting archived session {session_id}");
-                handle.delete_session(session_id, tx);
-            }
+        let tx = target.read(cx).event_tx.clone();
+        let success = i18n::archived_delete_succeeded(&name, &label, cx);
+        target.update(cx, |this, cx| this.begin_archived_action(success, cx));
+        if let Some(handle) = crate::runtime::runtime_handle() {
+            tracing::info!("Deleting archived session {session_id}");
+            handle.delete_session_in(workspace_id.clone(), session_id.clone(), tx);
         }
         window.close_dialog(cx);
     };
     let cancel = move |_: &gpui_kit::ClickEvent, window: &mut gpui_kit::Window, cx: &mut App| {
         if let Some(target) = cancel_view.upgrade() {
-            target.update(cx, |this, cx| {
-                this.archived_delete_target = None;
-                cx.notify();
-            });
+            // A cancelled confirmation leaves no receipt behind.
+            target.update(cx, |_this, cx| ArchivedNotice::set(None, cx));
         }
         window.close_dialog(cx);
     };
@@ -4125,7 +4362,11 @@ fn open_archived_delete_dialog(
                     .w(px(380.))
                     .text_sm()
                     .text_color(cx.theme().foreground)
-                    .child(text.session_delete_warning.clone()),
+                    .child(i18n::archived_delete_message(
+                        &confirm_view_name,
+                        &confirm_view_label,
+                        cx,
+                    )),
             )
             .footer(
                 div()
@@ -4149,9 +4390,11 @@ fn open_archived_delete_dialog(
     });
 }
 
-/// Confirm dialog for deleting every archived session of this workspace. The
-/// ids are read at confirm time so the dialog never acts on a stale list;
-/// each deletion goes through the same per-session call as the row action.
+/// Confirm dialog for deleting every archived session the page shows. Both
+/// counts come from the current projection (the web reports the entry count
+/// and the workspace count); the ids are re-read at confirm time so the dialog
+/// never acts on a stale list, and each deletion goes through the same
+/// per-session, per-workspace call as the row action.
 fn open_archived_delete_all_dialog(
     view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
     window: &mut gpui_kit::Window,
@@ -4160,12 +4403,21 @@ fn open_archived_delete_all_dialog(
     let Some(shell) = view.upgrade() else {
         return;
     };
-    let count = shell
-        .read(cx)
-        .sessions
-        .iter()
-        .filter(|row| row.archived)
-        .count();
+    let (count, workspace_count) = {
+        let shell = shell.read(cx);
+        (
+            shell
+                .archived_groups
+                .iter()
+                .map(|group| group.rows.len())
+                .sum::<usize>(),
+            shell
+                .archived_groups
+                .iter()
+                .filter(|group| !group.rows.is_empty())
+                .count(),
+        )
+    };
     if count == 0 {
         return;
     }
@@ -4173,18 +4425,30 @@ fn open_archived_delete_all_dialog(
     let confirm_view = view.clone();
     let confirm = move |_: &gpui_kit::ClickEvent, window: &mut gpui_kit::Window, cx: &mut App| {
         if let Some(target) = confirm_view.upgrade() {
-            let ids: Vec<String> = target
-                .read(cx)
-                .sessions
-                .iter()
-                .filter(|row| row.archived)
-                .map(|row| row.id.clone())
-                .collect();
-            let tx = target.read(cx).event_tx.clone();
+            let (tx, targets) = {
+                let shell = target.read(cx);
+                let targets: Vec<(String, String)> = shell
+                    .archived_groups
+                    .iter()
+                    .flat_map(|group| {
+                        group
+                            .rows
+                            .iter()
+                            .map(|row| (group.workspace_id.clone(), row.session_id.clone()))
+                    })
+                    .collect();
+                (shell.event_tx.clone(), targets)
+            };
+            let success = i18n::archived_delete_all_succeeded(count, cx);
+            target.update(cx, |this, cx| this.begin_archived_action(success, cx));
             if let Some(handle) = crate::runtime::runtime_handle() {
-                tracing::info!("Deleting all {} archived sessions", ids.len());
-                for session_id in ids {
-                    handle.delete_session(session_id, tx.clone());
+                tracing::info!(
+                    "Deleting all {} archived sessions across {} workspaces",
+                    targets.len(),
+                    workspace_count
+                );
+                for (workspace_id, session_id) in targets {
+                    handle.delete_session_in(workspace_id, session_id, tx.clone());
                 }
             }
         }
@@ -4203,7 +4467,11 @@ fn open_archived_delete_all_dialog(
                     .w(px(380.))
                     .text_sm()
                     .text_color(cx.theme().foreground)
-                    .child(i18n::archived_delete_all_confirm_message(count, cx)),
+                    .child(i18n::archived_delete_all_confirm_message(
+                        count,
+                        workspace_count,
+                        cx,
+                    )),
             )
             .footer(
                 div()

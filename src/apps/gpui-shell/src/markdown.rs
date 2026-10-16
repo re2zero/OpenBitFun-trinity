@@ -260,17 +260,27 @@ fn parse_line_spec(spec: &str) -> Option<usize> {
     digits.parse::<usize>().ok().filter(|line| *line > 0)
 }
 
-/// The code-block copy feedback window: hash of the block that was copied and
-/// when. Rendering reads [`block_was_copied`]; the expiring repaint is
-/// scheduled by [`copy_code_block`] so the check mark does not overstay when
-/// nothing else redraws the window.
+/// What the transcript's last copy action copied: a fenced code block (keyed
+/// by content hash) or a tool row (keyed by card key). One slot, because only
+/// the freshest copy shows its check mark — the web keeps per-button state
+/// with the same single-visible-window effect.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) enum CopiedThing {
+    Block(u64),
+    ToolRow(String),
+}
+
+/// The copy feedback window: what was copied and when. Rendering reads
+/// [`code_block_copied`] / [`tool_row_copied`]; the expiring repaint is
+/// scheduled by [`copy_with_feedback`] so the check mark does not overstay
+/// when nothing else redraws the window.
 #[derive(Default)]
-struct CopiedBlock {
-    hash: Option<u64>,
+struct CopiedFeedback {
+    key: Option<CopiedThing>,
     at: Option<Instant>,
 }
 
-impl Global for CopiedBlock {}
+impl Global for CopiedFeedback {}
 
 /// Stable content key for one code block: the same hashing the transcript uses
 /// for markdown element ids.
@@ -281,13 +291,13 @@ fn code_hash(code: &str) -> u64 {
     hasher.finish()
 }
 
-/// Copies a fenced code block and arms the two-state feedback (web
-/// `CopyButton`: `navigator.clipboard.writeText` then a 2s check mark).
-pub(crate) fn copy_code_block(code: &SharedString, cx: &mut App) {
-    cx.write_to_clipboard(ClipboardItem::new_string(code.to_string()));
-    let hash = code_hash(code);
-    cx.set_global(CopiedBlock {
-        hash: Some(hash),
+/// Copies text and arms the two-state feedback for whichever thing the copy
+/// came from (web `useCopyTextAction`: write, then a check mark that resets;
+/// the shell keeps the code block's 2s window for every copy action).
+pub(crate) fn copy_with_feedback(thing: CopiedThing, text: String, cx: &mut App) {
+    cx.write_to_clipboard(ClipboardItem::new_string(text));
+    cx.set_global(CopiedFeedback {
+        key: Some(thing.clone()),
         at: Some(Instant::now()),
     });
     cx.refresh_windows();
@@ -295,13 +305,13 @@ pub(crate) fn copy_code_block(code: &SharedString, cx: &mut App) {
     cx.spawn(async move |cx| {
         executor.timer(COPY_FEEDBACK).await;
         cx.update(|cx| {
-            // Only clear the block this copy armed: a later copy of another
-            // block owns the feedback now.
+            // Only clear the thing this copy armed: a later copy of another
+            // thing owns the feedback now.
             let stale = cx
-                .try_global::<CopiedBlock>()
-                .is_some_and(|state| state.hash == Some(hash));
+                .try_global::<CopiedFeedback>()
+                .is_some_and(|state| state.key.as_ref() == Some(&thing));
             if stale {
-                cx.global_mut::<CopiedBlock>().at = None;
+                cx.global_mut::<CopiedFeedback>().at = None;
             }
             cx.refresh_windows();
         });
@@ -309,11 +319,32 @@ pub(crate) fn copy_code_block(code: &SharedString, cx: &mut App) {
     .detach();
 }
 
+/// Copies a fenced code block and arms its feedback (web `CopyButton`:
+/// `navigator.clipboard.writeText` then a check mark).
+pub(crate) fn copy_code_block(code: &SharedString, cx: &mut App) {
+    copy_with_feedback(CopiedThing::Block(code_hash(code)), code.to_string(), cx);
+}
+
+/// Copies one tool row's payload (web `ToolCardCopyAction`).
+pub(crate) fn copy_tool_row(key: &SharedString, text: &str, cx: &mut App) {
+    copy_with_feedback(CopiedThing::ToolRow(key.to_string()), text.to_string(), cx);
+}
+
+/// Whether the thing just copied still has its feedback window open.
+fn copied_within(key: &CopiedThing, cx: &App) -> bool {
+    cx.try_global::<CopiedFeedback>().is_some_and(|state| {
+        state.key.as_ref() == Some(key) && state.at.is_some_and(|at| at.elapsed() < COPY_FEEDBACK)
+    })
+}
+
 /// Whether the block just copied still has its feedback window open.
 fn block_was_copied(hash: u64, cx: &App) -> bool {
-    cx.try_global::<CopiedBlock>().is_some_and(|state| {
-        state.hash == Some(hash) && state.at.is_some_and(|at| at.elapsed() < COPY_FEEDBACK)
-    })
+    copied_within(&CopiedThing::Block(hash), cx)
+}
+
+/// Whether the tool row just copied still has its feedback window open.
+pub(crate) fn tool_row_copied(key: &str, cx: &App) -> bool {
+    copied_within(&CopiedThing::ToolRow(key.to_string()), cx)
 }
 
 /// The toolbar the component pins to the top-right of a fenced block (the web
@@ -403,6 +434,38 @@ pub(crate) fn open_external(url: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// G-S2: the copy feedback is per-thing. A tool row's copy arms that row's
+    /// check mark and leaves every other row (and every code block) alone —
+    /// which is what makes the row's icon flip for exactly two seconds.
+    #[gpui_kit::test]
+    fn copy_feedback_arms_only_the_thing_copied(cx: &mut gpui_kit::TestAppContext) {
+        let row: SharedString = "tool-call-1".into();
+        let other: SharedString = "tool-call-2".into();
+        let block = CodeBlock::from_code("fn main() {}\n", Some("rs"));
+
+        cx.update(|cx| {
+            assert!(!tool_row_copied(&row, cx), "nothing copied yet");
+            copy_tool_row(&row, "cargo test --lib", cx);
+            assert!(tool_row_copied(&row, cx), "the copied row arms its check");
+            assert!(
+                !tool_row_copied(&other, cx),
+                "a sibling row keeps its copy glyph"
+            );
+            assert!(
+                !block_was_copied(code_hash(&block.code()), cx),
+                "a code block keeps its copy glyph"
+            );
+
+            // A later copy takes the feedback over from the first row.
+            copy_code_block(&block.code(), cx);
+            assert!(
+                !tool_row_copied(&row, cx),
+                "the newer copy owns the feedback"
+            );
+            assert!(block_was_copied(code_hash(&block.code()), cx));
+        });
+    }
 
     #[test]
     fn language_labels_follow_the_web_alias_table() {

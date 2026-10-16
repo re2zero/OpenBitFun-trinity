@@ -154,6 +154,12 @@ pub(crate) enum RuntimeEvent {
     TurnFinished {
         session_id: String,
         error: Option<String>,
+        /// G-S1: the runtime-reported turn duration (`DialogTurnCompleted`);
+        /// the failure and cancel paths have none.
+        duration_ms: Option<u64>,
+        /// G-S1: the user stopped the turn; the footer meta says `Stopped`
+        /// instead of `Completed` (web `ModelRoundItem` status).
+        cancelled: bool,
     },
     /// The authoritative history changed (undo/restore/repair); reload it.
     HistoryChanged {
@@ -272,6 +278,14 @@ pub(crate) enum RuntimeEvent {
         root_path: String,
         rows: Vec<SessionListRow>,
     },
+    /// The archived-sessions projection for the settings page (G-SE30): every
+    /// recent workspace's archived rows, one group each. The read answers as a
+    /// whole so the page's loading state has a single boundary; ordering is
+    /// the page's job (web sorts all entries by `lastActiveAt` descending).
+    ArchivedSessions(Vec<ArchivedWorkspaceGroup>),
+    /// An archive-state change or a delete landed for some workspace; the
+    /// archived page reloads its projection while it is open.
+    ArchivedChanged,
     /// The active workspace changed; workspace-scoped surfaces reset and the
     /// list reloads for the new root.
     WorkspaceSwitched(WorkspaceChoice),
@@ -416,6 +430,30 @@ pub(crate) struct SessionListRow {
     pub archived: bool,
 }
 
+/// One workspace's archived sessions for the settings archived page (G-SE30).
+/// The page groups by workspace, so each workspace keeps its own read result:
+/// `Err` is that workspace's load failure (web
+/// `loadArchivedFailedForWorkspace`), never a page-level error.
+#[derive(Debug)]
+pub(crate) struct ArchivedWorkspaceGroup {
+    pub workspace_id: String,
+    pub name: String,
+    pub root_path: String,
+    pub rows: Result<Vec<ArchivedSessionRow>, String>,
+}
+
+/// One archived session row: what the page renders plus the workspace id the
+/// per-workspace restore/delete calls need.
+#[derive(Debug, Clone)]
+pub(crate) struct ArchivedSessionRow {
+    pub session_id: String,
+    pub name: String,
+    /// Unix ms; the page sorts groups and rows by it (the web collects every
+    /// workspace's entries and sorts by `lastActiveAt` descending before
+    /// grouping).
+    pub last_active_at: u64,
+}
+
 /// R7c: one host-channel provider ready to install into the shell projection.
 /// The trait object has no `Debug`, so the event enum derives around it.
 pub(crate) struct PluginUiProviderInstall {
@@ -537,8 +575,46 @@ pub(crate) struct OpenedSession {
     /// The session's model selector, when the runtime recorded one.
     pub model_id: Option<String>,
     pub entries: Vec<ChatEntry>,
+    /// G-S1: per-turn wall-clock timing read from the transcript's message
+    /// timestamps, so a historical turn's footer can show its completion time
+    /// and duration (live turns extend it through the turn events).
+    pub turn_times: HashMap<String, TurnTimes>,
     /// The session was mid-turn when opened; live events continue to arrive.
     pub busy: bool,
+}
+
+/// One turn's wall-clock timing for the transcript footer (G-S1, web
+/// `turnStartedAt` / `turnEndedAt` / `turnDurationMs`). A transcript read
+/// fills both ends from the persisted message timestamps; a live turn fills
+/// the start when it starts, and the end plus the runtime's authoritative
+/// duration when it settles.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct TurnTimes {
+    pub started_at_ms: Option<u64>,
+    pub ended_at_ms: Option<u64>,
+    /// Runtime-reported duration (`DialogTurnCompleted`).
+    pub duration_ms: Option<u64>,
+    /// The user stopped the turn (live path only; a transcript read cannot
+    /// tell a stop from a success). The footer says `Stopped` for these.
+    pub cancelled: bool,
+}
+
+impl TurnTimes {
+    /// The duration the footer shows: the runtime's number when it reported
+    /// one, else the wall-clock span between the two recorded ends (the web
+    /// falls back the same way).
+    pub(crate) fn effective_duration_ms(&self) -> Option<u64> {
+        self.duration_ms
+            .or_else(|| match (self.started_at_ms, self.ended_at_ms) {
+                (Some(start), Some(end)) => Some(end.saturating_sub(start)),
+                _ => None,
+            })
+    }
+
+    /// Whether the footer can show anything at all.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.started_at_ms.is_none() && self.ended_at_ms.is_none() && self.duration_ms.is_none()
+    }
 }
 
 /// Chat transcript entry as rendered by the shell.
@@ -740,6 +816,49 @@ impl RuntimeHandle {
         }
     }
 
+    /// The settings archived page's cross-workspace read (G-SE30): one
+    /// metadata read per recent workspace, archived rows only. The page is the
+    /// only consumer and asks on open and after every mutation, so this stays
+    /// a page-scoped projection rather than a second live list.
+    pub(crate) fn load_archived_sessions(
+        &self,
+        choices: Vec<WorkspaceChoice>,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+    ) {
+        let compat = self.compat.clone();
+        self.tokio.spawn(async move {
+            let mut groups = Vec::with_capacity(choices.len());
+            for choice in choices {
+                let root = std::path::PathBuf::from(&choice.root_path);
+                let rows = match compat.list_persisted_sessions(&root).await {
+                    Ok(metadatas) => Ok(metadatas
+                        .into_iter()
+                        .filter(|metadata| matches!(metadata.status, SessionStatus::Archived))
+                        .map(|metadata| ArchivedSessionRow {
+                            session_id: metadata.session_id,
+                            name: metadata.session_name,
+                            last_active_at: metadata.last_active_at,
+                        })
+                        .collect::<Vec<_>>()),
+                    Err(error) => {
+                        tracing::warn!(
+                            "Archived sessions for {} could not be read: {error}",
+                            choice.root_path
+                        );
+                        Err(error.to_string())
+                    }
+                };
+                groups.push(ArchivedWorkspaceGroup {
+                    workspace_id: choice.id,
+                    name: choice.name,
+                    root_path: choice.root_path,
+                    rows,
+                });
+            }
+            let _ = tx.send(RuntimeEvent::ArchivedSessions(groups));
+        });
+    }
+
     /// Renames one session; a successful call reports
     /// [`RuntimeEvent::SessionRenamed`] and refreshes the list.
     pub(crate) fn rename_session(
@@ -786,12 +905,28 @@ impl RuntimeHandle {
         archived: bool,
         tx: mpsc::UnboundedSender<RuntimeEvent>,
     ) {
+        self.set_session_archived_in(self.workspace().id, session_id, archived, tx);
+    }
+
+    /// Same as [`Self::set_session_archived`] but scoped to an explicit
+    /// workspace: the archived settings page acts on rows from every recent
+    /// workspace (web `sessionAPI.unarchiveSession(id, workspaceId)`), and the
+    /// archive state lives in the owning workspace's store. Only the active
+    /// workspace's session list reloads; the archived projection reloads
+    /// through [`RuntimeEvent::ArchivedChanged`] either way.
+    pub(crate) fn set_session_archived_in(
+        &self,
+        workspace_id: String,
+        session_id: String,
+        archived: bool,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+    ) {
         let runtime = self.agent_runtime.clone();
-        let workspace_id = Some(self.workspace().id);
+        let active_id = self.workspace().id;
         let handle = self.clone_handle_after_action();
         self.tokio.spawn(async move {
             let request = AgentSessionArchiveStateRequest {
-                workspace_id,
+                workspace_id: Some(workspace_id.clone()),
                 workspace_path: String::new(),
                 session_id: session_id.clone(),
                 archived,
@@ -801,7 +936,10 @@ impl RuntimeHandle {
             match runtime.set_session_archived(request).await {
                 Ok(()) => {
                     tracing::info!("Session {session_id} archived={archived}");
-                    handle.reload_sessions(tx);
+                    let _ = tx.send(RuntimeEvent::ArchivedChanged);
+                    if workspace_id == active_id {
+                        handle.reload_sessions(tx);
+                    }
                 }
                 Err(error) => {
                     let message = error.into_message();
@@ -822,12 +960,24 @@ impl RuntimeHandle {
         session_id: String,
         tx: mpsc::UnboundedSender<RuntimeEvent>,
     ) {
+        self.delete_session_in(self.workspace().id, session_id, tx);
+    }
+
+    /// Deletes one session of an explicit workspace (the archived page's rows
+    /// come from every recent workspace); the active workspace's list reloads,
+    /// the archived projection rides [`RuntimeEvent::ArchivedChanged`].
+    pub(crate) fn delete_session_in(
+        &self,
+        workspace_id: String,
+        session_id: String,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+    ) {
         let runtime = self.agent_runtime.clone();
-        let workspace_id = Some(self.workspace().id);
+        let active_id = self.workspace().id;
         let handle = self.clone_handle_after_action();
         self.tokio.spawn(async move {
             let request = AgentSessionDeleteRequest {
-                workspace_id,
+                workspace_id: Some(workspace_id.clone()),
                 workspace_path: String::new(),
                 session_id: session_id.clone(),
                 remote_connection_id: None,
@@ -839,7 +989,10 @@ impl RuntimeHandle {
                     let _ = tx.send(RuntimeEvent::SessionDeleted {
                         session_id: session_id.clone(),
                     });
-                    handle.reload_sessions(tx);
+                    let _ = tx.send(RuntimeEvent::ArchivedChanged);
+                    if workspace_id == active_id {
+                        handle.reload_sessions(tx);
+                    }
                 }
                 Err(error) => {
                     let message = error.into_message();
@@ -3529,6 +3682,7 @@ impl RuntimeHandle {
                 }
             };
             let entries = convert_transcript(&transcript.messages);
+            let turn_times = transcript_turn_times(&transcript.messages);
             let _ = tx.send(RuntimeEvent::SessionOpened(OpenedSession {
                 session_id,
                 // Reload keeps the current pane title; the list refresh on turn
@@ -3537,6 +3691,7 @@ impl RuntimeHandle {
                 agent_type: String::new(),
                 model_id: None,
                 entries,
+                turn_times,
                 busy: false,
             }));
         });
@@ -3576,14 +3731,36 @@ async fn emit_opened(
         }
     };
     let entries = convert_transcript(&transcript.messages);
+    let turn_times = transcript_turn_times(&transcript.messages);
     let _ = tx.send(RuntimeEvent::SessionOpened(OpenedSession {
         session_id,
         name,
         agent_type,
         model_id,
         entries,
+        turn_times,
         busy,
     }));
+}
+
+/// G-S1: per-turn wall-clock timing from a persisted transcript — the first
+/// and last message timestamps of each turn (the web reads the same facts off
+/// its persisted dialog turns). A turn whose messages carry no timestamps
+/// stays absent; its footer then shows no meta.
+pub(crate) fn transcript_turn_times(messages: &[TranscriptMessage]) -> HashMap<String, TurnTimes> {
+    let mut times: HashMap<String, TurnTimes> = HashMap::new();
+    for message in messages {
+        let Some(turn_id) = message.turn_id.as_deref() else {
+            continue;
+        };
+        let Some(at) = message.timestamp_ms else {
+            continue;
+        };
+        let entry = times.entry(turn_id.to_string()).or_default();
+        entry.started_at_ms = Some(entry.started_at_ms.map_or(at, |first| first.min(at)));
+        entry.ended_at_ms = Some(entry.ended_at_ms.map_or(at, |last| last.max(at)));
+    }
+    times
 }
 
 /// Converts a persisted transcript into shell chat entries.
@@ -3967,6 +4144,7 @@ fn translate_event(event: AgenticEvent) -> Vec<RuntimeEvent> {
         AgenticEvent::DialogTurnCompleted {
             session_id,
             success,
+            duration_ms,
             ..
         } => vec![RuntimeEvent::TurnFinished {
             session_id,
@@ -3974,18 +4152,24 @@ fn translate_event(event: AgenticEvent) -> Vec<RuntimeEvent> {
                 Some(false) => Some("turn completed unsuccessfully".to_string()),
                 _ => None,
             },
+            duration_ms: Some(duration_ms),
+            cancelled: false,
         }],
         AgenticEvent::DialogTurnFailed {
             session_id, error, ..
         } => vec![RuntimeEvent::TurnFinished {
             session_id,
             error: Some(error),
+            duration_ms: None,
+            cancelled: false,
         }],
         AgenticEvent::DialogTurnCancelled { session_id, .. }
         | AgenticEvent::DialogTurnInterrupted { session_id, .. } => {
             vec![RuntimeEvent::TurnFinished {
                 session_id,
                 error: None,
+                duration_ms: None,
+                cancelled: true,
             }]
         }
         AgenticEvent::SessionHistoryChanged { session_id, .. } => {
@@ -4010,6 +4194,8 @@ fn translate_event(event: AgenticEvent) -> Vec<RuntimeEvent> {
         } => vec![RuntimeEvent::TurnFinished {
             session_id,
             error: Some(error),
+            duration_ms: None,
+            cancelled: false,
         }],
         other => {
             tracing::debug!("Dropping runtime event for UI: {:?}", other.session_id());
@@ -4435,6 +4621,57 @@ pub(crate) fn format_last_active(last_active_at_ms: u64) -> String {
         .unwrap_or_default()
 }
 
+/// Wall-clock milliseconds, the unit the shell's timing rows use (the same
+/// clock the session metadata records `last_active_at` in).
+pub(crate) fn now_ms() -> u64 {
+    chrono::Utc::now().timestamp_millis().max(0) as u64
+}
+
+/// G-S1: the turn footer's completion time, local `HH:MM:SS` (the web
+/// `ModelRoundItem` formats the same clock shape).
+pub(crate) fn format_clock_time(at_ms: u64) -> String {
+    chrono::DateTime::from_timestamp_millis(at_ms as i64)
+        .map(|time| {
+            time.with_timezone(&chrono::Local)
+                .format("%H:%M:%S")
+                .to_string()
+        })
+        .unwrap_or_default()
+}
+
+/// G-S1: the turn footer's duration, shaped like the web's
+/// `formatElapsedDuration` (`820ms`, `12.3s`, `5m30s`, `2h5m`).
+pub(crate) fn format_elapsed_duration(duration_ms: u64) -> String {
+    if duration_ms < 1000 {
+        return format!("{duration_ms}ms");
+    }
+    let seconds = duration_ms as f64 / 1000.0;
+    if seconds < 60.0 {
+        let rounded = (seconds * 10.0).round() / 10.0;
+        if rounded.fract() == 0.0 {
+            return format!("{}s", rounded as u64);
+        }
+        return format!("{rounded}s");
+    }
+    let whole_seconds = seconds.round() as u64;
+    let minutes = whole_seconds / 60;
+    let remaining_seconds = whole_seconds % 60;
+    if minutes < 60 {
+        return if remaining_seconds == 0 {
+            format!("{minutes}m")
+        } else {
+            format!("{minutes}m{remaining_seconds}s")
+        };
+    }
+    let hours = minutes / 60;
+    let remaining_minutes = minutes % 60;
+    if remaining_minutes == 0 {
+        format!("{hours}h")
+    } else {
+        format!("{hours}h{remaining_minutes}m")
+    }
+}
+
 /// Minimal valid permission request for pump/UI tests; shared with the
 /// `main.rs` test module.
 #[cfg(test)]
@@ -4527,6 +4764,65 @@ mod tests {
             .map(|session| session.session_id.as_str())
             .collect();
         assert_eq!(ids, vec!["a", "b", "c", "d"]);
+    }
+
+    /// G-S1: turn timing comes from the persisted message timestamps — the
+    /// first and last of each turn, whatever the role order; a message
+    /// without a timestamp (or turn id) contributes nothing.
+    #[test]
+    fn transcript_turn_times_bracket_each_turn() {
+        let timed = |turn_id: &str, at: u64| TranscriptMessage {
+            id: None,
+            role: "assistant".to_string(),
+            turn_id: Some(turn_id.to_string()),
+            timestamp_ms: Some(at),
+            content: TranscriptContent::Text("text".to_string()),
+        };
+        let mut untimed = message("user", TranscriptContent::Text("hello".to_string()));
+        untimed.turn_id = None;
+        let times = transcript_turn_times(&[
+            timed("turn-1", 1_000),
+            untimed,
+            timed("turn-2", 9_000),
+            timed("turn-1", 5_000),
+            timed("turn-2", 4_000),
+        ]);
+        let first = times.get("turn-1").expect("turn-1 timed");
+        assert_eq!(first.started_at_ms, Some(1_000));
+        assert_eq!(first.ended_at_ms, Some(5_000));
+        assert_eq!(first.effective_duration_ms(), Some(4_000));
+        let second = times.get("turn-2").expect("turn-2 timed");
+        assert_eq!(second.started_at_ms, Some(4_000));
+        assert_eq!(second.ended_at_ms, Some(9_000));
+        assert_eq!(times.len(), 2, "timeless messages add no rows");
+
+        // The runtime's own duration wins over the wall-clock span.
+        let mut with_runtime_duration = *first;
+        with_runtime_duration.duration_ms = Some(3_200);
+        assert_eq!(with_runtime_duration.effective_duration_ms(), Some(3_200));
+    }
+
+    /// G-S1: the duration shapes the footer shows follow the web's
+    /// `formatElapsedDuration`.
+    #[test]
+    fn elapsed_duration_shapes_match_the_web() {
+        assert_eq!(format_elapsed_duration(0), "0ms");
+        assert_eq!(format_elapsed_duration(820), "820ms");
+        assert_eq!(format_elapsed_duration(12_000), "12s");
+        assert_eq!(format_elapsed_duration(12_300), "12.3s");
+        assert_eq!(format_elapsed_duration(90_000), "1m30s");
+        assert_eq!(format_elapsed_duration(120_000), "2m");
+        assert_eq!(format_elapsed_duration(7_500_000), "2h5m");
+        assert_eq!(format_elapsed_duration(7_200_000), "2h");
+    }
+
+    /// G-S1: the completion clock is a local `HH:MM:SS`; an out-of-range
+    /// timestamp renders empty rather than panicking.
+    #[test]
+    fn clock_time_formats_hh_mm_ss_or_empty() {
+        assert_eq!(format_clock_time(0).len(), 8);
+        assert_eq!(format_clock_time(0).matches(':').count(), 2);
+        assert_eq!(format_clock_time(i64::MAX as u64), "");
     }
 
     #[test]

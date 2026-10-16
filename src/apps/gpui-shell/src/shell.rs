@@ -28,8 +28,9 @@ use gpui_kit::{
 };
 use openbitfun_agent_runtime::sdk::{PendingUserQuestion, PermissionReply, PermissionRequest};
 use openbitfun_runtime_ports::{AgentInputAttachment, AgentSessionLineageSnapshot};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
@@ -83,9 +84,107 @@ const TURN_RHYTHM_GAP: f32 = 12.;
 /// Composer height; explicit pixels because an auto-grown textarea makes the
 /// docked composer row jump while streaming text is typed.
 const COMPOSER_HEIGHT: f32 = 88.;
-/// Bounds of the docked terminal panel, dragged by the divider above it.
+/// Bounds of the docked terminal panel, dragged by the divider above it (or
+/// beside it, in the right dock).
 const MIN_TERMINAL_HEIGHT: f32 = 120.;
 const MAX_TERMINAL_HEIGHT: f32 = 900.;
+/// G-T1: the double-click size tiers, the web's
+/// `BOTTOM_TERMINAL_PANEL_CONFIG` stops (compact 180, comfortable 300,
+/// expanded 420) with its mode thresholds (below 220 compact, 420 and up
+/// expanded).
+const TERMINAL_TIER_COMPACT: f32 = 180.;
+const TERMINAL_TIER_COMFORTABLE: f32 = 300.;
+const TERMINAL_TIER_EXPANDED: f32 = 420.;
+/// Width the right dock reopens at before any drag (the web's comfortable
+/// default).
+const DEFAULT_TERMINAL_WIDTH: f32 = 300.;
+const TERMINAL_COMPACT_THRESHOLD: f32 = 220.;
+const TERMINAL_EXPANDED_THRESHOLD: f32 = 420.;
+
+/// Which edge the terminal panel docks to (G-T1): the shared
+/// `terminal.terminal_panel_position` preference. The web hosts the `right`
+/// position inside its aux pane; the shell's aux pane is the files/changes
+/// panel, so the terminal docks as the scene body's own right column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalDock {
+    Bottom,
+    Right,
+}
+
+impl TerminalDock {
+    /// Resolves the shared value; anything but `right` (including the empty
+    /// string an older config may carry) keeps the shell's bottom dock.
+    fn from_shared(raw: &str) -> Self {
+        if raw == "right" {
+            Self::Right
+        } else {
+            Self::Bottom
+        }
+    }
+
+    /// The size tier a panel of this extent sits in (web
+    /// `getPanelDisplayMode`).
+    fn tier(self, extent: Pixels) -> TerminalTier {
+        let extent = f32::from(extent);
+        if extent < TERMINAL_COMPACT_THRESHOLD {
+            TerminalTier::Compact
+        } else if extent >= TERMINAL_EXPANDED_THRESHOLD {
+            TerminalTier::Expanded
+        } else {
+            TerminalTier::Comfortable
+        }
+    }
+}
+
+/// Which side of the chat column the resource panel docks to (G-F8, web
+/// `SplitView`'s `secondarySide`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PanelSide {
+    Left,
+    Right,
+}
+
+impl PanelSide {
+    /// The other side — what the panel head's swap action selects.
+    fn toggled(self) -> Self {
+        match self {
+            Self::Left => Self::Right,
+            Self::Right => Self::Left,
+        }
+    }
+}
+
+/// The terminal panel's display tiers the divider's double click cycles
+/// through (web `PanelDisplayMode` collapsed/compact/comfortable/expanded;
+/// `collapsed` is the closed panel, which the cycle leaves to the close
+/// button).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TerminalTier {
+    Compact,
+    Comfortable,
+    Expanded,
+}
+
+impl TerminalTier {
+    /// The next tier a double click selects (web `getNextMode`: compact and
+    /// collapsed go to comfortable, comfortable to expanded, expanded back to
+    /// comfortable).
+    fn next(self) -> Self {
+        match self {
+            Self::Compact => Self::Comfortable,
+            Self::Comfortable => Self::Expanded,
+            Self::Expanded => Self::Comfortable,
+        }
+    }
+
+    fn extent(self) -> Pixels {
+        px(match self {
+            Self::Compact => TERMINAL_TIER_COMPACT,
+            Self::Comfortable => TERMINAL_TIER_COMFORTABLE,
+            Self::Expanded => TERMINAL_TIER_EXPANDED,
+        })
+    }
+}
 /// Bounds of the session's right resource panel (R2c), dragged by the divider
 /// left of it; `DEFAULT` is the pre-drag width.
 const MIN_RESOURCE_PANEL_WIDTH: f32 = 240.;
@@ -106,6 +205,13 @@ gpui_kit::actions!(openbitfun_gpui_shell, [OpenGlobalSearch, ToggleSidebar]);
 struct TerminalTab {
     pane: Entity<TerminalPane>,
     label: SharedString,
+    /// G-T2: the launch directory — the target of the tab's "show in file
+    /// manager" action (the pane tracks no live cwd, so the reveal uses where
+    /// the shell started it).
+    directory: Option<String>,
+    /// G-T2: the startup command a profile tab ran (the web's badge); `None`
+    /// for a plain default-shell tab.
+    startup_command: Option<String>,
 }
 
 /// Lifecycle of the embedded runtime, mirrored into the status line.
@@ -147,6 +253,31 @@ struct OtherWorkspaceGroup {
     expanded: bool,
 }
 
+/// One workspace group on the settings archived page (G-SE30, web
+/// `ArchivedSessionsConfig`): a collapsible header (label + count) over the
+/// workspace's archived rows. Only workspaces with archived sessions get a
+/// group; a workspace whose read failed contributes a failure line instead.
+#[derive(Clone)]
+pub(crate) struct ArchivedGroupView {
+    /// The owning workspace, for the per-workspace restore/delete calls.
+    pub(crate) workspace_id: String,
+    /// The fold key and action target: the workspace root path.
+    pub(crate) root_path: String,
+    /// Header text, `name · path` (or just the path when the name is it).
+    pub(crate) label: String,
+    /// Newest first (the web sorts every collected entry by `lastActiveAt`).
+    pub(crate) rows: Vec<ArchivedRowView>,
+}
+
+/// One archived session row on that page.
+#[derive(Clone)]
+pub(crate) struct ArchivedRowView {
+    pub(crate) session_id: String,
+    pub(crate) name: String,
+    /// Unix ms; rendered through [`runtime::format_last_active`].
+    pub(crate) last_active_at: u64,
+}
+
 /// One open session in the chat pane; one per session tab (R1a multi-tab).
 struct ChatView {
     session_id: String,
@@ -176,6 +307,13 @@ struct ChatView {
     /// head tool key hash — same stability rule as the user bubbles. Absent
     /// means automatic: a collecting run stays open, a settled one folds.
     expanded_groups: BTreeMap<u64, bool>,
+    /// G-S1: per-turn wall-clock timing for the transcript footer. A
+    /// transcript read fills every persisted turn; live turns add theirs as
+    /// they start and settle.
+    turn_times: HashMap<String, runtime::TurnTimes>,
+    /// The turn currently executing for this session (set from its start
+    /// event), so the finish event can close the matching timing row.
+    active_turn_id: Option<String>,
 }
 
 /// Why the chat pane is showing a hidden child session (M20).
@@ -435,6 +573,7 @@ impl ChatView {
         agent_type: String,
         model_id: Option<String>,
         entries: Vec<ChatEntry>,
+        turn_times: HashMap<String, runtime::TurnTimes>,
         cx: &mut Context<ShellWindow>,
     ) -> Self {
         let scroller = cx.new(|cx| MessageScrollerState::new(entries.len(), cx));
@@ -450,6 +589,8 @@ impl ChatView {
             child_context: None,
             expanded_user_texts: BTreeSet::new(),
             expanded_groups: BTreeMap::new(),
+            turn_times,
+            active_turn_id: None,
         }
     }
 
@@ -1619,20 +1760,37 @@ pub(crate) struct ShellWindow {
     /// Split state of the docked terminal panel: the panel keeps whatever
     /// height the divider was dragged to for as long as the window lives.
     dock: Entity<ResizableState>,
+    /// The same split state for the right dock (G-T1): one entity per axis,
+    /// because each remembers its own panel sizes.
+    dock_h: Entity<ResizableState>,
     /// Height the terminal dock reopens at (the last dragged height, or the
     /// pane default before any drag).
     terminal_height: Pixels,
+    /// The same for the right dock (G-T1): the width it reopens at.
+    terminal_width: Pixels,
     /// The session tab's right resource panel (R2c): Files or Changes docked
     /// beside the conversation. A workspace-scoped layout preference, like the
     /// web's `workspaceResourceState` — it follows the workspace and survives
     /// session switches; opening it never activates a session.
     resource_panel: Option<ResourcePanelKind>,
-    /// Split state of the session's right panel (the same shape the terminal
-    /// dock keeps for its height).
+    /// Split state of the session's resource panel (the same shape the
+    /// terminal dock keeps for its height).
     panel_split: Entity<ResizableState>,
-    /// Width the right panel reopens at (the last dragged width, or the
+    /// The same split state for the swapped arrangement (G-F8). One entity per
+    /// side, because the group stores sizes by panel index: sharing one state
+    /// would hand the panel's width to the chat column on the first swap.
+    panel_split_left: Entity<ResizableState>,
+    /// Width the resource panel reopens at (the last dragged width, or the
     /// default before any drag).
     panel_width: Pixels,
+    /// Which side of the chat column the resource panel docks to (G-F8, web
+    /// `SplitView` `secondarySide` + `swapPanes`). A window preference like
+    /// the panel itself: it survives session and workspace switches.
+    resource_panel_side: PanelSide,
+    /// The resource panel fills the scene body, chat column hidden (G-F8, web
+    /// `toggleMaximized` → `content-only`). Cleared whenever the panel closes;
+    /// a maximized panel with nothing in it would be an empty scene.
+    resource_panel_maximized: bool,
     /// One-shot automation hooks for the settings page and the changes view,
     /// mirroring `OPENBITFUN_GPUI_TERMINAL_AUTOOPEN`.
     settings_auto_open: bool,
@@ -1666,6 +1824,31 @@ pub(crate) struct ShellWindow {
     /// Sidebar session groups beyond the current workspace (web
     /// SessionsSection): one entry per recent workspace that reported rows.
     other_groups: Vec<OtherWorkspaceGroup>,
+    /// The settings archived page's cross-workspace projection (G-SE30),
+    /// ordered by each group's newest member (the web sorts every entry by
+    /// `lastActiveAt` before grouping). Reloaded when the page is opened and
+    /// after every archive-state change or delete while it is open.
+    pub(crate) archived_groups: Vec<ArchivedGroupView>,
+    /// Per-workspace read failures for that page (web `loadFailures`),
+    /// pre-formatted; shown above the groups.
+    pub(crate) archived_failures: Vec<String>,
+    /// A projection read is in flight (web `loading`).
+    pub(crate) archived_loading: bool,
+    /// The projection answered at least once; later reads are background
+    /// refreshes that keep a failed workspace's previous rows (web
+    /// `hasLoadedRef`), and a fresh load collapses every group.
+    pub(crate) archived_loaded: bool,
+    /// Collapsed archived groups, keyed by root path. The web page collapses
+    /// every group after a fresh load.
+    pub(crate) archived_collapsed: Vec<String>,
+    /// The archived page's in-flight row action: the success receipt to show
+    /// when the projection it triggers lands (web toasts; the shell renders
+    /// the same text inline). The `SessionActionFailed` handler clears it
+    /// into a failure receipt instead.
+    pub(crate) archived_pending: Option<String>,
+    /// A reload request arrived while one was in flight; the landing
+    /// projection re-reads once so a burst (delete-all) coalesces.
+    archived_reload_dirty: bool,
     /// Global search palette (R1b): one boolean, because the query state and
     /// the input entity live on the window already (`search`/`search_input`).
     search_overlay_open: bool,
@@ -1816,9 +1999,6 @@ pub(crate) struct ShellWindow {
     pub(crate) mcp_resource_view: Option<crate::manage::McpResourceView>,
     /// M22 self-update state machine; the general settings page projects it.
     pub(crate) update_state: crate::update::UpdateUiState,
-    /// M22 archived-sessions delete confirmation target (dialog input lives
-    /// on the window like every other dialog scratch value).
-    pub(crate) archived_delete_target: Option<String>,
     /// M22 global usage statistics snapshot for the settings usage page.
     pub(crate) usage_stats: Option<Box<openbitfun_services_core::token_usage::UsageStatistics>>,
     pub(crate) usage_range: String,
@@ -1861,6 +2041,7 @@ impl ShellWindow {
             TextareaState::new(window, cx).placeholder(text.chat_input_placeholder.clone())
         });
         let dock = cx.new(|_| ResizableState::default());
+        let dock_h = cx.new(|_| ResizableState::default());
         let rename_input = cx.new(|cx| InputState::new(window, cx));
         let workspace_input = cx.new(|cx| InputState::new(window, cx));
         let workspace_new_parent_input = cx.new(|cx| {
@@ -1980,10 +2161,15 @@ impl ShellWindow {
             trinity_edit_content,
             trinity_transfer_path,
             dock,
+            dock_h,
             terminal_height: TerminalPane::panel_height(),
+            terminal_width: px(DEFAULT_TERMINAL_WIDTH),
             resource_panel: None,
             panel_split: cx.new(|_| ResizableState::default()),
+            panel_split_left: cx.new(|_| ResizableState::default()),
             panel_width: px(DEFAULT_RESOURCE_PANEL_WIDTH),
+            resource_panel_side: PanelSide::Right,
+            resource_panel_maximized: false,
             settings_auto_open: std::env::var_os("OPENBITFUN_GPUI_SETTINGS_AUTOOPEN").is_some(),
             settings_page: settings::SettingsEntry::General,
             settings_search_input,
@@ -1998,6 +2184,13 @@ impl ShellWindow {
             sessions_expanded: false,
             session_list: SessionListFilters::default(),
             other_groups: Vec::new(),
+            archived_groups: Vec::new(),
+            archived_failures: Vec::new(),
+            archived_loading: false,
+            archived_loaded: false,
+            archived_collapsed: Vec::new(),
+            archived_pending: None,
+            archived_reload_dirty: false,
             search_overlay_open: false,
             sidebar_open: true,
             root_focus: cx.focus_handle(),
@@ -2058,7 +2251,6 @@ impl ShellWindow {
             mcp_import_id_inputs: Vec::new(),
             mcp_resource_view: None,
             update_state: Default::default(),
-            archived_delete_target: None,
             usage_stats: None,
             usage_range: "thisMonth".to_string(),
             usage_loading: false,
@@ -2384,6 +2576,7 @@ impl ShellWindow {
                     chat.submitting = false;
                     chat.name = opened.name;
                     chat.model_id = opened.model_id;
+                    chat.turn_times = opened.turn_times;
                     if settled_child.is_some() {
                         chat.child_context = settled_child;
                     }
@@ -2394,6 +2587,7 @@ impl ShellWindow {
                         opened.agent_type,
                         opened.model_id,
                         opened.entries,
+                        opened.turn_times,
                         cx,
                     );
                     chat.busy = opened.busy;
@@ -2486,7 +2680,10 @@ impl ShellWindow {
                     self.list_sync_append(&session_id, cx);
                 }
             }
-            RuntimeEvent::TurnStarted { session_id, .. } => {
+            RuntimeEvent::TurnStarted {
+                session_id,
+                turn_id,
+            } => {
                 // Session-agnostic bookkeeping first (T2-6): the pump reports
                 // every session's turns, and background subagent activity is
                 // derived from exactly that.
@@ -2494,6 +2691,11 @@ impl ShellWindow {
                 if let Some(chat) = self.chat_mut_for(&session_id) {
                     chat.submitting = false;
                     chat.busy = true;
+                    // G-S1: the live turn's timing row opens here; the finish
+                    // event closes it with the runtime's own duration.
+                    chat.active_turn_id = Some(turn_id.clone());
+                    let times = chat.turn_times.entry(turn_id).or_default();
+                    times.started_at_ms = Some(runtime::now_ms());
                 }
             }
             RuntimeEvent::TextChunk {
@@ -2524,12 +2726,25 @@ impl ShellWindow {
                     }
                 }
             }
-            RuntimeEvent::TurnFinished { session_id, error } => {
+            RuntimeEvent::TurnFinished {
+                session_id,
+                error,
+                duration_ms,
+                cancelled,
+            } => {
                 self.live_sessions.remove(&session_id);
                 let failure = error.clone();
                 if let Some(chat) = self.chat_mut_for(&session_id) {
                     chat.busy = false;
                     chat.submitting = false;
+                    // G-S1: close the live turn's timing row with the
+                    // completion clock and the runtime's duration.
+                    if let Some(turn_id) = chat.active_turn_id.take() {
+                        let times = chat.turn_times.entry(turn_id).or_default();
+                        times.ended_at_ms = Some(runtime::now_ms());
+                        times.duration_ms = duration_ms;
+                        times.cancelled = cancelled;
+                    }
                     if let Some(error) = error {
                         chat.entries.push(ChatEntry::Notice {
                             text: i18n::failed_status(&error, cx),
@@ -3050,6 +3265,49 @@ impl ShellWindow {
                 }
                 cx.notify();
             }
+            RuntimeEvent::ArchivedSessions(groups) => {
+                let previous = std::mem::take(&mut self.archived_groups);
+                let fresh = !self.archived_loaded;
+                self.archived_loaded = true;
+                self.archived_loading = false;
+                let (composed, failures) = compose_archived_groups(groups, &previous, fresh, cx);
+                self.archived_groups = composed;
+                self.archived_failures = failures;
+                // A landing projection settles the row action that asked for
+                // it: the read exists only because the mutation succeeded.
+                if let Some(success) = self.archived_pending.take() {
+                    settings::ArchivedNotice::set(Some((true, success)), cx);
+                }
+                if fresh {
+                    // The web collapses every workspace group after the first
+                    // load lands.
+                    self.archived_collapsed = self
+                        .archived_groups
+                        .iter()
+                        .map(|group| group.root_path.clone())
+                        .collect();
+                } else {
+                    // Groups that dropped out (workspace removed, last row
+                    // deleted) leave no stale fold behind.
+                    let roots: Vec<String> = self
+                        .archived_groups
+                        .iter()
+                        .map(|group| group.root_path.clone())
+                        .collect();
+                    self.archived_collapsed.retain(|root| roots.contains(root));
+                }
+                cx.notify();
+                if std::mem::take(&mut self.archived_reload_dirty) {
+                    self.reload_archived_groups(cx);
+                }
+            }
+            RuntimeEvent::ArchivedChanged => {
+                if self.tabs.active_kind() == Some(&TabKind::Scene(SceneId::Settings))
+                    && self.settings_page == settings::SettingsEntry::Archived
+                {
+                    self.reload_archived_groups(cx);
+                }
+            }
             RuntimeEvent::WorkspaceSwitched(choice) => {
                 tracing::info!("Adopted workspace {} ({})", choice.name, choice.root_path);
                 self.workspace_error = None;
@@ -3176,6 +3434,12 @@ impl ShellWindow {
             RuntimeEvent::SessionActionFailed { message } => {
                 let line = i18n::failed_status(&message, cx);
                 tracing::warn!("Session action failed: {message}");
+                // An archived-page row action reports its failure where it was
+                // fired from (the web toasts it; the shell's page shows the
+                // receipt inline).
+                if self.archived_pending.take().is_some() {
+                    settings::ArchivedNotice::set(Some((false, line.clone())), cx);
+                }
                 if self.tabs.active_session_id().is_some() {
                     self.chat_error = Some(line);
                 } else {
@@ -3207,12 +3471,9 @@ impl ShellWindow {
     fn toggle_terminal_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.terminal_open {
             self.terminal_open = false;
-            // Remember the dragged height so the next open docks at it instead
+            // Remember the dragged extent so the next open docks at it instead
             // of the default; the second slot is the terminal panel.
-            if let Some(size) = self.dock.read(cx).sizes().get(1) {
-                self.terminal_height =
-                    (*size).clamp(px(MIN_TERMINAL_HEIGHT), px(MAX_TERMINAL_HEIGHT));
-            }
+            self.remember_terminal_extent(cx);
             self.close_all_terminal_tabs(cx);
         } else {
             self.open_terminal_panel(window, cx);
@@ -3227,6 +3488,61 @@ impl ShellWindow {
             tab.pane.update(cx, |pane, _| pane.close());
         }
         self.active_terminal = 0;
+    }
+
+    /// Where the terminal docks (G-T1): the shared
+    /// `terminal.terminal_panel_position` preference the desktop and web
+    /// write; a missing config keeps the shell's bottom dock.
+    fn terminal_dock(&self, cx: &App) -> TerminalDock {
+        settings::ShellConfig::try_current(cx)
+            .map(|config| TerminalDock::from_shared(&config.terminal.panel_position))
+            .unwrap_or(TerminalDock::Bottom)
+    }
+
+    /// The docked panel's split state for the active dock.
+    fn terminal_dock_state(&self, cx: &App) -> Entity<ResizableState> {
+        match self.terminal_dock(cx) {
+            TerminalDock::Bottom => self.dock.clone(),
+            TerminalDock::Right => self.dock_h.clone(),
+        }
+    }
+
+    /// Remembers the docked panel's current extent so the next open lands on
+    /// it (each dock keeps its own).
+    fn remember_terminal_extent(&mut self, cx: &Context<Self>) {
+        let dock = self.terminal_dock(cx);
+        let state = self.terminal_dock_state(cx);
+        if let Some(size) = state.read(cx).sizes().get(1) {
+            let size = (*size).clamp(px(MIN_TERMINAL_HEIGHT), px(MAX_TERMINAL_HEIGHT));
+            match dock {
+                TerminalDock::Bottom => self.terminal_height = size,
+                TerminalDock::Right => self.terminal_width = size,
+            }
+        }
+    }
+
+    /// Cycles the docked terminal through the size tiers — the divider's
+    /// double click (web `handleBottomDoubleClick` → `getNextMode`). Compact
+    /// and comfortable go up one tier, expanded comes back to comfortable.
+    fn cycle_terminal_size_tier(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.terminal_open {
+            return;
+        }
+        let dock = self.terminal_dock(cx);
+        let state = self.terminal_dock_state(cx);
+        let fallback = match dock {
+            TerminalDock::Bottom => self.terminal_height,
+            TerminalDock::Right => self.terminal_width,
+        };
+        let extent = state.read(cx).sizes().get(1).copied().unwrap_or(fallback);
+        let target = dock.tier(extent).next().extent();
+        state.update(cx, |state, cx| state.resize_panel(1, target, window, cx));
+        match dock {
+            TerminalDock::Bottom => self.terminal_height = target,
+            TerminalDock::Right => self.terminal_width = target,
+        }
+        tracing::info!("Terminal panel tier -> {target:?}");
+        cx.notify();
     }
 
     /// Opens the terminal panel, creating the default tab (and its PTY) on
@@ -3278,9 +3594,16 @@ impl ShellWindow {
             .as_ref()
             .map(|p| SharedString::from(p.name.clone()))
             .unwrap_or_else(|| i18n::current(cx).terminal_new_tab_default.clone().into());
+        let directory = start_dir.clone();
+        let startup_command = initial_command.clone();
         let pane = cx
             .new(|cx| TerminalPane::new(tokio, &terminal, start_dir, initial_command, window, cx));
-        TerminalTab { pane, label }
+        TerminalTab {
+            pane,
+            label,
+            directory,
+            startup_command,
+        }
     }
 
     /// Opens a new panel tab: the default shell when `profile_id` is `None`,
@@ -3315,10 +3638,7 @@ impl ShellWindow {
         let tab = self.terminals.remove(index);
         tab.pane.update(cx, |pane, _| pane.close());
         if self.terminals.is_empty() {
-            if let Some(size) = self.dock.read(cx).sizes().get(1) {
-                self.terminal_height =
-                    (*size).clamp(px(MIN_TERMINAL_HEIGHT), px(MAX_TERMINAL_HEIGHT));
-            }
+            self.remember_terminal_extent(cx);
             self.terminal_open = false;
             self.active_terminal = 0;
         } else {
@@ -3778,6 +4098,55 @@ impl ShellWindow {
         cx: &mut Context<Self>,
     ) {
         self.settings_page = page;
+        // The archived page's projection spans every recent workspace, so it
+        // is read when the page is selected (web loads on mount) and refreshed
+        // after each mutation while it stays open.
+        if page == settings::SettingsEntry::Archived {
+            self.reload_archived_groups(cx);
+        }
+        cx.notify();
+    }
+
+    /// Reloads the archived settings page's projection (G-SE30). Fails silent
+    /// with the log when the runtime or the workspace catalog is not up yet:
+    /// the page's own empty state covers that case. A request that arrives
+    /// while a read is in flight is coalesced into one re-read when it lands.
+    pub(crate) fn reload_archived_groups(&mut self, cx: &mut Context<Self>) {
+        let Some(handle) = runtime::runtime_handle() else {
+            return;
+        };
+        if self.workspaces.is_empty() {
+            return;
+        }
+        if self.archived_loading {
+            self.archived_reload_dirty = true;
+            return;
+        }
+        self.archived_loading = true;
+        handle.load_archived_sessions(self.workspaces.clone(), self.event_tx.clone());
+        cx.notify();
+    }
+
+    /// Records the archived page's in-flight action and its success receipt;
+    /// the previous receipt clears so the page always shows the latest
+    /// outcome.
+    pub(crate) fn begin_archived_action(&mut self, success: String, cx: &mut Context<Self>) {
+        self.archived_pending = Some(success);
+        settings::ArchivedNotice::set(None, cx);
+        cx.notify();
+    }
+
+    /// Flips one archived group's fold on the settings page.
+    pub(crate) fn toggle_archived_group(&mut self, root_path: &str, cx: &mut Context<Self>) {
+        if let Some(position) = self
+            .archived_collapsed
+            .iter()
+            .position(|root| root == root_path)
+        {
+            self.archived_collapsed.remove(position);
+        } else {
+            self.archived_collapsed.push(root_path.to_string());
+        }
         cx.notify();
     }
 
@@ -4086,11 +4455,39 @@ impl ShellWindow {
     /// Hides the right panel, remembering the dragged width so the next dock
     /// reopens at it (the terminal dock's height rule).
     fn close_resource_panel(&mut self, cx: &mut Context<Self>) {
-        if let Some(size) = self.panel_split.read(cx).sizes().get(1) {
+        let state = self.panel_split_state();
+        if let Some(size) = state.read(cx).sizes().get(1) {
             self.panel_width =
                 (*size).clamp(px(MIN_RESOURCE_PANEL_WIDTH), px(MAX_RESOURCE_PANEL_WIDTH));
         }
         self.resource_panel = None;
+        self.resource_panel_maximized = false;
+        cx.notify();
+    }
+
+    /// The split state of the current arrangement (one per side, G-F8).
+    fn panel_split_state(&self) -> Entity<ResizableState> {
+        match self.resource_panel_side {
+            PanelSide::Right => self.panel_split.clone(),
+            PanelSide::Left => self.panel_split_left.clone(),
+        }
+    }
+
+    /// Moves the resource panel to the other side of the chat column (G-F8,
+    /// web `swapPanes`).
+    fn swap_resource_panel_side(&mut self, cx: &mut Context<Self>) {
+        self.resource_panel_side = self.resource_panel_side.toggled();
+        tracing::info!(
+            "Resource panel docked to the {:?} of the chat column",
+            self.resource_panel_side
+        );
+        cx.notify();
+    }
+
+    /// Maximizes the resource panel over the scene body, or restores the split
+    /// (G-F8, web `toggleMaximized`).
+    fn toggle_resource_panel_maximized(&mut self, cx: &mut Context<Self>) {
+        self.resource_panel_maximized = !self.resource_panel_maximized;
         cx.notify();
     }
 
@@ -4101,6 +4498,7 @@ impl ShellWindow {
             return;
         };
         self.resource_panel = None;
+        self.resource_panel_maximized = false;
         self.set_resource_compact(kind, false, cx);
         self.tabs.open(TabKind::Scene(kind.scene()));
         cx.notify();
@@ -5270,12 +5668,24 @@ struct TurnFooterPlan {
     /// The turn's user prompt id (fork boundary); `None` leaves the fork
     /// entry out (transcript head without a persisted prompt id).
     turn_id: Option<String>,
+    /// G-S1: the turn's completion meta when the transcript or the live turn
+    /// events recorded it (web `buildModelRoundCompletionMeta`).
+    meta: Option<TurnMeta>,
     /// Whole-turn copy text (`User\n…` + every assistant round, web
     /// `formatTranscriptTurnText` shape); `None` when the turn has no
     /// assistant text and the copy entry hides.
     copy_full: Option<String>,
     /// Result-scope copy: the final assistant round.
     copy_result: Option<String>,
+}
+
+/// G-S1: one finished turn's footer meta — the completion clock and the
+/// duration, which the web renders as `Completed HH:MM:SS` / `Duration 12s`
+/// (the labels ride tooltips here; the values are the visible text).
+struct TurnMeta {
+    completed_at_ms: u64,
+    duration_ms: Option<u64>,
+    cancelled: bool,
 }
 
 /// The finished-turn tail test for row `index`: the entry must close a turn
@@ -5288,6 +5698,7 @@ fn turn_footer_plan(
     busy: bool,
     submitting: bool,
     text: &ShellText,
+    turn_times: &HashMap<String, runtime::TurnTimes>,
 ) -> Option<TurnFooterPlan> {
     match entries.get(index)? {
         ChatEntry::User { .. } | ChatEntry::Notice { .. } | ChatEntry::Info { .. } => {
@@ -5327,10 +5738,71 @@ fn turn_footer_plan(
         parts.extend(rounds.iter().rev().map(|text| (*text).to_string()));
         Some(parts.join("\n\n---\n\n"))
     };
+    let turn_id = turn.map(|(turn_id, _)| turn_id).flatten();
+    // G-S1: the meta needs the turn's timing, which a transcript read
+    // (persisted message timestamps) or the live turn events supply. A turn
+    // without a clock renders no meta, same as the web's absent `endTime`.
+    let meta = turn_id
+        .as_ref()
+        .and_then(|turn_id| turn_times.get(turn_id))
+        .filter(|times| !times.is_empty())
+        .and_then(|times| {
+            times.ended_at_ms.map(|completed_at_ms| TurnMeta {
+                completed_at_ms,
+                duration_ms: times.effective_duration_ms(),
+                cancelled: times.cancelled,
+            })
+        });
     Some(TurnFooterPlan {
-        turn_id: turn.map(|(turn_id, _)| turn_id).flatten(),
+        turn_id,
+        meta,
         copy_full,
         copy_result,
+    })
+}
+
+/// The dock divider's appearance (G-T1): the kit's own handle plus the web's
+/// double-click size cycle and its "drag to resize | double-click to switch
+/// mode | current: X" tooltip (`layout.resizer.title`). The kit renderer draws
+/// the visible part only — the hit band, cursor and drag stay with the handle —
+/// so the cycle rides a wrapper that covers the same box.
+fn terminal_dock_handle_appearance(
+    view: gpui_kit::WeakEntity<ShellWindow>,
+    dock: TerminalDock,
+    tier: TerminalTier,
+    text: &ShellText,
+) -> gpui_kit::base::ResizeHandleRenderer {
+    let inner = gpui_kit::component::resize_handle_appearance();
+    let text = text.clone();
+    Rc::new(move |handle, window, cx| {
+        let element = inner(handle, window, cx)?;
+        let view = view.clone();
+        let text = text.clone();
+        let title = i18n::terminal_resizer_title(&i18n::terminal_tier_label(tier, &text), cx);
+        Some(
+            div()
+                .id(SharedString::from(format!(
+                    "shell-terminal-dock-handle-{dock:?}"
+                )))
+                .absolute()
+                .inset_0()
+                .on_click(move |event, window, cx| {
+                    // The web cycles tiers on a double click; gpui reports the
+                    // count on the ordinary click event.
+                    if event.click_count() < 2 {
+                        return;
+                    }
+                    let Some(view) = view.upgrade() else {
+                        return;
+                    };
+                    view.update(cx, |this, cx| this.cycle_terminal_size_tier(window, cx));
+                })
+                .tooltip(move |window, cx| {
+                    gpui_kit::component::tooltip::Tooltip::new(title.clone()).build(window, cx)
+                })
+                .child(element)
+                .into_any_element(),
+        )
     })
 }
 
@@ -5343,14 +5815,43 @@ fn turn_footer(
     row: usize,
     fork: &ChatForkContext,
     text: &ShellText,
+    cx: &App,
 ) -> gpui_kit::AnyElement {
-    let mut actions = div()
+    // G-S1: the meta sits where the web puts it — a muted run left of the
+    // action row (`margin-inline-end: auto` there, one flex row here).
+    let mut footer = div()
         .debug_selector(|| "turn-footer".to_string())
         .mt_1()
         .flex()
         .items_center()
-        .justify_end()
-        .gap_0p5();
+        .w_full()
+        .gap_2();
+    if let Some(meta) = &plan.meta {
+        let mut meta_row = div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap_2()
+            .text_xs()
+            .text_color(cx.theme().muted_foreground);
+        meta_row = meta_row.child(turn_meta_item(
+            if meta.cancelled {
+                text.turn_meta_stopped.clone()
+            } else {
+                text.turn_meta_completed.clone()
+            },
+            runtime::format_clock_time(meta.completed_at_ms),
+        ));
+        if let Some(duration_ms) = meta.duration_ms {
+            meta_row = meta_row.child(turn_meta_item(
+                text.turn_meta_duration.clone(),
+                runtime::format_elapsed_duration(duration_ms),
+            ));
+        }
+        footer = footer.child(meta_row);
+    }
+    let mut actions = div().flex().items_center().justify_end().gap_0p5();
     if let Some(turn_id) = plan.turn_id {
         actions = actions.child(turn_fork_menu(
             fork.session_id.clone(),
@@ -5398,7 +5899,23 @@ fn turn_footer(
                 }
             }),
     );
-    actions.into_any_element()
+    footer.child(actions).into_any_element()
+}
+
+/// One G-S1 footer meta item (web `model-round-item__meta-item`): the value is
+/// the visible text, the label rides its tooltip (the web keeps the label in
+/// `aria-label`).
+fn turn_meta_item(label: String, value: String) -> gpui_kit::AnyElement {
+    let shown = SharedString::from(value);
+    let hover = SharedString::from(format!("{label}: {shown}"));
+    div()
+        .id(SharedString::from(format!("turn-meta-{shown}")))
+        .flex_shrink_0()
+        .tooltip(move |window, cx| {
+            gpui_kit::component::tooltip::Tooltip::new(hover.clone()).build(window, cx)
+        })
+        .child(shown)
+        .into_any_element()
 }
 
 /// Per-turn menu under a user prompt: fork including the selected turn, from
@@ -5658,15 +6175,25 @@ fn render_tool_row(
     }
     if let Some(copy) = &card.facts.copy {
         let copy = copy.clone();
+        let copied = markdown::tool_row_copied(card.key.as_ref(), cx);
+        let copy_key = card.key.clone();
         header = header.child(
             Button::new(SharedString::from(format!("{}-copy", card.key)))
                 .debug_selector(|| "tool-row-copy".to_string())
-                .icon(IconName::Copy)
+                .icon(if copied {
+                    IconName::Check
+                } else {
+                    IconName::Copy
+                })
                 .xsmall()
                 .with_variant(ButtonVariant::Ghost)
-                .tooltip(text.tool_copy.clone())
+                .tooltip(if copied {
+                    text.tool_copied.clone()
+                } else {
+                    text.tool_copy.clone()
+                })
                 .on_click(move |_, _, cx| {
-                    cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
+                    markdown::copy_tool_row(&copy_key, &copy, cx);
                 }),
         );
     }
@@ -6281,7 +6808,14 @@ impl ShellWindow {
                 return div().into_any_element();
             }
             let footer_plan = chat.and_then(|chat| {
-                turn_footer_plan(&chat.entries, index, chat.busy, chat.submitting, &text)
+                turn_footer_plan(
+                    &chat.entries,
+                    index,
+                    chat.busy,
+                    chat.submitting,
+                    &text,
+                    &chat.turn_times,
+                )
             });
             let user_expanded = match (&entry, chat) {
                 (Some(ChatEntry::User { text: body, .. }), Some(chat)) => {
@@ -6332,10 +6866,11 @@ impl ShellWindow {
                                     chat.busy,
                                     chat.submitting,
                                     &text,
+                                    &chat.turn_times,
                                 )
                             });
                             if let (Some(plan), Some(fork)) = (plan, fork.as_ref()) {
-                                row = row.child(turn_footer(plan, tail, fork, &text));
+                                row = row.child(turn_footer(plan, tail, fork, &text, cx));
                             }
                             return row.into_any_element();
                         }
@@ -6358,7 +6893,7 @@ impl ShellWindow {
                         cx,
                     ));
                     if let (Some(plan), Some(fork)) = (footer_plan, fork.as_ref()) {
-                        row = row.child(turn_footer(plan, index, fork, &text));
+                        row = row.child(turn_footer(plan, index, fork, &text, cx));
                     }
                     row.into_any_element()
                 }
@@ -7767,6 +8302,72 @@ enum WorkspaceGroupPlan {
     SwitchThenAct { root: String },
 }
 
+/// Projects one archived-sessions read into the page's group list (G-SE30):
+/// rows newest first, groups ordered by their newest member — the web sorts
+/// every collected entry by `lastActiveAt` descending and groups in that
+/// order, so a workspace with the newest archived session leads. Workspaces
+/// with no archived rows render no group at all. A failed read contributes a
+/// failure line (web `loadFailures`); on a background refresh its previous
+/// rows stay visible (web `loadArchived`).
+fn compose_archived_groups(
+    groups: Vec<runtime::ArchivedWorkspaceGroup>,
+    previous: &[ArchivedGroupView],
+    fresh: bool,
+    cx: &App,
+) -> (Vec<ArchivedGroupView>, Vec<String>) {
+    let mut composed: Vec<ArchivedGroupView> = Vec::new();
+    let mut failures: Vec<String> = Vec::new();
+    for group in groups {
+        let label = if group.name == group.root_path {
+            group.root_path.clone()
+        } else {
+            format!("{} · {}", group.name, group.root_path)
+        };
+        match group.rows {
+            Ok(mut rows) => {
+                if rows.is_empty() {
+                    continue;
+                }
+                rows.sort_by(|a, b| b.last_active_at.cmp(&a.last_active_at));
+                composed.push(ArchivedGroupView {
+                    workspace_id: group.workspace_id,
+                    root_path: group.root_path,
+                    label,
+                    rows: rows
+                        .into_iter()
+                        .map(|row| ArchivedRowView {
+                            session_id: row.session_id,
+                            name: row.name,
+                            last_active_at: row.last_active_at,
+                        })
+                        .collect(),
+                });
+            }
+            Err(_) => {
+                failures.push(crate::i18n::archived_load_failed(
+                    &group.name,
+                    &group.root_path,
+                    cx,
+                ));
+                if !fresh {
+                    if let Some(kept) = previous
+                        .iter()
+                        .find(|view| view.root_path == group.root_path)
+                    {
+                        composed.push(kept.clone());
+                    }
+                }
+            }
+        }
+    }
+    composed.sort_by(|a, b| {
+        let a_newest = a.rows.first().map(|row| row.last_active_at).unwrap_or(0);
+        let b_newest = b.rows.first().map(|row| row.last_active_at).unwrap_or(0);
+        b_newest.cmp(&a_newest)
+    });
+    (composed, failures)
+}
+
 fn workspace_group_plan(group: Option<&str>, current_root: &str) -> WorkspaceGroupPlan {
     match group {
         Some(root) if root != current_root => WorkspaceGroupPlan::SwitchThenAct {
@@ -8462,9 +9063,10 @@ impl Render for ShellWindow {
             .min_h_0()
             .v_flex()
             .child(self.render_scene_top_bar(window, &text, cx))
-            // The scene body and the docked terminal are one vertical split:
-            // the divider above the terminal drags its height, and the scene
-            // keeps the rest. Closed, the terminal panel is simply absent.
+            // The scene body and the docked terminal are one split: the
+            // divider above (or beside, in the right dock, G-T1) the terminal
+            // drags its extent, and the scene keeps the rest. Closed, the
+            // terminal panel is simply absent.
             .child(
                 div()
                     .id("shell-dock-frame")
@@ -8495,17 +9097,43 @@ impl Render for ShellWindow {
                                         .child(main_area),
                                 ),
                         )];
+                        let dock = self.terminal_dock(cx);
                         if self.terminal_open {
-                            panels.push(
-                                resizable_panel()
+                            let panel = match dock {
+                                TerminalDock::Bottom => resizable_panel()
                                     .size(self.terminal_height)
-                                    .flex_none()
                                     .size_range(px(MIN_TERMINAL_HEIGHT)..px(MAX_TERMINAL_HEIGHT))
-                                    .child(self.render_terminal_panel(&text, cx)),
-                            );
+                                    .child(self.render_terminal_panel(&text, dock, cx)),
+                                TerminalDock::Right => resizable_panel()
+                                    .size(self.terminal_width)
+                                    .size_range(px(MIN_TERMINAL_HEIGHT)..px(MAX_TERMINAL_HEIGHT))
+                                    .child(self.render_terminal_panel(&text, dock, cx)),
+                            };
+                            panels.push(panel.flex_none());
                         }
-                        v_resizable("shell-dock")
-                            .with_state(&self.dock)
+                        let state = self.terminal_dock_state(cx);
+                        let group = match dock {
+                            TerminalDock::Bottom => v_resizable("shell-dock"),
+                            TerminalDock::Right => h_resizable("shell-dock"),
+                        };
+                        // The tooltip reports the tier the panel sits in right
+                        // now, read from the live split state.
+                        let remembered = match dock {
+                            TerminalDock::Bottom => self.terminal_height,
+                            TerminalDock::Right => self.terminal_width,
+                        };
+                        let extent = state.read(cx).sizes().get(1).copied().unwrap_or(remembered);
+                        group
+                            .with_state(&state)
+                            // The divider carries the double-click size cycle
+                            // (web `handleBottomDoubleClick`); the kit's own
+                            // appearance is kept and wrapped.
+                            .with_handle_appearance(terminal_dock_handle_appearance(
+                                cx.entity().downgrade(),
+                                dock,
+                                dock.tier(extent),
+                                &text,
+                            ))
                             .children(panels)
                     }),
             );
@@ -8748,6 +9376,7 @@ impl ShellWindow {
                         cx.listener(|this, _, window, cx| this.toggle_terminal_panel(window, cx)),
                     )
             })
+            .child(self.render_notification_button(&text, cx))
             .when(session_active, |bar| {
                 bar.child(self.render_usage_button(cx))
                     .child(self.render_quick_actions_menu(text, cx))
@@ -8757,16 +9386,131 @@ impl ShellWindow {
                             .small()
                             .with_variant(ButtonVariant::Ghost)
                             .tooltip(panel_label)
-                            .on_click(cx.listener(|this, _, _, cx| {
+                            .on_click(cx.listener(|this, _, window, cx| {
                                 if this.resource_panel.is_some() {
                                     this.close_resource_panel(cx);
                                 } else {
+                                    // The page entity is created on first dock;
+                                    // docking without it renders an empty body.
+                                    this.ensure_resource_page(ResourcePanelKind::Files, window, cx);
                                     this.dock_resource_panel(ResourcePanelKind::Files, cx);
                                 }
                             })),
                     )
             })
             .children(self.render_window_controls(window))
+    }
+
+    /// The notification center (G-X6, web `NotificationCenter` behind the
+    /// title bar's bell): the unread turns the tray badge counts, listed by
+    /// session. The shell keeps no general notification history, so the panel
+    /// projects exactly the completion facts it has. Opening a row opens that
+    /// session (which clears its unread count); the last entry clears them
+    /// all. The dot mirrors the tray: red when a turn failed.
+    fn render_notification_button(
+        &self,
+        text: &ShellText,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        let unread: Vec<(String, String, u32, bool)> = self
+            .unread_turns
+            .iter()
+            .map(|(session_id, (count, failed))| {
+                let name = self
+                    .chat_for(session_id)
+                    .map(|chat| chat.name.clone())
+                    .or_else(|| {
+                        self.sessions
+                            .iter()
+                            .find(|row| &row.id == session_id)
+                            .map(|row| row.name.clone())
+                    })
+                    .unwrap_or_else(|| session_id.clone());
+                (session_id.clone(), name, *count, *failed)
+            })
+            .collect();
+        let total: u32 = unread.iter().map(|(_, _, count, _)| *count).sum();
+        let any_failed = unread.iter().any(|(_, _, _, failed)| *failed);
+        let view = cx.entity().downgrade();
+        let menu_view = cx.entity().downgrade();
+        let button = Button::new("top-bar-notifications")
+            .debug_selector(|| "top-bar-notifications".to_string())
+            .icon(IconName::Bell)
+            .small()
+            .with_variant(ButtonVariant::Ghost)
+            .tooltip(text.notifications_title.clone())
+            .dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, _window, cx| {
+                let text = i18n::current(cx);
+                let mut menu = menu.max_h(px(320.));
+                if unread.is_empty() {
+                    return menu
+                        .item(PopupMenuItem::new(text.notifications_empty.clone()).disabled(true));
+                }
+                for (session_id, name, count, failed) in &unread {
+                    let view = view.clone();
+                    let session_id = session_id.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(i18n::notifications_row(name, *count, cx))
+                            .icon(if *failed {
+                                IconName::ShieldAlert
+                            } else {
+                                IconName::Check
+                            })
+                            .on_click(move |_, window, cx| {
+                                if let Some(shell) = view.upgrade() {
+                                    let session_id = session_id.clone();
+                                    shell.update(cx, |this, cx| {
+                                        this.open_session_row(session_id, None, window, cx);
+                                    });
+                                }
+                            }),
+                    );
+                }
+                let menu_view = menu_view.clone();
+                menu.separator().item(
+                    PopupMenuItem::new(text.notifications_clear_all.clone()).on_click(
+                        move |_, _, cx| {
+                            if let Some(shell) = menu_view.upgrade() {
+                                shell.update(cx, |this, cx| this.clear_all_unread(cx));
+                            }
+                        },
+                    ),
+                )
+            });
+        div()
+            .relative()
+            .child(button)
+            .when(total > 0, |this| {
+                this.child(
+                    div()
+                        .debug_selector(|| "notification-badge".to_string())
+                        .absolute()
+                        .top(px(4.))
+                        .right(px(4.))
+                        .size(px(6.))
+                        .rounded_full()
+                        .bg(if any_failed {
+                            cx.theme().danger
+                        } else {
+                            cx.theme().accent
+                        }),
+                )
+            })
+            .into_any_element()
+    }
+
+    /// Clears every unread completion (the notification center's "Clear All").
+    fn clear_all_unread(&mut self, cx: &mut Context<Self>) {
+        if self.unread_turns.is_empty() {
+            return;
+        }
+        tracing::info!(
+            "Clearing {} unread turn notifications",
+            self.unread_turns.len()
+        );
+        self.unread_turns.clear();
+        self.sync_tray_unread();
+        cx.notify();
     }
 
     /// The window control cluster (minimize / zoom / close), shaped after the
@@ -8922,6 +9666,7 @@ impl ShellWindow {
     fn render_terminal_panel(
         &self,
         text: &ShellText,
+        dock: TerminalDock,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
         let active_title = self
@@ -8985,49 +9730,83 @@ impl ShellWindow {
             let fallback = tab.label.clone();
             let label = tab.pane.read(cx).title_label(fallback);
             let close_view = cx.entity();
-            tab_bar = tab_bar.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .px_2()
-                    .py_0p5()
-                    .rounded(cx.theme().radius)
-                    .when(active, |style| style.bg(cx.theme().sidebar_accent))
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("terminal-tab-select-{index}")))
-                            .cursor_pointer()
-                            .max_w_32()
-                            .truncate()
-                            .text_xs()
-                            .text_color(if active {
-                                cx.theme().foreground
-                            } else {
-                                cx.theme().muted_foreground
-                            })
-                            .on_click({
-                                let this = cx.entity();
-                                move |_, _, cx| {
-                                    this.update(cx, |this, cx| this.select_terminal_tab(index, cx));
-                                }
-                            })
-                            .child(label),
+            // G-T2: a profile tab that ran a startup command carries the
+            // marker (the web's badge); its tooltip is the command.
+            let startup_command = tab.startup_command.clone();
+            let label_hover = startup_command.clone();
+            let mut tab_entry = div()
+                .flex()
+                .items_center()
+                .gap_1()
+                .px_2()
+                .py_0p5()
+                .rounded(cx.theme().radius)
+                .when(active, |style| style.bg(cx.theme().sidebar_accent))
+                .when(startup_command.is_some(), |this| {
+                    this.child(
+                        gpui_kit::component::Icon::new(IconName::SquareTerminal)
+                            .size_3()
+                            .text_color(cx.theme().muted_foreground),
                     )
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("terminal-tab-close-{index}")))
-                            .cursor_pointer()
-                            .on_click(move |_, _, cx| {
-                                close_view
-                                    .update(cx, |this, cx| this.close_terminal_tab(index, cx));
+                })
+                .child(
+                    div()
+                        .id(SharedString::from(format!("terminal-tab-select-{index}")))
+                        .cursor_pointer()
+                        .max_w_32()
+                        .truncate()
+                        .text_xs()
+                        .text_color(if active {
+                            cx.theme().foreground
+                        } else {
+                            cx.theme().muted_foreground
+                        })
+                        .when_some(label_hover, |this, command| {
+                            this.tooltip(move |window, cx| {
+                                gpui_kit::component::tooltip::Tooltip::new(command.clone())
+                                    .build(window, cx)
                             })
-                            .child(
-                                Icon::new(IconName::Close)
-                                    .size_3()
-                                    .text_color(cx.theme().muted_foreground),
-                            ),
-                    ),
+                        })
+                        .on_click({
+                            let this = cx.entity();
+                            move |_, _, cx| {
+                                this.update(cx, |this, cx| this.select_terminal_tab(index, cx));
+                            }
+                        })
+                        .child(label),
+                );
+            // G-T2: reveal the tab's launch directory in the platform file
+            // manager (the web's `reveal-directory` action; the pane tracks no
+            // live cwd, so this is where the shell started the terminal).
+            if let Some(directory) = tab.directory.clone() {
+                tab_entry = tab_entry.child(
+                    Button::new(SharedString::from(format!("terminal-tab-reveal-{index}")))
+                        .debug_selector(move || format!("terminal-tab-reveal-{index}"))
+                        .icon(IconName::FolderOpen)
+                        .xsmall()
+                        .with_variant(ButtonVariant::Ghost)
+                        .tooltip(text.terminal_reveal.clone())
+                        .on_click(move |_, _, _cx| {
+                            crate::settings::open_path_in_file_manager(std::path::Path::new(
+                                &directory,
+                            ));
+                        }),
+                );
+            }
+            tab_bar = tab_bar.child(
+                tab_entry.child(
+                    div()
+                        .id(SharedString::from(format!("terminal-tab-close-{index}")))
+                        .cursor_pointer()
+                        .on_click(move |_, _, cx| {
+                            close_view.update(cx, |this, cx| this.close_terminal_tab(index, cx));
+                        })
+                        .child(
+                            Icon::new(IconName::Close)
+                                .size_3()
+                                .text_color(cx.theme().muted_foreground),
+                        ),
+                ),
             );
         }
 
@@ -9037,7 +9816,11 @@ impl ShellWindow {
             .v_flex()
             .size_full()
             .min_h_0()
-            .border_t_1()
+            .min_w_0()
+            // The seam sits on the edge the divider is on: above the bottom
+            // dock, left of the right one.
+            .when(dock == TerminalDock::Bottom, |this| this.border_t_1())
+            .when(dock == TerminalDock::Right, |this| this.border_l_1())
             .border_color(cx.theme().title_bar_border)
             .bg(cx.theme().background)
             .child(
@@ -9056,14 +9839,16 @@ impl ShellWindow {
                             .overflow_x_scroll()
                             .child(div().flex().items_center().gap_1().child(tab_bar)),
                     )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .truncate()
-                            .max_w_48()
-                            .child(active_title),
-                    )
+                    .when(dock == TerminalDock::Bottom, |this| {
+                        this.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .truncate()
+                                .max_w_48()
+                                .child(active_title),
+                        )
+                    })
                     .child(
                         Button::new("terminal-close")
                             .icon(IconName::X)
@@ -9096,6 +9881,7 @@ impl ShellWindow {
     ) -> gpui_kit::AnyElement {
         let chat_area = self.render_chat_area(session_id, text, cx);
         div()
+            .debug_selector(|| "chat-column".to_string())
             .flex_1()
             .min_h_0()
             .min_w_0()
@@ -9150,19 +9936,30 @@ impl ShellWindow {
         text: &ShellText,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
-        let chat = self.render_chat_column(session_id, text, cx);
         let Some(kind) = self.resource_panel else {
-            return chat;
+            return self.render_chat_column(session_id, text, cx);
+        };
+        let panel = self.render_resource_panel(kind, text, cx);
+        // Maximized (G-F8, web `content-only`): the panel fills the scene body
+        // and the chat column steps aside; the head's restore button is the
+        // way back.
+        if self.resource_panel_maximized {
+            return panel;
+        }
+        let chat = self.render_chat_column(session_id, text, cx);
+        let sized = || {
+            resizable_panel()
+                .size(self.panel_width)
+                .size_range(px(MIN_RESOURCE_PANEL_WIDTH)..px(MAX_RESOURCE_PANEL_WIDTH))
+                .child(panel)
+        };
+        let panels = match self.resource_panel_side {
+            PanelSide::Right => [resizable_panel().child(chat), sized()],
+            PanelSide::Left => [sized(), resizable_panel().child(chat)],
         };
         h_resizable("session-panel-split")
-            .with_state(&self.panel_split)
-            .children([
-                resizable_panel().child(chat),
-                resizable_panel()
-                    .size(self.panel_width)
-                    .size_range(px(MIN_RESOURCE_PANEL_WIDTH)..px(MAX_RESOURCE_PANEL_WIDTH))
-                    .child(self.render_resource_panel(kind, text, cx)),
-            ])
+            .with_state(&self.panel_split_state())
+            .children(panels)
             .into_any_element()
     }
 
@@ -9201,6 +9998,16 @@ impl ShellWindow {
                     .into_any_element()
             }),
         };
+        let maximize_label = if self.resource_panel_maximized {
+            text.panel_restore.clone()
+        } else {
+            text.panel_maximize.clone()
+        };
+        let maximize_icon = if self.resource_panel_maximized {
+            IconName::Minimize
+        } else {
+            IconName::Maximize
+        };
         let head = div()
             .debug_selector(|| "resource-panel-head".to_string())
             .h_9()
@@ -9217,6 +10024,26 @@ impl ShellWindow {
                     .flex()
                     .items_center()
                     .gap_0p5()
+                    .child(
+                        Button::new("resource-panel-maximize")
+                            .icon(maximize_icon)
+                            .small()
+                            .with_variant(ButtonVariant::Ghost)
+                            .tooltip(maximize_label)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.toggle_resource_panel_maximized(cx);
+                            })),
+                    )
+                    .child(
+                        Button::new("resource-panel-swap")
+                            .icon(IconName::Replace)
+                            .small()
+                            .with_variant(ButtonVariant::Ghost)
+                            .tooltip(text.panel_swap.clone())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.swap_resource_panel_side(cx);
+                            })),
+                    )
                     .child(
                         Button::new("resource-panel-pop-out")
                             .icon(IconName::ExternalLink)
@@ -9245,7 +10072,12 @@ impl ShellWindow {
             .flex_1()
             .v_flex()
             .overflow_hidden()
-            .border_l_1()
+            .when(self.resource_panel_side == PanelSide::Left, |this| {
+                this.border_r_1()
+            })
+            .when(self.resource_panel_side == PanelSide::Right, |this| {
+                this.border_l_1()
+            })
             .border_color(cx.theme().border)
             .child(head)
             .child(match body {
@@ -9839,6 +10671,8 @@ mod tests {
             child_context: None,
             expanded_user_texts: BTreeSet::new(),
             expanded_groups: BTreeMap::new(),
+            turn_times: HashMap::new(),
+            active_turn_id: None,
         }
     }
 
@@ -9885,8 +10719,11 @@ mod tests {
         let entries = turn_entries();
         // The tail assistant closes the finished turn; the copy scopes use
         // the web transcript shape (`User\n…` + rounds, `---` separated).
-        let plan = turn_footer_plan(&entries, 3, false, false, &text).expect("tail hosts footer");
+        let times = HashMap::new();
+        let plan =
+            turn_footer_plan(&entries, 3, false, false, &text, &times).expect("tail hosts footer");
         assert_eq!(plan.turn_id.as_deref(), Some("turn-1"));
+        assert!(plan.meta.is_none(), "no timing row, no meta");
         assert_eq!(plan.copy_result.as_deref(), Some("final answer"));
         assert_eq!(
             plan.copy_full.as_deref(),
@@ -9904,7 +10741,53 @@ mod tests {
             text: "next please".into(),
             turn_id: Some("turn-2".into()),
         });
-        assert!(turn_footer_plan(&history, 3, true, false, &text).is_some());
+        let times = HashMap::new();
+        assert!(turn_footer_plan(&history, 3, true, false, &text, &times).is_some());
+    }
+
+    /// G-S1: the footer meta reads the turn's timing row — the runtime's own
+    /// duration wins over the wall-clock span, a stopped turn keeps its flag,
+    /// and a turn without a recorded end renders no meta.
+    #[test]
+    fn turn_footer_plan_reads_the_turn_meta() {
+        let text = crate::i18n::fallback_text(LocaleId::EnUS);
+        let entries = turn_entries();
+        let mut times = HashMap::new();
+        times.insert(
+            "turn-1".to_string(),
+            runtime::TurnTimes {
+                started_at_ms: Some(1_000),
+                ended_at_ms: Some(13_000),
+                duration_ms: None,
+                cancelled: false,
+            },
+        );
+        let plan =
+            turn_footer_plan(&entries, 3, false, false, &text, &times).expect("tail hosts footer");
+        let meta = plan.meta.expect("a timed turn yields meta");
+        assert_eq!(meta.completed_at_ms, 13_000);
+        assert_eq!(meta.duration_ms, Some(12_000));
+        assert!(!meta.cancelled);
+
+        times.insert(
+            "turn-1".to_string(),
+            runtime::TurnTimes {
+                started_at_ms: Some(1_000),
+                ended_at_ms: Some(13_000),
+                duration_ms: Some(9_500),
+                cancelled: true,
+            },
+        );
+        let plan =
+            turn_footer_plan(&entries, 3, false, false, &text, &times).expect("tail hosts footer");
+        let meta = plan.meta.expect("a timed turn yields meta");
+        assert_eq!(meta.duration_ms, Some(9_500), "runtime duration wins");
+        assert!(meta.cancelled);
+
+        times.insert("turn-1".to_string(), runtime::TurnTimes::default());
+        let plan =
+            turn_footer_plan(&entries, 3, false, false, &text, &times).expect("tail hosts footer");
+        assert!(plan.meta.is_none(), "no end recorded, no meta");
     }
 
     #[test]
@@ -9912,12 +10795,13 @@ mod tests {
         let text = crate::i18n::fallback_text(LocaleId::EnUS);
         let entries = turn_entries();
         // The executing turn's tail stays footer-less until it finishes.
-        assert!(turn_footer_plan(&entries, 3, true, false, &text).is_none());
-        assert!(turn_footer_plan(&entries, 3, false, true, &text).is_none());
+        let times = HashMap::new();
+        assert!(turn_footer_plan(&entries, 3, true, false, &text, &times).is_none());
+        assert!(turn_footer_plan(&entries, 3, false, true, &text, &times).is_none());
         // Tool cards inside the turn are not the tail; prompts and
         // system rows never host the footer.
-        assert!(turn_footer_plan(&entries, 2, false, false, &text).is_none());
-        assert!(turn_footer_plan(&entries, 0, false, false, &text).is_none());
+        assert!(turn_footer_plan(&entries, 2, false, false, &text, &times).is_none());
+        assert!(turn_footer_plan(&entries, 0, false, false, &text, &times).is_none());
         // A tool-only turn has no assistant text: the tail row still hosts
         // fork/snapshots while both copy scopes hide.
         let tool_only = vec![
@@ -9936,7 +10820,8 @@ mod tests {
                 background: false,
             }),
         ];
-        let plan = turn_footer_plan(&tool_only, 1, false, false, &text).expect("tool tail hosts");
+        let plan =
+            turn_footer_plan(&tool_only, 1, false, false, &text, &times).expect("tool tail hosts");
         assert_eq!(plan.turn_id.as_deref(), Some("turn-1"));
         assert!(plan.copy_full.is_none() && plan.copy_result.is_none());
     }
@@ -10038,6 +10923,7 @@ mod tests {
                 model_id: None,
                 entries,
                 busy: false,
+                turn_times: Default::default(),
             })
         };
         let parent_entries = || {
@@ -11182,7 +12068,12 @@ mod tests {
                 presets,
                 active_preset: active,
             });
-            cx.set_global(settings::ShellConfig::startup_default(LocaleId::ZhCN));
+            // This test's subject is the bottom dock's body sizing; the shared
+            // preference's fresh-install default is `right`, so pin the dock
+            // the assertions describe.
+            let mut config = settings::ShellConfig::startup_default(LocaleId::ZhCN);
+            config.terminal.panel_position = "bottom".to_string();
+            cx.set_global(config);
             cx.set_global(sample_shell_text());
         });
         let (tx, rx) = mpsc::unbounded_channel();
@@ -11364,6 +12255,7 @@ mod tests {
                         model_id: Some("model-a".into()),
                         entries: Vec::new(),
                         busy: false,
+                        turn_times: Default::default(),
                     }),
                     window,
                     cx,
@@ -11540,6 +12432,7 @@ mod tests {
                         model_id: Some("model-a".into()),
                         entries: Vec::new(),
                         busy: false,
+                        turn_times: Default::default(),
                     }),
                     window,
                     cx,
@@ -11645,6 +12538,7 @@ mod tests {
                         model_id: None,
                         entries: Vec::new(),
                         busy: false,
+                        turn_times: Default::default(),
                     }),
                     window,
                     cx,
@@ -12498,6 +13392,8 @@ mod tests {
                     RuntimeEvent::TurnFinished {
                         session_id: "s-1".into(),
                         error: None,
+                        duration_ms: None,
+                        cancelled: false,
                     },
                     window,
                     cx,
@@ -12535,24 +13431,178 @@ mod tests {
                     window,
                     cx,
                 );
+                // The page's rows come from the cross-workspace projection, not
+                // the session list; seed one group so the row renders.
+                shell.apply_runtime_event(
+                    RuntimeEvent::ArchivedSessions(vec![crate::runtime::ArchivedWorkspaceGroup {
+                        workspace_id: "w-1".into(),
+                        name: "a5-ws".into(),
+                        root_path: "/tmp/a5-ws".into(),
+                        rows: Ok(vec![crate::runtime::ArchivedSessionRow {
+                            session_id: "s-2".into(),
+                            name: "Archived".into(),
+                            last_active_at: 1_790_000_000_000,
+                        }]),
+                    }]),
+                    window,
+                    cx,
+                );
             });
         });
 
-        let view = shell.downgrade();
-        window.draw(
-            point(px(0.), px(0.)),
-            size(px(900.), px(600.)),
-            move |_, cx| {
-                // The component library asks the window for the current view
-                // id during layout, so the field renders inside a view.
-                cx.new(|_| ArchivedFieldHarness {
-                    text: text.clone(),
-                    view: view.clone(),
-                })
-                .into_any_element()
-            },
+        // The whole page, not the bare field: the page's item layout is what
+        // decides how much width the rows get.
+        let draw_page = |window: &mut gpui_kit::VisualTestContext, shell: &Entity<ShellWindow>| {
+            let view = shell.downgrade();
+            let text = text.clone();
+            window.draw(
+                point(px(0.), px(0.)),
+                size(px(900.), px(600.)),
+                move |_, cx| {
+                    // The component library asks the window for the current view
+                    // id during layout, so the page renders inside a view. The
+                    // wrapper stands in for the shell's settings column: the
+                    // real page gets ~640px there, and that width is what
+                    // decides whether the rows' actions fit.
+                    div()
+                        .w(px(640.))
+                        .h_full()
+                        .child(
+                            cx.new(|_| SettingsHarness {
+                                text: text.clone(),
+                                view: view.clone(),
+                                page: settings::SettingsEntry::Archived,
+                            })
+                            .into_any_element(),
+                        )
+                        .into_any_element()
+                },
+            );
+            window.run_until_parked();
+        };
+        draw_page(window, &shell);
+        // A fresh load starts folded; the rows render once the group opens.
+        window.update(|_, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.toggle_archived_group("/tmp/a5-ws", cx)
+            });
+        });
+        draw_page(window, &shell);
+        // The row's actions must stay inside the page: a name block that keeps
+        // its natural width pushes them (and the headers' count chips) past the
+        // column edge, where nothing can be clicked.
+        let restore = window
+            .debug_bounds("archived-restore")
+            .expect("the archived row renders its restore action");
+        let delete = window
+            .debug_bounds("archived-delete")
+            .expect("the archived row renders its delete action");
+        // The page wrapper is the column's width; an action past it is
+        // unreachable (the settings column clips, it does not scroll sideways).
+        let page_right = px(640.);
+        assert!(
+            restore.origin.x + restore.size.width <= page_right,
+            "restore action stays inside the page: {restore:?}"
         );
-        window.run_until_parked();
+        assert!(
+            delete.origin.x + delete.size.width <= page_right,
+            "delete action stays inside the page: {delete:?}"
+        );
+    }
+
+    /// G-SE30: the archived page's projection — groups ordered by their newest
+    /// member (the web sorts every entry by `lastActiveAt` before grouping),
+    /// workspaces without archived rows dropped, `name · path` labels (just the
+    /// path when the name is it), one failure line per unreadable workspace,
+    /// and previous rows kept for a workspace whose background re-read failed
+    /// (web `loadArchived`).
+    #[gpui_kit::test]
+    fn archived_projection_groups_order_and_survive_a_failed_refresh(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        install_shell_globals(cx);
+        let archived_row = |id: &str, at: u64| crate::runtime::ArchivedSessionRow {
+            session_id: id.to_string(),
+            name: id.to_string(),
+            last_active_at: at,
+        };
+        cx.update(|cx| {
+            let groups = vec![
+                crate::runtime::ArchivedWorkspaceGroup {
+                    workspace_id: "ws-old".into(),
+                    name: "old".into(),
+                    root_path: "/home/zero/old".into(),
+                    rows: Ok(vec![archived_row("s-old", 100)]),
+                },
+                crate::runtime::ArchivedWorkspaceGroup {
+                    workspace_id: "ws-new".into(),
+                    name: "new".into(),
+                    root_path: "/home/zero/new".into(),
+                    rows: Ok(vec![
+                        archived_row("s-new-1", 900),
+                        archived_row("s-new-2", 300),
+                    ]),
+                },
+                crate::runtime::ArchivedWorkspaceGroup {
+                    workspace_id: "ws-empty".into(),
+                    name: "empty".into(),
+                    root_path: "/home/zero/empty".into(),
+                    rows: Ok(Vec::new()),
+                },
+                crate::runtime::ArchivedWorkspaceGroup {
+                    workspace_id: "ws-nameless".into(),
+                    name: "/home/zero/nameless".into(),
+                    root_path: "/home/zero/nameless".into(),
+                    rows: Ok(vec![archived_row("s-nameless", 500)]),
+                },
+                crate::runtime::ArchivedWorkspaceGroup {
+                    workspace_id: "ws-broken".into(),
+                    name: "broken".into(),
+                    root_path: "/home/zero/broken".into(),
+                    rows: Err("store unreadable".into()),
+                },
+            ];
+            let (composed, failures) = compose_archived_groups(groups, &[], true, cx);
+            assert_eq!(failures.len(), 1, "one line per unreadable workspace");
+            let ids: Vec<&str> = composed
+                .iter()
+                .map(|group| group.workspace_id.as_str())
+                .collect();
+            assert_eq!(
+                ids,
+                vec!["ws-new", "ws-nameless", "ws-old"],
+                "newest member leads; workspaces without archived rows drop out"
+            );
+            assert_eq!(composed[0].label, "new · /home/zero/new");
+            assert_eq!(
+                composed[1].label, "/home/zero/nameless",
+                "a name that already is the path labels as the path"
+            );
+            let rows: Vec<&str> = composed[0]
+                .rows
+                .iter()
+                .map(|row| row.session_id.as_str())
+                .collect();
+            assert_eq!(rows, vec!["s-new-1", "s-new-2"], "rows are newest first");
+
+            // A background refresh keeps the failed workspace's previous rows
+            // and still reports the failure.
+            let previous = composed.clone();
+            let (composed, failures) = compose_archived_groups(
+                vec![crate::runtime::ArchivedWorkspaceGroup {
+                    workspace_id: "ws-new".into(),
+                    name: "new".into(),
+                    root_path: "/home/zero/new".into(),
+                    rows: Err("store unreadable".into()),
+                }],
+                &previous,
+                false,
+                cx,
+            );
+            assert_eq!(failures.len(), 1);
+            assert_eq!(composed.len(), 1);
+            assert_eq!(composed[0].rows.len(), 2, "previous rows stay visible");
+        });
     }
 
     /// Background subagent activity (T2-6): a linked child whose task tool
@@ -12606,6 +13656,8 @@ mod tests {
                     RuntimeEvent::TurnFinished {
                         session_id: "parent".into(),
                         error: None,
+                        duration_ms: None,
+                        cancelled: false,
                     },
                     window,
                     cx,
@@ -12615,6 +13667,8 @@ mod tests {
                     RuntimeEvent::TurnFinished {
                         session_id: "child-1".into(),
                         error: None,
+                        duration_ms: None,
+                        cancelled: false,
                     },
                     window,
                     cx,
@@ -12719,6 +13773,8 @@ mod tests {
                     RuntimeEvent::TurnFinished {
                         session_id: "parent".into(),
                         error: None,
+                        duration_ms: None,
+                        cancelled: false,
                     },
                     window,
                     cx,
@@ -12995,6 +14051,7 @@ mod tests {
                         model_id: None,
                         entries: Vec::new(),
                         busy: false,
+                        turn_times: Default::default(),
                     }),
                     window,
                     cx,
@@ -13139,6 +14196,7 @@ mod tests {
                         model_id: None,
                         entries: Vec::new(),
                         busy: false,
+                        turn_times: Default::default(),
                     }),
                     window,
                     cx,
@@ -13204,6 +14262,7 @@ mod tests {
                             text: body.into(),
                         }],
                         busy: false,
+                        turn_times: Default::default(),
                     }),
                     window,
                     cx,
@@ -13277,6 +14336,7 @@ mod tests {
                             }),
                         ],
                         busy: false,
+                        turn_times: Default::default(),
                     }),
                     window,
                     cx,
@@ -13351,6 +14411,7 @@ mod tests {
                         model_id: None,
                         entries,
                         busy: false,
+                        turn_times: Default::default(),
                     }),
                     window,
                     cx,
@@ -13424,6 +14485,7 @@ mod tests {
                         model_id: None,
                         entries: vec![ChatEntry::Tool(spawn.clone())],
                         busy: false,
+                        turn_times: Default::default(),
                     }),
                     window,
                     cx,
@@ -13541,6 +14603,7 @@ mod tests {
                             },
                         ],
                         busy: false,
+                        turn_times: Default::default(),
                     }),
                     window,
                     cx,
@@ -13600,6 +14663,7 @@ mod tests {
                             },
                         ],
                         busy: false,
+                        turn_times: Default::default(),
                     }),
                     window,
                     cx,
@@ -13647,6 +14711,7 @@ mod tests {
                         model_id: None,
                         entries: Vec::new(),
                         busy: false,
+                        turn_times: Default::default(),
                     }),
                     window,
                     cx,
@@ -13695,6 +14760,193 @@ mod tests {
         assert!(window.debug_bounds("resource-panel").is_none());
     }
 
+    /// G-F8: the panel head's swap action moves the resource panel to the
+    /// other side of the chat column, and the maximize action hands it the
+    /// whole scene body (web `swapPanes` / `toggleMaximized`).
+    #[gpui_kit::test]
+    fn resource_panel_swaps_sides_and_maximizes(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(
+                    RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                        session_id: "s-1".into(),
+                        name: "First".into(),
+                        agent_type: "Standard".into(),
+                        model_id: None,
+                        entries: Vec::new(),
+                        busy: false,
+                        turn_times: Default::default(),
+                    }),
+                    window,
+                    cx,
+                );
+                // The scene top bar's panel button path: ensure the page, then
+                // dock. Docking without the page renders an empty body.
+                shell.ensure_resource_page(ResourcePanelKind::Files, window, cx);
+                shell.dock_resource_panel(ResourcePanelKind::Files, cx);
+                assert!(
+                    shell.files.is_some(),
+                    "the top-bar dock creates the files page"
+                );
+                assert_eq!(shell.resource_panel_side, PanelSide::Right);
+            });
+        });
+        fn draw(window: &mut gpui_kit::VisualTestContext, shell: &Entity<ShellWindow>) {
+            window.draw(point(px(0.), px(0.)), size(px(1400.), px(900.)), {
+                let shell = shell.clone();
+                move |_, _| shell.into_any_element()
+            });
+            window.run_until_parked();
+        }
+        draw(window, &shell);
+        let chat = window
+            .debug_bounds("chat-column")
+            .expect("chat column lays out");
+        let panel = window
+            .debug_bounds("resource-panel")
+            .expect("panel lays out");
+        assert!(
+            panel.origin.x >= chat.origin.x + chat.size.width,
+            "default dock is right of the chat column: panel {:?} chat {:?}",
+            panel,
+            chat
+        );
+
+        window.update(|_, cx| {
+            shell.update(cx, |shell, cx| shell.swap_resource_panel_side(cx));
+        });
+        draw(window, &shell);
+        let chat = window
+            .debug_bounds("chat-column")
+            .expect("chat column lays out");
+        let panel = window
+            .debug_bounds("resource-panel")
+            .expect("panel lays out");
+        window.update(|_, cx| {
+            shell.update(cx, |shell, _| {
+                assert_eq!(shell.resource_panel_side, PanelSide::Left);
+            });
+        });
+        assert!(
+            panel.origin.x + panel.size.width <= chat.origin.x,
+            "after the swap the panel sits left of the chat column: panel {:?} chat {:?}",
+            panel,
+            chat
+        );
+
+        window.update(|_, cx| {
+            shell.update(cx, |shell, cx| shell.toggle_resource_panel_maximized(cx));
+        });
+        draw(window, &shell);
+        assert!(
+            window.debug_bounds("chat-column").is_none(),
+            "maximized: the chat column steps aside"
+        );
+        let panel = window
+            .debug_bounds("resource-panel")
+            .expect("maximized panel lays out");
+        let scene = window
+            .debug_bounds("shell-scene-column")
+            .expect("the scene column lays out");
+        assert!(
+            (panel.size.width - scene.size.width).abs() < px(2.),
+            "maximized panel fills the scene body: panel {:?} scene {:?}",
+            panel.size,
+            scene.size
+        );
+
+        // Closing the panel drops the maximize with it (a maximized empty
+        // scene body would have no way back).
+        window.update(|_, cx| {
+            shell.update(cx, |shell, cx| shell.close_resource_panel(cx));
+        });
+        draw(window, &shell);
+        assert!(window.debug_bounds("resource-panel").is_none());
+        assert!(
+            window.debug_bounds("chat-column").is_some(),
+            "the chat column returns when the panel closes"
+        );
+        window.update(|_, cx| {
+            shell.update(cx, |shell, _| assert!(!shell.resource_panel_maximized));
+        });
+    }
+
+    /// G-X6: the notification center lists the unread completions the tray
+    /// badge counts, and its clear-all action empties them in one step.
+    #[gpui_kit::test]
+    fn notification_button_lists_and_clears_unread_turns(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                for (session_id, failed) in [("s-1", false), ("s-2", true)] {
+                    shell.apply_runtime_event(
+                        RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                            session_id: session_id.into(),
+                            name: format!("Session {session_id}"),
+                            agent_type: "Standard".into(),
+                            model_id: None,
+                            entries: Vec::new(),
+                            busy: false,
+                            turn_times: Default::default(),
+                        }),
+                        window,
+                        cx,
+                    );
+                    // A completion that lands while another session is on
+                    // screen is what the badge (and the panel) counts.
+                    shell.record_unread_turn(session_id, failed, window, cx);
+                    if !shell.unread_turns.contains_key(session_id) {
+                        // The headless window counts as active, so the public
+                        // gate refuses; seed the map the same way the
+                        // production path leaves it.
+                        shell
+                            .unread_turns
+                            .insert(session_id.to_string(), (1, failed));
+                    }
+                }
+                assert_eq!(shell.unread_turns.len(), 2);
+            });
+        });
+        window.draw(point(px(0.), px(0.)), size(px(1400.), px(900.)), {
+            let shell = shell.clone();
+            move |_, _| shell.into_any_element()
+        });
+        window.run_until_parked();
+        assert!(
+            window.debug_bounds("top-bar-notifications").is_some(),
+            "the bell renders in the scene top bar"
+        );
+        assert!(
+            window.debug_bounds("notification-badge").is_some(),
+            "unread completions show the dot"
+        );
+
+        window.update(|_, cx| {
+            shell.update(cx, |shell, cx| shell.clear_all_unread(cx));
+        });
+        window.update(|_, cx| {
+            shell.update(cx, |shell, _| assert!(shell.unread_turns.is_empty()));
+        });
+        window.draw(point(px(0.), px(0.)), size(px(1400.), px(900.)), {
+            let shell = shell.clone();
+            move |_, _| shell.into_any_element()
+        });
+        window.run_until_parked();
+        assert!(
+            window.debug_bounds("notification-badge").is_none(),
+            "the dot clears with the list"
+        );
+    }
+
     /// A process-lifetime tokio runtime for pane construction in headless
     /// tests: `TerminalPane::new` spawns its PTY pump on the given handle, so
     /// the runtime must outlive the test (`pty_integration` drives the same
@@ -13737,6 +14989,31 @@ mod tests {
             shell.terminals.push(TerminalTab {
                 pane,
                 label: SharedString::from(label.to_string()),
+                directory: None,
+                startup_command: None,
+            });
+        });
+    }
+
+    /// The same, for a tab launched from a profile (G-T2): it carries the
+    /// profile's working directory and the startup command it typed.
+    fn inject_terminal_profile_tab(
+        shell: &Entity<ShellWindow>,
+        label: &str,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let settings = settings::ShellConfig::try_current(cx)
+            .unwrap_or_else(|| settings::ShellConfig::startup_default(i18n::current(cx).locale))
+            .terminal;
+        let pane = cx
+            .new(|cx| TerminalPane::new(test_terminal_tokio(), &settings, None, None, window, cx));
+        shell.update(cx, |shell, _| {
+            shell.terminals.push(TerminalTab {
+                pane,
+                label: SharedString::from(label.to_string()),
+                directory: Some("/tmp".to_string()),
+                startup_command: Some("echo hi".to_string()),
             });
         });
     }
@@ -13790,6 +15067,84 @@ mod tests {
             .debug_bounds("shell-terminal-dock")
             .expect("docked terminal renders with tabs");
         assert!(dock.size.height > px(50.), "dock height: {:?}", dock.size);
+    }
+
+    /// G-T1: the dock divider's double click walks the web's size tiers
+    /// (`getNextMode`): compact → comfortable → expanded → comfortable, with
+    /// the panel's remembered extent following each step.
+    #[gpui_kit::test]
+    fn terminal_size_tier_cycles_between_the_web_steps(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        window.update(|window, cx| {
+            // The dock preference is shared with the web; the tier extents are
+            // the same numbers for both docks.
+            let mut config = settings::ShellConfig::try_current(cx).unwrap_or_else(|| {
+                settings::ShellConfig::startup_default(i18n::current(cx).locale)
+            });
+            config.terminal.panel_position = "right".to_string();
+            cx.set_global(config);
+            inject_terminal_tab(&shell, "one", window, cx);
+            shell.update(cx, |shell, cx| {
+                shell.terminal_open = true;
+                assert_eq!(shell.terminal_dock(cx), TerminalDock::Right);
+                // Compact sits below the threshold; the cycle takes it up one
+                // tier at a time.
+                shell.terminal_width = px(TERMINAL_TIER_COMPACT);
+                shell.cycle_terminal_size_tier(window, cx);
+                assert_eq!(shell.terminal_width, px(TERMINAL_TIER_COMFORTABLE));
+                shell.cycle_terminal_size_tier(window, cx);
+                assert_eq!(shell.terminal_width, px(TERMINAL_TIER_EXPANDED));
+                shell.cycle_terminal_size_tier(window, cx);
+                assert_eq!(
+                    shell.terminal_width,
+                    px(TERMINAL_TIER_COMFORTABLE),
+                    "expanded steps back down (the web never lands on collapsed)"
+                );
+                // A closed panel ignores the gesture.
+                shell.terminal_open = false;
+                shell.terminal_width = px(TERMINAL_TIER_COMPACT);
+                shell.cycle_terminal_size_tier(window, cx);
+                assert_eq!(shell.terminal_width, px(TERMINAL_TIER_COMPACT));
+            });
+        });
+    }
+
+    /// G-T2: a tab launched from a profile carries its startup command (the
+    /// row's terminal marker) and its launch directory (the row's reveal
+    /// action).
+    #[gpui_kit::test]
+    fn terminal_tab_row_reveals_the_launch_directory(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        window.update(|window, cx| {
+            let mut config = settings::ShellConfig::try_current(cx).unwrap_or_else(|| {
+                settings::ShellConfig::startup_default(i18n::current(cx).locale)
+            });
+            config.terminal.panel_position = "bottom".to_string();
+            cx.set_global(config);
+            inject_terminal_tab(&shell, "one", window, cx);
+            inject_terminal_profile_tab(&shell, "dev", window, cx);
+            shell.update(cx, |shell, cx| {
+                shell.terminal_open = true;
+                shell.active_terminal = 1;
+            });
+        });
+        window.draw(point(px(0.), px(0.)), size(px(1400.), px(900.)), {
+            let shell = shell.clone();
+            move |_, _| shell.into_any_element()
+        });
+        window.run_until_parked();
+        assert!(
+            window.debug_bounds("terminal-tab-reveal-1").is_some(),
+            "the profile tab reveals the directory it was started in"
+        );
     }
 
     /// Terminal profiles flow through the shared mirror: an empty id is
