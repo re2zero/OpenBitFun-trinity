@@ -331,7 +331,7 @@
 - **G-A2 子代理勾选编辑（subagents tab）**：web `:1198-1294`（token 网格 + external 行禁用）；
   壳只有每 mode 技能选择（T2-11）。**B 档**。
 - **G-A3 子代理模型覆盖**：web `:1113-1127`（默认/inherit/fast/primary/具体模型）；壳无。**A 档**。
-  **✅ 交付**（2026-10-16，A 批 3 尾车 `b402be1a9`）****：非 external 子代理行尾挂「模型: <档位>」菜单
+  **✅ 交付**（2026-10-16，A 批 3 尾车 `b402be1a9`，文档 `733cb7a4a`）****：非 external 子代理行尾挂「模型: <档位>」菜单
   （`manage.rs::agent_model_menu`，四档 = 使用默认子智能体模型 / 继承父会话 / 快速模型 / 主力模型 + 具体模型 id；
   当前档打勾）。写面：builtin 走 `ai.agent_model_defaults.subagents.builtin` 的读-合并-写（map 里其它子代理的档位不丢，
   选「使用默认」= 删键），custom 走 core `update_and_save_custom_subagent_config(id, model, clear, workspace)`；
@@ -345,7 +345,7 @@
   `AgentsFilterState` 动态组装 items（`settings.rs` 调用点随之传 `cx`）。空结果出 `manage-agents-no-match`。
   证据帧 `a3-04..06`。
 - **G-A6 Harness 概览区**：web `components/AgentHarnessOverview.tsx:70-107`；壳无。**A 档**。
-  **✅ 交付**（2026-10-16，A 批 3 尾车 `b402be1a9`）****：智能体页目录前加「智能体执行框架」区（`manage.rs::harness_zone`）——
+  **✅ 交付**（2026-10-16，A 批 3 尾车 `b402be1a9`，文档 `733cb7a4a`）****：智能体页目录前加「智能体执行框架」区（`manage.rs::harness_zone`）——
   四张卡（Minimal/Standard/Ultimate/Creative，标题用共享词 `shared.agents.<id>`）+ 卡片图标（随壳资产内置四份 harness SVG，
   `assets.rs::HARNESS_ICONS`）+ 每档路线图（canvas 画布按 web `STRATEGY_ROUTES` 逐点重绘：cubic 贝塞尔 + 圆点，
   单点档 = 一条平线）+ 目的行 ×3 语；有 skills 的档位保留「技能」入口。**harness 行不再在「模式」列表里重复**
@@ -360,7 +360,7 @@
 - **G-M1 OAuth 授权流 UI**（T3-18）：web `McpToolsConfig.tsx:1677-1775`（OAuth 状态/开始授权/redirectUri/token）；
   壳有登录式 token 编辑但无 OAuth 流程。**B 档**。
 - **G-M2 粘贴/文件导入 + 预览导入**：web `MCPServerConfigDialog.tsx:217-342`；壳编辑器无粘贴导入预览。**A 档**。
-  **✅ 交付**（2026-10-16，A 批 3 尾车 `b402be1a9`）****：MCP 页「导入配置」对话框（`manage.rs::open_mcp_import_dialog`）——
+  **✅ 交付**（2026-10-16，A 批 3 尾车 `b402be1a9`，文档 `733cb7a4a`）****：MCP 页「导入配置」对话框（`manage.rs::open_mcp_import_dialog`）——
   粘贴框 + **键入 JSON 文件路径**（壳无原生选择器，与「打开项目」同范式，读文件后内容进粘贴框）+ 「预览导入」出候选表
   （逐条勾选 + 目标 id 输入 + 空/非法/已占用三类红字警示，**跟随输入实时变化**，改完即时消警）+ 「导入所选服务」经
   `merge_mcp_import` 写配置：**导入条目一律 `enabled:false`**、**不覆盖已有条目**（撞 id 必须改名）、剥掉 `_openbitfunImport`
@@ -429,7 +429,7 @@
   删 BOOTSTRAP、设主助理、开新会话）；壳只有 status 的 awakened 读数与身份行。**B 档**。
 - **G-Y4 记忆导出 / 导入 JSON**：web `:965-1211,628-689`（导出 + 导入 + being_id 不匹配二次确认）；
   壳记忆面有回忆/记存/强化/两步遗忘，无导出导入。**A 档**。
-  **✅ 交付**（2026-10-16，A 批 3 尾车 `b402be1a9`）****：记忆区头「导出 / 导入」两钮（`trinity.rs`）——
+  **✅ 交付**（2026-10-16，A 批 3 尾车 `b402be1a9`，文档 `733cb7a4a`）****：记忆区头「导出 / 导入」两钮（`trinity.rs`）——
   导出对话框预填 `~/trinity-graph-YYYY-MM-DD.json`（web `exportFileName` 同名），成功出「已导出 N 条记忆、M 条关联 -> 路径」
   绿色回执；导入走 `memory.import`，空路径先拦（「请填写文件路径。」），daemon 错误原文内联（如 `read '...': No such file
   or directory`），**跨身份容器**（daemon 拒 `being_id mismatch: container 'A' vs local 'B'`）则把同一对话框重绘成
