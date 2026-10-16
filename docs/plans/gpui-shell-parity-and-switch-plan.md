@@ -66,8 +66,8 @@
 | 17 | 定时任务 / 任务看板 | cron_api(5) | 已支持 | 定时任务页 + 看板（`tasks.rs`，core `service/cron` 直调）；**A 批 3（2026-10-15）**：日历点选日详情面板（选中日期 + 清除 + 当日条目）、行徽标（正在运行/下次运行/已逾期）、不可执行分区「无后续运行（N）」+ 已暂停/已结束/计划无效 chip |
 | 18 | 洞察 / 用量报告 | insights_api(5)、token_usage_api(1) | 已支持 | insights 报告 + usage 数字面 + 趋势图/活动热力图（T2-8；热力格 UTC 锚定为有意简化）；**A 批 3（2026-10-15）**：范围 chips 7/14/30/90 + 模型选择（primary/目录 enabled 模型）、报告历史区（保留 5 份提示 + 时间/窗口/会话/消息/小时/天数/生成 tokens/模型/标签 meta 卡）、建议三段 + 复制钮 |
 | 19 | 技能管理 / 技能市场 | skill_api(13) | 已支持（子集） | 技能管理页（目录扫描 + 全局启停）+ 每 mode 技能选择（T2-11）；市场下载缺；**A 批 3（2026-10-15）**：技能页搜索（名称/描述/key）+「隐藏重复项」（shadowed）+ 无匹配空态 |
-| 20 | 智能体管理（agents / custom agents / subagents） | custom_agent_api(5)、subagent_api、agentic_api | 已支持（子集） | agents 管理页 + 创建/编辑/删除卡片（T2-12，编辑粒度 = 壳创建面六字段）；subagents 编辑器缺；**A 批 3（2026-10-15）**：搜索（名称/描述）+ 来源过滤（任意/内置/用户/项目/外部）+ 类型过滤（任意/智能体/子代理，按 web 语义切换整块分区） |
-| 21 | MCP 管理（servers / resources / prompts / OAuth） | mcp_api(23) | 已支持（子集） | 管理页 + 增删改 + 运行中交互应答（多行 + 预填）+ JSON 原文编辑 + 资源浏览（T2-7）；OAuth 流程缺 |
+| 20 | 智能体管理（agents / custom agents / subagents） | custom_agent_api(5)、subagent_api、agentic_api | 已支持（子集） | agents 管理页 + 创建/编辑/删除卡片（T2-12，编辑粒度 = 壳创建面六字段）；subagents 编辑器缺；**A 批 3（2026-10-15）**：搜索（名称/描述）+ 来源过滤（任意/内置/用户/项目/外部）+ 类型过滤（任意/智能体/子代理，按 web 语义切换整块分区）；**A 批 3 尾车（2026-10-16 `b402be1a9`）**：Harness 概览区（四卡 + 路线图，harness 行不再混进模式列表）+ 子代理行内模型覆盖菜单（四档 + 具体模型；builtin 走配置 map 读-合并-写、custom 走 agent 文件） |
+| 21 | MCP 管理（servers / resources / prompts / OAuth） | mcp_api(23) | 已支持（子集） | 管理页 + 增删改 + 运行中交互应答（多行 + 预填）+ JSON 原文编辑 + 资源浏览（T2-7）；**A 批 3 尾车（2026-10-16 `b402be1a9`）**：粘贴/键入路径导入 + 预览（勾选 + 目标 id 改名 + 实时警示）+ 合并写（强制 disabled、不覆盖已有）；OAuth 流程缺 |
 | 22 | 生态兼容（外部来源导入 / ACP 客户端 / external hooks） | external_sources_api(27)、acp_client_api(16)、external_hooks_api(5) | 缺 | 大工程（发现/冲突解决/批导入） |
 | 23 | 插件 / 扩展管理页 | 生态 + 插件运行时 | 缺 | 依赖 22 |
 | 24 | MiniApps（运行时 / 库 / 市场 / 提交） | miniapp_api(39)、miniapp_market_api(13)、miniapp_agent_api(5)、miniapp_export_api(1) | 缺 | 需 JS worker 宿主桥 + 市场；大工程，后置 |
@@ -82,7 +82,7 @@
 | 33 | 应用内更新 UI（检查 / 下载 / 安装提示） | update_api(3) | 已支持 | 引擎（D32）+ UI（检查/下载/安装/重启）+ 每日门控（T1-3）；feed 接入仍按 §4.4 拍板时同批 |
 | 34 | 公告 / 更新提示 | announcement_api(6) | 缺 | 可后置 |
 | 35 | 桌面宠物 / 工具条模式 / 浮动 mini chat | — | 缺（明确后置） | 与壳定位无关 |
-| 36 | Trinity 认知控制台 | trinity_api(26) | 已支持（子集） | 薄 RPC 转发，T2-15 已交付（`trinity.rs`：认知态卡 + 趋势 + 记忆时间线 浏览/搜索/新增/强化/两步遗忘，云端同步/晨报/觉醒向导仍缺）；**A 批 3（2026-10-15）**：记忆行内修正（`memorize {content, target_id}` + corrected 回执提示）、词汇量计数（`memory.vocabulary_size`） |
+| 36 | Trinity 认知控制台 | trinity_api(26) | 已支持（子集） | 薄 RPC 转发，T2-15 已交付（`trinity.rs`：认知态卡 + 趋势 + 记忆时间线 浏览/搜索/新增/强化/两步遗忘，云端同步/晨报/觉醒向导仍缺）；**A 批 3（2026-10-15）**：记忆行内修正（`memorize {content, target_id}` + corrected 回执提示）、词汇量计数（`memory.vocabulary_size`）；**A 批 3 尾车（2026-10-16 `b402be1a9`）**：记忆导出/导入（daemon `memory.export`/`memory.import`，键入路径替代原生对话框；跨身份容器二次确认后带 `confirm_being_id` 重试） |
 | 37 | 审查平台 / 深度审查 | review_platform_api(10) + review-team 前端 | 缺（review 族投影已有标签） | 平台本体后置；review 族 agent_type 已有「审核中」标签与子视图（T2-6） |
 | 38 | 账号 / 身份（GitHub 登录、市场） | account_identity_api(3) | 缺 | 服务市场能力时一并 |
 | 39 | 会话快照 / 回滚（turn 文件 accept/reject） | snapshot_service(22) | 已支持 | 快照恢复经 Git 面板落地（`git.rs` snapshot 族） |
@@ -343,6 +343,7 @@ domain prism token；② 工具栏锚位 = 组件右上动作簇（语言标签�
 
 | 日期 | 变更 |
 |---|---|
+| 2026-10-16 | **界面 1:1 整改 A 批 3 尾车交付**（`b402be1a9`）：智能体页 Harness 概览区（G-A6）+ 子代理行内模型覆盖（G-A3）、MCP 导入对话框（G-M2，粘贴/键入路径 + 预览 + 合并强制 disabled）、Trinity 记忆导出/导入（G-Y4，daemon RPC + 键入路径 + 跨身份二次确认）；顺带修掉 6 个既有对话框的 448px 裁切（内容宽 >448 时右侧按钮被 `overflow_hidden` 裁掉）；ftl 865→902 ×3；证据帧 `a4-01..15`（Xvfb :241 冒烟 0 panic/0 缺资产，含真 daemon 导出 1215 节点与 stub daemon 跨身份确认两段式）；§2 行 20/21/36 按本批改判并补注 |
 | 2026-10-15 | **界面 1:1 整改 A 批 2（设置小字段）部分交付**（`4ba07163a`）：外观页界面字号（G-SE5，渲染侧 `set_rem_size`，默认档 = 壳原有字号）、模型页流超时 + 代理（G-SE10/G-SE11）、执行与权限页工具/提问超时 + 子智能体四键 + 按需加载工具 + JSON 修复 + 审核容量（G-SE18–G-SE22）；G-SE30 暂缓（需跨工作区归档投影）、G-SE31 因未登记 WIP 未动（见整改计划 §6.1 W-4）；ftl 800→861 ×3；证据帧 `a2-01..09`（Xvfb :190 冒烟 0 panic/0 缺资产，含切「大」档整壳放大与代理/子代理模型写面落盘核对）；§2.1 三行按本批改判并补注 |
 | 2026-10-15 | **界面 1:1 整改 A 批 3（场景小项）交付**（`5867bdf25`，会话 74）：任务看板日详情面板 + 行徽标/不可执行分区（G-P2/G-P3）、洞察范围 7/14/30/90 + 模型选择 + 历史 meta 卡 + 建议三段复制（G-I1/G-I5/G-I6）、技能搜索 + 隐藏重复项（G-K5）、智能体搜索 + 来源/类型过滤（G-A5）、Trinity 记忆行内修正 + 词汇量（G-Y5/G-Y6）；G-Y4（原生文件对话框）/G-A3/G-A6/G-M2 判为暂缓（理由见整改计划 §3.1）；§2 行 17/18/19/20/36 按本批改判并补注 |
 | 2026-10-09 | 首个基线（M10 第 1 会话）：704 命令域统计、19 场景矩阵、P0/P1/P2 分级、M-A/B/C 机制设计 |

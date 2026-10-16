@@ -331,6 +331,12 @@
 - **G-A2 子代理勾选编辑（subagents tab）**：web `:1198-1294`（token 网格 + external 行禁用）；
   壳只有每 mode 技能选择（T2-11）。**B 档**。
 - **G-A3 子代理模型覆盖**：web `:1113-1127`（默认/inherit/fast/primary/具体模型）；壳无。**A 档**。
+  **✅ 交付**（2026-10-16，A 批 3 尾车 `b402be1a9`）****：非 external 子代理行尾挂「模型: <档位>」菜单
+  （`manage.rs::agent_model_menu`，四档 = 使用默认子智能体模型 / 继承父会话 / 快速模型 / 主力模型 + 具体模型 id；
+  当前档打勾）。写面：builtin 走 `ai.agent_model_defaults.subagents.builtin` 的读-合并-写（map 里其它子代理的档位不丢，
+  选「使用默认」= 删键），custom 走 core `update_and_save_custom_subagent_config(id, model, clear, workspace)`；
+  成功即重拉目录（行标签随之更新），失败落 `AgentModelFailed` → 页面 notice。证据帧 `a4-02`（菜单）/`a4-03`（清档回默认，
+  配置键随之消失）。**刻意分歧**：web 菜单在详情对话框的 model 页，壳直接放在行上（壳无详情对话框族，G-A1/A2/A4）。
 - **G-A4 详情卡（能力 5 级条 / follow-up / 共享 profile / external provider）**：web `:1038-1110`；壳卡片简化。**A/B 档**。
 - **G-A5 搜索 / source / kind 过滤**：web `:808-865`；壳无。**A 档**。
   **✅ 交付**（2026-10-15，A 批 3）****：智能体页顶部控制行（`manage.rs::agents_controls`）—— 搜索（名称/描述，trim +
@@ -339,6 +345,12 @@
   `AgentsFilterState` 动态组装 items（`settings.rs` 调用点随之传 `cx`）。空结果出 `manage-agents-no-match`。
   证据帧 `a3-04..06`。
 - **G-A6 Harness 概览区**：web `components/AgentHarnessOverview.tsx:70-107`；壳无。**A 档**。
+  **✅ 交付**（2026-10-16，A 批 3 尾车 `b402be1a9`）****：智能体页目录前加「智能体执行框架」区（`manage.rs::harness_zone`）——
+  四张卡（Minimal/Standard/Ultimate/Creative，标题用共享词 `shared.agents.<id>`）+ 卡片图标（随壳资产内置四份 harness SVG，
+  `assets.rs::HARNESS_ICONS`）+ 每档路线图（canvas 画布按 web `STRATEGY_ROUTES` 逐点重绘：cubic 贝塞尔 + 圆点，
+  单点档 = 一条平线）+ 目的行 ×3 语；有 skills 的档位保留「技能」入口。**harness 行不再在「模式」列表里重复**
+  （模式列表过滤掉 harness id）。证据帧 `a4-01`。**刻意分歧**：web 点卡片开 harness 详情对话框，壳为只读概览
+  （壳无 harness 详情面，G-A4 同族）。
 - **G-A7 external agent → 生态页跳转**：依赖 G-E1。**C 档（随生态页）**。
 
 ### 2.9 MCP（G-M）
@@ -348,6 +360,15 @@
 - **G-M1 OAuth 授权流 UI**（T3-18）：web `McpToolsConfig.tsx:1677-1775`（OAuth 状态/开始授权/redirectUri/token）；
   壳有登录式 token 编辑但无 OAuth 流程。**B 档**。
 - **G-M2 粘贴/文件导入 + 预览导入**：web `MCPServerConfigDialog.tsx:217-342`；壳编辑器无粘贴导入预览。**A 档**。
+  **✅ 交付**（2026-10-16，A 批 3 尾车 `b402be1a9`）****：MCP 页「导入配置」对话框（`manage.rs::open_mcp_import_dialog`）——
+  粘贴框 + **键入 JSON 文件路径**（壳无原生选择器，与「打开项目」同范式，读文件后内容进粘贴框）+ 「预览导入」出候选表
+  （逐条勾选 + 目标 id 输入 + 空/非法/已占用三类红字警示，**跟随输入实时变化**，改完即时消警）+ 「导入所选服务」经
+  `merge_mcp_import` 写配置：**导入条目一律 `enabled:false`**、**不覆盖已有条目**（撞 id 必须改名）、剥掉 `_openbitfunImport`
+  标记，落盘走既有的指纹比对 JSON 保存面。解析/合并/行警示均为纯函数（`parse_mcp_import` / `merge_mcp_import` /
+  `mcp_import_row_problem` + 单测）。证据帧 `a4-04..08`（读文件+预览 / 导入落 `enabled:false` / 撞 id 预览 / 改名消警 /
+  再次导入后列表 3 行）。**顺带发现**：core 的 MCP 配置加载按内容签名去重（`merge_mcp_server_config_sources`，
+  日志 `Deduplicating MCP config by content signature`）——同 URL 的两个 id 在运行时投影里只留一个（文件里两条都在），
+  这是 core 既有语义，非本批引入。
 - **G-M3 auth 模式细分（auto/oauth/token/headers）+ 远程认证对话框**：web 同文件；壳简化为 URL/凭据。
   **B 档（与 G-M1 同批）**。
 
@@ -408,6 +429,13 @@
   删 BOOTSTRAP、设主助理、开新会话）；壳只有 status 的 awakened 读数与身份行。**B 档**。
 - **G-Y4 记忆导出 / 导入 JSON**：web `:965-1211,628-689`（导出 + 导入 + being_id 不匹配二次确认）；
   壳记忆面有回忆/记存/强化/两步遗忘，无导出导入。**A 档**。
+  **✅ 交付**（2026-10-16，A 批 3 尾车 `b402be1a9`）****：记忆区头「导出 / 导入」两钮（`trinity.rs`）——
+  导出对话框预填 `~/trinity-graph-YYYY-MM-DD.json`（web `exportFileName` 同名），成功出「已导出 N 条记忆、M 条关联 -> 路径」
+  绿色回执；导入走 `memory.import`，空路径先拦（「请填写文件路径。」），daemon 错误原文内联（如 `read '...': No such file
+  or directory`），**跨身份容器**（daemon 拒 `being_id mismatch: container 'A' vs local 'B'`）则把同一对话框重绘成
+  「跨身份记忆迁移」确认（列明容器/本机两个身份）→「确认合并」才带 `confirm_being_id` 重试，回执「已导入，新增 N 条记忆。」
+  证据帧 `a4-09..14`。**刻意分歧**：web 用 `plugin-dialog` 原生保存/打开，壳改为**键入路径**（与「打开项目」同范式，
+  M24 已判不放假入口）；两处真实路径实测（真 daemon 导出 1215 节点；stub daemon 演示 mismatch 两段式，避免真库合并）。
 - **G-Y5 记忆行内编辑（memorize 修正）**：web `:1085-1190`；壳无行内编辑。**A 档**。
   **✅ 交付**（2026-10-15，A 批 3）****：每行「修正」钮 → 行体换成预填当前内容的共享 textarea（`trinity_edit_content`，
   窗口持有）+「保存修正 / 取消」（保存键在有内容时可用，空内容不得提交 = web 语义）；保存走
@@ -475,6 +503,12 @@
     （比纯 UI 大，归 B 档口径）。
   - **G-M2 MCP 粘贴/文件导入 + 预览**：粘贴解析 + 预览表（逐条勾选 + 目标 id 编辑 + 冲突提示 + 导入后强制 disabled）
     是独立对话框族，单列一批更稳。
+  **✅ 尾车交付（2026-10-16，`b402be1a9`）**：上面四项**全部落地**（逐项注见 §2.8/§2.9/§2.12 各行）——
+  G-Y4 走 daemon RPC + 键入路径（原生对话框的文档化替代）、G-A3 走既有 core 写面（builtin 配置 map / custom 文件）、
+  G-A6 随壳内置 harness SVG（不必扩 core 投影：harness 档位本就在 `AgentCatalog.modes` 里）、G-M2 为纯函数解析/合并 + 既有指纹保存面。
+  ftl 865→902 ×3；**提交内容**壳 327 lib 全绿（工作区并集 329），Xvfb :241 冒烟 0 panic/0 缺资产，证据帧 `a4-01..15`。
+  另：本批顺带修掉一个既有的对话框裁切缺陷（gpui-component Dialog 默认 448px + body `overflow_hidden`，
+  6 个 460–560 宽的壳对话框把右侧按钮排到裁切之外；逐个显式声明宽度，证据帧 `a4-15`）。
   另 **G-I5/G-I6 的视觉复验待有洞察报告时补**（本机 store 为空）。
 - **A 批 4 = 会话/终端/杂项**：G-S1/G-S2（turn footer meta / copy 反馈）、G-T1/G-T2、G-F8、G-X6（通知中心）。
 
@@ -569,8 +603,13 @@
   装入「只有本批内容」的自建副本，工作区其余部分一动未动；A 批 2 的隔离验证 = 受控换入换出 + 哈希自检，换入期 315 绿、
   恢复后并集 317 绿），该 WIP 原样留在工作区（A 批 2 交付后复核：其 4 个 ftl 键、i18n 的字段/helper、settings.rs 的横幅与两条测试
   仍在，内容逐字未变）；**接管或覆盖它前需公子或作者点头**。
-- **W-5 A 批 3 未交付余项**：G-Y4（原生文件对话框）/ G-A3（子代理模型覆盖）/ G-A6（Harness 概览，需扩 core 投影）/
-  G-M2（MCP 粘贴导入预览）四项暂缓（理由见 §3.1 批 3 行）；G-I5/G-I6 的视觉复验待本机出现洞察报告时补。
+- **W-5 A 批 3 余项已清**：G-Y4 / G-A3 / G-A6 / G-M2 四项由尾车交付（`b402be1a9`，逐项注见 §2.8/§2.9/§2.12）。
+  G-I5/G-I6 的视觉复验仍待本机出现洞察报告时补。
+- **W-6 对话框宽度裁切（本批顺带修）**：`gpui_component` 的 `Dialog` 默认 `w(448px)` 且 body 是
+  `flex_1 + overflow_hidden`，内容更宽的对话框会把**靠右**的元素（右对齐行、同行右钮）整块排到裁切外——
+  表现为「按钮不显示但代码里有」。壳既有 6 个 460–560 宽的对话框全中（本批自己的 MCP 导入对话框先撞上）。
+  修法 = 每个对话框显式 `.w(px(内容宽 + 32.))`（左右 padding 各 16）；`a4-15` 为 JSON 编辑器复验帧。
+  后续新对话框按此自查：**内容不设宽（`w_full`）或给面板补宽，二选一，别只给内容设宽**。
 
 ### 6.2 小扫尾四项（原 R2c/R2d 余留，归 A 档批 1/批 4）
 
@@ -591,6 +630,7 @@ copy 成功态图标反馈（=G-S2）。
 | 日期 | 变更 |
 |---|---|
 | 2026-10-15 | **A 批 2（设置小字段）部分交付**（`4ba07163a`）：G-SE5 界面字号（外观页档位下拉 + 自定义 12–20 px，渲染侧 `set_rem_size`，默认档 = 壳原有字号）、G-SE10 流空闲/首字超时、G-SE11 代理（按 key 合并写、未知键不丢）、G-SE18 工具/提问超时、G-SE19 子智能体默认模型 + 批量策略 + 两个并发上限（只写配置、不动核心并发；证据帧 `a2-06`/`a2-07`/`a2-09`）、G-SE20 按需加载工具、G-SE21 参数 JSON 修复、G-SE22 审核容量（证据帧 `a2-08`）；G-SE30 暂缓（壳归档列表只持当前工作区，1:1 需先加跨工作区归档投影）；G-SE31 因工作区那份未登记 WIP 正是该语义而按纪律未动（见 §6.1 W-4）。ftl 800→861 ×3、壳 315 lib（提交内容）/317（工作区并集）全绿。Xvfb :190 冒烟 0 panic/0 缺资产（唯一 ERROR = Xvfb xinput 既有噪声），证据帧 `a2-01..09`：字号行 / 六档菜单 / 切「大」后整壳等比放大 / 模型页两分节（超时 600·600 与禁用态代理）/ 代理启用并写入地址后落盘 / 执行页工具与超时 / 子智能体与两个开关 / 审核容量 / 子智能体默认模型菜单（继承父会话·快速模型·主力模型） |
+| 2026-10-16 | **A 批 3 尾车交付**（`b402be1a9`）：G-A6 Harness 概览区（四卡 + 共享词标题 + 内置 SVG + canvas 路线图 + harness 行不再混进模式列表）、G-A3 子代理行内模型菜单（四档 + 具体模型；builtin 走 `ai.agent_model_defaults.subagents.builtin` 读-合并-写，custom 走 `update_and_save_custom_subagent_config`，成功重拉目录、失败出 notice）、G-M2 MCP 导入对话框（粘贴或键入路径读文件 → 预览勾选 + 目标 id 改名 + 空/非法/占用三类实时警示 → 合并写：强制 `enabled:false`、不覆盖、剥导入标记）、G-Y4 记忆导出/导入（daemon `memory.export`/`memory.import` + 键入路径；空路径拦、daemon 错误内联、跨身份容器重绘为二次确认后带 `confirm_being_id` 重试）。ftl 865→902 ×3（37 键 ×3）；**提交内容**壳 327 lib（并集 329，含 MCP 纯函数/布局/事件新测）。Xvfb :241 冒烟 0 panic/0 缺资产，证据帧 `a4-01..15`：四卡 harness 区 / 模型菜单（选 快速模型 落盘 `Explore={"kind":"fixed","model_id":"fast"}`，再清档回落并删键）/ MCP 读文件+预览 / 导入落盘两条 `enabled:false` / 撞 id 预览 + 改名实时消警 / 再导一处新 URL 后列表 3 行 / Trinity 导出真库 1215 节点回执 / 空路径与 daemon 错误内联 / stub daemon 跨身份确认两段式。**顺带修2**：① 6 个既有对话框的 448px 裁切（§6.1 W-6）；② MCP 预览行的警示改为跟随输入实时变化（冒烟中发现改名后旧警示仍在）。另记两条无主 WIP 现状：`settings.rs` 诊断横幅 WIP 与 `stash@{0}`（079 并发规模档）均未动 |
 | 2026-10-15 | **A 批 3（场景小项）部分交付**（会话 74，与 A 批 2 并发）：G-P2 日详情面板、G-P3 行徽标 + 不可执行分区、G-I1 范围 7/14/30/90 + 模型选择、G-I5 建议三段复制、G-I6 历史 meta 卡、G-Y5 记忆行内修正（含 `corrected` 回执）、G-Y6 词汇量、G-K5 技能搜索 + 隐藏重复项、G-A5 智能体搜索 + 来源/类型过滤；G-Y4/G-A3/G-A6/G-M2 暂缓（理由见 §3.1）；证据帧 `a3-01..11`；W-4 按 stash + 并发 WIP 现状重写并新增 W-5 |
 | 2026-10-15 | **A 批 1（Git + 文件）交付**（`04a1675c5`）：G-G1 非仓库态卡 + init 填 chat、G-G3 行内 discard/delete（两段式 + 远程降级）、G-G5 文件列↔diff 分隔条、G-G6 ahead/behind 徽标 + pull（顺带修 remotes 恒空）、G-FL2 文件树本地过滤；G-FL3 判为维持待点名。core 侧最小契约扩展：`GitRepositoryOverview` +`ahead`/`behind`、`GitPort` +`pull`/`discard_files`。证据帧 `g1-01..04`（Xvfb 冒烟：徽标/行内动作/armed 态/init 预填 + 执行态核验） |
 | 2026-10-15 | 首版：界面逐一盘点（框架层 8 行 / 主场景 21 项 / 设置 21 页 / 面板与对话框 18 行 / 壳侧独有 3 项 / 死面 5 项）；差距明细 80 余条编号条目（G-*）含双端源码锚点；整改计划 A/B/C 分档 + 不补清单（含拍板来源）；验收口径与建议执行顺序；T3 17-25 与本文编号的映射；工程性尾项（R7c 尾货 / 并发规模 / 真机 / 未提交改动）归并登记 |
