@@ -686,6 +686,11 @@ pub(crate) struct ShellText {
     pub settings_diagnostics_export_confirm: String,
     pub settings_diagnostics_export_success: String,
     pub settings_diagnostics_export_failed: String,
+    /// G-SE31: the previous-run notice on the diagnostics page. The category
+    /// picks the pair (a written crash report vs. a run state left unclean);
+    /// both descriptions name the session log directory.
+    pub settings_diagnostics_previous_crash: String,
+    pub settings_diagnostics_previous_unclean: String,
     pub trinity_title: String,
     pub trinity_status_title: String,
     pub trinity_status_unavailable: String,
@@ -900,6 +905,24 @@ pub(crate) fn git_behind(count: usize, cx: &App) -> String {
     resolve_with(
         "gpui-shell-git-behind",
         TranslationArgs::new().with_number("count", count as f64),
+        cx,
+    )
+}
+
+/// G-SE31: the diagnostics page's previous-run description for a crashed run.
+pub(crate) fn diagnostics_previous_crash_logs(path: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-settings-diagnostics-previous-crash-description",
+        TranslationArgs::new().with_string("path", path),
+        cx,
+    )
+}
+
+/// G-SE31: the same line for a run that never recorded a clean shutdown.
+pub(crate) fn diagnostics_previous_unclean_logs(path: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-settings-diagnostics-previous-unclean-description",
+        TranslationArgs::new().with_string("path", path),
         cx,
     )
 }
@@ -2119,6 +2142,10 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_diagnostics_export_confirm: "Export".to_string(),
         settings_diagnostics_export_success: "Diagnostics bundle exported".to_string(),
         settings_diagnostics_export_failed: "Failed to export diagnostics bundle".to_string(),
+        settings_diagnostics_previous_crash: "Previous session ended unexpectedly".to_string(),
+        settings_diagnostics_previous_unclean: {
+            "Previous session did not record a normal shutdown".to_string()
+        },
         trinity_title: "Trinity".to_string(),
         trinity_status_title: "Trinity Cognitive State".to_string(),
         trinity_status_unavailable: {
@@ -3016,6 +3043,12 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
             .await,
         settings_diagnostics_export_failed: service
             .t("gpui-shell-settings-diagnostics-export-failed")
+            .await,
+        settings_diagnostics_previous_crash: service
+            .t("gpui-shell-settings-diagnostics-previous-crash")
+            .await,
+        settings_diagnostics_previous_unclean: service
+            .t("gpui-shell-settings-diagnostics-previous-unclean")
             .await,
         trinity_title: service.t("gpui-shell-trinity-title").await,
         trinity_status_title: service.t("gpui-shell-trinity-status-title").await,

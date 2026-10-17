@@ -4587,14 +4587,111 @@ fn diagnostics_group(
         column.into_any_element()
     });
 
-    SettingGroup::new().items(vec![
+    let mut items = vec![
         SettingItem::new(text.settings_logging_level.clone(), level_field)
             .description(text.settings_logging_level_description.clone()),
         SettingItem::new(text.settings_logs_dir.clone(), logs_field)
             .description(text.settings_diagnostics_note.clone()),
         SettingItem::new(text.settings_diagnostics_export.clone(), export_field)
             .description(text.settings_diagnostics_export_description.clone()),
-    ])
+    ];
+    // G-SE31: a run that ended without writing the clean-shutdown marker gets
+    // its notice above the logging controls, matching the desktop page's alert.
+    // The probe is a memory read of the startup snapshot, so this costs a
+    // render-path branch, not a file stat.
+    if let Some(previous) = crate::diagnostics::previous_unexpected_exit() {
+        let notice = previous.clone();
+        // A whole-element item, not a label/field pair: the notice is one
+        // alert (icon, title, description) spanning the card, the shape the
+        // desktop page gives its `Alert` above the logging section.
+        items.insert(
+            0,
+            SettingItem::render(move |_options, _window, cx| previous_exit_notice(&notice, cx)),
+        );
+    }
+    SettingGroup::new().items(items)
+}
+
+/// G-SE31: the title of the previous-run notice. The category decides which
+/// copy applies — a written crash report reads differently from a run state
+/// that simply never recorded a clean shutdown — and the desktop page makes
+/// the same distinction (`logging.previousCrash` / `.previousUncleanShutdown`).
+fn previous_exit_title(info: &crate::diagnostics::UnexpectedExitInfo, text: &ShellText) -> String {
+    match info.category {
+        crate::diagnostics::UnexpectedExitCategory::Crash => {
+            text.settings_diagnostics_previous_crash.clone()
+        }
+        crate::diagnostics::UnexpectedExitCategory::UncleanShutdown => {
+            text.settings_diagnostics_previous_unclean.clone()
+        }
+    }
+}
+
+/// The notice body: the session log directory line the desktop page points at.
+/// The run-state `reason` stays out — the desktop alert shows the category
+/// title plus this line only, and the reason is an English diagnostics string.
+fn previous_exit_description(info: &crate::diagnostics::UnexpectedExitInfo, cx: &App) -> String {
+    let path = info
+        .session_log_dir
+        .clone()
+        .unwrap_or_else(|| "-".to_string());
+    match info.category {
+        crate::diagnostics::UnexpectedExitCategory::Crash => {
+            i18n::diagnostics_previous_crash_logs(&path, cx)
+        }
+        crate::diagnostics::UnexpectedExitCategory::UncleanShutdown => {
+            i18n::diagnostics_previous_unclean_logs(&path, cx)
+        }
+    }
+}
+
+/// The previous-run banner on the diagnostics page: warning-toned for a crash,
+/// neutral-info for an unclean shutdown. Detected runs only — a clean exit
+/// renders nothing, exactly like the desktop page.
+fn previous_exit_notice(
+    info: &crate::diagnostics::UnexpectedExitInfo,
+    cx: &App,
+) -> gpui_kit::AnyElement {
+    let tone = match info.category {
+        crate::diagnostics::UnexpectedExitCategory::Crash => cx.theme().warning,
+        crate::diagnostics::UnexpectedExitCategory::UncleanShutdown => cx.theme().info,
+    };
+    let title = previous_exit_title(info, &i18n::current(cx));
+    div()
+        .debug_selector(|| "settings-diagnostics-previous-exit".to_string())
+        .flex()
+        .items_start()
+        .gap_2()
+        .w_full()
+        .px_3()
+        .py_2()
+        .rounded(cx.theme().radius)
+        .bg(tone.opacity(0.12))
+        .child(
+            gpui_kit::component::Icon::new(IconName::ShieldAlert)
+                .size_4()
+                .text_color(tone),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .v_flex()
+                .gap_0p5()
+                .child(
+                    div()
+                        .font_medium()
+                        .text_color(cx.theme().foreground)
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(previous_exit_description(info, cx)),
+                ),
+        )
+        .into_any_element()
 }
 
 /// Opens the export confirmation; the bundle is written on confirm only, so
@@ -5415,6 +5512,62 @@ mod tests {
     fn active_preset(cx: &gpui_kit::App) -> &'static str {
         let state = cx.global::<crate::theme::ShellState>();
         state.presets[state.active_preset].id
+    }
+
+    fn previous_exit_fixture() -> crate::diagnostics::UnexpectedExitInfo {
+        crate::diagnostics::UnexpectedExitInfo {
+            detected: true,
+            started_at: Some("2026-10-15 12:00:00".to_string()),
+            session_log_dir: Some("/logs/gpui-1".to_string()),
+            crash_report_path: Some("/logs/gpui-1/crash.json".to_string()),
+            category: crate::diagnostics::UnexpectedExitCategory::Crash,
+            notify_on_startup: true,
+            reason: "previous run wrote a crash report before shutdown".to_string(),
+        }
+    }
+
+    /// G-SE31: the notice's title follows the run-state category (a crash
+    /// report reads differently from an unclean shutdown).
+    #[test]
+    fn previous_exit_notice_title_follows_the_category() {
+        let text = sample_text();
+        let crash = previous_exit_fixture();
+        assert_eq!(
+            previous_exit_title(&crash, &text),
+            text.settings_diagnostics_previous_crash
+        );
+
+        let unclean = crate::diagnostics::UnexpectedExitInfo {
+            category: crate::diagnostics::UnexpectedExitCategory::UncleanShutdown,
+            crash_report_path: None,
+            notify_on_startup: false,
+            ..crash
+        };
+        assert_eq!(
+            previous_exit_title(&unclean, &text),
+            text.settings_diagnostics_previous_unclean
+        );
+    }
+
+    /// The banner lays out for a detected run (fixture run, no runtime).
+    #[gpui_kit::test]
+    fn previous_exit_notice_lays_out(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(install_theme_state);
+        cx.update(|cx| cx.set_global(sample_text()));
+        let window = cx.add_empty_window();
+        let notice = window.update(|_, cx| previous_exit_notice(&previous_exit_fixture(), cx));
+        window.draw(
+            gpui_kit::point(px(0.), px(0.)),
+            gpui_kit::size(px(640.), px(200.)),
+            move |_, _| notice.into_any_element(),
+        );
+        window.run_until_parked();
+        assert!(
+            window
+                .debug_bounds("settings-diagnostics-previous-exit")
+                .is_some(),
+            "the previous-run banner lays out"
+        );
     }
 
     #[gpui_kit::test]
