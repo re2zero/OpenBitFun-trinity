@@ -2568,8 +2568,14 @@ impl ShellWindow {
                 // Opening a session is a chat action: the session tab the
                 // transcript lands on activates below (tabs.open).
                 // Opening the session is "reading it" (T2-16): its unread
-                // turns drop out of the tray badge.
-                self.clear_unread_session(&opened.session_id);
+                // turns drop out of the tray badge. A reload of an
+                // already-open pane (the transcript refresh a settled turn
+                // triggers) is not an open, so it keeps them — otherwise a
+                // turn that finished while the window was inactive would
+                // clear its own unread the moment its refresh lands.
+                if !opened.reload {
+                    self.clear_unread_session(&opened.session_id);
+                }
                 // A requested child view (subagent run / /btw) settles here:
                 // when the opened session is the awaited child its context
                 // attaches to the chat; a different session drops the wait
@@ -2586,8 +2592,14 @@ impl ShellWindow {
                     chat.entries = opened.entries;
                     chat.busy = opened.busy;
                     chat.submitting = false;
-                    chat.name = opened.name;
-                    chat.model_id = opened.model_id;
+                    // A reload carries no pane facts (the runtime sends an
+                    // empty name and no model): it refreshes the transcript
+                    // only, so the open pane keeps its tab title and model
+                    // selector. Only a real open overwrites them.
+                    if !opened.reload {
+                        chat.name = opened.name;
+                        chat.model_id = opened.model_id;
+                    }
                     chat.turn_times = opened.turn_times;
                     if settled_child.is_some() {
                         chat.child_context = settled_child;
@@ -10944,6 +10956,7 @@ mod tests {
 
         let opened = |session_id: &str, name: &str, entries: Vec<ChatEntry>| {
             RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                reload: false,
                 session_id: session_id.into(),
                 name: name.into(),
                 agent_type: "Standard".into(),
@@ -12276,6 +12289,7 @@ mod tests {
             shell.update(cx, |shell, cx| {
                 shell.apply_runtime_event(
                     RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                        reload: false,
                         session_id: "s-1".into(),
                         name: "First".into(),
                         agent_type: "Standard".into(),
@@ -12453,6 +12467,7 @@ mod tests {
                 );
                 shell.apply_runtime_event(
                     RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                        reload: false,
                         session_id: "s-1".into(),
                         name: "First".into(),
                         agent_type: "Standard".into(),
@@ -12559,6 +12574,7 @@ mod tests {
             shell.update(cx, |shell, cx| {
                 shell.apply_runtime_event(
                     RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                        reload: false,
                         session_id: "s-1".into(),
                         name: "First".into(),
                         agent_type: "Standard".into(),
@@ -14259,6 +14275,7 @@ mod tests {
                 );
                 shell.apply_runtime_event(
                     RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                        reload: false,
                         session_id: "s-1".into(),
                         name: "First".into(),
                         agent_type: "Standard".into(),
@@ -14404,6 +14421,7 @@ mod tests {
             shell.update(cx, |shell, cx| {
                 shell.apply_runtime_event(
                     RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                        reload: false,
                         session_id: "s-1".into(),
                         name: "First".into(),
                         agent_type: "Standard".into(),
@@ -14467,6 +14485,7 @@ mod tests {
             shell.update(cx, |shell, cx| {
                 shell.apply_runtime_event(
                     RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                        reload: false,
                         session_id: "s-1".into(),
                         name: "First".into(),
                         agent_type: "Standard".into(),
@@ -14514,6 +14533,7 @@ mod tests {
             shell.update(cx, |shell, cx| {
                 shell.apply_runtime_event(
                     RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                        reload: false,
                         session_id: "s-1".into(),
                         name: "First".into(),
                         agent_type: "Standard".into(),
@@ -14619,6 +14639,7 @@ mod tests {
             shell.update(cx, |shell, cx| {
                 shell.apply_runtime_event(
                     RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                        reload: false,
                         session_id: "s-1".into(),
                         name: "First".into(),
                         agent_type: "Standard".into(),
@@ -14693,6 +14714,7 @@ mod tests {
             shell.update(cx, |shell, cx| {
                 shell.apply_runtime_event(
                     RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                        reload: false,
                         session_id: "s-1".into(),
                         name: "First".into(),
                         agent_type: "Standard".into(),
@@ -14802,6 +14824,7 @@ mod tests {
             shell.update(cx, |shell, cx| {
                 shell.apply_runtime_event(
                     RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                        reload: false,
                         session_id: "s-1".into(),
                         name: "First".into(),
                         agent_type: "Standard".into(),
@@ -14862,6 +14885,7 @@ mod tests {
             shell.update(cx, |shell, cx| {
                 shell.apply_runtime_event(
                     RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                        reload: false,
                         session_id: "s-1".into(),
                         name: "First".into(),
                         agent_type: "Standard".into(),
@@ -14919,6 +14943,7 @@ mod tests {
             shell.update(cx, |shell, cx| {
                 shell.apply_runtime_event(
                     RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                        reload: false,
                         session_id: "s-1".into(),
                         name: "First".into(),
                         agent_type: "Standard".into(),
@@ -14988,6 +15013,7 @@ mod tests {
             shell.update(cx, |shell, cx| {
                 shell.apply_runtime_event(
                     RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                        reload: false,
                         session_id: "s-1".into(),
                         name: "First".into(),
                         agent_type: "Standard".into(),
@@ -15104,6 +15130,7 @@ mod tests {
                 for (session_id, failed) in [("s-1", false), ("s-2", true)] {
                     shell.apply_runtime_event(
                         RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                            reload: false,
                             session_id: session_id.into(),
                             name: format!("Session {session_id}"),
                             agent_type: "Standard".into(),
@@ -15159,6 +15186,82 @@ mod tests {
             window.debug_bounds("notification-badge").is_none(),
             "the dot clears with the list"
         );
+    }
+
+    /// T2-16 semantics: a transcript reload of an already-open pane is not an
+    /// open — a turn that settled while the window was inactive keeps its
+    /// unread count across the refresh that settlement triggers, and the pane
+    /// keeps its tab title and model selector (a reload carries neither); a
+    /// real open reads the unread away and wins over the pane facts.
+    #[gpui_kit::test]
+    fn transcript_reloads_keep_unread_turns_until_the_session_is_opened(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        let opened = |reload: bool, name: &str| crate::runtime::OpenedSession {
+            session_id: "s-1".into(),
+            name: name.into(),
+            agent_type: "Standard".into(),
+            model_id: None,
+            entries: Vec::new(),
+            turn_times: Default::default(),
+            reload,
+            busy: false,
+        };
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                // The user opens the session and a turn settles while the
+                // window is inactive: the completion is recorded as unread.
+                shell.apply_runtime_event(
+                    RuntimeEvent::SessionOpened(opened(false, "Session s-1")),
+                    window,
+                    cx,
+                );
+                assert_eq!(
+                    shell.chat_for("s-1").map(|chat| chat.name.as_str()),
+                    Some("Session s-1"),
+                    "an open carries the pane title"
+                );
+                shell.unread_turns.insert("s-1".to_string(), (1, false));
+                // Settlement refreshes the open pane through the same event;
+                // its empty name is not a rename.
+                shell.apply_runtime_event(
+                    RuntimeEvent::SessionOpened(opened(true, "")),
+                    window,
+                    cx,
+                );
+                assert!(
+                    shell.unread_turns.contains_key("s-1"),
+                    "a reload must not read the session away"
+                );
+                assert_eq!(
+                    shell.chat_for("s-1").map(|chat| chat.name.as_str()),
+                    Some("Session s-1"),
+                    "a reload must not clear the tab title"
+                );
+                // The user opens the session again: that is reading it, and
+                // the open's facts win.
+                shell.apply_runtime_event(
+                    RuntimeEvent::SessionOpened(opened(false, "Renamed")),
+                    window,
+                    cx,
+                );
+                assert!(
+                    !shell.unread_turns.contains_key("s-1"),
+                    "an open clears the session's unread turns"
+                );
+                assert_eq!(
+                    shell.chat_for("s-1").map(|chat| chat.name.as_str()),
+                    Some("Renamed"),
+                    "an open's title replaces the pane's"
+                );
+            });
+        });
     }
 
     /// A process-lifetime tokio runtime for pane construction in headless

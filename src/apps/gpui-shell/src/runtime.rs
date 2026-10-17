@@ -579,6 +579,11 @@ pub(crate) struct OpenedSession {
     /// timestamps, so a historical turn's footer can show its completion time
     /// and duration (live turns extend it through the turn events).
     pub turn_times: HashMap<String, TurnTimes>,
+    /// The transcript was re-read for an already-open pane (turn settlement
+    /// refreshed it) rather than opened by the user. A reload is not an open:
+    /// it must not count as "reading it" for the unread-turn badge, so the
+    /// shell keeps a session's unread completions across refreshes.
+    pub reload: bool,
     /// The session was mid-turn when opened; live events continue to arrive.
     pub busy: bool,
 }
@@ -3692,6 +3697,7 @@ impl RuntimeHandle {
                 model_id: None,
                 entries,
                 turn_times,
+                reload: true,
                 busy: false,
             }));
         });
@@ -3739,6 +3745,7 @@ async fn emit_opened(
         model_id,
         entries,
         turn_times,
+        reload: false,
         busy,
     }));
 }
