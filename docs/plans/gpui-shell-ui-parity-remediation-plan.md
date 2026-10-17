@@ -722,11 +722,38 @@
   ④ **G-SE31 真实链路补验**：同批把「非干净退出 → 下次启动检测」从手造 run-state 升级为真实链路——
   壳运行期确实写出 `gpui-run-state.json`（`cleanShutdown:false` + 会话日志目录），`kill -9` 后重启，
   诊断页真实渲染信息色提示「上次会话未记录到正常关闭 / 上次会话日志位于 …」（帧 `w7-09`）。
-  ⑤ **登记观察（未立项，本轮新发现）**：**composer 的「停止」tooltip 会滞留屏上**——busy 期指针停在发送/停止按钮
-  （两态共位）上时回合结算，按钮被卸载，hover-end 不再触发，tooltip 便不再消失。复现：桩模型 15s 延迟，点发送后把指针
-  留在按钮上直至结算，再移开指针——`停止` 提示框仍悬在发送按钮上方（本轮原始现场：15:55 结算 → 壳 16:11 重启前一直在；
-  刻意复现帧 `w8-06`，修前帧 `w8-02` 同一现象亦可见）。落点在 `gpui_kit::component` 的 tooltip 生命周期（元素卸载时
-  无 hover-end 收尾），壳侧无干净杠杆——待点名（可能需上游 `gpui-kit` 修）。
+  ⑤ **收口（滞留的「停止」tooltip，2026-10-17 第三场）**：上轮登记为「待点名、可能需上游修」，
+  本轮定机制并对**壳侧**收口（真 turn 冒烟证毕）。
+  **机制**（读码 + 上游测试互证）：滞留的是 gpui-component 的 **managed tooltip**——`Button::tooltip`
+  走 `managed_tooltip_with_placement`，弹层是**窗口级 overlay**（`WindowState.tooltip_overlay`），
+  隐藏路径**只有**触发元素的 `on_hover(false)` → `request_hide`。而 `TabsState` 那类「回合结算」会让
+  composer 的发送/停止按钮（两态共位、**两个不同 id**）互换：指针静止压在按钮上时结算 → 停止按钮被卸载，
+  hover-end 永远不会到 → 弹层留在屏上（连「把指针移开」都救不回来，因为接班的发送按钮自身没有 tooltip，
+  不会替它发 `request_hide`）。对照 gpui 原生 tooltip：它由**拥有者每帧 prepaint 重新注册**
+  （`set_tooltip_on_window`）+ 拥有者消失时 `weak_active_tooltip.upgrade()` 失败即释放
+  （gpui 自带测试 `tooltip_is_released_when_its_owner_disappears`），**结构性不会滞留**。
+  **修法**（`shell.rs::render_composer`，busy 分支）：停止按钮不再带 `Button::tooltip`，改为挂在一个
+  **只与停止按钮同生共死**的 anchor 包装上——`div().flex().id("chat-stop-tooltip-anchor").tooltip(原生闭包).child(停止按钮)`；
+  包装随按钮一起离开元素树 → 弹层在同帧释放。`Tooltip::element` 而非 `Tooltip::new`：弹层外观不变（同一
+  样式盒 + 同一纯文本子节点），多出的 `debug_selector("chat-stop-tooltip")` 是回归测试唯一能看见
+  原生弹层的把手（kit 的弹层自身不带 selector）。
+  **行为差异（诚实登记，均已用帧核对）**：① 原生 tooltip **只由鼠标移动事件驱动**（managed 会因
+  「指针静止下的布局变化」触发 hover 变化而弹出）——即「按钮在指针底下被换掉」这一路现在还**根本不弹**
+  （滞留的前提随之消失）；正常路径（指针移到按钮上）不变：同样 500ms 延迟、同样外观。② 定位锚点由
+  「触发元素侧位」变为「光标处（+1px，窗口边缘翻转/夹紧）」——本按钮在右下角，两种读出来都是「在按钮上方」
+  （`w9-01z` vs `w8-06` 并看）；web 此处只有 aria-label、无可见 tooltip，故无 1:1 锚点被这一处改动破坏。
+  **回归测试**（新，`stop_tooltip_releases_with_the_button_when_the_turn_settles`）：真窗口 root view +
+  真帧（新 helper `draw_window_for_test`——壳测试惯用的 ad-hoc `draw` 只跑「布局+prepaint+paint」迷你管线，
+  **不 prepaint tooltip**），断言三段：anchor 恰为图标按钮的盒（32×32）→ 悬停 600ms 后原生弹层在帧内可见
+  → 结算那一帧（指针**未动**）anchor 与弹层同时消失。去掉修复（回退成 `Button::tooltip`）第一步即红
+  （managed 弹层不是帧内元素，随 owner 释放无从谈起）；壳 lib **345 全绿**。
+  **真 turn 对照帧**（桩模型 15s 延迟，1180×760 @82,80，Xvfb :266）：`w9-01`（+`w9-01z` 放大）busy 期指针
+  移到停止按钮上 → 「停止」正常出现；`w9-02`（+`w9-02z`）**结算后指针一动未动** → 弹层已消失、按钮回到
+  发送箭头；`w9-03` 指针移开 → 仍无残留（与 `w9-02` 逐像素相同，sha 前 16 位 `c9b7c9b3da20ea37`）。
+  修前同现象对照 = `w8-06`（上一场的 `w8-02` 亦可辨）。
+  **仍未动的上游面**：壳内其余 managed tooltip 若「在指针下无点击卸载」（本例之外还有别的候选位），
+  仍受同一致命路径影响——彻底收口需 gpui-component 给 overlay 补「拥有者消失」的自愈（如 gpui 原生
+  那套 prepaint 检查），或壳内逐个换锚；本轮只把已观测到的那一处收干净，其余待点名。
 
 ### 6.2 小扫尾（原 R2c/R2d 余留）
 
@@ -747,6 +774,7 @@ turn footer 完成时间/耗时 meta（=G-S1）与 copy 成功态图标反馈（
 
 | 日期 | 变更 |
 |---|---|
+| 2026-10-17 | **「停止」tooltip 滞留收口（W-8 ⑤，第三场）**：上轮登记的「composer 停止 tooltip 在按钮卸载后滞留」定机制并对壳侧收口。滞留者是 gpui-component 的 **managed tooltip**（窗口级 overlay，隐藏路径只有触发元素的 `on_hover(false)` → `request_hide`）：回合结算让发送/停止两个同 id 不同的按钮互换，指针静止压在按钮上时停止按钮被卸载，hover-end 永不到 → 弹层留在屏上（移开指针也无效，接班的发送按钮不会替它发 `request_hide`）。gpui 原生 tooltip 由拥有者每帧 prepaint 重新注册、拥有者消失即释放（gpui 自带 `tooltip_is_released_when_its_owner_disappears`），结构性不滞留——修法即把 composer 停止按钮的 tooltip 从 `Button::tooltip` 摘到**只与按钮同生共死**的 anchor 包装上（`div().flex().id("chat-stop-tooltip-anchor").tooltip(原生).child(按钮)`，`Tooltip::element` 保外观 + 供测试看见）。新回归测试 `stop_tooltip_releases_with_the_button_when_the_turn_settles`（真窗口 root view + 真帧，新 helper `draw_window_for_test`）：anchor 盒 32×32 → 悬停 600ms 弹层在帧内 → 结算帧（指针未动）anchor 与弹层同时消失；回退成 `Button::tooltip` 第一步即红（已验）；壳 lib **345 全绿**。真 turn 对照帧 `w9-01`(+`z`) 悬停有提示 / `w9-02`(+`z`) 结算后无滞留 / `w9-03` 移开仍无残留（与 `w9-02` 逐像素同），修前同现象 = `w8-06` |
 | 2026-10-17 | **G-X6 有内容态复验 + 转写重载语义修复（W-8）**：本地桩模型（OpenAI 兼容假服务 + 隔离根 `app.json` 单模型指向 127.0.0.1，零外网零 key）让壳跑通真 turn，「窗口非前台完成 → 未读圆点 / 面板带行 / 点行清除 / 清除所有」全链复验（帧 `w7-01..04`），「隔离冒烟 0 models 造不出真 turn」的缺口关闭。顺带修「转写刷新被当作打开」：`OpenedSession` 增 `reload` 事件事实（`reload_transcript` 置真、`emit_opened` 置假），消费侧只在 `!reload` 时清未读 / 覆盖 tab 标题与模型选择——此前**每回合结算后**该会话未读被立即清掉（T2-16 定案是「打开会话清」）、tab 标题被清空、模型选择回落「默认模型」（对照帧 `w7-05`/`w7-06`、`w7-07`/`w7-08`；新测试 `transcript_reloads_keep_unread_turns_until_the_session_is_opened` 三断言，去保护必红已验；壳 lib **343 全绿**）。另登记（未立项）：reload 的 `tabs.open` 会激活其 tab，可能把结算会话抢到前台 |
 | 2026-10-17 | **结算抢前台收口（W-8 ③，第二场）**：上条登记的观察坐实——reload 走的 `tabs.open` 无条件激活该 tab 并记一次导航跳（`TabsState::open` + `record_navigation`），用户在别处看时回合结算会把前台拽回该会话。单测红证 `transcript_reloads_do_not_steal_the_active_tab`（修前 `left: Some("s-b") / right: Some("s-a")`），修 = reload 只做定向 scroller 复位（`list_sync_reset_for`），open 路径不变；真 turn 对照帧 `w8-01`/`w8-02`（修前抢）vs `w8-03`/`w8-04`（修后不抢），`w8-05` 证转写刷新仍在（16:12:25 / 15.2s 已在转写里）；壳 lib **344 全绿**。同轮新登记（未立项）：composer「停止」tooltip 在按钮卸载后滞留屏上（帧 `w8-06`，落点 `gpui_kit::component` tooltip 生命周期） |
 | 2026-10-17 | **G-SE31 异常退出提示交付**（`6091cb4a3`，接管那份无主 WIP，见 §6.1 W-4 结案）：诊断页读启动快照（进程内内存读，非每帧文件 stat），`detected` 时在日志控件上方出一整块提示——有崩溃报告 → 告警底纹、无报告 → 信息底纹，`ShieldAlert` + 分类标题 + 「上次会话日志位于 {path}」；干净退出整块不渲染。呈现用整元素设置项（`SettingItem::render`）横跨整卡、标题在块内；文案与桌面 `logging.previousCrash` / `.previousUncleanShutdown` 三语逐字同源（ftl 921→925 ×3）。**接管时修两处呈现偏差**：① 横幅原样显示 run-state 的英文 `reason`（桌面 Alert 只有标题 + 描述，UI 文案须本地化）→ 移除；② 标题原在标签栏、提示块只占窄控件槽 → 改全宽。壳 lib **342 全绿**（含该功能自带 2 测）；i18n:audit / repo-hygiene / rustfmt 绿；Xvfb :263 三态冒烟 0 panic/0 缺资产，证据帧 `w6-01..04`：修复前窄块带英文 reason / crash 告警块 / unclean 信息块含换行 / 干净态无块 |

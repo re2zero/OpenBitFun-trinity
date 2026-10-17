@@ -7070,22 +7070,50 @@ impl ShellWindow {
                 .filter(|child| child.kind == ChildKind::Btw)
                 .and_then(|child| child.btw_turn_id.clone())
                 .map(|turn_id| (session_id.clone(), turn_id));
-            // Web cancel shape: a round button holding a small square.
-            Button::new("chat-stop")
-                .icon(IconName::Square)
-                .with_variant(ButtonVariant::Danger)
-                .rounded(ButtonRounded::Size(px(999.)))
-                .tooltip(text.chat_stop.clone())
-                .on_click(move |_, _, _| {
-                    if let Some(handle) = runtime::runtime_handle() {
-                        match &btw_cancel {
-                            Some((child_session_id, turn_id)) => {
-                                handle.cancel_btw(child_session_id.clone(), turn_id.clone())
-                            }
-                            None => handle.cancel_turn(session_id.clone()),
-                        }
-                    }
+            // Web cancel shape: a round button holding a small square. The
+            // tooltip rides a wrapper that goes away with the button instead of
+            // riding `Button::tooltip` (W-8 ⑤): the kit's managed tooltip is a
+            // window-level overlay whose only hide path is the trigger's
+            // hover-end, so a turn that settles under a resting pointer unmounts
+            // the trigger before that event can fire and the popup sticks on
+            // screen. gpui's own tooltip is re-registered by its owner's paint
+            // every frame, so it disappears together with its owner.
+            let stop_label = text.chat_stop.clone();
+            div()
+                .flex()
+                .id("chat-stop-tooltip-anchor")
+                .debug_selector(|| "chat-stop-tooltip-anchor".to_string())
+                .tooltip(move |window, cx| {
+                    let label = stop_label.clone();
+                    // `element` rather than `new`: the popup is the same
+                    // styled box around the same plain string, and the
+                    // selector is the only handle the W-8 ⑤ regression test
+                    // has on a native tooltip (the kit's popup owns no
+                    // selector of its own).
+                    gpui_kit::component::tooltip::Tooltip::element(move |_, _| {
+                        div()
+                            .debug_selector(|| "chat-stop-tooltip".to_string())
+                            .child(label.clone())
+                    })
+                    .build(window, cx)
                 })
+                .child(
+                    Button::new("chat-stop")
+                        .icon(IconName::Square)
+                        .with_variant(ButtonVariant::Danger)
+                        .rounded(ButtonRounded::Size(px(999.)))
+                        .on_click(move |_, _, _| {
+                            if let Some(handle) = runtime::runtime_handle() {
+                                match &btw_cancel {
+                                    Some((child_session_id, turn_id)) => {
+                                        handle.cancel_btw(child_session_id.clone(), turn_id.clone())
+                                    }
+                                    None => handle.cancel_turn(session_id.clone()),
+                                }
+                            }
+                        }),
+                )
+                .into_any_element()
         } else {
             // Web send shape: a round primary button holding an up arrow.
             Button::new("chat-send")
@@ -7139,6 +7167,7 @@ impl ShellWindow {
                         state.set_value("", window, cx);
                     });
                 })
+                .into_any_element()
         };
 
         let strip = self.render_attachment_strip(cx);
@@ -11996,6 +12025,14 @@ mod tests {
         window.run_until_parked();
     }
 
+    /// Paints one real frame of the window (the root view pipeline, which the
+    /// harness's ad-hoc `draw` skips): tooltips and other deferred overlays
+    /// only prepaint here.
+    fn draw_window_for_test(window: &mut gpui_kit::VisualTestContext) {
+        window.update(|window, cx| window.draw(cx).clear(cx));
+        window.run_until_parked();
+    }
+
     /// Writes a query into the settings nav field through the shell's own input
     /// (the same path a keystroke takes) and paints the frame it produces.
     fn set_settings_search_for_test(
@@ -12357,6 +12394,92 @@ mod tests {
             picker,
             strip,
             card
+        );
+    }
+
+    /// W-8 ⑤: the stop button's tooltip must not outlive the button. The kit's
+    /// managed tooltip (`Button::tooltip`) hides only on its trigger's
+    /// hover-end, and a turn that settles under a resting pointer swaps the
+    /// button out before that event can arrive, so the popup used to stay on
+    /// screen (frame `w8-06`); the composer anchors the tooltip on a wrapper
+    /// that leaves the tree with the button instead. Both halves are pinned
+    /// here: shown while the stop button is up and hovered, released in the
+    /// frame the turn settles — without the pointer moving.
+    #[gpui_kit::test]
+    fn stop_tooltip_releases_with_the_button_when_the_turn_settles(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        // The shell rides a window root view here, not the harness's ad-hoc
+        // `draw`: only a real frame prepaints tooltips, which is the whole
+        // point of what this test has to watch.
+        let (shell, window) = cx.add_window_view(|window, cx| ShellWindow::new(tx, rx, window, cx));
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(
+                    RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                        reload: false,
+                        session_id: "s-1".into(),
+                        name: "First".into(),
+                        agent_type: "Standard".into(),
+                        model_id: Some("model-a".into()),
+                        entries: Vec::new(),
+                        busy: true,
+                        turn_times: Default::default(),
+                    }),
+                    window,
+                    cx,
+                );
+            });
+        });
+        draw_window_for_test(window);
+        let anchor = window
+            .debug_bounds("chat-stop-tooltip-anchor")
+            .expect("the running turn shows the stop button");
+        assert_eq!(
+            anchor.size,
+            size(px(32.), px(32.)),
+            "the tooltip anchor is exactly the icon button's box"
+        );
+
+        // The pointer comes to rest on the stop button and the tooltip shows
+        // through the same delay the kit's managed tooltip used.
+        window.simulate_mouse_move(anchor.center(), None, Modifiers::default());
+        draw_window_for_test(window);
+        window
+            .dispatcher
+            .advance_clock(std::time::Duration::from_millis(600));
+        window.run_until_parked();
+        draw_window_for_test(window);
+        assert!(
+            window.debug_bounds("chat-stop-tooltip").is_some(),
+            "hovering the stop button shows its tooltip"
+        );
+
+        // The turn settles under the stationary pointer.
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(
+                    RuntimeEvent::TurnFinished {
+                        session_id: "s-1".into(),
+                        error: None,
+                        duration_ms: Some(1_200),
+                        cancelled: false,
+                    },
+                    window,
+                    cx,
+                );
+            });
+        });
+        draw_window_for_test(window);
+        assert!(
+            window.debug_bounds("chat-stop-tooltip-anchor").is_none(),
+            "the stop button leaves with the settled turn"
+        );
+        assert!(
+            window.debug_bounds("chat-stop-tooltip").is_none(),
+            "and its tooltip does not outlive it"
         );
     }
 
