@@ -2431,7 +2431,14 @@ impl ShellWindow {
         let Some(session_id) = self.tabs.active_session_id().map(str::to_string) else {
             return;
         };
-        let Some(chat) = self.chat_for(&session_id) else {
+        self.list_sync_reset_for(&session_id, cx);
+    }
+
+    /// [`Self::list_sync_reset`] for one named session rather than whichever
+    /// tab happens to be active — a transcript reload refreshes a pane in
+    /// place, including one behind the reader's active tab.
+    fn list_sync_reset_for(&mut self, session_id: &str, cx: &mut Context<Self>) {
+        let Some(chat) = self.chat_for(session_id) else {
             return;
         };
         let count = chat.entries.len();
@@ -2620,11 +2627,20 @@ impl ShellWindow {
                     }
                     self.chats.push(chat);
                 }
-                // A transcript (re)load always lands on a tab the user just
-                // addressed; opening activates it and re-syncs the scroller.
-                self.tabs.open(TabKind::Session(opened.session_id));
+                // A transcript (re)load lands on the tab the user just
+                // addressed when it is an open; a reload is not an open, so
+                // it refreshes the pane in place instead. Pulling the
+                // settling session's tab to the front would take the reader
+                // off whatever they moved on to, and recording the hop would
+                // also clobber their back/forward history with a navigation
+                // they never made.
+                if opened.reload {
+                    self.list_sync_reset_for(&opened.session_id, cx);
+                } else {
+                    self.tabs.open(TabKind::Session(opened.session_id));
+                    self.list_sync_reset(cx);
+                }
                 self.apply_subagent_links();
-                self.list_sync_reset(cx);
                 tracing::info!("Session transcript ready in a session tab");
             }
             RuntimeEvent::SessionOpenFailed(error) => {
@@ -15259,6 +15275,96 @@ mod tests {
                     shell.chat_for("s-1").map(|chat| chat.name.as_str()),
                     Some("Renamed"),
                     "an open's title replaces the pane's"
+                );
+            });
+        });
+    }
+
+    /// A reload refreshes an open pane's transcript in place. It is not a
+    /// user navigation: the settling session's tab must not take the
+    /// foreground away from whatever the reader is looking at, and the
+    /// reload must not leave a hop in the back/forward history.
+    #[gpui_kit::test]
+    fn transcript_reloads_do_not_steal_the_active_tab(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        let opened = |session_id: &str, reload: bool| crate::runtime::OpenedSession {
+            session_id: session_id.into(),
+            name: if reload {
+                String::new()
+            } else {
+                format!("Session {session_id}")
+            },
+            agent_type: "Standard".into(),
+            model_id: None,
+            entries: Vec::new(),
+            turn_times: Default::default(),
+            reload,
+            busy: false,
+        };
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                // The reader settles on session B, then goes back to A: the
+                // forward history points at B again.
+                shell.apply_runtime_event(
+                    RuntimeEvent::SessionOpened(opened("s-a", false)),
+                    window,
+                    cx,
+                );
+                shell.apply_runtime_event(
+                    RuntimeEvent::SessionOpened(opened("s-b", false)),
+                    window,
+                    cx,
+                );
+                assert_eq!(shell.tabs.active_session_id(), Some("s-b"));
+                assert!(shell.tabs.go_back());
+                assert_eq!(shell.tabs.active_session_id(), Some("s-a"));
+                assert!(shell.tabs.can_go_forward());
+                // B's turn settles while A is on screen: its transcript
+                // refresh lands as a reload.
+                shell.apply_runtime_event(
+                    RuntimeEvent::SessionOpened(opened("s-b", true)),
+                    window,
+                    cx,
+                );
+                assert_eq!(
+                    shell.tabs.active_session_id(),
+                    Some("s-a"),
+                    "a reload must not pull the reader onto the settling session's tab"
+                );
+                assert!(
+                    shell.tabs.can_go_forward(),
+                    "a reload must not record a navigation hop"
+                );
+                // A scene tab is not spared either: the refresh keeps it in
+                // front of the reader.
+                shell
+                    .tabs
+                    .open(TabKind::Scene(crate::tabs::SceneId::Trinity));
+                assert_eq!(
+                    shell.tabs.active_kind(),
+                    Some(&TabKind::Scene(crate::tabs::SceneId::Trinity))
+                );
+                shell.apply_runtime_event(
+                    RuntimeEvent::SessionOpened(opened("s-a", true)),
+                    window,
+                    cx,
+                );
+                assert_eq!(
+                    shell.tabs.active_kind(),
+                    Some(&TabKind::Scene(crate::tabs::SceneId::Trinity)),
+                    "a reload must keep a scene tab in front"
+                );
+                // The reload still refreshed the pane: a real open of it is
+                // served from the state the refresh wrote.
+                assert_eq!(
+                    shell.chat_for("s-b").map(|chat| chat.name.as_str()),
+                    Some("Session s-b"),
+                    "a reload keeps the pane it refreshed"
                 );
             });
         });
