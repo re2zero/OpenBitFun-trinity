@@ -133,6 +133,31 @@ test('allows the published attribution identifiers only when they carry every re
   }
 });
 
+test('allows the legacy insights report key as on-disk data spelling', () => {
+  const legacyInsightsReportKey = `${retiredLowerName}_md_additions`;
+
+  for (const line of [
+    `    /// as \`${legacyInsightsReportKey}\`; without the alias those saved reports fail to`,
+    `    #[serde(alias = "${legacyInsightsReportKey}")]`,
+    `            "${legacyInsightsReportKey}": [`,
+    `        assert!(!suggestions.contains_key("${legacyInsightsReportKey}"));`,
+    `        let current = LEGACY_REPORT.replace("${legacyInsightsReportKey}", "openbitfun_md_additions");`,
+  ]) {
+    assert.deepEqual(violationsFor(line), [], line);
+  }
+
+  for (const line of [
+    `// ${retiredLowerName} reports carry ${legacyInsightsReportKey}`,
+    `const ${retiredLowerName}ReportKey = "${legacyInsightsReportKey}";`,
+    `Co-authored-by: ${retiredName} <${legacyInsightsReportKey}>`,
+  ]) {
+    assert.ok(
+      violationsFor(line).some((violation) => violation.rule === 'retired-product-name'),
+      line,
+    );
+  }
+});
+
 test('limits retired identity data to the one-time production migration boundary', () => {
   for (const file of [
   ]) {

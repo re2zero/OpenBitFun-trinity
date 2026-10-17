@@ -583,7 +583,15 @@ pub(crate) fn render_page(
     text: &ShellText,
     cx: &App,
 ) -> gpui_kit::AnyElement {
-    let mut column = div().w_full().h_full().flex().flex_col().gap_3().p_4();
+    // Natural height: `h_full()` capped the page inside its scroll wrapper at
+    // the viewport height, so a long memory list had no scroll extent.
+    let mut column = div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .p_4()
+        .debug_selector(|| "trinity-page-content".to_string());
 
     let mut header = div()
         .flex()
@@ -1647,27 +1655,31 @@ pub(crate) fn open_memory_transfer_dialog(
             }
         };
         // 448px default panel width clips a 460px body.
-        dialog.w(px(492.)).title(div().child(title)).child(content).footer(
-            div()
-                .flex()
-                .flex_row()
-                .justify_end()
-                .gap_2()
-                .child(
-                    Button::new("trinity-transfer-cancel")
-                        .label(text.session_action_cancel.clone())
-                        .with_variant(ButtonVariant::Ghost)
-                        .disabled(busy)
-                        .on_click(cancel.clone()),
-                )
-                .child(
-                    Button::new("trinity-transfer-confirm")
-                        .label(confirm_label)
-                        .with_variant(ButtonVariant::Primary)
-                        .disabled(busy)
-                        .on_click(confirm.clone()),
-                ),
-        )
+        dialog
+            .w(px(492.))
+            .title(div().child(title))
+            .child(content)
+            .footer(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("trinity-transfer-cancel")
+                            .label(text.session_action_cancel.clone())
+                            .with_variant(ButtonVariant::Ghost)
+                            .disabled(busy)
+                            .on_click(cancel.clone()),
+                    )
+                    .child(
+                        Button::new("trinity-transfer-confirm")
+                            .label(confirm_label)
+                            .with_variant(ButtonVariant::Primary)
+                            .disabled(busy)
+                            .on_click(confirm.clone()),
+                    ),
+            )
     });
 }
 

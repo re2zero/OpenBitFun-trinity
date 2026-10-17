@@ -443,15 +443,29 @@
   **✅ 交付**（2026-10-15，A 批 3）****：报告新增三段建议区（OPENBITFUN.md 增补 / 值得一试 / 用法模式），每行一个复制钮，
   入剪贴板的载荷与 web 一致（增补 `content` / 特性 `example_usage`（空则不出钮）/ 模式 `suggested_prompt`，
   后者标签「试试这个提示词」）；列表为空整段不渲染（同 web 条件）。
-  **未做视觉冒烟**：本机洞察报告 store 为空且隔离环境无模型目录，无法出报告 → 待有报告时目视复验（见 HANDOFF-081）。
+  **✅ 视觉复验（2026-10-17，W-5 收官）**：本机真报告（`~/.config/trinity/data/usage-data/insights-1785725436.json`，
+  2026-08-03 生成）拷入隔离根 `config/data/usage-data/` 后首开即命中**「旧报告解析失败」假空态**——日志
+  `Failed to parse report … missing field openbitfun_md_additions`：改名前的旧键（`bitfun_md_additions`）未留
+  别名，报告整份被跳过、页面显示「暂无洞察报告」（**修 ①**：core `types.rs` 加 `#[serde(alias)]` + 红/绿回归测试
+  `legacy_reports_still_carry_the_md_additions`；该缺陷桌面端同源，一并修掉）。修后三段建议区全部渲染
+  （OPENBITFUN.md 增补 / 值得一试 / 用法模式），逐行复制钮实测：`提交规范` 复制 = 报告 `content` 原文、
+  `模块接入对齐 · 试试这个提示词` = `suggested_prompt` 原文（`xclip -o` 逐字比对相等）。证据帧
+  `w5-01`（修复前假空态）/`w5-04`/`w5-05`/`w5-06`。
 - **G-I6 Open HTML + 历史 5 份 meta 卡**：web `:287-431,529-577`；壳历史列表无 meta 细节、无 Open HTML
   （HTML 报告文件明确留给 desktop-web，`insights.rs:1-8`）。**A 档（meta）/ 不补（HTML）**。
   **✅ 交付 meta 半**（2026-10-15，A 批 3）****：历史区头「报告历史」+「仅保留最近 5 份报告」；每行 meta 卡 =
   生成时间（本地 `YYYY-MM-DD HH:MM`）+ 窗口（ISO 前 10 字，`start → end`）+ 会话 `X / Y` + 消息数 +
   小时 + 覆盖天数 + 生成用量 tokens + 生成模型（` + ` 连接）+ 目标/语言标签（去重、目标优先，同 web 取前 3）。
   Open HTML 维持**不补**（需 `plugin-opener` 原生打开，HTML 报告文件归 desktop-web）。
-  **同 G-I5 的待复验项**：本机无报告数据，meta 卡只经纯函数测试（`history_range/history_timestamp/history_tags`），
-  未目视。
+  **✅ 视觉复验（2026-10-17，W-5 收官）**：真报告下 meta 卡渲染「6 / 6 会话 · 243 条消息 · 1.2 小时 · 覆盖 3 天 ·
+  生成报告用量: 61630 tokens · deepseek-v4-flash-free」+ 目标/语言标签行，与报告字段逐项一致。**顺带修 ②**
+  （时间戳单位）：`generated_at` 持久化是 **epoch 秒**（生成端 `SystemTime::…as_secs()`、web `* 1000`），壳按毫秒
+  解释 → 行首显示 `1970-01-22 00:02`；修后 `2026-08-03 10:50`（帧 `w5-02` 修复前 / `w5-03` 修复后，后者含
+  真实时间与窗口 `2026-08-01 → 2026-08-03`）。**顺带修 ③**（页面滚动）：页面根列 `h_full()` 把滚动容器内容封顶在
+  视口高——长报告越过折叠线后**滚轮实测无效、建议区不可达**；去 `h_full` 后滚动生效（帧 `w5-05` 为滚到底的建议区，
+  无头探针 `insights_page_keeps_a_scroll_extent_for_long_content` 修复前 content=container=755px、修复后 content>container）。
+  同型结构在任务看板/认知体两页一并修（§6.1 W-7，探针 `tasks_and_trinity_pages_keep_a_scroll_extent_for_long_content`；
+  认知体真记忆列表滚动帧 `w5-08`/`w5-09`）。
 
 ### 2.12 认知体 Trinity（G-Y）
 
@@ -647,13 +661,29 @@
   装入「只有本批内容」的自建副本，工作区其余部分一动未动；A 批 2 的隔离验证 = 受控换入换出 + 哈希自检，换入期 315 绿、
   恢复后并集 317 绿），该 WIP 原样留在工作区（A 批 2 交付后复核：其 4 个 ftl 键、i18n 的字段/helper、settings.rs 的横幅与两条测试
   仍在，内容逐字未变）；**接管或覆盖它前需公子或作者点头**。
-- **W-5 A 批 3 余项已清**：G-Y4 / G-A3 / G-A6 / G-M2 四项由尾车交付（`b402be1a9`，逐项注见 §2.8/§2.9/§2.12）。
-  G-I5/G-I6 的视觉复验仍待本机出现洞察报告时补。
+- **W-5 A 批 3 余项已清（2026-10-17 收官）**：G-Y4 / G-A3 / G-A6 / G-M2 四项由尾车交付（`b402be1a9`，逐项注见 §2.8/§2.9/§2.12）。
+  G-I5/G-I6 视觉复验已补：本机真报告（2026-08-03，`~/.config/trinity/data/usage-data/insights-1785725436.json`）拷入
+  隔离根即可复现与复验（见 §2.11 两行、§7 记录；证据帧 `w5-01..09`）。
 - **W-6 对话框宽度裁切（本批顺带修）**：`gpui_component` 的 `Dialog` 默认 `w(448px)` 且 body 是
   `flex_1 + overflow_hidden`，内容更宽的对话框会把**靠右**的元素（右对齐行、同行右钮）整块排到裁切外——
   表现为「按钮不显示但代码里有」。壳既有 6 个 460–560 宽的对话框全中（本批自己的 MCP 导入对话框先撞上）。
   修法 = 每个对话框显式 `.w(px(内容宽 + 32.))`（左右 padding 各 16）；`a4-15` 为 JSON 编辑器复验帧。
   后续新对话框按此自查：**内容不设宽（`w_full`）或给面板补宽，二选一，别只给内容设宽**。
+- **W-7 G-I5/G-I6 视觉复验顺带修四项（2026-10-17）**：冒烟/无头探针中发现、HEAD 既有，逐项已回写对应行：
+  ① **旧洞察报告键兼容**（core `agentic/insights/types.rs`）：`InsightsSuggestions` 的
+  `openbitfun_md_additions` 在改名前持久化为 `bitfun_md_additions`，改名未留别名 → 旧报告整份
+  反序列化失败、`load_latest_reports` 静默跳过（页面假空态，桌面端同源）。修 = 该字段 `#[serde(alias = "bitfun_md_additions")]`
+  + 回归测试「旧键可读、新键照写」（红/绿双证）。
+  ② **历史卡时间戳单位**（`insights.rs::history_timestamp`）：`generated_at` 是 epoch 秒，壳按毫秒解释
+  → `1970-01-22`；修 = `timestamp_opt(secs, 0)`，测试改为 `timestamp()` 并注明契约。
+  ③ **三页滚动内容封顶**（`insights.rs` / `tasks.rs` / `trinity.rs` 页面根列）：`h_full()` 让页面在滚动容器里
+  恒等于视口高 → 长内容越过折叠线不可达（滚轮实测无效、无滚动条）。修 = 页面根列改自然高度（宽度仍 `w_full`），
+  各页加 `{page}-page/-content` debug selector，两条无头探针钉住（修复前 content=container=755px，修复后 content>container）。
+  空态视觉无回退（`Empty` 组件自带留白；帧 `w5-01`/`w5-07`）。
+  ④ **认知体首开不载记忆**（`shell.rs::toggle_trinity_view`）：启动期的状态预取 `fetch_trinity_status_once`
+  先落 `trinity.loaded = true`，而开页守卫 `if !self.trinity.loaded` 把「状态」与「记忆」两个面共用同一 flag
+  → 记忆列表永远停在「载入中…」（真 daemon 必备场景）。修 = `trinity_open_fetches(status_loaded, memories_loaded,
+  memories_loading)` 纯投影（两面各自 flag + 在飞守卫）+ 单测；冒烟复验首开即出真记忆行（帧 `w5-08`）。
 
 ### 6.2 小扫尾（原 R2c/R2d 余留）
 
@@ -674,6 +704,7 @@ turn footer 完成时间/耗时 meta（=G-S1）与 copy 成功态图标反馈（
 
 | 日期 | 变更 |
 |---|---|
+| 2026-10-17 | **G-I5/G-I6 视觉复验收官（W-5）**，顺带修 **4 项既有缺陷**（详见 §6.1 W-7、§2.11 两行）：① core 洞察类型补改名前的旧键别名 `bitfun_md_additions`（旧报告曾整份解析失败 → 页面假空态，桌面端同源）；② 历史卡时间戳按 epoch 秒解释（曾显示 `1970-01-22`，现 `2026-08-03 10:50`）；③ 洞察/任务看板/认知体三页页面根列去 `h_full()`（滚动容器内容被封顶在视口高 → 长内容越过折叠线不可达，滚轮实测无效）；④ 认知体开页守卫拆成「状态 / 记忆」两面各自 flag（启动期状态预取曾顶掉首次记忆加载 → 列表恒停「载入中…」）。复验素材 = 本机真报告（2026-08-03，`insights-1785725436.json`）拷入隔离根；证据帧 `w5-01..09`（假空态修复前 / 时间戳修复前 / 历史卡 / 报告头 / 建议三段 + 复制 / 任务看板 / 认知体真记忆列表与滚动）；壳 lib **342 全绿**（含 3 条新无头探针/单测，探针均红/绿双证），core 洞察域 13 测绿；Xvfb :262 冒烟 0 panic/0 缺资产；复制载荷 `xclip` 逐字比对相等 |
 | 2026-10-16 | **A 批 4（会话/终端/杂项）交付**（`bb9f2925f`）：G-S1 turn footer 完成时刻/耗时 meta（`TurnFinished` +`duration_ms`/`cancelled`、`OpenedSession` +`turn_times` 由转写时间戳派生）、G-S2 copy 成功态反馈扩到工具行（`CopiedThing::Block/ToolRow` + 共享 2s 窗口）、G-T1 终端位置偏好 `bottom/right` + 分隔条双击尺寸档（180/300/420，每方位一份分割状态）、G-T2 标签行内「在文件管理器显示」+ 启动命令徽标、G-F8 资源面板最大化/还原 + 换位、G-X6 通知中心（铃铛 + 未读圆点 + 按会话列行 + 清除所有）、G-SE30 归档页按工作区分组（先补跨工作区归档投影：新事件 + 带 workspace_id 的恢复/删除 + 合并重读；分组头计数可折叠 + 行内回执）。ftl 898→921 ×3；**提交内容**壳 337 lib 全绿（工作区并集 339）。Xvfb :253 冒烟 0 panic/0 缺资产（唯一 ERROR = Xvfb xinput 既有噪声），证据帧 `a5-01..14`：终端右列 / 档位悬停（舒适·展开）/ 标签揭示 tooltip / footer meta `20:00:31 1m35s` / 复制勾选与 2s 复位 / 归档两工作区分组 / 展开行 + 恢复删除 / 恢复回执 / 通知中心空态 / 面板停靠四钮 / 最大化 / 换位。**顺带修2**（均为冒烟发现，HEAD 既有）：① 归档页整表塞进设置项右侧控件槽导致行内动作被列宽裁掉（改 `SettingItem::layout(Axis::Vertical)`，断言经真实 640px 页面比对动作右缘并已验证去掉修复即红）；② 顶栏面板钮未 `ensure_resource_page` 导致首次打开面板体空白（补 ensure + 断言）。另记：`settings.rs` 诊断横幅 WIP 与 `stash@{0}`（079 并发规模档）仍未动 |
 | 2026-10-15 | **A 批 2（设置小字段）部分交付**（`4ba07163a`）：G-SE5 界面字号（外观页档位下拉 + 自定义 12–20 px，渲染侧 `set_rem_size`，默认档 = 壳原有字号）、G-SE10 流空闲/首字超时、G-SE11 代理（按 key 合并写、未知键不丢）、G-SE18 工具/提问超时、G-SE19 子智能体默认模型 + 批量策略 + 两个并发上限（只写配置、不动核心并发；证据帧 `a2-06`/`a2-07`/`a2-09`）、G-SE20 按需加载工具、G-SE21 参数 JSON 修复、G-SE22 审核容量（证据帧 `a2-08`）；G-SE30 暂缓（壳归档列表只持当前工作区，1:1 需先加跨工作区归档投影）；G-SE31 因工作区那份未登记 WIP 正是该语义而按纪律未动（见 §6.1 W-4）。ftl 800→861 ×3、壳 315 lib（提交内容）/317（工作区并集）全绿。Xvfb :190 冒烟 0 panic/0 缺资产（唯一 ERROR = Xvfb xinput 既有噪声），证据帧 `a2-01..09`：字号行 / 六档菜单 / 切「大」后整壳等比放大 / 模型页两分节（超时 600·600 与禁用态代理）/ 代理启用并写入地址后落盘 / 执行页工具与超时 / 子智能体与两个开关 / 审核容量 / 子智能体默认模型菜单（继承父会话·快速模型·主力模型） |
 | 2026-10-16 | **A 批 3 尾车交付**（`b402be1a9`）：G-A6 Harness 概览区（四卡 + 共享词标题 + 内置 SVG + canvas 路线图 + harness 行不再混进模式列表）、G-A3 子代理行内模型菜单（四档 + 具体模型；builtin 走 `ai.agent_model_defaults.subagents.builtin` 读-合并-写，custom 走 `update_and_save_custom_subagent_config`，成功重拉目录、失败出 notice）、G-M2 MCP 导入对话框（粘贴或键入路径读文件 → 预览勾选 + 目标 id 改名 + 空/非法/占用三类实时警示 → 合并写：强制 `enabled:false`、不覆盖、剥导入标记）、G-Y4 记忆导出/导入（daemon `memory.export`/`memory.import` + 键入路径；空路径拦、daemon 错误内联、跨身份容器重绘为二次确认后带 `confirm_being_id` 重试）。ftl 865→902 ×3（37 键 ×3）；**提交内容**壳 327 lib（并集 329，含 MCP 纯函数/布局/事件新测）。Xvfb :241 冒烟 0 panic/0 缺资产，证据帧 `a4-01..15`：四卡 harness 区 / 模型菜单（选 快速模型 落盘 `Explore={"kind":"fixed","model_id":"fast"}`，再清档回落并删键）/ MCP 读文件+预览 / 导入落盘两条 `enabled:false` / 撞 id 预览 + 改名实时消警 / 再导一处新 URL 后列表 3 行 / Trinity 导出真库 1215 节点回执 / 空路径与 daemon 错误内联 / stub daemon 跨身份确认两段式。**顺带修2**：① 6 个既有对话框的 448px 裁切（§6.1 W-6）；② MCP 预览行的警示改为跟随输入实时变化（冒烟中发现改名后旧警示仍在）。另记两条无主 WIP 现状：`settings.rs` 诊断横幅 WIP 与 `stash@{0}`（079 并发规模档）均未动 |

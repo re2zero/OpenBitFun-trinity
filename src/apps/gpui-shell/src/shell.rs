@@ -745,6 +745,18 @@ fn nav_actions() -> Vec<NavAction> {
     ]
 }
 
+/// Which trinity panes the tab still has to fetch on open: `(status, memories)`.
+/// The status pane refetches only until it landed once; the timeline has its
+/// own fetched flag and an in-flight guard, so the startup status prefetch can
+/// never stand in for the memory load.
+fn trinity_open_fetches(
+    status_loaded: bool,
+    memories_loaded: bool,
+    memories_loading: bool,
+) -> (bool, bool) {
+    (!status_loaded, !memories_loaded && !memories_loading)
+}
+
 /// Row label for a nav destination: the desktop nav nouns (智能助理/认知体/
 /// 任务看板/小应用/扩展与兼容), not the scene titles the tabs show.
 fn nav_label<'a>(action: NavAction, text: &'a ShellText) -> &'a str {
@@ -4334,11 +4346,23 @@ impl ShellWindow {
         }
     }
 
-    /// Trinity console tab; the first open pulls status + timeline.
+    /// Trinity console tab; the first open pulls status + timeline. The two
+    /// panes are planned independently: the startup status prefetch
+    /// ([`Self::fetch_trinity_status_once`]) marks the status fetched, and
+    /// gating the timeline on that same flag left the memory list at its
+    /// loading label forever on a live daemon.
     fn toggle_trinity_view(&mut self, cx: &mut Context<Self>) {
-        if !self.trinity.loaded {
-            if let Some(handle) = runtime::runtime_handle() {
+        let (fetch_status, fetch_memories) = trinity_open_fetches(
+            self.trinity.loaded,
+            self.trinity.memories_loaded,
+            self.trinity.memories_loading,
+        );
+        if let Some(handle) = runtime::runtime_handle() {
+            if fetch_status {
                 handle.trinity_refresh(self.event_tx.clone());
+            }
+            if fetch_memories {
+                self.trinity.memories_loading = true;
                 handle.trinity_load_memories(self.event_tx.clone(), None);
             }
         }
@@ -8910,6 +8934,7 @@ impl Render for ShellWindow {
             },
             Some(TabKind::Scene(SceneId::Insights)) => div()
                 .id("insights-page")
+                .debug_selector(|| "insights-page".to_string())
                 .flex_1()
                 .min_h_0()
                 .min_w_0()
@@ -8924,6 +8949,7 @@ impl Render for ShellWindow {
                 .into_any_element(),
             Some(TabKind::Scene(SceneId::Tasks)) => div()
                 .id("tasks-page")
+                .debug_selector(|| "tasks-page".to_string())
                 .flex_1()
                 .min_h_0()
                 .min_w_0()
@@ -8947,6 +8973,7 @@ impl Render for ShellWindow {
             },
             Some(TabKind::Scene(SceneId::Trinity)) => div()
                 .id("trinity-page")
+                .debug_selector(|| "trinity-page".to_string())
                 .flex_1()
                 .min_h_0()
                 .min_w_0()
@@ -12637,6 +12664,193 @@ mod tests {
             assert_eq!(shell.tasks.error.as_deref(), Some("cron: boom"));
             assert!(shell.chats.is_empty(), "page events never touch the chat");
         });
+    }
+
+    /// The insights page keeps a scroll extent for long content: the page
+    /// column must grow past the viewport so the report body and the
+    /// suggestions below the fold stay reachable. A column pinned to
+    /// `h_full()` capped the scrollable content at the container height (found
+    /// by the G-I5/G-I6 visual pass against a real report).
+    #[gpui_kit::test]
+    fn insights_page_keeps_a_scroll_extent_for_long_content(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.tabs.open(TabKind::Scene(tabs::SceneId::Insights));
+                shell.insights.loaded = true;
+                shell.insights.latest = (0..20)
+                    .map(
+                        |index| openbitfun_core::agentic::insights::InsightsReportMeta {
+                            generated_at: 1_785_725_436 + index,
+                            total_sessions: 6,
+                            analyzed_sessions: 6,
+                            date_range: openbitfun_core::agentic::insights::DateRange {
+                                start: "2026-08-01T16:31:29.115+00:00".into(),
+                                end: "2026-08-03T00:44:44.204+00:00".into(),
+                            },
+                            path: format!("/tmp/usage-data/insights-1785725436-{index}.json"),
+                            total_messages: 243,
+                            days_covered: 3,
+                            total_hours: 1.2,
+                            top_goals: vec!["goals".into()],
+                            languages: vec!["Rust".into()],
+                            session_usage: Default::default(),
+                            generation_usage: Default::default(),
+                            generation_models: vec!["deepseek-v4-flash-free".into()],
+                        },
+                    )
+                    .collect();
+                cx.notify();
+            });
+        });
+
+        let shell_for_draw = shell.clone();
+        window.draw(
+            point(px(0.), px(0.)),
+            size(px(1200.), px(800.)),
+            move |_, _| shell_for_draw.into_any_element(),
+        );
+        window.run_until_parked();
+
+        let container = window
+            .debug_bounds("insights-page")
+            .expect("the insights page renders inside its scroll container");
+        let content = window
+            .debug_bounds("insights-page-content")
+            .expect("the page column renders");
+        assert!(
+            content.size.height > container.size.height,
+            "long content keeps a scroll extent: content height {} vs container height {}",
+            content.size.height,
+            container.size.height
+        );
+    }
+
+    /// The tasks and trinity pages share the insights page's wrapper + column
+    /// shape: their columns must keep a scroll extent for long content too
+    /// (the job list and the paged memory timeline both grow without bound).
+    #[gpui_kit::test]
+    fn tasks_and_trinity_pages_keep_a_scroll_extent_for_long_content(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use openbitfun_core::service::cron::{
+            CronJob, CronJobPayload, CronJobTarget, CronSchedule, CronWorkspaceRef,
+        };
+
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        let draw_page = |window: &mut gpui_kit::VisualTestContext, shell: &Entity<ShellWindow>| {
+            let shell = shell.clone();
+            window.draw(
+                point(px(0.), px(0.)),
+                size(px(1200.), px(800.)),
+                move |_, _| shell.into_any_element(),
+            );
+            window.run_until_parked();
+        };
+
+        // Tasks: a long all-jobs list.
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.tabs.open(TabKind::Scene(tabs::SceneId::Tasks));
+                shell.tasks.loaded = true;
+                shell.tasks.jobs = (0..30)
+                    .map(|index| CronJob {
+                        id: format!("job-{index}"),
+                        name: format!("job-{index}"),
+                        schedule: CronSchedule::Cron {
+                            expr: "0 9 * * *".to_string(),
+                            tz: None,
+                        },
+                        payload: CronJobPayload {
+                            text: String::new(),
+                        },
+                        enabled: true,
+                        target: CronJobTarget::Workspace {
+                            workspace: CronWorkspaceRef {
+                                workspace_id: None,
+                                workspace_path: String::new(),
+                                project_workspace_path: None,
+                                execution_target: None,
+                                remote_connection_id: None,
+                                remote_ssh_host: None,
+                            },
+                            launch: Default::default(),
+                        },
+                        created_at_ms: 0,
+                        config_updated_at_ms: 0,
+                        updated_at_ms: 0,
+                        state: Default::default(),
+                    })
+                    .collect();
+                cx.notify();
+            });
+        });
+        draw_page(&mut window, &shell);
+        let container = window
+            .debug_bounds("tasks-page")
+            .expect("the tasks page renders inside its scroll container");
+        let content = window
+            .debug_bounds("tasks-page-content")
+            .expect("the tasks page column renders");
+        assert!(
+            content.size.height > container.size.height,
+            "the tasks page keeps a scroll extent: content height {} vs container height {}",
+            content.size.height,
+            container.size.height
+        );
+
+        // Trinity: a long memory timeline.
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.tabs.open(TabKind::Scene(tabs::SceneId::Trinity));
+                shell.trinity.loaded = true;
+                shell.trinity.memories_loaded = true;
+                shell.trinity.memories = (0..30)
+                    .map(|index| crate::trinity::MemoryEntry {
+                        id: Some(format!("m-{index}")),
+                        content: Some(format!("memory entry {index}")),
+                        kind: None,
+                        layer: None,
+                        strength: None,
+                        timestamp: None,
+                    })
+                    .collect();
+                cx.notify();
+            });
+        });
+        draw_page(&mut window, &shell);
+        let container = window
+            .debug_bounds("trinity-page")
+            .expect("the trinity page renders inside its scroll container");
+        let content = window
+            .debug_bounds("trinity-page-content")
+            .expect("the trinity page column renders");
+        assert!(
+            content.size.height > container.size.height,
+            "the trinity page keeps a scroll extent: content height {} vs container height {}",
+            content.size.height,
+            container.size.height
+        );
+    }
+
+    /// The trinity tab fetches status and timeline on independent flags: the
+    /// startup status prefetch must not suppress the memory load (a live daemon
+    /// answers that prefetch before the user opens the tab, which left the
+    /// memory pane at its loading label), and an in-flight load is not doubled.
+    #[test]
+    fn trinity_open_fetches_each_pane_once() {
+        assert_eq!(trinity_open_fetches(false, false, false), (true, true));
+        assert_eq!(trinity_open_fetches(true, false, false), (false, true));
+        assert_eq!(trinity_open_fetches(true, true, false), (false, false));
+        assert_eq!(trinity_open_fetches(true, false, true), (false, false));
     }
 
     /// Archived rows stay out of the sidebar until the toggle is on, and the

@@ -180,11 +180,13 @@ pub(crate) fn render_page(
     cx: &App,
 ) -> gpui_kit::AnyElement {
     let reload_tx = tx.clone();
+    // Natural height: `h_full()` capped the page inside its scroll wrapper at
+    // the viewport height, so a long job list had no scroll extent.
     let mut column = div()
         .w_full()
-        .h_full()
         .flex()
         .flex_col()
+        .debug_selector(|| "tasks-page-content".to_string())
         .gap_3()
         .p_4()
         .child(

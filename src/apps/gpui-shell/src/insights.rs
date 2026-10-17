@@ -92,14 +92,15 @@ pub(crate) fn selected_model_label(options: &[(String, String)], selected: &str)
         })
 }
 
-/// The history card's generation timestamp, in local time (the report stores
-/// epoch milliseconds).
-pub(crate) fn history_timestamp(generated_at_ms: u64) -> String {
+/// The history card's generation timestamp, in local time. Reports persist
+/// `generated_at` as epoch **seconds** (`SystemTime::…as_secs()`; the web
+/// multiplies by 1000), not milliseconds.
+pub(crate) fn history_timestamp(generated_at_secs: u64) -> String {
     chrono::Local
-        .timestamp_millis_opt(generated_at_ms as i64)
+        .timestamp_opt(generated_at_secs as i64, 0)
         .single()
         .map(|at| at.format("%Y-%m-%d %H:%M").to_string())
-        .unwrap_or_else(|| generated_at_ms.to_string())
+        .unwrap_or_else(|| generated_at_secs.to_string())
 }
 
 /// The card's analysed window; the stored instants are ISO strings, so only
@@ -127,6 +128,10 @@ pub(crate) fn history_tags(meta: &InsightsReportMeta) -> Vec<String> {
 
 /// The full page: a generate header, the report history, and the currently
 /// open report.
+///
+/// The column keeps its natural height: forcing `h_full()` capped the scroll
+/// container's content at the viewport, so a long report had no scroll extent
+/// and everything past the fold was unreachable.
 pub(crate) fn render_page(
     state: &InsightsPageState,
     view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
@@ -134,7 +139,13 @@ pub(crate) fn render_page(
     text: &ShellText,
     cx: &App,
 ) -> gpui_kit::AnyElement {
-    let mut column = div().w_full().h_full().flex().flex_col().gap_3().p_4();
+    let mut column = div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .gap_3()
+        .p_4()
+        .debug_selector(|| "insights-page-content".to_string());
 
     let mut header = div()
         .flex()
@@ -746,13 +757,13 @@ mod tests {
             "2026-09-15 → 2026-10-15"
         );
         assert_eq!(history_range("n/a", "n/a"), "n/a → n/a");
-        // The same instant through the local calendar, so the assertion
-        // holds wherever the suite runs.
+        // The report persists epoch seconds; the same instant goes through the
+        // local calendar, so the assertion holds wherever the suite runs.
         let stamp = chrono::Local
             .with_ymd_and_hms(2026, 10, 15, 9, 30, 0)
             .single()
             .expect("valid local time")
-            .timestamp_millis() as u64;
+            .timestamp() as u64;
         assert_eq!(history_timestamp(stamp), "2026-10-15 09:30");
     }
 
