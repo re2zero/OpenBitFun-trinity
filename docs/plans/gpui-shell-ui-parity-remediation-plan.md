@@ -78,12 +78,12 @@
 | application.appearance 外观 | ✅ 语言/主题 | 子集 | G-SE4（外观包）、G-SE5（字号/动效） |
 | application.pet 宠物 | — | 不补 | 不补（产品形态） |
 | application.voice 语音 | — | 缺 | **G-SE6（C 档）** |
-| application.shortcuts 快捷键 | — | 缺 | G-SE7（B 档 = T3-24 只读页；运行时改键不补） |
+| application.shortcuts 快捷键 | ✅ 只读键位表（全局/浮层/终端/文本编辑四组 + keycap） | 子集（不做运行时改键） | **G-SE7 ✅ 交付** |
 | application.terminal 终端 | ✅ 字号/字体/回滚/Shell 命令/终端 Profile | 同构（壳超集） | 无（web 只有默认终端 Combobox，壳不降级） |
 | application.editor 编辑器 | — | 不补 | 不补（前置缺失：壳无编辑器宿主） |
 | ai.models 模型 | ✅ 默认模型/已配置清单 | 子集 | G-SE8..G-SE12 |
-| ai.memory 记忆 | — | 缺 | **G-SE13（B 档，未立项）** |
-| ai.trinity 引擎 | — | 缺 | **G-SE14（B 档，未立项）** |
+| ai.memory 记忆 | ✅ 全量（总开关/BTW/外部上下文策略/双模型/7 项高级/管理菜单含两类确认） | 同构（写径 = 共享 `memories` 文档） | **G-SE13 ✅ 交付** |
+| ai.trinity 引擎 | ✅ 全量（provider 预设/URL/模型/Key 掩码/测试连接/保存） | 同构（写径 = trinityd `llm.set_config`） | **G-SE14 ✅ 交付** |
 | workspace.session 会话与工作区 | ✅ 跳转卡（开全局搜索） | 同构 | G-SE15（默认 Harness/会话标题 UI） |
 | workspace.worktrees 工作树 | ✅ 跳转卡（开 Git 面板 Worktrees） | 同构 | G-SE16（隔离设置字段 UI） |
 | tools.execution 执行与权限 | ✅ 权限预设/自动批准 | 子集 | G-SE17..G-SE23 |
@@ -159,6 +159,17 @@
   工具行路径由上述无头断言覆盖）。
 - **G-S3 用户行 hover 动作（edit/rollback）**：web `UserMessageItem` hover 显「编辑/回滚」；壳 R2d 已判「edit 无命令、rollback 已在 fork 菜单」。
   动作：维持不补（在案），只登记。**不补**。
+
+- **G-S4 composer mode pill（登记，未立项；2026-10-18 查验补登）**：web composer 条带 mode pill 点击切换
+  HarnessProfile（`SessionModeSelector`）；壳 mode 是只读事实（`shell.rs` `render_composer_context_strip` 注——"switching has
+  no shell runtime path yet"）。**该注已过期**：SDK `update_session_mode`（`agent-runtime/sdk.rs`）+ core
+  `AgentSessionModePort`（`coordinator.rs`）通路已在，纯壳侧接线（HANDOFF-073/074 记录为「无通路/未做」，
+  2026-10-18 复核后升级为可接线）。**B 档口径**。
+- **G-S5 模型菜单推理强度二级（登记，未立项；2026-10-18 补登）**：web 模型菜单含 reasoning preset 二级选择；
+  壳 composer 模型菜单只切模型（`update_session_model`，`reasoning_preset: None` 硬置）。
+  `update_session_model_selection(reasoning_preset)`（core/coordinator + SDK）已在，纯壳侧接线。**B 档口径**。
+- **G-S6 分支快切（登记，未立项；2026-10-18 补登）**：web composer 分支 chip 带菜单可快切；壳 chip 只读。
+  与 T3-22（G-G4 branches/graph）同族，壳侧无通路。**B 档口径（可并入 G-G4 立项）**。
 
 - **G-F8 会话页分栏动作（AuxPane split/swap/maximize）**：见 §1.1 行 F8。**A 档（可选）**。
   **✅ 交付（2026-10-16，A 批 4，`bb9f2925f`）**：位置偏好半项由 G-T1 交付（`terminal.terminal_panel_position`）；
@@ -268,6 +279,14 @@
 - **G-SE7 快捷键只读页**（T3-24）：web `KeyboardShortcutsTab.tsx`（录制/冲突/重置）；
   壳键位绑定集中在 `shell.rs`（含焦点链三件套坑）。
   动作：只读展示壳内生效键位（分组 + 描述），不做运行时改键（体系改造）。**B 档**。
+  **✅ 交付**（2026-10-18，B 档首车）：`application.shortcuts` 出隐藏名单，新页四组 —— **全局**（两行由
+  `GLOBAL_SHORTCUTS` 表直出，`install_global_shortcuts` 绑的就是这张表：Ctrl+K 打开全局搜索 / Ctrl+B 切换侧栏，
+  标签复用壳既有 `settings_jump_session_action` / `sidebar_toggle` 文案）、**浮层与菜单**（Esc / ↑↓ / Enter，
+  组件层真实绑定）、**终端**（Ctrl+Shift+C / Ctrl+Shift+V，`terminal/pane.rs::on_key_down` 自己实现的复制粘贴对）、
+  **文本编辑**（说明行：系统标准编辑键由文本引擎处理）。keycap 用 kit `Kbd`（`Kbd::format` 平台化：Linux `Ctrl+K`）。
+  **不补**运行时改键（web 的录制/冲突/重置需要键位文档与运行期改绑，壳无此体系）——页头提示行明写「键位随版本固定」。
+  测试 `shortcuts_page_matches_the_bound_globals`：绑表后向窗口 keymap 反查每个 action 的绑定，
+  `Kbd::format` 与表内 stroke 逐字相等（表与绑定漂移即红），再无头渲染断言行级 debug selector。
 - **G-SE8 订阅认证（账号登录 → 导入为模型配置）**：web `ModelSettingsPage.tsx:3595-3785`；
   壳无账号面。动作：接模型账号态（core 已有账号/身份服务则装配，否则 C 档）。**B/C 档（先考据）**。
 - **G-SE9 models.dev 目录**：web `ModelSettingsPage.tsx:3902-3933,4036-4122`（来源/缓存/revision + 刷新）；壳无。
@@ -287,8 +306,24 @@
 - **G-SE13 记忆设置页**：web `MemorySettingsPage.tsx`（总开关/BTW/外部上下文策略/抽取与巩固模型/7 项高级/
   管理菜单：打开目录/重置/清空）。壳无（core 记忆能力在，仅缺 UI）。
   动作：新页（字段全量 + 危险确认）。**B 档（未立项，建议优先）**。
+  **✅ 交付**（2026-10-18，B 档首车）：`ai.memory` 出隐藏名单。总开关同写 `generate_memories` + `use_memories`
+  （同 web `updateMemoryEnabled`），关闭只停生成/使用、**不动数据**（分节注记同 web）；BTW 开关与外部上下文策略
+  下拉（`clear_tool_results`/`allow`/`skip_session` 三值共享契约）随总开关禁用；抽取/整理两个模型下拉
+  （跟随项 = 空值，目录取 `ModelCatalog` 已启用项，**已保存但目录里没有的 id 仍列出并带「（已停用或不存在）」后缀**，
+  同 web `buildModelOptions`）；高级块默认收起，展开出 7 项数字（空窗 1–48h / 回溯 0–365 天 / 单次 1–100 /
+  扫描 1–5000 / 并发 1–16 / 整理候选 1–4096 / 保留 0–365 天），两个窗口字段**交叉约束**（回溯 ≤ 保留，写入即夹紧）。
+  管理菜单 = 打开记忆目录（先建目录再reveal，同 desktop `get_memory_paths`）、重置记忆设置（`reset_config("memories")`
+  + 重读已存节，回执「记忆设置已重置」）、永久清空记忆（`MemoryDatabase::reset_memory_state` +
+  `reset_memory_workspace`，两段式危险确认，回执同 web `messages`）。文案 58 键 + 1 参数字符串三语逐字同源
+  （web `settings/memory.json`），toast 落为页内回执行（`MemoryNotice`）。
 - **G-SE14 Trinity 引擎 LLM 配置页**：web `TrinityEngineConfig.tsx` + `TrinityLlmFields.tsx`（provider 预设/URL/模型/Key/测试连接/保存到 trinityd）；
   壳 trinity 页明确不含 engine 配置（`trinity.rs:14` 注释自陈）。**B 档**。
+  **✅ 交付**（2026-10-18，B 档首车）：`ai.trinity` 出隐藏名单，走 daemon 的 `llm.get_config` / `llm.set_config` /
+  `llm.test_connection` 三个 RPC（不在壳侧落任何键值）。provider 五档预设（DeepSeek/智谱/OpenAI/本地 Ollama/自定义，
+  激活档 = 端点+模型全等匹配，同 web `detectPreset`）；端点/模型为文本行，**API 密钥掩码显示**（`InputState::set_masked`，
+  截图不泄；空值保存 = 保留已存 key，daemon 契约）；「测试连接」用草稿值探活、回执走 daemon 的 reply/error，
+  「保存」写 daemon toml 并热换。**daemon 不可达时不画字段**：整页替为离线块（分类标题 + daemon 原文原因 + 重试），
+  重读失败会把已加载态打回离线（`ConfigFailed` 清 `loaded`）——web 此态只留空字段，壳取「说清状况」的降级。
 - **G-SE15 默认 Harness / 会话标题生成**：web `DefaultHarnessConfig.tsx:166-208`、`SessionTitleConfig.tsx:184-222`；
   壳无 UI（core 配置在）。**B 档**。
 - **G-SE16 工作树隔离设置**：web `WorktreeSettingsPage.tsx:472-543`（根路径/分支前缀/复制改动/自动删除+上限）；
@@ -591,8 +626,8 @@
 | 序 | 项 | 编号 | 依赖/说明 | 预估 |
 |---|---|---|---|---|
 | 1 | 任务编辑器（at/every/cron/时区/绑定 session） | G-P1 | core cron 写面已有 | 1 会话 |
-| 2 | 记忆设置页 | G-SE13 | core 记忆能力在，纯 UI | 0.5-1 |
-| 3 | Trinity 引擎配置页 | G-SE14 | trinityd 配置面已有（web 同源） | 0.5 |
+| 2 | 记忆设置页 | G-SE13 **✅ 交付 2026-10-18** | core 记忆能力在，纯 UI | 0.5-1 |
+| 3 | Trinity 引擎配置页 | G-SE14 **✅ 交付 2026-10-18** | trinityd 配置面已有（web 同源） | 0.5 |
 | 4 | 技能管理写面（添加/删除/分组/详情/搜索） | G-K2..K5 | 部分需 core 写面核对 | 1 |
 | 5 | 智能体编辑面（工具/子代理/模型覆盖/过滤/详情） | G-A1..A6 | profiles 写路径已通（T2-11/12） | 1-1.5 |
 | 6 | MCP OAuth + 导入/认证细分 | G-M1,G-M3 | OAuth 流程需 core 支持核对 | 1 |
@@ -600,7 +635,7 @@
 | 8 | 搜索 actions/entities | G-Q1 | action 目录 + 聚合查询 | 1 |
 | 9 | 洞察补齐（模型/五阶段/图表/TOC） | G-I2..I4 | 复用报告结构，图表自绘 | 1-1.5 |
 | 10 | 设置字段族（执行/自动化/模型高级） | G-SE12,17,24,25,29 | 多数为配置项 UI | 1.5-2 |
-| 11 | 快捷键只读页 | G-SE7 | 键位表投影 | 0.5 |
+| 11 | 快捷键只读页 | G-SE7 **✅ 交付 2026-10-18** | 键位表投影 | 0.5 |
 | 12 | 公告面 | G-X1 | 载体选型（横幅/中心） | 0.5-1 |
 | 13 | 防休眠 | G-SE1 | 选型先行（portal inhibit） | 0.5-1 |
 | 14 | 技能市场 | G-K1 | desktop 私有 HTTP 自实现（D44） | 1-1.5 |
@@ -774,6 +809,7 @@ turn footer 完成时间/耗时 meta（=G-S1）与 copy 成功态图标反馈（
 
 | 日期 | 变更 |
 |---|---|
+| 2026-10-18 | **B 档首车：三页设置交付（G-SE14 认知引擎 / G-SE13 记忆 / G-SE7 快捷键只读）**。三页共享一条实现纪律：**设置页在窗口自身的 render 里构建**（`shell.rs::render` → `settings::render_page` → 组构建函数），那里窗口实体正被可变借用 —— 任何组构建函数直接 `view.upgrade().read(cx)` 都会 panic（`cannot read ShellWindow while it is already being updated`，本轮由 `settings_scene_nav_selects_pages_and_searches` 抓到）。修法 = 引擎页与记忆页的页内状态从窗口字段改成全局（`TrinityEngineState` / `MemoryPageState`，配 `current()`/`mutate()` 惰性物化），组构建函数与页内渲染闭包只读 `cx`；**断言/接口留给「延迟渲染闭包读窗口实体」这条既有安全路径**（`archived_sessions_field` 同款）。顺带修两条遗留红：导航元数据/树投影测试的硬编码页数 15（Trinity/Memory 登记后未跑过测试）→ 18（16 实页 + 2 跳转卡、隐藏 8→5），以及引擎页离线态回不去（`ConfigFailed` 现在清 `loaded`）。证据：壳 lib **352 全绿**；ftl 925→943（G-SE14 18 键）→1002（G-SE13 58 键 + 1 参数键）→**1016 ×3**（G-SE7 14 键）；`i18n:audit` / `check:core-boundaries` / `check:repo-hygiene` / `pnpm run fmt:rs` 四绿；Xvfb :83 隔离根冒烟 0 panic（唯一 ERROR = Xvfb xinput 既有噪声），证据帧 `b1-01..12`：启动态（搜索框 Ctrl K 提示）/设置导航三行新页/引擎页真 daemon 值（端点+模型已填、key 掩码）/记忆页基础（范围提示 + 关总开关时下游禁用）/管理菜单三项/高级块收起/展开点击态/七行数字（真存值 6·10·2·2000·1·64·30）/快捷键表四组/键位实测（Ctrl+B 折侧栏、Ctrl+K 开全局搜索）。**新坑登记**：`SettingItem` 不能在自定义元素里嵌套渲染（`render_item` 是 `pub(super)`），披露态探针改用独立标记项；`AsKeystroke` 不在 gpui prelude，测试要显式 `use gpui_kit::AsKeystroke as _`。 |
 | 2026-10-17 | **「停止」tooltip 滞留收口（W-8 ⑤，第三场）**：上轮登记的「composer 停止 tooltip 在按钮卸载后滞留」定机制并对壳侧收口。滞留者是 gpui-component 的 **managed tooltip**（窗口级 overlay，隐藏路径只有触发元素的 `on_hover(false)` → `request_hide`）：回合结算让发送/停止两个同 id 不同的按钮互换，指针静止压在按钮上时停止按钮被卸载，hover-end 永不到 → 弹层留在屏上（移开指针也无效，接班的发送按钮不会替它发 `request_hide`）。gpui 原生 tooltip 由拥有者每帧 prepaint 重新注册、拥有者消失即释放（gpui 自带 `tooltip_is_released_when_its_owner_disappears`），结构性不滞留——修法即把 composer 停止按钮的 tooltip 从 `Button::tooltip` 摘到**只与按钮同生共死**的 anchor 包装上（`div().flex().id("chat-stop-tooltip-anchor").tooltip(原生).child(按钮)`，`Tooltip::element` 保外观 + 供测试看见）。新回归测试 `stop_tooltip_releases_with_the_button_when_the_turn_settles`（真窗口 root view + 真帧，新 helper `draw_window_for_test`）：anchor 盒 32×32 → 悬停 600ms 弹层在帧内 → 结算帧（指针未动）anchor 与弹层同时消失；回退成 `Button::tooltip` 第一步即红（已验）；壳 lib **345 全绿**。真 turn 对照帧 `w9-01`(+`z`) 悬停有提示 / `w9-02`(+`z`) 结算后无滞留 / `w9-03` 移开仍无残留（与 `w9-02` 逐像素同），修前同现象 = `w8-06` |
 | 2026-10-17 | **G-X6 有内容态复验 + 转写重载语义修复（W-8）**：本地桩模型（OpenAI 兼容假服务 + 隔离根 `app.json` 单模型指向 127.0.0.1，零外网零 key）让壳跑通真 turn，「窗口非前台完成 → 未读圆点 / 面板带行 / 点行清除 / 清除所有」全链复验（帧 `w7-01..04`），「隔离冒烟 0 models 造不出真 turn」的缺口关闭。顺带修「转写刷新被当作打开」：`OpenedSession` 增 `reload` 事件事实（`reload_transcript` 置真、`emit_opened` 置假），消费侧只在 `!reload` 时清未读 / 覆盖 tab 标题与模型选择——此前**每回合结算后**该会话未读被立即清掉（T2-16 定案是「打开会话清」）、tab 标题被清空、模型选择回落「默认模型」（对照帧 `w7-05`/`w7-06`、`w7-07`/`w7-08`；新测试 `transcript_reloads_keep_unread_turns_until_the_session_is_opened` 三断言，去保护必红已验；壳 lib **343 全绿**）。另登记（未立项）：reload 的 `tabs.open` 会激活其 tab，可能把结算会话抢到前台 |
 | 2026-10-17 | **结算抢前台收口（W-8 ③，第二场）**：上条登记的观察坐实——reload 走的 `tabs.open` 无条件激活该 tab 并记一次导航跳（`TabsState::open` + `record_navigation`），用户在别处看时回合结算会把前台拽回该会话。单测红证 `transcript_reloads_do_not_steal_the_active_tab`（修前 `left: Some("s-b") / right: Some("s-a")`），修 = reload 只做定向 scroller 复位（`list_sync_reset_for`），open 路径不变；真 turn 对照帧 `w8-01`/`w8-02`（修前抢）vs `w8-03`/`w8-04`（修后不抢），`w8-05` 证转写刷新仍在（16:12:25 / 15.2s 已在转写里）；壳 lib **344 全绿**。同轮新登记（未立项）：composer「停止」tooltip 在按钮卸载后滞留屏上（帧 `w8-06`，落点 `gpui_kit::component` tooltip 生命周期） |

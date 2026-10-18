@@ -49,7 +49,7 @@
 |---|---|---|---|---|
 | 1 | 会话对话闭环 | agentic_api(58) 的 turn/session 子集 | 已支持 | 会话级事件流、工具卡、停止、标题齐备；富转写（M24）：工具行语义摘要 + 探索/执行折叠组 + 子代理身份卡（见 §2.3 第 14 行） |
 | 2 | 会话管理操作（重命名/删除/归档/导出/fork/压缩） | session_api(19)、agentic_api | 已支持 | M13 起全量落地：重命名 / 删除 / 归档+恢复 / fork / 压缩 / 导出转写（`runtime.rs` 直调 SDK 全族；T1-4 归档页批量删除；导出走 `read_session_transcript`） |
-| 3 | 模型 / Provider 选择 | `get_ai_model_catalog` + config 模型档案 | 已支持 | 模型设置页（`settings.rs::models_page`：provider/key/模型选择）+ 会话级 mode/model 切换（`update_session_mode` / `update_session_model`，composer 选择器） |
+| 3 | 模型 / Provider 选择 | `get_ai_model_catalog` + config 模型档案 | 已支持 | 模型设置页（`settings.rs::models_page`：provider/key/模型选择）+ 会话级 model 切换（`update_session_model`，composer 模型菜单）；**mode 为只读事实**——壳 composer 条带的 mode 只显示不切换（`shell.rs` 条带注），SDK `update_session_mode` 通路已在（`agent-runtime/sdk.rs`），属纯壳侧接线（2026-10-18 查验改判，登记见整改计划 §2.1 G-S4） |
 | 4 | 附件 / 图片上下文（粘贴图片、拖文件、上传） | clipboard_file_api(3)、context_upload_api(1)、file_drop_preview_api(1) | 已支持 | composer 附件区 + turn 请求 `attachments: Vec<AgentInputAttachment>`；拖放/剪贴板走 gpui-pre 原生（XDND / wl_data_device / `ClipboardItem`） |
 | 5 | 交互式提问（ask_user / user question） | tool_api(8) 的 question 两条 | 已支持 | 提问对话框 + FIFO 队列（与权限队列同型；`PendingUserQuestion` 快照拉取 + `submit_user_answers` 应答） |
 | 6 | 子代理投影 / BTW 侧会话 / 任务详情 | subagent_api(10)、btw_api(2) | 已支持（近似） | 子详情视图 = 全量转写（快照树超集）+ 贴底跟随；后台任务/父 turn 徽章计数、review 族「审核中」标签（T2-6）；BTW 侧会话 + busy 停止（T1-5）。web 内嵌投影的 last-round 截断为渲染量控制，壳无内嵌面（D67） |
@@ -311,6 +311,8 @@ domain prism token；② 工具栏锚位 = 组件右上动作簇（语言标签�
 
 默认切换动作需要同时满足（切换本身必须公子拍板，D6 / D19；**机制已选定 M-B、P0 已立项 M11**，切换动作仍待 P0 闭合后的终审拍板）：
 
+> **2026-10-18 查验补记（状态与本节正文不一致，以补记为准）**：切换本体**已执行**——2026-10-09 D42 公子拍板令「切换」，提交 `c4025fe63` 一次性完成四条件核对后的动作：默认宿主翻转（`products/openbitfun/product.jsonc` `guiHost: "gpui-shell"`）+ feed 逐键接入（`generate-linux-binaries-manifest.mjs` 的 `gpuiShell` 资产键）+ minisign 签名（sigUrl warn→校验）。残留 = **分支合并/发布面动作**：切换只存在于 `gpui-frontend` 分支（领先 `main` 218 个提交、未合并），发布级默认未翻转。历次交接清单里的「默认切换终审」即指这一残留；2026-10-18 起不再按「未拍板」挂账。详见 `.relay/PLAN.md` 当前焦点段。
+
 1. §3 P0 清单闭合且逐条有真机证据；
 2. 机制落地 = M-B（或在 M-B 未就绪时以 M-A 形式"并列发布 + 用户文档"，此时默认不变）；
 3. 保留 Tauri 桌面入口至少一个发布周期作为回退路径；
@@ -343,6 +345,8 @@ domain prism token；② 工具栏锚位 = 组件右上动作簇（语言标签�
 
 | 日期 | 变更 |
 |---|---|
+| 2026-10-18 | **B 档首车：三页设置交付（G-SE14 认知引擎 / G-SE13 记忆 / G-SE7 快捷键只读）**：`ai.trinity` / `ai.memory` / `application.shortcuts` 三页出隐藏名单（隐藏 8→5，树 17→18 行）。三页沿用同一实现纪律——**设置页在窗口自身 render 里构建，组构建函数不得读窗口实体**：引擎页与记忆页的页内状态因此从窗口字段改为全局（`TrinityEngineState` / `MemoryPageState`），否则每次渲染都 panic（`cannot read ShellWindow while it is already being updated`，本轮实测抓到）。引擎页走 trinityd 三个 RPC（读/写/测试连接），key 掩码、daemon 不可达时整页离线块并说清原因；记忆页字段全量（总开关同写两键、下游随总开关禁用、7 项高级含窗口交叉约束、管理菜单三项含两段式危险确认）；快捷键页是**只读键位表**（全局两行由绑定的同一张表直出 + 浮层/终端/文本编辑三组），不做运行时改键并明写。ftl 925→**1016 ×3**；壳 lib **352 全绿**；四审计绿；Xvfb :83 隔离根冒烟 0 panic，证据帧 `b1-01..12`。详见整改计划 §1/§2.2/§3.2/§7 |
+| 2026-10-18 | **遗留事项全量查验（会话 83）+ 三处文档校正**：88 份交接 + PLAN 三层 + 整改计划逐条核对实际仓库状态（工作区干净、`stash@{0}` 原封、无死链）。校正：① 本文件 §2 行 3 的「会话级 mode 切换」改判为只读事实（SDK 通路已在，纯壳接线；登记见整改计划 §2.1 G-S4）；② §4.3 增查验补记——切换本体已于 2026-10-09 D42 执行（`c4025fe63`：`product.jsonc` `guiHost: "gpui-shell"` + feed + minisign），残留仅为分支合并/发布面（`gpui-frontend` 领先 `main` 218 提交未合并）；③ 整改计划 §2.1 登记三项未入册缺口（G-S4 mode pill / G-S5 推理强度二级 / G-S6 分支快切）。 |
 | 2026-10-17 | **设置·日志与诊断页补「上次异常退出」提示（G-SE31）交付**（`6091cb4a3`）：诊断页读启动快照（内存读，非每帧 stat），`detected` 时才在日志控件上方出一整块提示——有崩溃报告 → 告警底纹、无 → 信息底纹，`ShieldAlert` + 分类标题 + 「上次会话日志位于 {path}」；干净退出不渲染。文案与桌面 `logging.previousCrash` / `.previousUncleanShutdown` 三语逐字同源（ftl 921→925 ×3）。本项即工作区里那份挂了三轮的无主 WIP（作者查不到），经公子点头后整体接管交付，同时修掉两处呈现偏差（横幅曾原样显示英文 `reason` 运行态字符串；标题在标签栏、提示块只占窄控件槽）。壳 342 lib 全绿；Xvfb :263 三态冒烟 0 panic/0 缺资产，证据帧 `w6-01..04`。详见整改计划 §2.6 / §6.1 W-4 结案 / §7 |
 | 2026-10-17 | **洞察页视觉复验（整改计划 W-5 收官）+ 顺带修 4 项既有缺陷**：① core `insights/types.rs` 给 `openbitfun_md_additions` 补改名前的旧键别名（旧报告曾整份解析失败 → 洞察页假「暂无报告」）；② 历史 meta 卡时间戳按 **epoch 秒** 解释（曾显示 `1970-01-22`，现 `2026-08-03 10:50`）；③ 洞察 / 任务看板 / 认知体三页页面根列去 `h_full()`——`overflow_y_scroll` 容器里的内容曾被封顶在视口高，长报告与长记忆列表越过折叠线不可达（滚轮实测无效），修后滚动生效；④ 认知体开页守卫拆为「状态 / 记忆」各自 flag——启动期状态预取曾顶掉首次记忆加载，真 daemon 下记忆列表恒停「载入中…」。复验素材 = 本机真报告拷入隔离根（`config/data/usage-data/`），真 daemon 记忆列表滚动实测；壳 lib **342 全绿**（3 条新探针/单测，均红/绿双证），core 洞察域 13 测绿；Xvfb :262 冒烟 0 panic/0 缺资产，证据帧 `w5-01..09`；复制载荷 `xclip` 逐字比对相等。详见整改计划 §2.11 / §6.1 W-5·W-7 / §7 |
 | 2026-10-16 | **界面 1:1 整改 A 批 4（会话/终端/杂项）交付**（`bb9f2925f`）：G-S1/G-S2（turn footer 完成时刻·耗时 meta、工具行 copy 勾选反馈）、G-T1/G-T2（终端 bottom/right 位置偏好 + 分隔条双击尺寸档、标签「在文件管理器显示」+ 启动命令徽标）、G-F8（资源面板最大化/还原 + 换位；位置偏好半项并入 G-T1）、G-X6（通知中心：铃铛 + 未读圆点 + 按会话列行 + 清除所有）、G-SE30（归档页按工作区分组：先补跨工作区归档投影）。**顺带修掉两个既有缺陷**：归档页整表被塞进设置项右侧控件槽（行内动作被列宽裁掉）、顶栏面板钮缺 `ensure_resource_page`（首次从该钮打开面板体空白）。ftl 898→921 ×3；**提交内容**壳 337 lib 全绿（并集 339）；Xvfb :253 冒烟 0 panic/0 缺资产，证据帧 `a5-01..14`；§1.1 F8 行与整改计划 §2.1/§2.2/§2.6/§2.10/§3.1 按本批改判并补注 |

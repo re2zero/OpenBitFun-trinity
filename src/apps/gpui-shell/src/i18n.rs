@@ -691,6 +691,106 @@ pub(crate) struct ShellText {
     /// both descriptions name the session log directory.
     pub settings_diagnostics_previous_crash: String,
     pub settings_diagnostics_previous_unclean: String,
+    /// G-SE13 memory page (`ai.memory`): nav label, page description,
+    /// section headings, copy, and receipts, copied verbatim from the
+    /// desktop settings catalog (`settings/memory.json` minus the
+    /// Trinity-authority wording, which the shell does not enforce).
+    pub settings_memory_label: String,
+    pub settings_page_memory_description: String,
+    pub memory_scope_notice: String,
+    pub memory_section_basic: String,
+    pub memory_section_basic_note: String,
+    pub memory_section_models: String,
+    pub memory_section_models_note: String,
+    pub memory_section_advanced: String,
+    pub memory_section_advanced_note: String,
+    pub memory_enabled: String,
+    pub memory_enabled_description: String,
+    pub memory_generate_btw: String,
+    pub memory_generate_btw_description: String,
+    pub memory_external_context: String,
+    pub memory_external_context_description: String,
+    pub memory_policy_clear_tool_results: String,
+    pub memory_policy_allow: String,
+    pub memory_policy_skip_session: String,
+    pub memory_actions_label: String,
+    pub memory_actions_description: String,
+    pub memory_action_manage: String,
+    pub memory_action_open_directory: String,
+    pub memory_action_reset_settings: String,
+    pub memory_action_reset_memory: String,
+    pub memory_reset_settings_confirm_title: String,
+    pub memory_reset_settings_confirm_message: String,
+    pub memory_reset_settings_confirm_action: String,
+    pub memory_reset_confirm_message: String,
+    pub memory_reset_confirm_action: String,
+    pub memory_extract_model: String,
+    pub memory_extract_model_description: String,
+    pub memory_consolidation_model: String,
+    pub memory_consolidation_model_description: String,
+    pub memory_model_primary: String,
+    pub memory_model_fast: String,
+    pub memory_model_follow_primary: String,
+    pub memory_model_follow_extraction: String,
+    pub memory_min_idle_hours: String,
+    pub memory_min_idle_hours_description: String,
+    pub memory_max_age_days: String,
+    pub memory_max_age_days_description: String,
+    pub memory_per_startup: String,
+    pub memory_per_startup_description: String,
+    pub memory_scan_limit: String,
+    pub memory_scan_limit_description: String,
+    pub memory_concurrency: String,
+    pub memory_concurrency_description: String,
+    pub memory_raw_limit: String,
+    pub memory_raw_limit_description: String,
+    pub memory_retention_days: String,
+    pub memory_retention_days_description: String,
+    pub memory_action_expand_advanced: String,
+    pub memory_action_collapse_advanced: String,
+    pub memory_settings_reset: String,
+    pub memory_settings_reset_failed: String,
+    pub memory_open_directory_failed: String,
+    pub memory_reset: String,
+    pub memory_reset_failed: String,
+    /// G-SE7 shortcuts page (`application.shortcuts`): the read-only table
+    /// of the bindings the shell honors. Section titles copy the desktop
+    /// `keyboard.scopes` where the scope exists; the rest is shell-authored
+    pub settings_shortcuts_label: String,
+    pub settings_page_shortcuts_description: String,
+    pub shortcuts_fixed_note: String,
+    pub shortcuts_section_global: String,
+    pub shortcuts_section_overlays: String,
+    pub shortcuts_section_terminal: String,
+    pub shortcuts_section_editing: String,
+    pub shortcuts_overlay_dismiss: String,
+    pub shortcuts_overlay_move: String,
+    pub shortcuts_overlay_confirm: String,
+    pub shortcuts_terminal_copy: String,
+    pub shortcuts_terminal_paste: String,
+    pub shortcuts_terminal_note: String,
+    pub shortcuts_editing_note: String,
+    /// G-SE14 engine page (`ai.trinity`): nav label, page description and
+    /// the LLM fields, copied verbatim from the desktop settings catalog
+    /// (`navigation.pages.trinity` / `trinity.engine.*`).
+    pub settings_trinity_label: String,
+    pub settings_page_trinity_description: String,
+    pub trinity_engine_provider: String,
+    pub trinity_engine_provider_deepseek: String,
+    pub trinity_engine_provider_zhipu: String,
+    pub trinity_engine_provider_openai: String,
+    pub trinity_engine_provider_ollama: String,
+    pub trinity_engine_provider_custom: String,
+    pub trinity_engine_api_url: String,
+    pub trinity_engine_model: String,
+    pub trinity_engine_api_key: String,
+    pub trinity_engine_save: String,
+    pub trinity_engine_saving: String,
+    pub trinity_engine_saved: String,
+    pub trinity_engine_test_connection: String,
+    pub trinity_engine_testing: String,
+    pub trinity_engine_connection_ok: String,
+    pub trinity_engine_connection_failed: String,
     pub trinity_title: String,
     pub trinity_status_title: String,
     pub trinity_status_unavailable: String,
@@ -1398,6 +1498,17 @@ pub(crate) fn question_progress(index: usize, total: usize, cx: &App) -> String 
         TranslationArgs::new()
             .with_number("index", index as f64)
             .with_number("total", total as f64),
+        cx,
+    )
+}
+
+/// G-SE13: a stored memory model id that is not in the current catalog stays
+/// selectable with this suffix (web `models.unavailable`) instead of being
+/// silently dropped from the dropdown.
+pub(crate) fn memory_model_unavailable(id: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-memory-model-unavailable",
+        TranslationArgs::new().with_string("id", id),
         cx,
     )
 }
@@ -2146,6 +2257,146 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_diagnostics_previous_unclean: {
             "Previous session did not record a normal shutdown".to_string()
         },
+        settings_memory_label: "Memory".to_string(),
+        settings_page_memory_description: {
+            "Control how agents create and use memories from sessions".to_string()
+        },
+        memory_scope_notice: {
+            "Settings, candidate sessions, and memory files belong to the current execution host; other devices keep separate memories".to_string()
+        },
+        memory_section_basic: "Basics".to_string(),
+        memory_section_basic_note: {
+            "Turning memory off keeps existing data; use Memory actions to clear it separately".to_string()
+        },
+        memory_section_models: "Models".to_string(),
+        memory_section_models_note: {
+            "Unless set separately, extraction uses the primary model and consolidation uses the extraction model".to_string()
+        },
+        memory_section_advanced: "Advanced settings".to_string(),
+        memory_section_advanced_note: {
+            "Limit which sessions are processed and how much memory work runs; defaults usually suffice".to_string()
+        },
+        memory_enabled: "Memory".to_string(),
+        memory_enabled_description: {
+            "Generate memories from completed sessions for use in later sessions".to_string()
+        },
+        memory_generate_btw: "Generate memories from BTW sessions".to_string(),
+        memory_generate_btw_description: {
+            "Include side conversations (BTW) when generating memories".to_string()
+        },
+        memory_external_context: "External context handling".to_string(),
+        memory_external_context_description: {
+            "Choose how memory extraction handles external tool results, such as web searches and web pages".to_string()
+        },
+        memory_policy_clear_tool_results: "Clear external tool results".to_string(),
+        memory_policy_allow: "Allow external tool results".to_string(),
+        memory_policy_skip_session: "Skip the session".to_string(),
+        memory_actions_label: "Memory actions".to_string(),
+        memory_actions_description: {
+            "Manage memory on the current execution host; clearing it permanently deletes memory data".to_string()
+        },
+        memory_action_manage: "Manage".to_string(),
+        memory_action_open_directory: "Open Memory Folder".to_string(),
+        memory_action_reset_settings: "Reset Memory Settings".to_string(),
+        memory_action_reset_memory: "Permanently clear memory".to_string(),
+        memory_reset_settings_confirm_title: "Reset memory settings?".to_string(),
+        memory_reset_settings_confirm_message: {
+            "This restores the memory switches, models, and advanced parameters on the current execution host to their defaults. Existing memory data is not deleted.".to_string()
+        },
+        memory_reset_settings_confirm_action: "Restore defaults".to_string(),
+        memory_reset_confirm_message: {
+            "This permanently deletes all memory data and memory workspace files on the current execution host. This cannot be undone.".to_string()
+        },
+        memory_reset_confirm_action: "Permanently clear".to_string(),
+        memory_extract_model: "Extraction model".to_string(),
+        memory_extract_model_description: {
+            "Model used to distill candidate memories from session transcripts.".to_string()
+        },
+        memory_consolidation_model: "Consolidation model".to_string(),
+        memory_consolidation_model_description: {
+            "Model used to merge candidates and update long-term memory files.".to_string()
+        },
+        memory_model_primary: "Primary model".to_string(),
+        memory_model_fast: "Fast model".to_string(),
+        memory_model_follow_primary: "Follow primary model".to_string(),
+        memory_model_follow_extraction: "Follow extraction model".to_string(),
+        memory_min_idle_hours: "Minimum idle time".to_string(),
+        memory_min_idle_hours_description: {
+            "How long a completed session must sit idle before extraction.".to_string()
+        },
+        memory_max_age_days: "Session lookback days".to_string(),
+        memory_max_age_days_description: {
+            "Only extract from sessions within this many days; cannot exceed candidate retention".to_string()
+        },
+        memory_per_startup: "Extraction limit per run".to_string(),
+        memory_per_startup_description: "Maximum sessions extracted in each memory run".to_string(),
+        memory_scan_limit: "Scan limit per run".to_string(),
+        memory_scan_limit_description: {
+            "Maximum completed sessions checked when looking for candidates".to_string()
+        },
+        memory_concurrency: "Extraction concurrency".to_string(),
+        memory_concurrency_description: {
+            "Maximum sessions undergoing memory extraction at the same time".to_string()
+        },
+        memory_raw_limit: "Consolidation candidate limit".to_string(),
+        memory_raw_limit_description: {
+            "Maximum extracted results combined in each long-term memory consolidation".to_string()
+        },
+        memory_retention_days: "Candidate retention".to_string(),
+        memory_retention_days_description: {
+            "Unused extracted results expire from consolidation after this many days; cannot be shorter than session lookback".to_string()
+        },
+        memory_action_expand_advanced: "Expand advanced settings".to_string(),
+        memory_action_collapse_advanced: "Collapse advanced settings".to_string(),
+        memory_settings_reset: "Memory settings reset".to_string(),
+        memory_settings_reset_failed: "Failed to reset memory settings".to_string(),
+        memory_open_directory_failed: "Failed to open memory folder".to_string(),
+        memory_reset: "Memory permanently cleared".to_string(),
+        memory_reset_failed: "Failed to permanently clear memory".to_string(),
+        settings_shortcuts_label: "Keyboard Shortcuts".to_string(),
+        settings_page_shortcuts_description: "The keyboard shortcuts in effect".to_string(),
+        shortcuts_fixed_note: {
+            "The shell's bindings are fixed per release; there is no remapping yet".to_string()
+        },
+        shortcuts_section_global: "Global".to_string(),
+        shortcuts_section_overlays: "Overlays and menus".to_string(),
+        shortcuts_section_terminal: "Terminal".to_string(),
+        shortcuts_section_editing: "Text editing".to_string(),
+        shortcuts_overlay_dismiss: {
+            "Close the current overlay, cancel a menu, or leave the search panel".to_string()
+        },
+        shortcuts_overlay_move: "Move the selection in menus and lists".to_string(),
+        shortcuts_overlay_confirm: {
+            "Confirm the selected menu item, or run the global search".to_string()
+        },
+        shortcuts_terminal_copy: "Copy the terminal's selection".to_string(),
+        shortcuts_terminal_paste: "Paste into the terminal".to_string(),
+        shortcuts_terminal_note: {
+            "Every other key goes to the terminal as-is; control characters such as Ctrl+C are not intercepted".to_string()
+        },
+        shortcuts_editing_note: {
+            "Text fields use the system's standard editing keys (copy, paste, select all, word motion), handled by the text engine".to_string()
+        },
+        settings_trinity_label: "Trinity Engine".to_string(),
+        settings_page_trinity_description: {
+            "Cognitive engine LLM endpoint, model, and connection.".to_string()
+        },
+        trinity_engine_provider: "Provider".to_string(),
+        trinity_engine_provider_deepseek: "DeepSeek".to_string(),
+        trinity_engine_provider_zhipu: "Zhipu".to_string(),
+        trinity_engine_provider_openai: "OpenAI".to_string(),
+        trinity_engine_provider_ollama: "Local Ollama".to_string(),
+        trinity_engine_provider_custom: "Custom".to_string(),
+        trinity_engine_api_url: "API URL".to_string(),
+        trinity_engine_model: "Model".to_string(),
+        trinity_engine_api_key: "API Key".to_string(),
+        trinity_engine_save: "Save".to_string(),
+        trinity_engine_saving: "Saving…".to_string(),
+        trinity_engine_saved: "Cognitive engine configuration saved.".to_string(),
+        trinity_engine_test_connection: "Test connection".to_string(),
+        trinity_engine_testing: "Testing…".to_string(),
+        trinity_engine_connection_ok: "Connection successful.".to_string(),
+        trinity_engine_connection_failed: "Connection failed.".to_string(),
         trinity_title: "Trinity".to_string(),
         trinity_status_title: "Trinity Cognitive State".to_string(),
         trinity_status_unavailable: {
@@ -3049,6 +3300,144 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
             .await,
         settings_diagnostics_previous_unclean: service
             .t("gpui-shell-settings-diagnostics-previous-unclean")
+            .await,
+        settings_memory_label: service.t("gpui-shell-settings-memory-label").await,
+        settings_page_memory_description: service
+            .t("gpui-shell-settings-page-memory-description")
+            .await,
+        memory_scope_notice: service.t("gpui-shell-memory-scope-notice").await,
+        memory_section_basic: service.t("gpui-shell-memory-section-basic").await,
+        memory_section_basic_note: service.t("gpui-shell-memory-section-basic-note").await,
+        memory_section_models: service.t("gpui-shell-memory-section-models").await,
+        memory_section_models_note: service.t("gpui-shell-memory-section-models-note").await,
+        memory_section_advanced: service.t("gpui-shell-memory-section-advanced").await,
+        memory_section_advanced_note: service.t("gpui-shell-memory-section-advanced-note").await,
+        memory_enabled: service.t("gpui-shell-memory-enabled").await,
+        memory_enabled_description: service.t("gpui-shell-memory-enabled-description").await,
+        memory_generate_btw: service.t("gpui-shell-memory-generate-btw").await,
+        memory_generate_btw_description: service
+            .t("gpui-shell-memory-generate-btw-description")
+            .await,
+        memory_external_context: service.t("gpui-shell-memory-external-context").await,
+        memory_external_context_description: service
+            .t("gpui-shell-memory-external-context-description")
+            .await,
+        memory_policy_clear_tool_results: service
+            .t("gpui-shell-memory-policy-clear-tool-results")
+            .await,
+        memory_policy_allow: service.t("gpui-shell-memory-policy-allow").await,
+        memory_policy_skip_session: service.t("gpui-shell-memory-policy-skip-session").await,
+        memory_actions_label: service.t("gpui-shell-memory-actions-label").await,
+        memory_actions_description: service.t("gpui-shell-memory-actions-description").await,
+        memory_action_manage: service.t("gpui-shell-memory-action-manage").await,
+        memory_action_open_directory: service.t("gpui-shell-memory-action-open-directory").await,
+        memory_action_reset_settings: service.t("gpui-shell-memory-action-reset-settings").await,
+        memory_action_reset_memory: service.t("gpui-shell-memory-action-reset-memory").await,
+        memory_reset_settings_confirm_title: service
+            .t("gpui-shell-memory-reset-settings-confirm-title")
+            .await,
+        memory_reset_settings_confirm_message: service
+            .t("gpui-shell-memory-reset-settings-confirm-message")
+            .await,
+        memory_reset_settings_confirm_action: service
+            .t("gpui-shell-memory-reset-settings-confirm-action")
+            .await,
+        memory_reset_confirm_message: service.t("gpui-shell-memory-reset-confirm-message").await,
+        memory_reset_confirm_action: service.t("gpui-shell-memory-reset-confirm-action").await,
+        memory_extract_model: service.t("gpui-shell-memory-extract-model").await,
+        memory_extract_model_description: service
+            .t("gpui-shell-memory-extract-model-description")
+            .await,
+        memory_consolidation_model: service.t("gpui-shell-memory-consolidation-model").await,
+        memory_consolidation_model_description: service
+            .t("gpui-shell-memory-consolidation-model-description")
+            .await,
+        memory_model_primary: service.t("gpui-shell-memory-model-primary").await,
+        memory_model_fast: service.t("gpui-shell-memory-model-fast").await,
+        memory_model_follow_primary: service.t("gpui-shell-memory-model-follow-primary").await,
+        memory_model_follow_extraction: service
+            .t("gpui-shell-memory-model-follow-extraction")
+            .await,
+        memory_min_idle_hours: service.t("gpui-shell-memory-min-idle-hours").await,
+        memory_min_idle_hours_description: service
+            .t("gpui-shell-memory-min-idle-hours-description")
+            .await,
+        memory_max_age_days: service.t("gpui-shell-memory-max-age-days").await,
+        memory_max_age_days_description: service
+            .t("gpui-shell-memory-max-age-days-description")
+            .await,
+        memory_per_startup: service.t("gpui-shell-memory-per-startup").await,
+        memory_per_startup_description: service
+            .t("gpui-shell-memory-per-startup-description")
+            .await,
+        memory_scan_limit: service.t("gpui-shell-memory-scan-limit").await,
+        memory_scan_limit_description: service.t("gpui-shell-memory-scan-limit-description").await,
+        memory_concurrency: service.t("gpui-shell-memory-concurrency").await,
+        memory_concurrency_description: service
+            .t("gpui-shell-memory-concurrency-description")
+            .await,
+        memory_raw_limit: service.t("gpui-shell-memory-raw-limit").await,
+        memory_raw_limit_description: service.t("gpui-shell-memory-raw-limit-description").await,
+        memory_retention_days: service.t("gpui-shell-memory-retention-days").await,
+        memory_retention_days_description: service
+            .t("gpui-shell-memory-retention-days-description")
+            .await,
+        memory_action_expand_advanced: service.t("gpui-shell-memory-action-expand-advanced").await,
+        memory_action_collapse_advanced: service
+            .t("gpui-shell-memory-action-collapse-advanced")
+            .await,
+        memory_settings_reset: service.t("gpui-shell-memory-settings-reset").await,
+        memory_settings_reset_failed: service.t("gpui-shell-memory-settings-reset-failed").await,
+        memory_open_directory_failed: service.t("gpui-shell-memory-open-directory-failed").await,
+        memory_reset: service.t("gpui-shell-memory-reset").await,
+        memory_reset_failed: service.t("gpui-shell-memory-reset-failed").await,
+        settings_shortcuts_label: service.t("gpui-shell-settings-shortcuts-label").await,
+        settings_page_shortcuts_description: service
+            .t("gpui-shell-settings-page-shortcuts-description")
+            .await,
+        shortcuts_fixed_note: service.t("gpui-shell-shortcuts-fixed-note").await,
+        shortcuts_section_global: service.t("gpui-shell-shortcuts-section-global").await,
+        shortcuts_section_overlays: service.t("gpui-shell-shortcuts-section-overlays").await,
+        shortcuts_section_terminal: service.t("gpui-shell-shortcuts-section-terminal").await,
+        shortcuts_section_editing: service.t("gpui-shell-shortcuts-section-editing").await,
+        shortcuts_overlay_dismiss: service.t("gpui-shell-shortcuts-overlay-dismiss").await,
+        shortcuts_overlay_move: service.t("gpui-shell-shortcuts-overlay-move").await,
+        shortcuts_overlay_confirm: service.t("gpui-shell-shortcuts-overlay-confirm").await,
+        shortcuts_terminal_copy: service.t("gpui-shell-shortcuts-terminal-copy").await,
+        shortcuts_terminal_paste: service.t("gpui-shell-shortcuts-terminal-paste").await,
+        shortcuts_terminal_note: service.t("gpui-shell-shortcuts-terminal-note").await,
+        shortcuts_editing_note: service.t("gpui-shell-shortcuts-editing-note").await,
+        settings_trinity_label: service.t("gpui-shell-settings-trinity-label").await,
+        settings_page_trinity_description: service
+            .t("gpui-shell-settings-page-trinity-description")
+            .await,
+        trinity_engine_provider: service.t("gpui-shell-trinity-engine-provider").await,
+        trinity_engine_provider_deepseek: service
+            .t("gpui-shell-trinity-engine-provider-deepseek")
+            .await,
+        trinity_engine_provider_zhipu: service.t("gpui-shell-trinity-engine-provider-zhipu").await,
+        trinity_engine_provider_openai: service
+            .t("gpui-shell-trinity-engine-provider-openai")
+            .await,
+        trinity_engine_provider_ollama: service
+            .t("gpui-shell-trinity-engine-provider-ollama")
+            .await,
+        trinity_engine_provider_custom: service
+            .t("gpui-shell-trinity-engine-provider-custom")
+            .await,
+        trinity_engine_api_url: service.t("gpui-shell-trinity-engine-api-url").await,
+        trinity_engine_model: service.t("gpui-shell-trinity-engine-model").await,
+        trinity_engine_api_key: service.t("gpui-shell-trinity-engine-api-key").await,
+        trinity_engine_save: service.t("gpui-shell-trinity-engine-save").await,
+        trinity_engine_saving: service.t("gpui-shell-trinity-engine-saving").await,
+        trinity_engine_saved: service.t("gpui-shell-trinity-engine-saved").await,
+        trinity_engine_test_connection: service
+            .t("gpui-shell-trinity-engine-test-connection")
+            .await,
+        trinity_engine_testing: service.t("gpui-shell-trinity-engine-testing").await,
+        trinity_engine_connection_ok: service.t("gpui-shell-trinity-engine-connection-ok").await,
+        trinity_engine_connection_failed: service
+            .t("gpui-shell-trinity-engine-connection-failed")
             .await,
         trinity_title: service.t("gpui-shell-trinity-title").await,
         trinity_status_title: service.t("gpui-shell-trinity-status-title").await,

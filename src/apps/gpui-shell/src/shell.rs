@@ -1,4 +1,4 @@
-use crate::{i18n, markdown, runtime, settings, theme};
+use crate::{i18n, markdown, runtime, settings, theme, trinity};
 
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
@@ -22,7 +22,7 @@ use gpui_kit::InteractiveElement as _;
 use gpui_kit::StatefulInteractiveElement as _;
 use gpui_kit::{
     div, img, point, prelude::*, px, size, Anchor, App, Bounds, ClipboardEntry, ClipboardItem,
-    Context, ElementId, Entity, ExternalPaths, FontWeight, Image, ImageFormat, KeyBinding, Pixels,
+    Context, ElementId, Entity, ExternalPaths, FontWeight, Image, ImageFormat, Pixels,
     SharedString, StyleRefinement, SystemNotification, TitlebarOptions, WeakEntity, Window,
     WindowBackgroundAppearance, WindowBounds, WindowControlArea, WindowOptions,
 };
@@ -1896,6 +1896,9 @@ pub(crate) struct ShellWindow {
     usage_report: Option<Box<runtime::SessionUsageSummary>>,
     /// T2-15 Trinity console page state (event-driven) + its form inputs.
     pub(crate) trinity: crate::trinity::TrinityPageState,
+    // The engine and memory page states live in their own globals
+    // (`TrinityEngineState`, `MemoryPageState`): the settings page is built
+    // inside this window's render, where the window entity cannot be read.
     /// R1d status bar: OS login name backing the user slot while the trinity
     /// daemon (which knows the user's chosen name) is not connected.
     os_user: String,
@@ -2913,6 +2916,87 @@ impl ShellWindow {
             }
             RuntimeEvent::TrinityCorrection { applied } => {
                 self.trinity.correction = Some(applied);
+            }
+            // G-SE14 engine page: config load, save and connection-test
+            // settlements. Display lines compose here (the runtime has no
+            // i18n); the daemon's own error text passes through verbatim.
+            RuntimeEvent::TrinityEngineConfigReady { config } => {
+                trinity::TrinityEngineState::mutate(cx, |state| {
+                    state.loaded = true;
+                    state.loading = false;
+                    state.failure = None;
+                    state.api_url = config.api_url.clone();
+                    state.model = config.model.clone();
+                    state.api_key = config.api_key.clone();
+                });
+            }
+            RuntimeEvent::TrinityEngineConfigFailed(error) => {
+                tracing::info!("Trinity engine config unavailable: {error}");
+                trinity::TrinityEngineState::mutate(cx, |state| {
+                    // The daemon state is unknown again: the page states the
+                    // offline condition instead of fields nobody can vouch for.
+                    state.loaded = false;
+                    state.loading = false;
+                    state.failure = Some(error);
+                    state.test_result = None;
+                });
+            }
+            RuntimeEvent::TrinityEngineSaved => {
+                let saved = i18n::current(cx).trinity_engine_saved.clone();
+                trinity::TrinityEngineState::mutate(cx, |state| {
+                    state.saving = false;
+                    state.test_result = None;
+                    state.notice = Some((true, saved));
+                });
+            }
+            RuntimeEvent::TrinityEngineSaveFailed(error) => {
+                tracing::warn!("Trinity engine save failed: {error}");
+                trinity::TrinityEngineState::mutate(cx, |state| {
+                    state.saving = false;
+                    state.notice = Some((false, error));
+                });
+            }
+            RuntimeEvent::TrinityEngineTested { ok, error } => {
+                let text = i18n::current(cx);
+                let detail = if ok {
+                    text.trinity_engine_connection_ok.clone()
+                } else {
+                    error.unwrap_or_else(|| text.trinity_engine_connection_failed.clone())
+                };
+                trinity::TrinityEngineState::mutate(cx, |state| {
+                    state.testing = false;
+                    state.test_result = Some((ok, detail));
+                });
+            }
+            // G-SE13 memory page: the two menu actions settle here. The
+            // restored section is published back into the shared snapshot so
+            // the page repaints from storage facts, not from what it wrote.
+            RuntimeEvent::MemorySettingsReset(result) => {
+                settings::MemoryPageState::mutate(cx, |state| state.busy = false);
+                let text = i18n::current(cx);
+                let notice = match result {
+                    Ok(config) => {
+                        cx.global_mut::<crate::settings::ShellConfig>().memories = *config;
+                        (true, text.memory_settings_reset.clone())
+                    }
+                    Err(error) => {
+                        tracing::warn!("Failed to reset memory settings: {}", error);
+                        (false, text.memory_settings_reset_failed.clone())
+                    }
+                };
+                crate::settings::MemoryNotice::set(Some(notice), cx);
+            }
+            RuntimeEvent::MemoryCleared(result) => {
+                settings::MemoryPageState::mutate(cx, |state| state.busy = false);
+                let text = i18n::current(cx);
+                let notice = match result {
+                    Ok(()) => (true, text.memory_reset.clone()),
+                    Err(error) => {
+                        tracing::warn!("Failed to clear memory data: {}", error);
+                        (false, text.memory_reset_failed.clone())
+                    }
+                };
+                crate::settings::MemoryNotice::set(Some(notice), cx);
             }
             // G-Y4: memory export/import outcomes. Only the cross-identity
             // guard keeps the dialog open — as the explicit confirmation.
@@ -4144,6 +4228,203 @@ impl ShellWindow {
         if page == settings::SettingsEntry::Archived {
             self.reload_archived_groups(cx);
         }
+        // G-SE14: the engine page reads the daemon's LLM config on selection
+        // (web loads on mount); a failed read leaves the offline state up for
+        // the page's own retry.
+        if page == settings::SettingsEntry::TrinityEngine {
+            self.reload_trinity_engine(cx);
+        }
+        cx.notify();
+    }
+
+    /// Reloads the engine page's daemon configuration (G-SE14). The in-flight
+    /// guard coalesces repeated selections; a stale offline banner clears when
+    /// a fresh read starts so the page never shows two verdicts at once.
+    pub(crate) fn reload_trinity_engine(&mut self, cx: &mut Context<Self>) {
+        let Some(handle) = runtime::runtime_handle() else {
+            return;
+        };
+        let start = trinity::TrinityEngineState::mutate(cx, |state| {
+            if state.loading {
+                return false;
+            }
+            state.loading = true;
+            state.failure = None;
+            true
+        });
+        if !start {
+            return;
+        }
+        handle.trinity_engine_load(self.event_tx.clone());
+        cx.notify();
+    }
+
+    /// G-SE14: persists the engine LLM draft through the daemon (which owns
+    /// the toml). Guarded on the same `draft_ready` rule as the save button.
+    pub(crate) fn save_trinity_engine(&mut self, cx: &mut Context<Self>) {
+        let Some(handle) = runtime::runtime_handle() else {
+            return;
+        };
+        let draft = trinity::TrinityEngineState::mutate(cx, |state| {
+            if state.saving || !state.draft_ready() {
+                return None;
+            }
+            state.saving = true;
+            state.notice = None;
+            Some((
+                state.api_url.clone(),
+                state.model.clone(),
+                state.api_key.clone(),
+            ))
+        });
+        let Some((api_url, model, api_key)) = draft else {
+            return;
+        };
+        handle.trinity_engine_save(api_url, model, api_key, self.event_tx.clone());
+        cx.notify();
+    }
+
+    /// G-SE14: probes the draft endpoint through the daemon.
+    pub(crate) fn test_trinity_engine(&mut self, cx: &mut Context<Self>) {
+        let Some(handle) = runtime::runtime_handle() else {
+            return;
+        };
+        let draft = trinity::TrinityEngineState::mutate(cx, |state| {
+            if state.testing || !state.draft_ready() {
+                return None;
+            }
+            state.testing = true;
+            state.test_result = None;
+            Some((
+                state.api_url.clone(),
+                state.model.clone(),
+                state.api_key.clone(),
+            ))
+        });
+        let Some((api_url, model, api_key)) = draft else {
+            return;
+        };
+        handle.trinity_engine_test(api_url, model, api_key, self.event_tx.clone());
+        cx.notify();
+    }
+
+    /// G-SE14: applies one preset to the draft (web `applyPreset`: endpoint
+    /// and model fill, the key always stays the user's; any pending verdicts
+    /// clear because they describe the previous values).
+    pub(crate) fn apply_trinity_engine_preset(
+        &mut self,
+        api_url: &str,
+        model: &str,
+        cx: &mut Context<Self>,
+    ) {
+        trinity::TrinityEngineState::mutate(cx, |state| {
+            state.api_url = api_url.to_string();
+            state.model = model.to_string();
+            state.test_result = None;
+            state.notice = None;
+        });
+        cx.notify();
+    }
+
+    /// G-SE14: draft field setters (the page's inputs). Any edit clears the
+    /// stale test verdict — it described the previous draft.
+    pub(crate) fn set_trinity_engine_api_url(&mut self, value: String, cx: &mut Context<Self>) {
+        trinity::TrinityEngineState::mutate(cx, |state| {
+            state.api_url = value;
+            state.test_result = None;
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn set_trinity_engine_model(&mut self, value: String, cx: &mut Context<Self>) {
+        trinity::TrinityEngineState::mutate(cx, |state| {
+            state.model = value;
+            state.test_result = None;
+        });
+        cx.notify();
+    }
+
+    pub(crate) fn set_trinity_engine_api_key(&mut self, value: String, cx: &mut Context<Self>) {
+        trinity::TrinityEngineState::mutate(cx, |state| {
+            state.api_key = value;
+            state.test_result = None;
+        });
+        cx.notify();
+    }
+
+    /// G-SE13: flips the memory page's advanced block (web `expandAdvanced` /
+    /// `collapseAdvanced`). Purely presentational, so it stays on the entity.
+    pub(crate) fn toggle_memory_advanced(&mut self, cx: &mut Context<Self>) {
+        settings::MemoryPageState::mutate(cx, |state| state.advanced_open = !state.advanced_open);
+        cx.notify();
+    }
+
+    /// G-SE13: reveals the memory root in the platform file manager (the web
+    /// page's `openDirectory`, which creates the directory first, so the
+    /// action works before the first memory was ever written). Fire and
+    /// forget, so it needs no in-flight guard; a missing path manager is the
+    /// only failure and surfaces as the page's error receipt.
+    pub(crate) fn open_memory_directory(&mut self, cx: &mut Context<Self>) {
+        match openbitfun_core::infrastructure::try_get_path_manager_arc() {
+            Ok(manager) => {
+                let dir = manager.memories_root_dir();
+                if let Err(error) = std::fs::create_dir_all(&dir) {
+                    tracing::warn!("Failed to create memory directory {:?}: {}", dir, error);
+                }
+                crate::settings::open_path_in_file_manager(&dir);
+            }
+            Err(error) => {
+                tracing::warn!("Memory directory unavailable: {}", error);
+                crate::settings::MemoryNotice::set(
+                    Some((
+                        false,
+                        i18n::current(cx).memory_open_directory_failed.clone(),
+                    )),
+                    cx,
+                );
+            }
+        }
+        cx.notify();
+    }
+
+    /// G-SE13: restores the memory settings document to its defaults. Guarded
+    /// so the confirmation dialog cannot queue two resets.
+    pub(crate) fn reset_memory_settings(&mut self, cx: &mut Context<Self>) {
+        let Some(handle) = runtime::runtime_handle() else {
+            return;
+        };
+        let start = settings::MemoryPageState::mutate(cx, |state| {
+            if state.busy {
+                return false;
+            }
+            state.busy = true;
+            true
+        });
+        if !start {
+            return;
+        }
+        crate::settings::MemoryNotice::set(None, cx);
+        handle.reset_memories_config(self.event_tx.clone());
+        cx.notify();
+    }
+
+    /// G-SE13: permanently clears the memory database and workspace files.
+    pub(crate) fn clear_memory_data(&mut self, cx: &mut Context<Self>) {
+        let Some(handle) = runtime::runtime_handle() else {
+            return;
+        };
+        let start = settings::MemoryPageState::mutate(cx, |state| {
+            if state.busy {
+                return false;
+            }
+            state.busy = true;
+            true
+        });
+        if !start {
+            return;
+        }
+        crate::settings::MemoryNotice::set(None, cx);
+        handle.clear_memory_data(self.event_tx.clone());
         cx.notify();
     }
 
@@ -10650,13 +10931,12 @@ pub fn launch_main_window(tokio_handle: tokio::runtime::Handle) {
             gpui_kit::init(cx);
 
             // Global search palette shortcut (R1b), matching the desktop's
-            // Ctrl K, plus the sidebar drawer toggle (web Ctrl B). No key
-            // context: the bindings match wherever no focused view consumes
-            // the keystroke first.
-            cx.bind_keys([
-                KeyBinding::new("ctrl-k", OpenGlobalSearch, None),
-                KeyBinding::new("ctrl-b", ToggleSidebar, None),
-            ]);
+            // Ctrl K, plus the sidebar drawer toggle (web Ctrl B). Both come
+            // from the settings table that the shortcuts page (G-SE7)
+            // documents, so the two cannot drift. No key context: the
+            // bindings match wherever no focused view consumes the keystroke
+            // first.
+            settings::install_global_shortcuts(cx);
 
             let presets = theme::load_presets();
             let active_preset = presets
@@ -11884,6 +12164,28 @@ mod tests {
 
         let cases: &[(settings::SettingsEntry, &[&str])] = &[
             (settings::SettingsEntry::Appearance, &[]),
+            // G-SE14: the engine page renders its pre-load state here; the
+            // loaded/offline blocks are covered by its own settlement test.
+            (settings::SettingsEntry::TrinityEngine, &[]),
+            // G-SE7: the shortcuts table renders its sections and rows; the
+            // binding cross-check has its own test.
+            (
+                settings::SettingsEntry::Shortcuts,
+                &[
+                    "settings-section-shortcuts-global",
+                    "settings-section-shortcuts-terminal",
+                ],
+            ),
+            // G-SE13: the three memory sections render collapsed; the
+            // advanced block's disclosure has its own settlement test.
+            (
+                settings::SettingsEntry::Memory,
+                &[
+                    "settings-section-memory-basic",
+                    "settings-section-memory-models",
+                    "settings-section-memory-advanced",
+                ],
+            ),
             (
                 settings::SettingsEntry::Models,
                 &["settings-section-stream", "settings-section-proxy"],
@@ -13876,6 +14178,328 @@ mod tests {
         assert!(
             delete.origin.x + delete.size.width <= page_right,
             "delete action stays inside the page: {delete:?}"
+        );
+    }
+
+    /// G-SE14: the engine settings page tracks the daemon through load, save
+    /// and test settlements — and states the offline condition instead of
+    /// showing fields whose values nobody knows. Renders the whole page so
+    /// the presets/actions/offline blocks prove their presence, not just the
+    /// state.
+    #[gpui_kit::test]
+    fn trinity_engine_page_tracks_daemon_settlements(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+        let text = sample_shell_text();
+
+        // Offline first: the failure is stated and no draft was touched; a
+        // later success clears it and prefills the daemon's values.
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                assert!(!crate::trinity::TrinityEngineState::current(cx).loaded);
+                shell.apply_runtime_event(
+                    RuntimeEvent::TrinityEngineConfigFailed("connection refused".into()),
+                    window,
+                    cx,
+                );
+                let state = crate::trinity::TrinityEngineState::current(cx);
+                assert_eq!(state.failure.as_deref(), Some("connection refused"));
+                assert!(!state.loading);
+
+                shell.apply_runtime_event(
+                    RuntimeEvent::TrinityEngineConfigReady {
+                        config: Box::new(crate::trinity::EngineLlmConfig {
+                            api_url: "https://api.openai.com/v1".into(),
+                            model: "gpt-4o".into(),
+                            api_key: "sk-live".into(),
+                        }),
+                    },
+                    window,
+                    cx,
+                );
+                let state = crate::trinity::TrinityEngineState::current(cx);
+                assert!(state.loaded);
+                assert!(state.failure.is_none());
+                assert_eq!(
+                    crate::trinity::detect_llm_preset(&state.api_url, &state.model),
+                    "openai"
+                );
+            });
+        });
+
+        // The whole page at the settings column's width.
+        let draw_page = |window: &mut gpui_kit::VisualTestContext, shell: &Entity<ShellWindow>| {
+            let view = shell.downgrade();
+            let text = text.clone();
+            window.draw(
+                point(px(0.), px(0.)),
+                size(px(900.), px(600.)),
+                move |_, cx| {
+                    div()
+                        .w(px(640.))
+                        .h_full()
+                        .child(
+                            cx.new(|_| SettingsHarness {
+                                text: text.clone(),
+                                view: view.clone(),
+                                page: settings::SettingsEntry::TrinityEngine,
+                            })
+                            .into_any_element(),
+                        )
+                        .into_any_element()
+                },
+            );
+            window.run_until_parked();
+        };
+        draw_page(window, &shell);
+        assert!(
+            window.debug_bounds("trinity-engine-presets").is_some(),
+            "the loaded page renders the provider presets"
+        );
+        assert!(
+            window.debug_bounds("trinity-engine-save").is_some(),
+            "the loaded page renders the save action"
+        );
+        assert!(
+            window.debug_bounds("trinity-engine-offline").is_none(),
+            "a loaded page shows fields, not the offline block"
+        );
+
+        // Save and test verdicts land in the page's own receipt lines.
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(RuntimeEvent::TrinityEngineSaved, window, cx);
+                assert!(crate::trinity::TrinityEngineState::current(cx)
+                    .notice
+                    .as_ref()
+                    .is_some_and(|(ok, _)| *ok));
+                shell.apply_runtime_event(
+                    RuntimeEvent::TrinityEngineTested {
+                        ok: false,
+                        error: Some("bad key".into()),
+                    },
+                    window,
+                    cx,
+                );
+                assert_eq!(
+                    crate::trinity::TrinityEngineState::current(cx).test_result,
+                    Some((false, "bad key".to_string()))
+                );
+            });
+        });
+
+        // A failed reload flips the page back to the offline block.
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(
+                    RuntimeEvent::TrinityEngineConfigFailed("daemon down".into()),
+                    window,
+                    cx,
+                );
+            });
+        });
+        draw_page(window, &shell);
+        assert!(
+            window.debug_bounds("trinity-engine-offline").is_some(),
+            "the offline page states the condition"
+        );
+        assert!(
+            window.debug_bounds("trinity-engine-presets").is_none(),
+            "fields stay hidden while the daemon cannot answer"
+        );
+    }
+
+    /// G-SE13: the memory page's two menu actions settle into the shared
+    /// snapshot, the page's receipt line and its in-flight guard; the
+    /// advanced block is disclosed in place and vanishes again on collapse.
+    /// Renders the whole page so the sections and the disclosure prove their
+    /// presence, not just the state.
+    #[gpui_kit::test]
+    fn memory_page_tracks_reset_and_clear_settlements(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+        let text = sample_shell_text();
+
+        let draw_page = |window: &mut gpui_kit::VisualTestContext, shell: &Entity<ShellWindow>| {
+            let view = shell.downgrade();
+            let text = text.clone();
+            window.draw(
+                point(px(0.), px(0.)),
+                size(px(900.), px(600.)),
+                move |_, cx| {
+                    div()
+                        .w(px(640.))
+                        .h_full()
+                        .child(
+                            cx.new(|_| SettingsHarness {
+                                text: text.clone(),
+                                view: view.clone(),
+                                page: settings::SettingsEntry::Memory,
+                            })
+                            .into_any_element(),
+                        )
+                        .into_any_element()
+                },
+            );
+            window.run_until_parked();
+        };
+
+        // The collapsed page renders its sections and no advanced block.
+        draw_page(window, &shell);
+        assert!(
+            window
+                .debug_bounds("settings-section-memory-basic")
+                .is_some(),
+            "the page renders its basic section"
+        );
+        assert!(
+            window
+                .debug_bounds("settings-section-memory-models")
+                .is_some(),
+            "the page renders its model section"
+        );
+        assert!(
+            window.debug_bounds("memory-advanced-block").is_none(),
+            "the advanced block starts collapsed"
+        );
+
+        // Disclosing the block is purely presentational; a reset then settles
+        // the in-flight guard, replaces the snapshot with the re-read section
+        // and leaves the success receipt up.
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.toggle_memory_advanced(cx);
+                assert!(settings::MemoryPageState::current(cx).advanced_open);
+
+                settings::MemoryPageState::mutate(cx, |state| state.busy = true);
+                let mut restored =
+                    openbitfun_core::service::config::types::MemoriesConfig::default();
+                restored.generate_memories = false;
+                restored.max_unused_days = 120;
+                shell.apply_runtime_event(
+                    RuntimeEvent::MemorySettingsReset(Ok(Box::new(restored.clone()))),
+                    window,
+                    cx,
+                );
+                assert!(
+                    !settings::MemoryPageState::current(cx).busy,
+                    "the guard clears with the receipt"
+                );
+                let snapshot = settings::ShellConfig::current(cx).memories;
+                assert!(!snapshot.generate_memories);
+                assert_eq!(snapshot.max_unused_days, 120);
+                assert!(
+                    settings::MemoryNotice::current(cx).is_some_and(|(ok, _)| ok),
+                    "the reset states its success"
+                );
+            });
+        });
+        draw_page(window, &shell);
+        assert!(
+            window.debug_bounds("memory-advanced-block").is_some(),
+            "the disclosed block is on the page"
+        );
+
+        // A failed clear reports itself, and collapsing hides the block again.
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                settings::MemoryPageState::mutate(cx, |state| state.busy = true);
+                shell.apply_runtime_event(
+                    RuntimeEvent::MemoryCleared(Err("disk busy".into())),
+                    window,
+                    cx,
+                );
+                assert!(!settings::MemoryPageState::current(cx).busy);
+                assert!(
+                    settings::MemoryNotice::current(cx).is_some_and(|(ok, _)| !ok),
+                    "a failure surfaces instead of a silent no-op"
+                );
+                shell.toggle_memory_advanced(cx);
+                assert!(!settings::MemoryPageState::current(cx).advanced_open);
+            });
+        });
+        draw_page(window, &shell);
+        assert!(
+            window.debug_bounds("memory-advanced-block").is_none(),
+            "collapsing removes the block"
+        );
+    }
+
+    /// G-SE7: the shortcuts page documents exactly what is bound. The two
+    /// global rows come from the same table `install_global_shortcuts` binds,
+    /// so the test binds the table and asks the window's keymap back what each
+    /// action resolves to — a row whose stroke had drifted from the binding
+    /// would fail here.
+    #[gpui_kit::test]
+    fn shortcuts_page_matches_the_bound_globals(cx: &mut gpui_kit::TestAppContext) {
+        // `as_keystroke` lives on a helper trait outside the gpui prelude.
+        use gpui_kit::AsKeystroke as _;
+
+        install_shell_globals(cx);
+        cx.update(|cx| settings::install_global_shortcuts(cx));
+
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+        let text = sample_shell_text();
+
+        for shortcut in settings::GLOBAL_SHORTCUTS {
+            let keystroke = gpui_kit::Keystroke::parse(shortcut.stroke)
+                .unwrap_or_else(|error| panic!("{} does not parse: {error}", shortcut.stroke));
+            let action = (shortcut.action)();
+            let bound =
+                window.update(|window, _cx| window.highest_precedence_binding_for_action(&*action));
+            let bound = bound
+                .unwrap_or_else(|| panic!("{} is not bound in the window keymap", shortcut.stroke));
+            let first = bound
+                .keystrokes()
+                .first()
+                .expect("a bound keybinding carries a keystroke")
+                .as_keystroke()
+                .clone();
+            assert_eq!(
+                gpui_kit::component::kbd::Kbd::format(&first),
+                gpui_kit::component::kbd::Kbd::format(&keystroke),
+                "the documented key and the bound key agree for {}",
+                shortcut.stroke
+            );
+            // The label the row shows comes from the shell copy, never empty.
+            assert!(!(shortcut.label)(&text).is_empty());
+        }
+
+        // The page renders the table: the global rows and the terminal pair
+        // prove both a keycap row and a note row made it into the layout.
+        let view = shell.downgrade();
+        window.draw(
+            point(px(0.), px(0.)),
+            size(px(900.), px(600.)),
+            move |_, cx| {
+                div()
+                    .w(px(640.))
+                    .h_full()
+                    .child(
+                        cx.new(|_| SettingsHarness {
+                            text: text.clone(),
+                            view: view.clone(),
+                            page: settings::SettingsEntry::Shortcuts,
+                        })
+                        .into_any_element(),
+                    )
+                    .into_any_element()
+            },
+        );
+        window.run_until_parked();
+        assert!(
+            window.debug_bounds("shortcut-row-ctrl-k").is_some(),
+            "the global table renders its search row"
+        );
+        assert!(
+            window.debug_bounds("shortcut-row-ctrl-shift-c").is_some(),
+            "the terminal section renders its copy row"
         );
     }
 

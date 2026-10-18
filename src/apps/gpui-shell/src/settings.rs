@@ -48,6 +48,10 @@ pub(crate) const TERMINAL_PROFILES_PATH: &str = "terminal.profiles";
 /// Default model new sessions start on (same path the desktop models page
 /// writes).
 pub(crate) const DEFAULT_MODEL_PATH: &str = "ai.default_models.primary";
+
+/// G-SE13: the `memories` config document the memory page edits. Single keys
+/// are merged back through [`persist_object_key`] so unknown keys survive.
+pub(crate) const MEMORIES_PATH: &str = "memories";
 /// What the window close button does (`app.close_button_behavior`). The shell
 /// renders `quit`/`minimize_to_tray`; anything else (the desktop's `ask`, for
 /// one) stays displayed verbatim and behaves like the desktop fallback:
@@ -146,6 +150,51 @@ impl ArchivedNotice {
 
     pub(crate) fn set(message: Option<(bool, String)>, cx: &mut App) {
         cx.set_global(Self(message));
+    }
+}
+
+/// The memory page's inline action receipt (G-SE13) as
+/// `(succeeded, message)` — same shell stand-in for the web's toasts as
+/// [`ArchivedNotice`].
+pub(crate) struct MemoryNotice(pub Option<(bool, String)>);
+
+impl Global for MemoryNotice {}
+
+impl MemoryNotice {
+    pub(crate) fn current(cx: &App) -> Option<(bool, String)> {
+        cx.try_global::<Self>().and_then(|notice| notice.0.clone())
+    }
+
+    pub(crate) fn set(message: Option<(bool, String)>, cx: &mut App) {
+        cx.set_global(Self(message));
+    }
+}
+
+/// The memory page's own UI state (G-SE13): the advanced-block disclosure and
+/// the in-flight guard the actions menu honors. A global because the page is
+/// built inside the window's own render, where the window entity cannot be
+/// read — the same reason [`MemoryNotice`] is one.
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct MemoryPageState {
+    pub(crate) advanced_open: bool,
+    pub(crate) busy: bool,
+}
+
+impl Global for MemoryPageState {}
+
+impl MemoryPageState {
+    /// The current state, or the defaults before anything touched it.
+    pub(crate) fn current(cx: &App) -> Self {
+        cx.try_global::<Self>().copied().unwrap_or_default()
+    }
+
+    /// Mutates the state, materializing the default when no bootstrap
+    /// installed it yet.
+    pub(crate) fn mutate<R>(cx: &mut App, change: impl FnOnce(&mut Self) -> R) -> R {
+        if cx.try_global::<Self>().is_none() {
+            cx.set_global(Self::default());
+        }
+        change(cx.global_mut::<Self>())
     }
 }
 
@@ -288,6 +337,9 @@ pub(crate) struct ShellConfig {
     /// A2 (G-SE22): `ai.review_teams.default` as the stored document; read for
     /// the two capacity keys, written back per key.
     pub(crate) review_team: serde_json::Value,
+    /// G-SE13: the `memories` section as the typed shared document. Writes go
+    /// key by key through [`persist_object_key`]; the mirror updates in place.
+    pub(crate) memories: openbitfun_core::service::config::types::MemoriesConfig,
 }
 
 impl Global for ShellConfig {}
@@ -368,6 +420,7 @@ impl ShellConfig {
                     .unwrap_or_default(),
             )
             .unwrap_or(serde_json::Value::Null),
+            memories: config.memories.clone(),
         }
     }
 
@@ -421,6 +474,7 @@ impl ShellConfig {
             deferred_tool_loading: true,
             allow_tool_json_repair: true,
             review_team: serde_json::Value::Null,
+            memories: openbitfun_core::service::config::types::MemoriesConfig::default(),
         }
     }
 }
@@ -932,6 +986,16 @@ pub(crate) enum SettingsEntry {
     Appearance,
     Terminal,
     Models,
+    /// G-SE14: the cognitive-engine LLM page (`ai.trinity`), backed by the
+    /// trinityd `llm.*` RPCs.
+    TrinityEngine,
+    /// G-SE13: the agent-memory page (`ai.memory`) over the shared
+    /// `memories` config section.
+    Memory,
+    /// G-SE7: the read-only shortcut table (`application.shortcuts`). The
+    /// shell's bindings are fixed per release; the web page's record/conflict
+    /// machinery has no shell counterpart to persist into.
+    Shortcuts,
     /// `workspace.session`: covered by the global search overlay.
     SessionSearch,
     /// `workspace.worktrees`: covered by the Git panel.
@@ -961,6 +1025,9 @@ impl SettingsEntry {
             Self::Appearance => Some("application.appearance"),
             Self::Terminal => Some("application.terminal"),
             Self::Models => Some("ai.models"),
+            Self::TrinityEngine => Some("ai.trinity"),
+            Self::Memory => Some("ai.memory"),
+            Self::Shortcuts => Some("application.shortcuts"),
             Self::SessionSearch => Some("workspace.session"),
             Self::WorktreesGit => Some("workspace.worktrees"),
             Self::Permissions => Some("tools.execution"),
@@ -979,19 +1046,17 @@ impl SettingsEntry {
 /// Registry pages with no shell presence of any kind. They stay out of the
 /// tree entirely — no dead-end entry that only says "not here" (the same
 /// no-fake-UI rule that keeps web-only switches out of the shell pages;
-/// parity §2.1). pet/voice have no shell analog, shortcuts/editor are
-/// postponed, memory/trinity and browser/desktop-control and ACP agents
-/// have no shell page. Test-only: hidden-ness is enforced by omission from
+/// parity §2.1). pet/voice have no shell analog, browser/desktop-control and
+/// ACP agents have no shell page, and the editor page stays postponed
+/// (trinity graduated with G-SE14, memory with G-SE13, shortcuts with G-SE7).
+/// Test-only: hidden-ness is enforced by omission from
 /// [`category_entries`]; this list exists so the disposition test can prove
 /// tree ∪ hidden covers the registry exactly.
 #[cfg(test)]
 pub(crate) const HIDDEN_REGISTRY_PAGES: &[&str] = &[
     "application.pet",
     "application.voice",
-    "application.shortcuts",
     "application.editor",
-    "ai.memory",
-    "ai.trinity",
     "tools.desktop-control",
     "tools.acp",
 ];
@@ -1002,9 +1067,14 @@ pub(crate) fn category_entries(category: SettingsCategory) -> &'static [Settings
         SettingsCategory::Application => &[
             SettingsEntry::General,
             SettingsEntry::Appearance,
+            SettingsEntry::Shortcuts,
             SettingsEntry::Terminal,
         ],
-        SettingsCategory::Ai => &[SettingsEntry::Models],
+        SettingsCategory::Ai => &[
+            SettingsEntry::Models,
+            SettingsEntry::TrinityEngine,
+            SettingsEntry::Memory,
+        ],
         SettingsCategory::Workspace => &[SettingsEntry::SessionSearch, SettingsEntry::WorktreesGit],
         SettingsCategory::Tools => &[
             SettingsEntry::Permissions,
@@ -1046,6 +1116,9 @@ pub(crate) fn entry_slug(entry: SettingsEntry) -> &'static str {
         SettingsEntry::Appearance => "appearance",
         SettingsEntry::Terminal => "terminal",
         SettingsEntry::Models => "models",
+        SettingsEntry::TrinityEngine => "trinity",
+        SettingsEntry::Memory => "memory",
+        SettingsEntry::Shortcuts => "shortcuts",
         SettingsEntry::SessionSearch => "session",
         SettingsEntry::WorktreesGit => "worktrees",
         SettingsEntry::Permissions => "execution",
@@ -1068,6 +1141,9 @@ pub(crate) fn entry_label<'a>(entry: SettingsEntry, text: &'a ShellText) -> &'a 
         SettingsEntry::Appearance => &text.settings_appearance,
         SettingsEntry::Terminal => &text.settings_terminal,
         SettingsEntry::Models => &text.models_title,
+        SettingsEntry::TrinityEngine => &text.settings_trinity_label,
+        SettingsEntry::Memory => &text.settings_memory_label,
+        SettingsEntry::Shortcuts => &text.settings_shortcuts_label,
         SettingsEntry::SessionSearch => &text.settings_jump_session_label,
         SettingsEntry::WorktreesGit => &text.settings_jump_worktrees_label,
         SettingsEntry::Permissions => &text.settings_permissions,
@@ -1089,6 +1165,9 @@ pub(crate) fn entry_description<'a>(entry: SettingsEntry, text: &'a ShellText) -
         SettingsEntry::Appearance => &text.settings_page_appearance_description,
         SettingsEntry::Terminal => &text.settings_page_terminal_description,
         SettingsEntry::Models => &text.settings_page_models_description,
+        SettingsEntry::TrinityEngine => &text.settings_page_trinity_description,
+        SettingsEntry::Memory => &text.settings_page_memory_description,
+        SettingsEntry::Shortcuts => &text.settings_page_shortcuts_description,
         SettingsEntry::SessionSearch => &text.settings_page_session_description,
         SettingsEntry::WorktreesGit => &text.settings_page_worktrees_description,
         SettingsEntry::Permissions => &text.settings_page_execution_description,
@@ -1121,6 +1200,9 @@ pub(crate) fn entry_group(
         SettingsEntry::Appearance => appearance_group(text, cx),
         SettingsEntry::Terminal => terminal_group(text, view),
         SettingsEntry::Models => models_group(text, cx),
+        SettingsEntry::TrinityEngine => trinity_engine_group(text, view, cx),
+        SettingsEntry::Memory => memory_group(text, view, cx),
+        SettingsEntry::Shortcuts => shortcuts_group(text, cx),
         SettingsEntry::SessionSearch => session_search_group(text, view),
         SettingsEntry::WorktreesGit => worktrees_git_group(text, view),
         SettingsEntry::Permissions => permissions_group(text, cx),
@@ -2140,6 +2222,176 @@ fn section_heading_item(slug: &'static str, title: String, note: String) -> Sett
     })
 }
 
+/// One of the shell's own global key bindings (G-SE7). The shortcuts page
+/// renders this table, and [`install_global_shortcuts`] binds the very same
+/// entries, so the documented keys cannot drift from the installed ones.
+pub(crate) struct GlobalShortcut {
+    /// Keystroke string exactly as the binding records it.
+    pub(crate) stroke: &'static str,
+    /// The bound action; a unit action of the shell.
+    pub(crate) action: fn() -> Box<dyn gpui_kit::Action>,
+    /// Row label against the shell copy (reuses the string the action's own
+    /// affordance shows).
+    pub(crate) label: fn(&ShellText) -> String,
+}
+
+/// The shell's global shortcuts, in binding order. No key context: they match
+/// wherever no focused view consumes the keystroke first (a terminal pane or a
+/// text editor on the focus path wins, exactly as on the desktop).
+pub(crate) const GLOBAL_SHORTCUTS: &[GlobalShortcut] = &[
+    GlobalShortcut {
+        stroke: "ctrl-k",
+        action: || Box::new(crate::shell::OpenGlobalSearch),
+        label: |text| text.settings_jump_session_action.clone(),
+    },
+    GlobalShortcut {
+        stroke: "ctrl-b",
+        action: || Box::new(crate::shell::ToggleSidebar),
+        label: |text| text.sidebar_toggle.clone(),
+    },
+];
+
+/// Installs the global bindings from [`GLOBAL_SHORTCUTS`] — the same table the
+/// settings page documents. A stroke that does not parse panics here at
+/// startup rather than silently shipping an unbound key.
+pub(crate) fn install_global_shortcuts(cx: &mut App) {
+    cx.bind_keys(GLOBAL_SHORTCUTS.iter().map(|shortcut| {
+        gpui_kit::KeyBinding::load(
+            shortcut.stroke,
+            (shortcut.action)(),
+            None,
+            false,
+            None,
+            &gpui_kit::DummyKeyboardMapper,
+        )
+        .unwrap_or_else(|error| {
+            panic!(
+                "Shell shortcut {} does not parse: {}",
+                shortcut.stroke, error
+            )
+        })
+    }));
+}
+
+/// G-SE7 read-only shortcuts page (`application.shortcuts`): what the shell
+/// honors, grouped the way the web page groups scopes — its own global
+/// bindings first, then the keys the component layer and the shell's handlers
+/// provide. The web page's recording, conflict detection and reset have no
+/// shell counterpart (there is no keybinding document to write), so the page
+/// states that instead of offering controls that could not persist.
+fn shortcuts_group(text: &ShellText, _cx: &App) -> SettingGroup {
+    let mut items = vec![
+        SettingItem::render({
+            let note = text.shortcuts_fixed_note.clone();
+            move |_options, _window, cx| info_note(&note, cx)
+        }),
+        section_heading_item(
+            "shortcuts-global",
+            text.shortcuts_section_global.clone(),
+            String::new(),
+        ),
+    ];
+
+    for shortcut in GLOBAL_SHORTCUTS {
+        items.push(shortcut_row(&[shortcut.stroke], (shortcut.label)(text)));
+    }
+
+    items.push(section_heading_item(
+        "shortcuts-overlays",
+        text.shortcuts_section_overlays.clone(),
+        String::new(),
+    ));
+    items.push(shortcut_row(
+        &["escape"],
+        text.shortcuts_overlay_dismiss.clone(),
+    ));
+    items.push(shortcut_row(
+        &["up", "down"],
+        text.shortcuts_overlay_move.clone(),
+    ));
+    items.push(shortcut_row(
+        &["enter"],
+        text.shortcuts_overlay_confirm.clone(),
+    ));
+
+    items.push(section_heading_item(
+        "shortcuts-terminal",
+        text.shortcuts_section_terminal.clone(),
+        String::new(),
+    ));
+    items.push(shortcut_row(
+        &["ctrl-shift-c"],
+        text.shortcuts_terminal_copy.clone(),
+    ));
+    items.push(shortcut_row(
+        &["ctrl-shift-v"],
+        text.shortcuts_terminal_paste.clone(),
+    ));
+    items.push(shortcut_row(&[], text.shortcuts_terminal_note.clone()));
+
+    items.push(section_heading_item(
+        "shortcuts-editing",
+        text.shortcuts_section_editing.clone(),
+        String::new(),
+    ));
+    items.push(shortcut_row(&[], text.shortcuts_editing_note.clone()));
+
+    SettingGroup::new().items(items)
+}
+
+/// One read-only shortcut row: label on the left, the keycaps on the right —
+/// the web page's `Kbd` column. A row with no strokes is a plain note line
+/// (the terminal and editing rows state behavior whose keys the platform
+/// owns). The row carries a debug selector named after its first stroke (or
+/// its label for note rows), so a headless test can prove the table rendered.
+fn shortcut_row(strokes: &[&str], label: String) -> SettingItem {
+    let strokes: Vec<String> = strokes.iter().map(|stroke| stroke.to_string()).collect();
+    let selector = match strokes.first() {
+        Some(stroke) => format!("shortcut-row-{}", stroke),
+        None => format!("shortcut-row-{}", label),
+    };
+    SettingItem::render(move |_options, _window, cx| {
+        let mut caps = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_1()
+            .flex_shrink_0();
+        for stroke in &strokes {
+            if let Ok(keystroke) = gpui_kit::Keystroke::parse(stroke) {
+                caps = caps.child(gpui_kit::component::kbd::Kbd::new(keystroke));
+            }
+        }
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap_3()
+            .w_full()
+            .debug_selector({
+                let selector = selector.clone();
+                move || selector.clone()
+            })
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .flex_1()
+                    .min_w(px(0.))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().foreground)
+                            .child(label.clone()),
+                    ),
+            )
+            .child(caps)
+            .into_any_element()
+    })
+}
+
 /// G-SE10: one streaming-timeout number field. Zero writes `null`, the shared
 /// "wait indefinitely" value; a positive value writes the seconds.
 fn stream_timeout_field(
@@ -2725,6 +2977,950 @@ fn review_capacity_field(
             set_review_capacity(key, serde_json::json!(clamped), cx);
         },
     )
+}
+
+/// G-SE13 memory page (`ai.memory`): the shared `memories` config section —
+/// the switches, model selectors and advanced extraction/consolidation knobs
+/// the desktop page edits, plus the memory-actions menu (open directory /
+/// reset settings / wipe). Copy is the desktop `settings/memory` catalog
+/// verbatim; the web's toasts become the inline [`MemoryNotice`].
+fn memory_group(
+    text: &ShellText,
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    cx: &mut App,
+) -> SettingGroup {
+    let advanced_open = MemoryPageState::current(cx).advanced_open;
+    let memories = ShellConfig::current(cx).memories.clone();
+    let memory_enabled = memories.generate_memories && memories.use_memories;
+    let work_disabled = !memory_enabled;
+
+    // 基础：记忆总开关（generate_memories 与 use_memories 同行同写，与 web
+    // `updateMemoryEnabled` 一致）、BTW 来源、外部上下文策略、记忆操作菜单。
+    let enabled_field = SettingField::switch(
+        move |cx: &App| {
+            let memories = &ShellConfig::current(cx).memories;
+            memories.generate_memories && memories.use_memories
+        },
+        |value: bool, cx: &mut App| {
+            {
+                let memories = &mut cx.global_mut::<ShellConfig>().memories;
+                memories.generate_memories = value;
+                memories.use_memories = value;
+            }
+            persist_object_key(MEMORIES_PATH, "generate_memories", serde_json::json!(value));
+            persist_object_key(MEMORIES_PATH, "use_memories", serde_json::json!(value));
+            cx.refresh_windows();
+        },
+    );
+
+    let btw_field = SettingField::switch(
+        move |cx: &App| ShellConfig::current(cx).memories.generate_for_btw_sessions,
+        |value: bool, cx: &mut App| {
+            cx.global_mut::<ShellConfig>()
+                .memories
+                .generate_for_btw_sessions = value;
+            persist_object_key(
+                MEMORIES_PATH,
+                "generate_for_btw_sessions",
+                serde_json::json!(value),
+            );
+            cx.refresh_windows();
+        },
+    );
+
+    let policy_field = SettingField::dropdown(
+        vec![
+            (
+                "clear_tool_results",
+                text.memory_policy_clear_tool_results.clone(),
+            ),
+            ("allow", text.memory_policy_allow.clone()),
+            ("skip_session", text.memory_policy_skip_session.clone()),
+        ]
+        .into_iter()
+        .map(|(id, label)| (SharedString::from(id), SharedString::from(label)))
+        .collect::<Vec<(SharedString, SharedString)>>(),
+        |cx: &App| {
+            SharedString::from(memory_policy_value(
+                ShellConfig::current(cx).memories.external_context_policy,
+            ))
+        },
+        |value: SharedString, cx: &mut App| {
+            let policy = memory_policy_from_str(value.as_ref());
+            cx.global_mut::<ShellConfig>()
+                .memories
+                .external_context_policy = policy;
+            persist_object_key(
+                MEMORIES_PATH,
+                "external_context_policy",
+                serde_json::json!(memory_policy_value(policy)),
+            );
+            cx.refresh_windows();
+        },
+    );
+
+    let actions_view = view.clone();
+    let actions_field = SettingField::render(move |_options, _window, cx| {
+        let text = crate::i18n::current(cx);
+        let busy = MemoryPageState::current(cx).busy;
+        let menu_view = actions_view.clone();
+        Button::new("memory-actions-menu")
+            .label(text.memory_action_manage.clone())
+            .small()
+            .with_variant(ButtonVariant::Secondary)
+            .disabled(busy)
+            .dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, _window, cx| {
+                memory_actions_menu(menu, menu_view.clone(), cx)
+            })
+            .into_any_element()
+    });
+
+    // 模型：抽取与整理各自跟随（空 = 跟随）或指定目录内启用模型。
+    let catalog = cx
+        .try_global::<crate::runtime::ModelCatalog>()
+        .cloned()
+        .unwrap_or_default();
+    let extract_field = SettingField::dropdown(
+        memory_model_options(
+            &catalog,
+            text.memory_model_follow_primary.clone(),
+            memories.extract_model.as_deref(),
+            cx,
+        ),
+        |cx: &App| {
+            SharedString::from(
+                ShellConfig::current(cx)
+                    .memories
+                    .extract_model
+                    .clone()
+                    .unwrap_or_default(),
+            )
+        },
+        |value: SharedString, cx: &mut App| {
+            let value = value.to_string();
+            let stored = (!value.is_empty()).then_some(value.clone());
+            cx.global_mut::<ShellConfig>().memories.extract_model = stored.clone();
+            persist_object_key(
+                MEMORIES_PATH,
+                "extract_model",
+                stored.map_or(serde_json::Value::Null, serde_json::Value::String),
+            );
+            cx.refresh_windows();
+        },
+    );
+
+    let consolidation_field = SettingField::dropdown(
+        memory_model_options(
+            &catalog,
+            text.memory_model_follow_extraction.clone(),
+            memories.consolidation_model.as_deref(),
+            cx,
+        ),
+        |cx: &App| {
+            SharedString::from(
+                ShellConfig::current(cx)
+                    .memories
+                    .consolidation_model
+                    .clone()
+                    .unwrap_or_default(),
+            )
+        },
+        |value: SharedString, cx: &mut App| {
+            let value = value.to_string();
+            let stored = (!value.is_empty()).then_some(value.clone());
+            cx.global_mut::<ShellConfig>().memories.consolidation_model = stored.clone();
+            persist_object_key(
+                MEMORIES_PATH,
+                "consolidation_model",
+                stored.map_or(serde_json::Value::Null, serde_json::Value::String),
+            );
+            cx.refresh_windows();
+        },
+    );
+
+    // 高级设置：可折叠（web 的 section extra chevron），默认收起。
+    let advanced_view = view.clone();
+    let advanced_toggle = SettingField::render(move |_options, _window, cx| {
+        let text = crate::i18n::current(cx);
+        let open = MemoryPageState::current(cx).advanced_open;
+        let click_view = advanced_view.clone();
+        Button::new("memory-advanced-toggle")
+            .label(if open {
+                text.memory_action_collapse_advanced.clone()
+            } else {
+                text.memory_action_expand_advanced.clone()
+            })
+            .small()
+            .with_variant(ButtonVariant::Ghost)
+            .on_click(move |_, _window, cx| {
+                if let Some(shell) = click_view.upgrade() {
+                    shell.update(cx, |this, cx| this.toggle_memory_advanced(cx));
+                }
+            })
+            .into_any_element()
+    });
+
+    let mut items = vec![
+        SettingItem::render({
+            let notice = text.memory_scope_notice.clone();
+            move |_options, _window, cx| memory_scope_notice(&notice, cx)
+        }),
+        section_heading_item(
+            "memory-basic",
+            text.memory_section_basic.clone(),
+            text.memory_section_basic_note.clone(),
+        ),
+        SettingItem::new(text.memory_enabled.clone(), enabled_field)
+            .description(text.memory_enabled_description.clone()),
+        SettingItem::new(text.memory_generate_btw.clone(), btw_field)
+            .description(text.memory_generate_btw_description.clone())
+            .disabled(work_disabled),
+        SettingItem::new(text.memory_external_context.clone(), policy_field)
+            .description(text.memory_external_context_description.clone())
+            .disabled(work_disabled),
+        SettingItem::new(text.memory_actions_label.clone(), actions_field)
+            .description(text.memory_actions_description.clone()),
+        section_heading_item(
+            "memory-models",
+            text.memory_section_models.clone(),
+            text.memory_section_models_note.clone(),
+        ),
+        SettingItem::new(text.memory_extract_model.clone(), extract_field)
+            .description(text.memory_extract_model_description.clone())
+            .disabled(work_disabled),
+        SettingItem::new(text.memory_consolidation_model.clone(), consolidation_field)
+            .description(text.memory_consolidation_model_description.clone())
+            .disabled(work_disabled),
+        section_heading_item(
+            "memory-advanced",
+            text.memory_section_advanced.clone(),
+            text.memory_section_advanced_note.clone(),
+        ),
+        SettingItem::new(text.memory_action_expand_advanced.clone(), advanced_toggle),
+    ];
+
+    if advanced_open {
+        // A disclosure marker item, so a headless test can prove the block is
+        // on the page (and gone again when collapsed) instead of only reading
+        // the flag. Items cannot nest: `SettingItem` is rendered by the group
+        // that owns it, not into a custom element.
+        items.push(SettingItem::render(|_options, _window, cx| {
+            div()
+                .w_full()
+                .h(px(1.))
+                .bg(cx.theme().border)
+                .debug_selector(|| "memory-advanced-block".to_string())
+                .into_any_element()
+        }));
+        items.extend(memory_advanced_items(&memories, text));
+    }
+
+    // The page's inline receipt replaces the web toasts; it sits above the
+    // first section so the outcome of a menu action stays visible.
+    if let Some((succeeded, message)) = MemoryNotice::current(cx) {
+        items.insert(
+            0,
+            SettingItem::render(move |_options, _window, cx| {
+                div()
+                    .w_full()
+                    .text_sm()
+                    .text_color(if succeeded {
+                        cx.theme().muted_foreground
+                    } else {
+                        cx.theme().danger
+                    })
+                    .child(message.clone())
+                    .into_any_element()
+            }),
+        );
+    }
+
+    SettingGroup::new().items(items)
+}
+
+/// The advanced numbers (web `sections.advanced`): extraction and
+/// consolidation windows. Each key was validated to live in the `memories`
+/// document; ranges mirror the web `NumberInput` bounds, and the two window
+/// fields are cross-bounded (回溯 ≤ 保留, web `isValidMemoryWindowConfig`).
+fn memory_advanced_items(
+    memories: &openbitfun_core::service::config::types::MemoriesConfig,
+    text: &ShellText,
+) -> Vec<SettingItem> {
+    let idle_field = SettingField::number_input(
+        NumberFieldOptions {
+            min: 1.,
+            max: 48.,
+            step: 1.,
+        },
+        move |cx: &App| ShellConfig::current(cx).memories.min_rollout_idle_hours as f64,
+        |value: f64, cx: &mut App| {
+            if !value.is_finite() {
+                return;
+            }
+            let clamped = (value.round() as i64).clamp(1, 48);
+            cx.global_mut::<ShellConfig>()
+                .memories
+                .min_rollout_idle_hours = clamped;
+            persist_object_key(
+                MEMORIES_PATH,
+                "min_rollout_idle_hours",
+                serde_json::json!(clamped),
+            );
+            cx.refresh_windows();
+        },
+    );
+
+    let age_field = SettingField::number_input(
+        NumberFieldOptions {
+            min: 0.,
+            max: memories.max_unused_days.max(0) as f64,
+            step: 1.,
+        },
+        move |cx: &App| ShellConfig::current(cx).memories.max_rollout_age_days as f64,
+        |value: f64, cx: &mut App| {
+            if !value.is_finite() {
+                return;
+            }
+            let clamped = (value.round() as i64).clamp(0, 3650);
+            let retained = cx.global::<ShellConfig>().memories.max_unused_days;
+            let next = clamped.min(retained);
+            cx.global_mut::<ShellConfig>().memories.max_rollout_age_days = next;
+            persist_object_key(
+                MEMORIES_PATH,
+                "max_rollout_age_days",
+                serde_json::json!(next),
+            );
+            cx.refresh_windows();
+        },
+    );
+
+    let per_startup_field = SettingField::number_input(
+        NumberFieldOptions {
+            min: 1.,
+            max: 128.,
+            step: 1.,
+        },
+        move |cx: &App| ShellConfig::current(cx).memories.max_rollouts_per_startup as f64,
+        |value: f64, cx: &mut App| {
+            if !value.is_finite() {
+                return;
+            }
+            let clamped = (value.round() as usize).clamp(1, 128);
+            cx.global_mut::<ShellConfig>()
+                .memories
+                .max_rollouts_per_startup = clamped;
+            persist_object_key(
+                MEMORIES_PATH,
+                "max_rollouts_per_startup",
+                serde_json::json!(clamped),
+            );
+            cx.refresh_windows();
+        },
+    );
+
+    let scan_field = SettingField::number_input(
+        NumberFieldOptions {
+            min: 1.,
+            max: 50_000.,
+            step: 100.,
+        },
+        move |cx: &App| ShellConfig::current(cx).memories.max_rollouts_scan_limit as f64,
+        |value: f64, cx: &mut App| {
+            if !value.is_finite() {
+                return;
+            }
+            let clamped = (value.round() as usize).clamp(1, 50_000);
+            cx.global_mut::<ShellConfig>()
+                .memories
+                .max_rollouts_scan_limit = clamped;
+            persist_object_key(
+                MEMORIES_PATH,
+                "max_rollouts_scan_limit",
+                serde_json::json!(clamped),
+            );
+            cx.refresh_windows();
+        },
+    );
+
+    let concurrency_field = SettingField::number_input(
+        NumberFieldOptions {
+            min: 1.,
+            max: 16.,
+            step: 1.,
+        },
+        move |cx: &App| ShellConfig::current(cx).memories.phase1_max_concurrency as f64,
+        |value: f64, cx: &mut App| {
+            if !value.is_finite() {
+                return;
+            }
+            let clamped = (value.round() as usize).clamp(1, 16);
+            cx.global_mut::<ShellConfig>()
+                .memories
+                .phase1_max_concurrency = clamped;
+            persist_object_key(
+                MEMORIES_PATH,
+                "phase1_max_concurrency",
+                serde_json::json!(clamped),
+            );
+            cx.refresh_windows();
+        },
+    );
+
+    let raw_field = SettingField::number_input(
+        NumberFieldOptions {
+            min: 1.,
+            max: 4096.,
+            step: 1.,
+        },
+        move |cx: &App| {
+            ShellConfig::current(cx)
+                .memories
+                .max_raw_memories_for_consolidation as f64
+        },
+        |value: f64, cx: &mut App| {
+            if !value.is_finite() {
+                return;
+            }
+            let clamped = (value.round() as usize).clamp(1, 4096);
+            cx.global_mut::<ShellConfig>()
+                .memories
+                .max_raw_memories_for_consolidation = clamped;
+            persist_object_key(
+                MEMORIES_PATH,
+                "max_raw_memories_for_consolidation",
+                serde_json::json!(clamped),
+            );
+            cx.refresh_windows();
+        },
+    );
+
+    let retention_field = SettingField::number_input(
+        NumberFieldOptions {
+            min: memories.max_rollout_age_days.max(0) as f64,
+            max: 365.,
+            step: 1.,
+        },
+        move |cx: &App| ShellConfig::current(cx).memories.max_unused_days as f64,
+        |value: f64, cx: &mut App| {
+            if !value.is_finite() {
+                return;
+            }
+            let clamped = (value.round() as i64).clamp(0, 365);
+            let age = cx.global::<ShellConfig>().memories.max_rollout_age_days;
+            let next = clamped.max(age);
+            cx.global_mut::<ShellConfig>().memories.max_unused_days = next;
+            persist_object_key(MEMORIES_PATH, "max_unused_days", serde_json::json!(next));
+            cx.refresh_windows();
+        },
+    );
+
+    vec![
+        SettingItem::new(text.memory_min_idle_hours.clone(), idle_field)
+            .description(text.memory_min_idle_hours_description.clone()),
+        SettingItem::new(text.memory_max_age_days.clone(), age_field)
+            .description(text.memory_max_age_days_description.clone()),
+        SettingItem::new(text.memory_per_startup.clone(), per_startup_field)
+            .description(text.memory_per_startup_description.clone()),
+        SettingItem::new(text.memory_scan_limit.clone(), scan_field)
+            .description(text.memory_scan_limit_description.clone()),
+        SettingItem::new(text.memory_concurrency.clone(), concurrency_field)
+            .description(text.memory_concurrency_description.clone()),
+        SettingItem::new(text.memory_raw_limit.clone(), raw_field)
+            .description(text.memory_raw_limit_description.clone()),
+        SettingItem::new(text.memory_retention_days.clone(), retention_field)
+            .description(text.memory_retention_days_description.clone()),
+    ]
+}
+
+/// A page-level info line, tinted with the info color: the memory page's
+/// scope notice and the shortcuts page's fixed-bindings note share it.
+fn info_note(message: &str, cx: &App) -> gpui_kit::AnyElement {
+    div()
+        .w_full()
+        .rounded(cx.theme().radius)
+        .bg(cx.theme().info.opacity(0.08))
+        .px_3()
+        .py_2()
+        .text_sm()
+        .text_color(cx.theme().info)
+        .child(message.to_string())
+        .into_any_element()
+}
+
+/// The info line above the basic section (web `scopeNotice`).
+fn memory_scope_notice(message: &str, cx: &App) -> gpui_kit::AnyElement {
+    info_note(message, cx)
+}
+
+/// G-SE13: the memory-actions menu (web `actions.manage` menu): open the
+/// memory directory, reset the settings document, wipe the memory data. The
+/// two destructive entries gate on the confirm dialogs below.
+fn memory_actions_menu(
+    menu: gpui_kit::component::menu::PopupMenu,
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    cx: &mut App,
+) -> gpui_kit::component::menu::PopupMenu {
+    let text = i18n::current(cx);
+    let open_view = view.clone();
+    let reset_view = view.clone();
+    let clear_view = view.clone();
+    menu.item(
+        PopupMenuItem::new(text.memory_action_open_directory.clone()).on_click(
+            move |_, _window, cx| {
+                if let Some(shell) = open_view.upgrade() {
+                    shell.update(cx, |this, cx| this.open_memory_directory(cx));
+                }
+            },
+        ),
+    )
+    .item(
+        PopupMenuItem::new(text.memory_action_reset_settings.clone()).on_click(
+            move |_, window, cx| {
+                open_memory_confirm_dialog(
+                    MemoryResetKind::Settings,
+                    reset_view.clone(),
+                    window,
+                    cx,
+                );
+            },
+        ),
+    )
+    .separator()
+    .item(
+        PopupMenuItem::new(text.memory_action_reset_memory.clone()).on_click(
+            move |_, window, cx| {
+                open_memory_confirm_dialog(MemoryResetKind::Memory, clear_view.clone(), window, cx);
+            },
+        ),
+    )
+}
+
+/// G-SE13: which destructive memory action a confirm dialog guards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MemoryResetKind {
+    Settings,
+    Memory,
+}
+
+/// G-SE13: the confirm dialog before a memory action that resets settings or
+/// wipes data (web's two `ConfirmDialog`s; the wipe is the danger variant).
+fn open_memory_confirm_dialog(
+    kind: MemoryResetKind,
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    window: &mut gpui_kit::Window,
+    cx: &mut App,
+) {
+    let text = i18n::current(cx);
+    let (title, message, confirm_label) = match kind {
+        MemoryResetKind::Settings => (
+            text.memory_reset_settings_confirm_title.clone(),
+            text.memory_reset_settings_confirm_message.clone(),
+            text.memory_reset_settings_confirm_action.clone(),
+        ),
+        MemoryResetKind::Memory => (
+            text.memory_action_reset_memory.clone(),
+            text.memory_reset_confirm_message.clone(),
+            text.memory_reset_confirm_action.clone(),
+        ),
+    };
+    let confirm_view = view.clone();
+    let confirm = move |_: &gpui_kit::ClickEvent, window: &mut gpui_kit::Window, cx: &mut App| {
+        if let Some(shell) = confirm_view.upgrade() {
+            shell.update(cx, |this, cx| match kind {
+                MemoryResetKind::Settings => this.reset_memory_settings(cx),
+                MemoryResetKind::Memory => this.clear_memory_data(cx),
+            });
+        }
+        window.close_dialog(cx);
+    };
+    let cancel = move |_: &gpui_kit::ClickEvent, window: &mut gpui_kit::Window, cx: &mut App| {
+        window.close_dialog(cx);
+    };
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let text = i18n::current(cx);
+        dialog
+            .title(div().child(title.clone()))
+            .child(
+                div()
+                    .w(px(380.))
+                    .text_sm()
+                    .text_color(cx.theme().foreground)
+                    .child(message.clone()),
+            )
+            .footer(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("memory-confirm-cancel")
+                            .label(text.session_action_cancel.clone())
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(cancel.clone()),
+                    )
+                    .child(
+                        Button::new("memory-confirm-accept")
+                            .label(confirm_label.clone())
+                            .with_variant(match kind {
+                                MemoryResetKind::Settings => ButtonVariant::Primary,
+                                MemoryResetKind::Memory => ButtonVariant::Danger,
+                            })
+                            .on_click(confirm.clone()),
+                    ),
+            )
+    });
+}
+
+/// Serialized `external_context_policy` ids (the shared snake_case contract the
+/// desktop page uses).
+pub(crate) fn memory_policy_value(
+    policy: openbitfun_core::service::config::types::MemoryExternalContextPolicy,
+) -> &'static str {
+    use openbitfun_core::service::config::types::MemoryExternalContextPolicy as Policy;
+    match policy {
+        Policy::ClearToolResults => "clear_tool_results",
+        Policy::Allow => "allow",
+        Policy::SkipSession => "skip_session",
+    }
+}
+
+/// Parses a stored policy id; unknown ids fall back to the shared default
+/// (clear_tool_results) instead of inventing a fourth state.
+pub(crate) fn memory_policy_from_str(
+    raw: &str,
+) -> openbitfun_core::service::config::types::MemoryExternalContextPolicy {
+    use openbitfun_core::service::config::types::MemoryExternalContextPolicy as Policy;
+    match raw {
+        "allow" => Policy::Allow,
+        "skip_session" => Policy::SkipSession,
+        _ => Policy::ClearToolResults,
+    }
+}
+
+/// Model selector options for the memory page: the follow entry (empty
+/// value), the two aliases, then the enabled catalog models. A stored id
+/// missing from the catalog stays listed with the "unavailable" suffix (web
+/// `buildModelOptions`) so the value is never silently dropped.
+pub(crate) fn memory_model_options(
+    catalog: &crate::runtime::ModelCatalog,
+    follow_label: String,
+    stored: Option<&str>,
+    cx: &App,
+) -> Vec<(SharedString, SharedString)> {
+    let text = crate::i18n::current(cx);
+    let mut options: Vec<(SharedString, SharedString)> = vec![
+        (SharedString::from(""), SharedString::from(follow_label)),
+        (
+            SharedString::from("primary"),
+            text.memory_model_primary.clone().into(),
+        ),
+        (
+            SharedString::from("fast"),
+            text.memory_model_fast.clone().into(),
+        ),
+    ];
+    for model in catalog.models.iter().filter(|model| model.enabled) {
+        options.push((model.id.clone().into(), model.label().into()));
+    }
+    if let Some(stored) = stored.filter(|id| !id.is_empty()) {
+        if stored != "primary"
+            && stored != "fast"
+            && !options.iter().any(|(value, _)| value.as_ref() == stored)
+        {
+            options.push((
+                SharedString::from(stored.to_string()),
+                SharedString::from(crate::i18n::memory_model_unavailable(stored, cx)),
+            ));
+        }
+    }
+    options
+}
+
+/// G-SE14 engine page (`ai.trinity`): the trinityd LLM configuration the
+/// desktop page edits — provider presets, endpoint/model/key fields, an
+/// inline connection test and the save action. The daemon owns the toml and
+/// hot-swaps on save; the page only forwards (web `TrinityEngineConfig` +
+/// `TrinityLlmFields`). While the daemon cannot answer, the page states the
+/// offline condition and offers the retry instead of showing fields whose
+/// values nobody knows (honest degrade; web leaves them silently empty).
+fn trinity_engine_group(
+    text: &ShellText,
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    cx: &mut App,
+) -> SettingGroup {
+    let engine = crate::trinity::TrinityEngineState::current(cx);
+    let (loaded, loading, failure) = (engine.loaded, engine.loading, engine.failure.clone());
+
+    if !loaded {
+        let owned_text = text.clone();
+        let retry_view = view.clone();
+        let item = if let Some(reason) = failure {
+            SettingItem::render(move |_options, _window, cx| {
+                let mut column = div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .w_full()
+                    .debug_selector(|| "trinity-engine-offline".to_string())
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().danger)
+                            .child(owned_text.trinity_status_unavailable.clone()),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(reason.clone()),
+                    );
+                let retry = retry_view.clone();
+                column = column.child(
+                    Button::new("trinity-engine-retry")
+                        .label(owned_text.settings_archived_refresh.clone())
+                        .small()
+                        .with_variant(ButtonVariant::Ghost)
+                        .on_click(move |_, _window, cx| {
+                            if let Some(shell) = retry.upgrade() {
+                                shell.update(cx, |this, cx| this.reload_trinity_engine(cx));
+                            }
+                        }),
+                );
+                column.into_any_element()
+            })
+        } else {
+            let _ = loading;
+            let owned_text = text.clone();
+            SettingItem::render(move |_options, _window, cx| {
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(owned_text.settings_archived_loading.clone())
+                    .into_any_element()
+            })
+        };
+        return SettingGroup::new().items(vec![item]);
+    }
+
+    // Provider presets (web `PROVIDER_PRESETS`): a pill row that fills the
+    // endpoint and model; the active pill is the exact-endpoint-and-model
+    // match ("custom" when none matches).
+    let preset_view = view.clone();
+    let provider_field = SettingField::render(move |_options, _window, cx| {
+        let text = crate::i18n::current(cx);
+        let engine = crate::trinity::TrinityEngineState::current(cx);
+        let (api_url, model) = (engine.api_url, engine.model);
+        let active = crate::trinity::detect_llm_preset(&api_url, &model);
+        let mut row = div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .gap_2()
+            .w_full()
+            .debug_selector(|| "trinity-engine-presets".to_string());
+        for (id, url, preset_model) in crate::trinity::LLM_ENGINE_PRESETS {
+            let is_active = *id == active;
+            let label = match *id {
+                "deepseek" => text.trinity_engine_provider_deepseek.clone(),
+                "zhipu" => text.trinity_engine_provider_zhipu.clone(),
+                "openai" => text.trinity_engine_provider_openai.clone(),
+                "ollama" => text.trinity_engine_provider_ollama.clone(),
+                _ => text.trinity_engine_provider_custom.clone(),
+            };
+            let click_view = preset_view.clone();
+            let (url, preset_model) = (*url, *preset_model);
+            row = row.child(
+                Button::new(SharedString::from(format!("trinity-engine-preset-{id}")))
+                    .label(label)
+                    .small()
+                    .with_variant(if is_active {
+                        ButtonVariant::Primary
+                    } else {
+                        ButtonVariant::Secondary
+                    })
+                    .on_click(move |_, _window, cx| {
+                        if let Some(shell) = click_view.upgrade() {
+                            shell.update(cx, |this, cx| {
+                                this.apply_trinity_engine_preset(url, preset_model, cx);
+                            });
+                        }
+                    }),
+            );
+        }
+        row.into_any_element()
+    });
+
+    let set_view = view.clone();
+    let api_url_field = SettingField::input(
+        move |cx: &App| SharedString::from(crate::trinity::TrinityEngineState::current(cx).api_url),
+        move |value: SharedString, cx: &mut App| {
+            if let Some(shell) = set_view.upgrade() {
+                shell.update(cx, |this, cx| {
+                    this.set_trinity_engine_api_url(value.to_string(), cx);
+                });
+            }
+        },
+    );
+
+    let set_view = view.clone();
+    let model_field = SettingField::input(
+        move |cx: &App| SharedString::from(crate::trinity::TrinityEngineState::current(cx).model),
+        move |value: SharedString, cx: &mut App| {
+            if let Some(shell) = set_view.upgrade() {
+                shell.update(cx, |this, cx| {
+                    this.set_trinity_engine_model(value.to_string(), cx);
+                });
+            }
+        },
+    );
+
+    // The api key renders masked (web `type="password"`): the daemon hands
+    // the stored key back on load, and a stray screenshot must not leak it.
+    // `SettingField::input` has no mask, so this is the string field's own
+    // shape plus `set_masked` at creation.
+    let key_view = view.clone();
+    let api_key_field = SettingField::render(move |options, window, cx| {
+        let value = SharedString::from(crate::trinity::TrinityEngineState::current(cx).api_key);
+        let state_entity =
+            window.use_keyed_state(SharedString::from("trinity-engine-api-key-state"), cx, {
+                let value = value.clone();
+                let key_view = key_view.clone();
+                move |window, cx| {
+                    let input = cx.new(|cx| {
+                        let mut state = InputState::new(window, cx).default_value(value);
+                        state.set_masked(true, window, cx);
+                        state
+                    });
+                    let subscription = cx.subscribe(&input, {
+                        let view = key_view.clone();
+                        move |_, input, event: &gpui_kit::component::input::InputEvent, cx| {
+                            if matches!(event, gpui_kit::component::input::InputEvent::Change) {
+                                let value = input.read(cx).value().to_string();
+                                if let Some(shell) = view.upgrade() {
+                                    shell.update(cx, |this, cx| {
+                                        this.set_trinity_engine_api_key(value, cx);
+                                    });
+                                }
+                            }
+                        }
+                    });
+                    (input, subscription)
+                }
+            });
+        state_entity.update(cx, |(input, _subscription), cx| {
+            if input.read(cx).value() != value {
+                input.update(cx, |input, cx| {
+                    input.set_value(value.clone(), window, cx);
+                });
+            }
+        });
+        let (input, _subscription) = state_entity.read(cx);
+        Input::new(input)
+            .with_size(options.size())
+            .map(|this| {
+                if matches!(options.layout(), Axis::Horizontal) {
+                    this.w_64()
+                } else {
+                    this.w_full()
+                }
+            })
+            .into_any_element()
+    });
+
+    // Test + save, with their verdicts inline (the web toasts the save; this
+    // surface has no toast system — the receipt stays until the next action).
+    let action_view = view.clone();
+    let actions_item = SettingItem::render(move |_options, _window, cx| {
+        let text = crate::i18n::current(cx);
+        let engine = crate::trinity::TrinityEngineState::current(cx);
+        let (testing, saving, draft_ready, test_result, notice) = (
+            engine.testing,
+            engine.saving,
+            engine.draft_ready(),
+            engine.test_result.clone(),
+            engine.notice.clone(),
+        );
+
+        let mut row = div().flex().flex_row().items_center().gap_2().w_full();
+        let click_view = action_view.clone();
+        row = row.child(
+            Button::new("trinity-engine-test")
+                .debug_selector(|| "trinity-engine-test".to_string())
+                .label(if testing {
+                    text.trinity_engine_testing.clone()
+                } else {
+                    text.trinity_engine_test_connection.clone()
+                })
+                .small()
+                .with_variant(ButtonVariant::Secondary)
+                .disabled(testing || saving || !draft_ready)
+                .on_click(move |_, _window, cx| {
+                    if let Some(shell) = click_view.upgrade() {
+                        shell.update(cx, |this, cx| this.test_trinity_engine(cx));
+                    }
+                }),
+        );
+        let click_view = action_view.clone();
+        row = row.child(
+            Button::new("trinity-engine-save")
+                .debug_selector(|| "trinity-engine-save".to_string())
+                .label(if saving {
+                    text.trinity_engine_saving.clone()
+                } else {
+                    text.trinity_engine_save.clone()
+                })
+                .small()
+                .with_variant(ButtonVariant::Primary)
+                .disabled(saving || testing || !draft_ready)
+                .on_click(move |_, _window, cx| {
+                    if let Some(shell) = click_view.upgrade() {
+                        shell.update(cx, |this, cx| this.save_trinity_engine(cx));
+                    }
+                }),
+        );
+        if let Some((ok, detail)) = test_result {
+            row = row.child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_sm()
+                    .text_color(if ok {
+                        cx.theme().foreground
+                    } else {
+                        cx.theme().danger
+                    })
+                    .child(detail),
+            );
+        }
+        let mut column = div().flex().flex_col().gap_2().w_full().child(row);
+        if let Some((ok, message)) = notice {
+            column = column.child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_sm()
+                    .text_color(if ok {
+                        cx.theme().muted_foreground
+                    } else {
+                        cx.theme().danger
+                    })
+                    .child(message),
+            );
+        }
+        column.into_any_element()
+    });
+
+    SettingGroup::new().items(vec![
+        SettingItem::new(text.trinity_engine_provider.clone(), provider_field)
+            .layout(Axis::Vertical),
+        SettingItem::new(text.trinity_engine_api_url.clone(), api_url_field),
+        SettingItem::new(text.trinity_engine_model.clone(), model_field),
+        SettingItem::new(text.trinity_engine_api_key.clone(), api_key_field),
+        actions_item,
+    ])
 }
 
 fn permissions_group(text: &ShellText, cx: &App) -> SettingGroup {
@@ -4922,15 +6118,15 @@ mod tests {
     fn settings_entries_carry_unique_nav_metadata() {
         let text = sample_text();
         let entries = settings_entries().collect::<Vec<_>>();
-        assert_eq!(entries.len(), 15);
+        assert_eq!(entries.len(), 18);
         let mut slugs = entries
             .iter()
             .map(|&entry| entry_slug(entry))
             .collect::<Vec<_>>();
-        assert_eq!(slugs.len(), 15);
+        assert_eq!(slugs.len(), 18);
         slugs.sort_unstable();
         slugs.dedup();
-        assert_eq!(slugs.len(), 15, "slugs key the page elements");
+        assert_eq!(slugs.len(), 18, "slugs key the page elements");
         for (ix, &entry) in entries.iter().enumerate() {
             assert!(!entry_label(entry, &text).is_empty(), "{entry:?}");
             assert!(!entry_description(entry, &text).is_empty(), "{entry:?}");
@@ -4953,7 +6149,7 @@ mod tests {
         );
         assert_eq!(
             tree.iter().map(|group| group.rows.len()).sum::<usize>(),
-            15,
+            18,
             "every tree entry is a row"
         );
         assert!(matches!(
@@ -5011,8 +6207,8 @@ mod tests {
             .iter()
             .map(|&category| category_entries(category).len())
             .sum();
-        assert_eq!(total, 15, "13 real pages + 2 redirect cards");
-        assert_eq!(HIDDEN_REGISTRY_PAGES.len(), 8);
+        assert_eq!(total, 18, "16 real pages + 2 redirect cards");
+        assert_eq!(HIDDEN_REGISTRY_PAGES.len(), 5);
     }
 
     /// The two redirect entries are exactly the registry pages another shell

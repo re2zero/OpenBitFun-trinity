@@ -30,6 +30,8 @@ use openbitfun_agent_runtime::sdk::{
 };
 use openbitfun_agent_runtime::user_questions::{get_user_input_manager, UserInputManager};
 use openbitfun_core::agentic::insights::{InsightsReport, InsightsReportMeta, InsightsService};
+use openbitfun_core::agentic::memories::db::MemoryDatabase;
+use openbitfun_core::agentic::memories::workspace::reset_memory_workspace;
 use openbitfun_core::agentic::system::{
     init_agentic_system_for_profile_with_runtime_ownership, select_agentic_system_profile,
 };
@@ -44,6 +46,7 @@ use openbitfun_core::product_runtime::{
 use openbitfun_core::runtime_ownership::{CoreRuntimeOwnership, RuntimeDeployment};
 use openbitfun_core::service::config::{
     get_app_language, get_global_config_service, initialize_global_config, types::GlobalConfig,
+    types::MemoriesConfig,
 };
 use openbitfun_core::service::cron::CronJob;
 use openbitfun_core::service::workspace::{
@@ -401,6 +404,31 @@ pub(crate) enum RuntimeEvent {
     TrinityCorrection {
         applied: bool,
     },
+    /// G-SE14 engine page: the daemon's current LLM configuration
+    /// (`llm.get_config`).
+    TrinityEngineConfigReady {
+        config: Box<crate::trinity::EngineLlmConfig>,
+    },
+    /// G-SE14: the engine configuration could not be read (daemon
+    /// unreachable); the page shows the reason instead of the fields.
+    TrinityEngineConfigFailed(String),
+    /// G-SE14: `llm.set_config` settled and the daemon hot-swapped it.
+    TrinityEngineSaved,
+    /// G-SE14: the save failed; surfaced as the page's inline notice.
+    TrinityEngineSaveFailed(String),
+    /// G-SE14: `llm.test_connection` settled; `error` carries the daemon's
+    /// reason on failure (the shell composes the display line).
+    TrinityEngineTested {
+        ok: bool,
+        error: Option<String>,
+    },
+    /// G-SE13 memory page: the `memories` settings document was restored to
+    /// its defaults; `Ok` carries the re-read section so the page repaints
+    /// from stored facts rather than from what it just wrote.
+    MemorySettingsReset(Result<Box<MemoriesConfig>, String>),
+    /// G-SE13: the memory database and the memory workspace files were
+    /// cleared (`Ok(())` on success).
+    MemoryCleared(Result<(), String>),
     /// R7c: the plugin UI host channel is live and its initial describe
     /// landed; the named providers install into the projection now (each
     /// entry is the source key plus its provider).
@@ -2467,6 +2495,148 @@ impl RuntimeHandle {
                     let _ = tx.send(RuntimeEvent::TrinityActionFailed(error));
                 }
             }
+        });
+    }
+
+    /// G-SE14 engine page: reads the daemon LLM configuration
+    /// (`llm.get_config`). A daemon that cannot answer settles the page's
+    /// offline state with the reason.
+    pub(crate) fn trinity_engine_load(&self, tx: mpsc::UnboundedSender<RuntimeEvent>) {
+        self.tokio.spawn(async move {
+            match crate::trinity::client()
+                .call("llm.get_config", serde_json::json!({}))
+                .await
+            {
+                Ok(value) => {
+                    let config = crate::trinity::parse_llm_config(&value);
+                    let _ = tx.send(RuntimeEvent::TrinityEngineConfigReady {
+                        config: Box::new(config),
+                    });
+                }
+                Err(error) => {
+                    tracing::info!("Trinity llm.get_config failed: {error}");
+                    let _ = tx.send(RuntimeEvent::TrinityEngineConfigFailed(error));
+                }
+            }
+        });
+    }
+
+    /// G-SE14: writes the engine LLM configuration (`llm.set_config`); the
+    /// daemon persists its toml and hot-swaps. An empty api key keeps the
+    /// stored one (daemon contract).
+    pub(crate) fn trinity_engine_save(
+        &self,
+        api_url: String,
+        model: String,
+        api_key: String,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+    ) {
+        self.tokio.spawn(async move {
+            match crate::trinity::client()
+                .call(
+                    "llm.set_config",
+                    serde_json::json!({
+                        "api_url": api_url,
+                        "model": model,
+                        "api_key": api_key,
+                    }),
+                )
+                .await
+            {
+                Ok(_) => {
+                    let _ = tx.send(RuntimeEvent::TrinityEngineSaved);
+                }
+                Err(error) => {
+                    tracing::warn!("Trinity llm.set_config failed: {error}");
+                    let _ = tx.send(RuntimeEvent::TrinityEngineSaveFailed(error));
+                }
+            }
+        });
+    }
+
+    /// G-SE14: probes the engine LLM connection with the draft values
+    /// (`llm.test_connection`); an empty api key uses the saved one.
+    pub(crate) fn trinity_engine_test(
+        &self,
+        api_url: String,
+        model: String,
+        api_key: String,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+    ) {
+        self.tokio.spawn(async move {
+            match crate::trinity::client()
+                .call(
+                    "llm.test_connection",
+                    serde_json::json!({
+                        "api_url": api_url,
+                        "model": model,
+                        "api_key": api_key,
+                    }),
+                )
+                .await
+            {
+                Ok(value) => {
+                    let (ok, error) = crate::trinity::parse_test_outcome(&value);
+                    let _ = tx.send(RuntimeEvent::TrinityEngineTested { ok, error });
+                }
+                Err(error) => {
+                    tracing::warn!("Trinity llm.test_connection failed: {error}");
+                    let _ = tx.send(RuntimeEvent::TrinityEngineTested {
+                        ok: false,
+                        error: Some(error),
+                    });
+                }
+            }
+        });
+    }
+
+    /// G-SE13 memory page: restores the stored `memories` document to the
+    /// shipped defaults (`configManager.resetConfig('memories')` on the web)
+    /// and re-reads the typed section; existing memory data is untouched.
+    pub(crate) fn reset_memories_config(&self, tx: mpsc::UnboundedSender<RuntimeEvent>) {
+        self.tokio.spawn(async move {
+            let result = async {
+                let service = get_global_config_service()
+                    .await
+                    .map_err(|error| error.to_string())?;
+                service
+                    .reset_config(Some("memories"))
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let config: MemoriesConfig = service
+                    .get_config(Some("memories"))
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Ok(Box::new(config))
+            }
+            .await;
+            if let Err(error) = &result {
+                tracing::warn!("Failed to reset memory settings: {}", error);
+            }
+            let _ = tx.send(RuntimeEvent::MemorySettingsReset(result));
+        });
+    }
+
+    /// G-SE13: clears the memory database and the memory workspace files, the
+    /// two halves of the desktop `reset_memory` command.
+    pub(crate) fn clear_memory_data(&self, tx: mpsc::UnboundedSender<RuntimeEvent>) {
+        self.tokio.spawn(async move {
+            let result = async {
+                let manager = try_get_path_manager_arc().map_err(|error| error.to_string())?;
+                MemoryDatabase::new(manager.clone())
+                    .reset_memory_state()
+                    .await
+                    .map_err(|error| format!("Failed to reset memory database: {}", error))?;
+                reset_memory_workspace(&manager.memories_root_dir())
+                    .await
+                    .map_err(|error| format!("Failed to reset memory workspace: {}", error))?;
+                Ok(())
+            }
+            .await;
+            if let Err(error) = &result {
+                tracing::warn!("Failed to clear memory data: {}", error);
+            }
+            let _ = tx.send(RuntimeEvent::MemoryCleared(result));
         });
     }
 

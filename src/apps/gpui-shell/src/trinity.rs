@@ -521,6 +521,72 @@ pub(crate) fn format_memory_time(timestamp: i64) -> String {
     }
 }
 
+// ── Engine LLM configuration (G-SE14) ───────────────────────────────
+
+/// Cognitive-engine provider presets, identical to the desktop page
+/// (`TrinityLlmFields.tsx` `PROVIDER_PRESETS`): id, endpoint, model. The
+/// "custom" row contributes nothing and is only matched by absence.
+pub(crate) const LLM_ENGINE_PRESETS: &[(&str, &str, &str)] = &[
+    ("deepseek", "https://api.deepseek.com/v1", "deepseek-chat"),
+    (
+        "zhipu",
+        "https://open.bigmodel.cn/api/paas/v4",
+        "glm-4-flash",
+    ),
+    ("openai", "https://api.openai.com/v1", "gpt-4o"),
+    ("ollama", "http://localhost:11434/v1", "qwen3:8b"),
+    ("custom", "", ""),
+];
+
+/// The preset whose endpoint and model the draft matches exactly; "custom"
+/// when none does (web `detectPreset`).
+pub(crate) fn detect_llm_preset(api_url: &str, model: &str) -> &'static str {
+    let trimmed_url = api_url.trim();
+    let trimmed_model = model.trim();
+    LLM_ENGINE_PRESETS
+        .iter()
+        .find(|(id, url, preset_model)| {
+            *id != "custom" && *url == trimmed_url && *preset_model == trimmed_model
+        })
+        .map(|(id, _, _)| *id)
+        .unwrap_or("custom")
+}
+
+/// The three LLM fields the engine page edits (`llm.get_config` payload).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct EngineLlmConfig {
+    pub api_url: String,
+    pub model: String,
+    pub api_key: String,
+}
+
+pub(crate) fn parse_llm_config(value: &Value) -> EngineLlmConfig {
+    let string_field = |key: &str| {
+        value
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    EngineLlmConfig {
+        api_url: string_field("api_url"),
+        model: string_field("model"),
+        api_key: string_field("api_key"),
+    }
+}
+
+/// `llm.test_connection` outcome: `(ok, error)`. The daemon answers
+/// `ok: true` (with latency/reply) or `ok: false` plus `error`; a payload
+/// without a true `ok` counts as failure.
+pub(crate) fn parse_test_outcome(value: &Value) -> (bool, Option<String>) {
+    let ok = value.get("ok").and_then(Value::as_bool).unwrap_or(false);
+    let error = value
+        .get("error")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    (ok, error)
+}
+
 // ── Page state ──────────────────────────────────────────────────────
 
 /// Console state; lives on the shell window and is updated only through
@@ -567,6 +633,60 @@ pub(crate) struct TrinityPageState {
 pub(crate) enum MemoryTransferKind {
     Export,
     Import,
+}
+
+/// G-SE14 engine page: the daemon LLM configuration, shown and edited in
+/// place. The draft lives here — not in the persisted config — because the
+/// daemon owns the toml and only `llm.set_config` writes it: an abandoned
+/// edit must never leak into a save. Updated through [`RuntimeEvent`]
+/// projections plus the field setters on the shell window.
+///
+/// A global, not a field of the window: the settings page is built inside the
+/// shell's own render, where the window entity cannot be read, so the page
+/// reads this the same way it reads the shared config.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct TrinityEngineState {
+    /// The daemon answered `llm.get_config` at least once.
+    pub loaded: bool,
+    pub loading: bool,
+    /// Daemon-unreachable message; the page shows it instead of the fields.
+    pub failure: Option<String>,
+    /// Draft values (loaded from the daemon, edited in place).
+    pub api_url: String,
+    pub model: String,
+    pub api_key: String,
+    pub saving: bool,
+    pub testing: bool,
+    /// Last connection-test verdict (ok, display line), cleared on the next
+    /// test or field edit.
+    pub test_result: Option<(bool, String)>,
+    /// Last save verdict (ok, display line), shown until the next action.
+    pub notice: Option<(bool, String)>,
+}
+
+impl gpui_kit::Global for TrinityEngineState {}
+
+impl TrinityEngineState {
+    /// The save / test buttons require an endpoint and a model (web `canTest`);
+    /// the api key is optional — the daemon falls back to the saved key.
+    pub(crate) fn draft_ready(&self) -> bool {
+        !self.api_url.trim().is_empty() && !self.model.trim().is_empty()
+    }
+
+    /// The current draft, or the defaults while nothing loaded yet (the page
+    /// is built before the bootstrap installs the global in some tests).
+    pub(crate) fn current(cx: &gpui_kit::App) -> Self {
+        cx.try_global::<Self>().cloned().unwrap_or_default()
+    }
+
+    /// Mutates the global, materializing the default when the bootstrap has
+    /// not installed it yet.
+    pub(crate) fn mutate<R>(cx: &mut gpui_kit::App, change: impl FnOnce(&mut Self) -> R) -> R {
+        if cx.try_global::<Self>().is_none() {
+            cx.set_global(Self::default());
+        }
+        change(cx.global_mut::<Self>())
+    }
 }
 
 // ── Rendering ───────────────────────────────────────────────────────
@@ -1711,6 +1831,88 @@ mod tests {
         let path = default_export_path();
         assert!(path.contains("trinity-graph-"));
         assert!(path.ends_with(".json"));
+    }
+
+    /// G-SE14: preset detection mirrors the web page — an exact endpoint
+    /// plus model matches a preset; anything else (including a half match)
+    /// is "custom".
+    #[test]
+    fn engine_preset_detection_matches_web() {
+        assert_eq!(
+            detect_llm_preset("https://api.openai.com/v1", "gpt-4o"),
+            "openai"
+        );
+        assert_eq!(
+            detect_llm_preset("https://api.deepseek.com/v1", "deepseek-chat"),
+            "deepseek"
+        );
+        // Half matches are custom, like the web detectPreset.
+        assert_eq!(
+            detect_llm_preset("https://api.openai.com/v1", "gpt-4o-mini"),
+            "custom"
+        );
+        assert_eq!(detect_llm_preset("", ""), "custom");
+        assert_eq!(detect_llm_preset("https://x/v1", "m"), "custom");
+        // Surrounding whitespace is tolerated (the draft trims for matching).
+        assert_eq!(
+            detect_llm_preset(" https://api.openai.com/v1 ", " gpt-4o "),
+            "openai"
+        );
+    }
+
+    /// G-SE14: the live `llm.get_config` payload shape (probed against the
+    /// real daemon 2026-10-18) parses into the three edited fields; extra
+    /// keys are ignored and missing ones default empty.
+    #[test]
+    fn engine_config_parses_the_daemon_payload() {
+        let payload = json!({
+            "backend": "openai",
+            "api_url": "http://10.0.0.2:8068/v1",
+            "api_key": "sk-secret",
+            "model": "qwen3.6-small",
+            "temperature": 0.7,
+            "max_tokens": 8192,
+            "active_profile": null,
+            "profiles": [],
+            "cerebellum": { "primary": "small_model", "mode": "small_model", "model": "qwen3.5-0.8b" },
+        });
+        assert_eq!(
+            parse_llm_config(&payload),
+            EngineLlmConfig {
+                api_url: "http://10.0.0.2:8068/v1".into(),
+                model: "qwen3.6-small".into(),
+                api_key: "sk-secret".into(),
+            }
+        );
+        assert_eq!(parse_llm_config(&json!({})), EngineLlmConfig::default());
+    }
+
+    /// G-SE14: `llm.test_connection` settles as `{ok:true,...}` or
+    /// `{ok:false,error}`; a payload without a true `ok` is a failure.
+    #[test]
+    fn engine_test_outcome_parses_both_verdicts() {
+        let ok = json!({"ok": true, "latency_ms": 812, "reply": "正常", "model": "m"});
+        assert_eq!(parse_test_outcome(&ok), (true, None));
+        let failed = json!({"ok": false, "latency_ms": 30, "error": "connection refused"});
+        assert_eq!(
+            parse_test_outcome(&failed),
+            (false, Some("connection refused".to_string()))
+        );
+        assert_eq!(parse_test_outcome(&json!({})), (false, None));
+    }
+
+    /// G-SE14: save/test gate on endpoint plus model only; the api key is
+    /// optional (the daemon falls back to the stored key).
+    #[test]
+    fn engine_draft_ready_requires_endpoint_and_model() {
+        let mut state = TrinityEngineState::default();
+        assert!(!state.draft_ready());
+        state.api_url = " https://api.openai.com/v1 ".into();
+        assert!(!state.draft_ready());
+        state.model = "gpt-4o".into();
+        assert!(state.draft_ready());
+        state.api_url = "   ".into();
+        assert!(!state.draft_ready());
     }
 
     fn temp_config(tag: &str, content: &str) -> std::path::PathBuf {
