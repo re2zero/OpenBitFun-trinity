@@ -2831,8 +2831,8 @@ pub(crate) fn open_mcp_import_dialog(
                 .filter(|(other_index, _)| *other_index != index)
                 .map(|(_, value)| value.clone())
                 .collect();
-            let problem =
-                mcp_import_row_problem(&current, &siblings, &existing_ids, &text).map(str::to_string);
+            let problem = mcp_import_row_problem(&current, &siblings, &existing_ids, &text)
+                .map(str::to_string);
             let toggle_view = view.clone();
             let mut row = div()
                 .v_flex()
@@ -5614,10 +5614,6 @@ mod tests {
         );
     }
 
-    /// G-M2: the merge mirrors web `importMcpServers` — ids validated, taken
-    /// ids rejected, the untrusted marker stripped, and every imported entry
-    /// forced disabled while the rest of the document survives.
-    #[test]
     /// G-M2: each preview row warns about the id it currently holds — the
     /// live input, so renaming a conflicted id clears the warning (the smoke
     /// found the snapshot-based version leaving a stale one).
@@ -5654,6 +5650,9 @@ mod tests {
         );
     }
 
+    /// G-M2: the merge mirrors web `importMcpServers` — ids validated, taken
+    /// ids rejected, the untrusted marker stripped, and every imported entry
+    /// forced disabled while the rest of the document survives.
     #[test]
     fn mcp_import_merge_forces_disabled_and_keeps_the_rest() {
         let document = serde_json::json!({
