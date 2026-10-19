@@ -921,8 +921,14 @@ fn install_binary(
     let backup = stage_path.join(format!("previous-{BIN_NAME}"));
 
     fs::copy(new_binary, &staged).context("stage the new binary")?;
-    fs::set_permissions(&staged, fs::Permissions::from_mode(0o755))
-        .context("make the staged binary executable")?;
+    // The executable bit is Unix-only: on Windows the copied image keeps the
+    // permissions it was created with, which is already what an update needs.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&staged, fs::Permissions::from_mode(0o755))
+            .context("make the staged binary executable")?;
+    }
     verify(&staged).context("the staged binary is not usable")?;
 
     if let Err(failure) = replace_binary(verify, current_exe, &staged, &backup) {
@@ -1338,14 +1344,17 @@ mod tests {
         assert_eq!(UpdateUiState::default(), UpdateUiState::Idle);
     }
 
+    #[cfg(unix)]
     fn executable_script(dir: &Path, name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
         let path = dir.join(name);
         fs::write(&path, body).expect("write the script");
-        use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("chmod the script");
         path
     }
 
+    // Runs `#!/bin/sh` stand-ins, so the fixture itself is Unix-only.
+    #[cfg(unix)]
     #[test]
     fn installed_binary_is_validated_by_running_it() {
         let dir = tempfile::tempdir().expect("temp dir");
