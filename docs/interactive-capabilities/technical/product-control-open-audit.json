@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
-  "catalogDigest": "b626f77724d05af870f136a1d0913b740d28b592e93241e61bd7d18852e2262e",
-  "count": 219,
+  "catalogDigest": "6c8246d83759082392e11c335a53f2322b13e3c38de99fcba4fbdb42a79bf074",
+  "count": 220,
   "reasonCounts": {
     "externalAuth": 4,
     "secretEntry": 7,
-    "unstructuredInteraction": 190,
+    "unstructuredInteraction": 191,
     "visualSelection": 18
   },
   "entries": [
@@ -2516,9 +2516,28 @@
         "command:trinity_recall_memory",
         "command:trinity_memorize",
         "command:trinity_memory_stats",
+        "command:trinity_memory_export",
+        "command:trinity_memory_import",
         "command:trinity_reinforce_memory",
         "command:trinity_forget_memory",
         "source:src/web-ui/src/locales/zh-CN/common.json#trinity.scene.memoryTimeline"
+      ]
+    },
+    {
+      "capabilityId": "feature.trinity",
+      "itemId": "morning",
+      "titleZh": "查看今天的晨报：昨夜整理出的想法与未竟之事",
+      "titleEn": "Read today's morning report: the overnight thoughts and unfinished urges",
+      "reasonCode": "unstructuredInteraction",
+      "reasonZh": "“查看今天的晨报：昨夜整理出的想法与未竟之事”由多个实时状态相关步骤组成，目前没有一个能确定完成整个流程的单一结构化 Command；Agent 会打开精确入口，并把后续交互保留在用户可见界面。",
+      "reasonEn": "“Read today's morning report: the overnight thoughts and unfinished urges” spans multiple live-state-dependent steps and currently has no single structured Command that can deterministically complete the whole workflow; the Agent opens the exact entry and keeps the remaining interaction visible to the user.",
+      "presentationTarget": {
+        "kind": "scene",
+        "sceneId": "trinity"
+      },
+      "evidence": [
+        "command:trinity_morning_report",
+        "source:src/web-ui/src/locales/zh-CN/common.json#trinity.morning.title"
       ]
     },
     {

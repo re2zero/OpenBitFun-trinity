@@ -5283,9 +5283,26 @@
             "command:trinity_recall_memory",
             "command:trinity_memorize",
             "command:trinity_memory_stats",
+            "command:trinity_memory_export",
+            "command:trinity_memory_import",
             "command:trinity_reinforce_memory",
             "command:trinity_forget_memory",
             "source:src/web-ui/src/locales/zh-CN/common.json#trinity.scene.memoryTimeline"
+          ]
+        },
+        {
+          "id": "morning",
+          "titleZh": "查看今天的晨报：昨夜整理出的想法与未竟之事",
+          "titleEn": "Read today's morning report: the overnight thoughts and unfinished urges",
+          "control": {
+            "kind": "open",
+            "reasonCode": "unstructuredInteraction",
+            "reasonZh": "“查看今天的晨报：昨夜整理出的想法与未竟之事”由多个实时状态相关步骤组成，目前没有一个能确定完成整个流程的单一结构化 Command；Agent 会打开精确入口，并把后续交互保留在用户可见界面。",
+            "reasonEn": "“Read today's morning report: the overnight thoughts and unfinished urges” spans multiple live-state-dependent steps and currently has no single structured Command that can deterministically complete the whole workflow; the Agent opens the exact entry and keeps the remaining interaction visible to the user."
+          },
+          "evidence": [
+            "command:trinity_morning_report",
+            "source:src/web-ui/src/locales/zh-CN/common.json#trinity.morning.title"
           ]
         },
         {

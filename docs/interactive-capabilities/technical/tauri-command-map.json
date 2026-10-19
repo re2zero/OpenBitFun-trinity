@@ -1,11 +1,11 @@
 {
   "schemaVersion": 2,
   "generatedFrom": "src/shared/interactive-capabilities/catalog.json",
-  "catalogDigest": "b626f77724d05af870f136a1d0913b740d28b592e93241e61bd7d18852e2262e",
-  "commandCount": 696,
+  "catalogDigest": "6c8246d83759082392e11c335a53f2322b13e3c38de99fcba4fbdb42a79bf074",
+  "commandCount": 699,
   "coverage": {
-    "commandCount": 696,
-    "documentedCommandCount": 648,
+    "commandCount": 699,
+    "documentedCommandCount": 651,
     "implementationCommandCount": 48,
     "implementationDigest": "f6d38a24a70708988cb47ada81d07eccf0668684e8734c9ee5155b9ffa7e3db8"
   },
@@ -10550,6 +10550,38 @@
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {
+      "id": "trinity_memory_export",
+      "moduleId": "trinity",
+      "capabilityId": "feature.trinity",
+      "capabilityIds": [
+        "feature.trinity"
+      ],
+      "documentedItemIds": [
+        "feature.trinity:memory"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::trinity_api::trinity_memory_export",
+      "sourceFile": "src/apps/desktop/src/api/trinity_api.rs",
+      "signature": "fn trinity_memory_export( _state: State<'_, crate::api::app_state::AppState>, request: Option<TrinityRequest>, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "trinity_memory_import",
+      "moduleId": "trinity",
+      "capabilityId": "feature.trinity",
+      "capabilityIds": [
+        "feature.trinity"
+      ],
+      "documentedItemIds": [
+        "feature.trinity:memory"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::trinity_api::trinity_memory_import",
+      "sourceFile": "src/apps/desktop/src/api/trinity_api.rs",
+      "signature": "fn trinity_memory_import( _state: State<'_, crate::api::app_state::AppState>, request: Option<TrinityRequest>, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
       "id": "trinity_memory_stats",
       "moduleId": "trinity",
       "capabilityId": "feature.trinity",
@@ -10579,6 +10611,22 @@
       "rustPath": "api::trinity_api::trinity_memory_timeline",
       "sourceFile": "src/apps/desktop/src/api/trinity_api.rs",
       "signature": "fn trinity_memory_timeline( _state: State<'_, crate::api::app_state::AppState>, request: Option<TrinityRequest>, ) -> Result<Value, String>",
+      "remoteWorkspacePolicy": "WorkspaceAgnostic"
+    },
+    {
+      "id": "trinity_morning_report",
+      "moduleId": "trinity",
+      "capabilityId": "feature.trinity",
+      "capabilityIds": [
+        "feature.trinity"
+      ],
+      "documentedItemIds": [
+        "feature.trinity:morning"
+      ],
+      "visibility": "documented",
+      "rustPath": "api::trinity_api::trinity_morning_report",
+      "sourceFile": "src/apps/desktop/src/api/trinity_api.rs",
+      "signature": "fn trinity_morning_report( _state: State<'_, crate::api::app_state::AppState>, request: Option<TrinityRequest>, ) -> Result<Value, String>",
       "remoteWorkspacePolicy": "WorkspaceAgnostic"
     },
     {

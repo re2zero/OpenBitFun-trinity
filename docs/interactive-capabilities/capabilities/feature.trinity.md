@@ -23,6 +23,8 @@ Connect the Trinity cognitive engine: awaken the core being, inspect live cognit
   - Inspect the live cognitive state: emotion valence, need strengths, attention focus, and confidence
 - **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 检索、新增、强化与遗忘长期记忆，并翻看记忆时间线
   - Search, add, reinforce, and forget long-term memories, and browse the memory timeline
+- **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 查看今天的晨报：昨夜整理出的想法与未竟之事
+  - Read today's morning report: the overnight thoughts and unfinished urges
 - **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 查看核心认知体身份（名字、认主、人格）并管理助理列表
   - Inspect the core being identity (name, owner, persona) and manage the assistant list
 - **智能体可定位入口，需交互完成 / Agent opens; interaction required** · 注册登录云端记忆，设置主密钥，并同步、备份或恢复认知体记忆

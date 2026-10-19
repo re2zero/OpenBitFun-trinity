@@ -770,6 +770,7 @@ pub(super) const OPERATIONS: &[OperationDefinition] = &[
     op("trinity_memory_import",                                      Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
     op("trinity_memory_stats",                                       Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
     op("trinity_memory_timeline",                                    Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
+    op("trinity_morning_report",                                     Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
     op("trinity_recall_memory",                                      Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
     op("trinity_reinforce_memory",                                   Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),
     op("trinity_self_perception",                                    Agnostic,    Proxied,          CLI_NOT_IMPLEMENTED),

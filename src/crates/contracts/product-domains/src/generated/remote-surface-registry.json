@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "digest": "fnv1a64:6f3dbd28d59c4222",
+  "digest": "fnv1a64:18d11a9432d46a9f",
   "retiredCommandPrefixes": [
     {
       "prefix": "lsp_",
@@ -8068,6 +8068,30 @@
       }
     },
     {
+      "id": "trinity_memory_export",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the CLI peer host has no handler for this command"
+      }
+    },
+    {
+      "id": "trinity_memory_import",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the CLI peer host has no handler for this command"
+      }
+    },
+    {
       "id": "trinity_memory_stats",
       "surface": "tauri_command",
       "remoteWorkspace": "WorkspaceAgnostic",
@@ -8081,6 +8105,18 @@
     },
     {
       "id": "trinity_memory_timeline",
+      "surface": "tauri_command",
+      "remoteWorkspace": "WorkspaceAgnostic",
+      "peer": {
+        "kind": "proxied"
+      },
+      "cliPeer": {
+        "kind": "unsupported",
+        "reason": "the CLI peer host has no handler for this command"
+      }
+    },
+    {
+      "id": "trinity_morning_report",
       "surface": "tauri_command",
       "remoteWorkspace": "WorkspaceAgnostic",
       "peer": {
