@@ -9,6 +9,7 @@ import {
   configureWindowsSigning,
   prepareMacOSFlashgrepForSigning,
   prepareTauriConfig,
+  rustHostTargetTriple,
   shouldRetryMacDmgBuild,
 } from './desktop-tauri-build.mjs';
 import { resolveProductDefinition } from './product-customization/resolver.mjs';
@@ -403,6 +404,36 @@ test('Desktop packaging includes only the selected Flashgrep target', () => {
     ]);
     assert.equal(config.bundle.resources['../../../resources/flashgrep'], undefined);
     assert.equal(config.bundle.resources['../../../dist'], 'frontend/dist');
+  } finally {
+    rmSync(fixture, { force: true, recursive: true });
+  }
+});
+
+test('Desktop packaging bundles the cognitive daemon only when its sidecar is staged', () => {
+  const fixture = join(tmpdir(), `openbitfun-tauri-trinityd-${process.pid}-${Date.now()}`);
+  mkdirSync(fixture, { recursive: true });
+  const baseConfig = join(fixture, 'tauri.conf.json');
+  writeFileSync(baseConfig, JSON.stringify({ bundle: { resources: {} } }));
+  const sidecar = join(fixture, `trinityd-${rustHostTargetTriple()}`);
+  try {
+    // A clean checkout — CI included — has no staged daemon, and tauri_build
+    // refuses to build a config that names a missing external binary, so the
+    // base config must not demand one.
+    const bare = prepareTauriConfig(baseConfig, {
+      desktopDir: fixture, flashgrepBinary: join(fixture, 'flashgrep'),
+    });
+    assert.equal(JSON.parse(readFileSync(bare, 'utf8')).bundle.externalBin, undefined);
+
+    // scripts/build-trinity-deb.sh stages the sidecar; packaging must then
+    // declare it so the deb ships the daemon beside the app binary.
+    writeFileSync(sidecar, '');
+    const staged = prepareTauriConfig(baseConfig, {
+      desktopDir: fixture, flashgrepBinary: join(fixture, 'flashgrep'),
+    });
+    assert.deepEqual(
+      JSON.parse(readFileSync(staged, 'utf8')).bundle.externalBin,
+      ['trinityd'],
+    );
   } finally {
     rmSync(fixture, { force: true, recursive: true });
   }

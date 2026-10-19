@@ -123,7 +123,7 @@ async function main() {
   process.exit(r.status ?? 1);
 }
 
-function rustHostTargetTriple() {
+export function rustHostTargetTriple() {
   const result = spawnSync('rustc', ['-vV'], {
     cwd: ROOT,
     encoding: 'utf8',
@@ -345,6 +345,7 @@ export function prepareTauriConfig(
   // compiles the profile before Tauri copies resources.
   injectDshProfileResource(config);
   injectExternalFrontendResource(config);
+  injectTrinitydSidecar(config, desktopDir);
 
   const release = releaseChannel
     ?? resolveReleaseChannel(process.env.OPENBITFUN_RELEASE_CHANNEL);
@@ -425,6 +426,28 @@ function injectExternalFrontendResource(config) {
   config.bundle = {
     ...(config.bundle || {}),
     resources,
+  };
+}
+
+// The cognitive daemon ships as a Tauri sidecar, but it is built from the
+// separate trinity checkout and staged as `trinityd-<host triple>` by
+// scripts/build-trinity-deb.sh (.gitignore keeps the binary out of the tree).
+// A clean checkout has no sidecar, and tauri_build refuses a config naming a
+// missing external binary, so a base-config entry would break every
+// `cargo build` of this crate — CI included. Add the entry only when the
+// staged binary is actually there.
+function injectTrinitydSidecar(config, desktopDir) {
+  const sidecar = `trinityd-${rustHostTargetTriple()}`;
+  if (!existsSync(join(desktopDir, sidecar))) {
+    console.log(
+      `[tauri-build] No ${sidecar} sidecar staged; packaging without the bundled cognitive daemon ` +
+        '(run scripts/build-trinity-deb.sh to bundle it).',
+    );
+    return;
+  }
+  config.bundle = {
+    ...(config.bundle || {}),
+    externalBin: [...(config.bundle?.externalBin || []), 'trinityd'],
   };
 }
 
