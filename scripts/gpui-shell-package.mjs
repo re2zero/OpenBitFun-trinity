@@ -9,8 +9,8 @@
 // future self-update feed consumes.
 
 import { createHash } from 'node:crypto';
-import { chmodSync, copyFileSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { appendFileSync, chmodSync, copyFileSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 import { extractProductConfigArg } from './product-customization/cli.mjs';
@@ -306,7 +306,12 @@ function main() {
     run('cargo', cargoArgs, { cwd: ROOT });
   }
 
-  const binary = resolveTargetPath(ROOT, target, join('release', BIN_NAME));
+  // An explicit --target means the caller built with `cargo --target`, which
+  // writes under target/<triple>/ even when that triple is the host's, so the
+  // host shortcut in resolveTargetPath would look in the wrong directory.
+  const binary = options.target
+    ? resolve(ROOT, 'target', target, 'release', BIN_NAME)
+    : resolveTargetPath(ROOT, target, join('release', BIN_NAME));
   if (!statSync(binary, { throwIfNoEntry: false })) {
     throw new Error(`Release binary not found at ${binary}; run without --no-build first`);
   }
@@ -315,6 +320,13 @@ function main() {
 
   const { archivePath, stageDir } = createArchive({ binary, version, target, outputDir, stagingRoot: workRoot });
   console.log(`[gpui-shell-package] archive: ${archivePath} (${statSync(archivePath).size} bytes)`);
+
+  if (process.env.GITHUB_OUTPUT?.trim()) {
+    appendFileSync(
+      process.env.GITHUB_OUTPUT,
+      `archive=${basename(archivePath)}\nchecksum=${basename(archivePath)}.sha256\n`,
+    );
+  }
 
   let deb = null;
   if (process.platform === 'linux') {

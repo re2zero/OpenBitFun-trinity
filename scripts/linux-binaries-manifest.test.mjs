@@ -20,6 +20,7 @@ test('generates GitHub URLs for both Linux CLI and Relay architectures', () => {
     for (const filename of [
       `openbitfun-cli-1.2.3-${target}.tar.gz`,
       `openbitfun-relay-server-${target}.tar.gz`,
+      `openbitfun-gpui-shell-1.2.3-${target}.tar.gz`,
     ]) {
       fs.writeFileSync(path.join(assets, filename), '');
       fs.writeFileSync(path.join(assets, `${filename}.sha256`), '');
@@ -56,6 +57,12 @@ test('generates GitHub URLs for both Linux CLI and Relay architectures', () => {
     manifest.platforms['linux-aarch64'].relay.sha256Url,
     /openbitfun-relay-server-aarch64-unknown-linux-gnu\.tar\.gz\.sha256$/
   );
+  // The default GUI host ships as a feed asset: the release pipeline must
+  // produce exactly this archive name for the updater to resolve it.
+  assert.match(
+    manifest.platforms['linux-x86_64'].gpuiShell.url,
+    /releases\/download\/v1\.2\.3\/openbitfun-gpui-shell-1\.2\.3-x86_64-unknown-linux-gnu\.tar\.gz$/
+  );
 });
 
 test('publishes sigUrl when a signature is present, omits it otherwise', () => {
@@ -68,6 +75,7 @@ test('publishes sigUrl when a signature is present, omits it otherwise', () => {
     for (const filename of [
       `openbitfun-cli-1.2.3-${target}.tar.gz`,
       `openbitfun-relay-server-${target}.tar.gz`,
+      `openbitfun-gpui-shell-1.2.3-${target}.tar.gz`,
     ]) {
       fs.writeFileSync(path.join(assets, filename), '');
       fs.writeFileSync(path.join(assets, `${filename}.sha256`), '');
@@ -122,6 +130,7 @@ test('rejects versions whose build metadata GitHub would rewrite in asset names'
     for (const filename of [
       `openbitfun-cli-${version}-${target}.tar.gz`,
       `openbitfun-relay-server-${target}.tar.gz`,
+      `openbitfun-gpui-shell-${version}-${target}.tar.gz`,
     ]) {
       fs.writeFileSync(path.join(assets, filename), '');
       fs.writeFileSync(path.join(assets, `${filename}.sha256`), '');

@@ -320,7 +320,7 @@ test(`${version} Linux CLI and Relay manifests keep signed assets on the version
   const tag = `v${version}`;
   const assets = [];
   for (const target of ['x86_64-unknown-linux-gnu', 'aarch64-unknown-linux-gnu']) {
-    for (const name of [`openbitfun-cli-${version}-${target}.tar.gz`, `openbitfun-relay-server-${target}.tar.gz`]) {
+    for (const name of [`openbitfun-cli-${version}-${target}.tar.gz`, `openbitfun-relay-server-${target}.tar.gz`, `openbitfun-gpui-shell-${version}-${target}.tar.gz`]) {
       for (const suffix of ['', '.sha256', '.sig', '.sha256.sig']) {
         const filename = path.join(temp, name + suffix);
         fs.writeFileSync(filename, `fixture ${name}${suffix}`);
@@ -339,7 +339,7 @@ test(`${version} Linux CLI and Relay manifests keep signed assets on the version
   assert.equal(manifest.tag, tag);
   assert.deepEqual(Object.keys(manifest.platforms).sort(), ['linux-aarch64', 'linux-x86_64']);
   for (const platform of Object.values(manifest.platforms)) {
-    for (const artifact of [platform.cli, platform.relay]) {
+    for (const artifact of [platform.cli, platform.relay, platform.gpuiShell]) {
       assert.equal(artifact.url, `https://github.com/test-owner/OpenBitFun/releases/download/${tag}/${artifact.filename}`);
       assert.equal(artifact.sha256Url, `${artifact.url}.sha256`);
       assert.equal(artifact.sigUrl, `${artifact.url}.sig`);
