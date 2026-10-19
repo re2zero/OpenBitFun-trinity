@@ -896,8 +896,6 @@ fn install_binary(
     current_exe: &Path,
     verify: &dyn Fn(&Path) -> Result<()>,
 ) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
     let install_dir = current_exe
         .parent()
         .ok_or_else(|| anyhow!("{} has no parent directory", current_exe.display()))?;
