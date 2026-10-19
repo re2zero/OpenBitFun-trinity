@@ -1,0 +1,24 @@
+/**
+ * Emotion color mapping shared by Trinity cognitive surfaces.
+ *
+ * Include inside a surface root; styles `[data-openbitfun-emotion]` dots
+ * with a per-valence hue. Fixed mid-chroma hues chosen to read on both
+ * light and dark themes:
+ *   positive_high  雀跃  bright green
+ *   positive_mild  舒展  emerald
+ *   neutral        平静  slate
+ *   curious        好奇  violet
+ *   confused       困惑  amber
+ *   negative_mild  低落  orange
+ *   negative_high  沮丧  red
+ */
+
+@mixin emotion-dots {
+  [data-openbitfun-emotion='positive_high'] { background: #4ade80; }
+  [data-openbitfun-emotion='positive_mild'] { background: #10b981; }
+  [data-openbitfun-emotion='neutral'] { background: #94a3b8; }
+  [data-openbitfun-emotion='curious'] { background: #a78bfa; }
+  [data-openbitfun-emotion='confused'] { background: #eab308; }
+  [data-openbitfun-emotion='negative_mild'] { background: #fb923c; }
+  [data-openbitfun-emotion='negative_high'] { background: #ef4444; }
+}

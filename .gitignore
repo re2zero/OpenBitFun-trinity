@@ -128,9 +128,14 @@ src/apps/mobile/android/.kotlin/
 # Downloaded Flashgrep release assets (metadata stays tracked).
 /resources/flashgrep/flashgrep-*
 /resources/flashgrep/*.download-*
+trinityd sidecar staging (built by scripts/build-trinity-deb.sh)
+src/apps/desktop/trinityd-*
 
 # Local generated workspace output.
 /output/
 
 # Retired implementation-process notes stay local; durable docs live with their owner.
 /docs/superpowers/
+
+# Session-relay planning artifacts stay local (see .relay/PLAN.md).
+/.relay/

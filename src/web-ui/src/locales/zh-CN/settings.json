@@ -48,6 +48,10 @@
         "label": "记忆",
         "description": "控制智能体如何从会话中生成和使用记忆"
       },
+      "trinity": {
+        "label": "认知引擎",
+        "description": "认知引擎 LLM 端点、模型与连接。"
+      },
       "sessionWorkspace": {
         "label": "会话与工作区",
         "description": "设置新会话的执行框架、标题生成与工作区搜索"
@@ -603,6 +607,29 @@
       "subtitle": "自定义应用的外观和色彩",
       "import": "导入外观",
       "export": "导出当前外观"
+    }
+  },
+  "trinity": {
+    "engine": {
+      "llmSection": "认知引擎 LLM",
+      "apiUrl": "API 地址",
+      "model": "模型",
+      "apiKey": "API 密钥",
+      "save": "保存",
+      "saving": "保存中…",
+      "saved": "认知引擎配置已保存。",
+      "testConnection": "测试连接",
+      "testing": "测试中…",
+      "connectionOk": "连接成功。",
+      "connectionFailed": "连接失败。",
+      "providerLabel": "服务商",
+      "provider": {
+        "deepseek": "DeepSeek",
+        "zhipu": "智谱",
+        "openai": "OpenAI",
+        "ollama": "本地 Ollama",
+        "custom": "自定义"
+      }
     }
   },
   "archivedSessions": {

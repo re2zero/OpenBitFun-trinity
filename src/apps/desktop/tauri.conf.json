@@ -65,6 +65,7 @@
           "libxcb1",
           "libxdo3",
           "tesseract-ocr-eng",
+          "zenity",
           "zlib1g"
         ],
         "files": {

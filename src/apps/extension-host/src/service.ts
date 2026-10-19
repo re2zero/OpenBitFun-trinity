@@ -99,6 +99,12 @@ export function registerHostMethods(input: {
   register("host.workspace.target", async (params) =>
     (await host()).workspaceTarget(params as Parameters<ExtensionHost["workspaceTarget"]>[0]),
   )
+  register("host.ui.describe", async (params) =>
+    (await host()).describeUi(params as Parameters<ExtensionHost["describeUi"]>[0]),
+  )
+  register("host.ui.event", async (params) =>
+    (await host()).dispatchUiEvent(params as Parameters<ExtensionHost["dispatchUiEvent"]>[0]),
+  )
   register("host.shutdown", async () => {
     logEvent("shutdown.requested")
     const result = await (await host()).shutdown()

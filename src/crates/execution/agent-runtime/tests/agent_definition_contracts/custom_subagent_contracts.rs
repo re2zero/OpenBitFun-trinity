@@ -47,9 +47,12 @@ fn build_definition(
 
 #[test]
 fn custom_subagent_defaults_match_existing_front_matter_contract() {
+    // The trinity build turns the cognitive framework on for new subagents
+    // too (`DEFAULT_CUSTOM_SUBAGENT_TOOLS`), so the defaults include the group
+    // the manifest layer expands into `trinity_*` tools.
     assert_eq!(
         custom_subagent_tools_from_front_matter(None),
-        ["LS", "Read", "Glob", "Grep"]
+        ["LS", "Read", "Glob", "Grep", "trinity_cognitive"]
     );
     assert_eq!(
         custom_subagent_readonly_or_default(None),
@@ -119,7 +122,10 @@ fn custom_subagent_definition_from_front_matter_preserves_schema_and_defaults() 
     assert_eq!(definition.description, "Review agent for changed files");
     assert_eq!(definition.kind, CustomAgentKind::Subagent);
     assert_eq!(definition.level, CustomSubagentKind::User);
-    assert_eq!(definition.tools, ["LS", "Read", "Glob", "Grep"]);
+    assert_eq!(
+        definition.tools,
+        ["LS", "Read", "Glob", "Grep", "trinity_cognitive"]
+    );
     assert!(definition.readonly);
     assert!(definition.review);
     assert_eq!(definition.model, "deepseek-reasoner");

@@ -86,7 +86,8 @@
       "terminal": "Shell",
       "git": "Git",
       "miniApps": "Mini App",
-      "insights": "Insights"
+      "insights": "Insights",
+      "trinity": "Trinity"
     },
     "tooltips": {
       "persona": "Smart Members — expand role- and memory-based member sessions",
@@ -1548,7 +1549,8 @@
     "assistant": "$t(shared:agents.Claw)",
     "todos": "Task Board",
     "shell": "Shell",
-    "panelView": "Panel View"
+    "panelView": "Panel View",
+    "trinity": "Cognitive Being"
   },
   "sceneBar": {
     "tabsLabel": "Scene tabs",
@@ -2040,6 +2042,193 @@
     "nextMonth": "Next month",
     "now": "Now",
     "close": "Close"
+  },
+  "trinity": {
+    "being": {
+      "title": "Cognitive Being",
+      "expand": "Expand cognitive being",
+      "collapse": "Collapse cognitive being",
+      "state": "Cognitive state",
+      "offlineHint": "Cognitive engine offline",
+      "awakenAction": "Start awakening ceremony",
+      "cloudMemory": "Cloud memory",
+      "cloudMemoryHint": "Sign up / Sign in",
+      "comingSoon": "Coming soon",
+      "openPanel": "Open full panel"
+    },
+    "phase": {
+      "offline": "Disconnected",
+      "dormant": "Dormant",
+      "awake": "Awake"
+    },
+    "emotion": {
+      "positive_high": "Elated",
+      "positive_mild": "Content",
+      "neutral": "Calm",
+      "curious": "Curious",
+      "confused": "Confused",
+      "negative_mild": "Low",
+      "negative_high": "Distressed"
+    },
+    "focus": {
+      "respond": "Responding",
+      "reflect": "Reflecting",
+      "explore": "Exploring",
+      "plan": "Planning",
+      "idle": "Idle"
+    },
+    "needs": {
+      "competence": "Competence",
+      "autonomy": "Autonomy",
+      "relatedness": "Relatedness",
+      "certainty": "Certainty",
+      "growth": "Growth"
+    },
+    "memory": {
+      "reinforce": "Reinforce",
+      "forget": "Forget",
+      "forgetConfirm": "Click again to confirm",
+      "searchPlaceholder": "Search memories…",
+      "backToTimeline": "Back to timeline",
+      "addMemory": "Add memory",
+      "addContentPlaceholder": "Write something to remember…",
+      "addProject": "Project (optional)",
+      "addSubmit": "Save",
+      "loadEarlier": "Load earlier",
+      "noMore": "Beginning reached",
+      "searchResults": "Search results",
+      "noSearchResults": "No matching memories.",
+      "editSave": "Save correction",
+      "editSaving": "Saving…",
+      "edited": "Correction applied.",
+      "editNotFound": "The original memory no longer exists (it may have been forgotten).",
+      "export": "Export",
+      "exportDone": "Exported {{nodes}} memories and {{triples}} associations → {{path}}",
+      "import": "Import",
+      "importDone": "Import finished — {{added}} memories added.",
+      "importConfirmTitle": "Cross-identity memory import",
+      "importConfirmMessage": "This memory container belongs to \"{{container}}\" while this machine's being is \"{{local}}\". Merging brings another life's memories into this being. Continue?",
+      "importConfirm": "Merge anyway"
+    },
+    "status": {
+      "title": "Trinity Cognitive State",
+      "online": "Trinity online",
+      "offline": "Trinity offline",
+      "unknown": "Trinity",
+      "unavailable": "The Trinity cognitive engine is unavailable. Start trinityd or check the daemon port.",
+      "confidence": "Confidence",
+      "needs": "Needs",
+      "memory": "Memory",
+      "memoryNodes": "{{count}} nodes",
+      "memoryTriples": "{{count}} triples",
+      "vocabulary": "{{count}} vocab",
+      "openPanel": "Open panel",
+      "awaken": "Awaken"
+    },
+    "scene": {
+      "title": "Trinity",
+      "subtitle": "Cognitive being — PSI state, memory, and awakening",
+      "refresh": "Refresh",
+      "awakenTitle": "Awakening ceremony",
+      "awakenDescription": "The cognitive being is not awakened yet. Run the ceremony to name it and form the bond.",
+      "awakenName": "Lingshu",
+      "awakenNameLabel": "Being name",
+      "awakenUserNameLabel": "Your name",
+      "awakenPersonaLabel": "Persona",
+      "userName": "Companion",
+      "persona": {
+        "dolores": "Dolores — warm and empathetic",
+        "arnold": "Arnold — direct and decisive",
+        "sage": "Sage — calm and wise",
+        "guardian": "Guardian — loyal and protective",
+        "explorer": "Explorer — curious and adventurous",
+        "neutral": "Neutral — balanced default"
+      },
+      "awaken": "Awaken",
+      "awakening": "Awakening…",
+      "memoryTimeline": "Her diary",
+      "noMemories": "No memories yet.",
+      "trend": "Cognitive trend",
+      "awakenFailed": "Awakening failed: {{message}}",
+      "createIdentityTitle": "Create identity",
+      "createIdentityDescription": "The cognitive being has no identity in this workspace (for example after a reset). Rebuild the primary assistant from the awakened identity held by the cognitive engine.",
+      "createIdentity": "Create identity",
+      "creatingIdentity": "Creating…",
+      "createIdentityConfirmTitle": "Create cognitive identity?",
+      "createIdentityConfirmMessage": "This writes IDENTITY.md, SOUL.md, and USER.md into the cognitive being workspace and makes it the primary assistant, overwriting the current persona files.",
+      "createIdentityMissingIdentity": "The cognitive engine did not return an awakened name; connect it before creating the identity.",
+      "createIdentityFailed": "Failed to create identity: {{message}}"
+    },
+    "cloud": {
+      "title": "Cloud Memory",
+      "desc": "Memories sync end-to-end encrypted; the server cannot read them. Account password ≠ memory passphrase.",
+      "userId": "Account",
+      "password": "Password",
+      "signup": "Sign up & bind device",
+      "login": "Log in & bind device",
+      "toLogin": "Have an account? Log in",
+      "toSignup": "No account? Sign up",
+      "keyDesc": "Set a memory passphrase (8+ chars) to wrap the master key. Forgetting it means cloud memories are lost forever — there is no backdoor.",
+      "passphrase": "Memory passphrase",
+      "setupKey": "Enable cloud encryption",
+      "syncNow": "Sync now",
+      "backup": "Back up snapshot",
+      "restore": "Restore from cloud",
+      "pendingOps": "{{count}} pending ops",
+      "engineRunning": "Sync engine running",
+      "engineStopped": "Sync engine not running (takes over after daemon restart)",
+      "unavailable": "Cloud memory status unavailable (daemon may not have cloud sync enabled)."
+    },
+    "morning": {
+      "title": "Morning report",
+      "overnight": "Overnight tidy-up ({{date}})",
+      "thoughts": "Last night's thoughts ({{count}})",
+      "urges": "Unfinished threads ({{count}})",
+      "unavailable": "The morning report is unavailable right now.",
+      "notifyTitle": "Morning report from {{name}}",
+      "notifyBody": "She has your morning report ready."
+    },
+    "personaShort": {
+      "dolores": "Dolores",
+      "arnold": "Arnold",
+      "sage": "Sage",
+      "guardian": "Guardian",
+      "explorer": "Explorer",
+      "neutral": "Neutral"
+    },
+    "profile": {
+      "birthday": "Birthday"
+    },
+    "framework": {
+      "chip": "Cognitive framework · {{count}} tools"
+    },
+    "onboarding": {
+      "welcome": "Before you begin, give her a name. It will appear in every memory and conversation she keeps.",
+      "personaHint": "Choose a persona preset — it shapes how she meets the world.",
+      "ownerHint": "What will she call you?",
+      "llmHint": "Connect a large language model as her mind. You can leave this empty and configure it later in settings.",
+      "steps": {
+        "identity": "Name",
+        "persona": "Persona",
+        "owner": "Owner",
+        "llm": "Mind"
+      },
+      "personaDesc": {
+        "dolores": "Empathizes first — she holds the feeling before fixing the problem.",
+        "arnold": "Direct and to the point — conclusions with reasons.",
+        "sage": "Calm and measured — thinks deeply, speaks sparingly.",
+        "guardian": "Cautious and protective — your safety and boundaries come first.",
+        "explorer": "Curious and playful — loves trying new things with you.",
+        "neutral": "Balanced default — no strong stylistic lean."
+      },
+      "begin": "Begin awakening",
+      "next": "Next",
+      "back": "Back",
+      "later": "Later",
+      "completeTitle": "{{name}} is awake",
+      "completeMessage": "Her memory and emotions will keep growing with every cognitive cycle.",
+      "enter": "Start talking"
+    }
   },
   "computerControl": {
     "title": "Computer control",

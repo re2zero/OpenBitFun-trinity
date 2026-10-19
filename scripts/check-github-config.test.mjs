@@ -919,7 +919,7 @@ test('Linux binary packaging uses the shared locked version projection contract'
     (step) => step.name === 'Verify projected Cargo metadata',
   );
   const buildIndex = steps.findIndex(
-    (step) => step.name === 'Build CLI and Relay Server',
+    (step) => step.name === 'Build CLI, Relay Server, and GPUI Shell',
   );
 
   assert.equal(inputs.artifact_retention_days.default, 7);
@@ -940,6 +940,7 @@ test('Linux binary packaging uses the shared locked version projection contract'
   assert.equal(steps[committedIndex].run, 'cargo metadata --locked --no-deps');
   assert.equal(steps[projectedIndex].run, 'cargo metadata --locked --no-deps');
   assert.match(steps[buildIndex].run, /cargo build --locked --release/);
+  assert.match(steps[buildIndex].run, /-p openbitfun-gpui-shell/);
   const rustCache = steps.find((step) =>
     step.uses?.startsWith('swatinem/rust-cache@'));
   const restoreOnlyOnPr =
@@ -958,6 +959,17 @@ test('Linux binary packaging uses the shared locked version projection contract'
   assert.equal(
     upload?.with?.['retention-days'],
     '${{ inputs.artifact_retention_days }}',
+  );
+  // The feed manifest requires `openbitfun-gpui-shell-<version>-<target>.tar.gz`
+  // next to the CLI and Relay archives, so the workflow must package it after
+  // the build and hand it to the same upload step.
+  const gpuiStage = steps.find((step) => step.id === 'gpui-stage');
+  assert.match(gpuiStage?.run ?? '', /scripts\/gpui-shell-package\.mjs/);
+  assert.ok(steps.indexOf(gpuiStage) > buildIndex);
+  assert.ok(steps.indexOf(gpuiStage) < steps.indexOf(upload));
+  assert.match(
+    String(upload?.with?.path ?? ''),
+    /steps\.gpui-stage\.outputs\.archive/,
   );
 });
 

@@ -86,8 +86,9 @@ test("Rust and JavaScript Tauri package lines stay pinned and aligned", () => {
     path.join(installerRoot, "src-tauri", "Cargo.toml"),
     "utf8"
   );
-  const rustTauri = cargoToml.match(/tauri = \{ version = "=([^"]+)"/)?.[1];
-  const rustDialog = cargoToml.match(/tauri-plugin-dialog = "=([^"]+)"/)?.[1];
+  const rustTauri = cargoToml.match(/^tauri = \{ version = "=([^"]+)"/m)?.[1];
+  // The dialog plugin carries features now, so the pin lives inside the table.
+  const rustDialog = cargoToml.match(/^tauri-plugin-dialog = \{ version = "=([^"]+)"/m)?.[1];
   const jsTauri = packageJson.dependencies["@tauri-apps/api"];
   const jsDialog = packageJson.dependencies["@tauri-apps/plugin-dialog"];
 

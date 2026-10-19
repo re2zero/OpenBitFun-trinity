@@ -407,6 +407,16 @@ $assistant-defaults-row-columns:
     gap: var(--openbitfun-space-3);
   }
 
+  &__tool-list {
+    display: flex;
+    margin: 0;
+    padding-inline-start: var(--openbitfun-space-4);
+    flex-direction: column;
+    gap: var(--openbitfun-space-2);
+    color: var(--openbitfun-color-content-secondary);
+    font-size: var(--openbitfun-type-body-sm-font-size);
+  }
+
   &__field {
     display: grid;
     grid-template-columns: minmax(0, 0.55fr) minmax(0, 1fr);

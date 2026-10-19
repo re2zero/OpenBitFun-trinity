@@ -15,12 +15,28 @@ const SKIPPED_DIRECTORIES = new Set([
   '.claude',
   '.cursor',
   '.git',
+  '.kilo',
   '.targets',
   '.tmp',
   '.worktrees',
   'node_modules',
   'target',
 ]);
+
+// Third-party crates vendored as `[patch.crates-io]` replacements live inside
+// the repository tree but are not repository packages: they carry
+// cargo-normalized upstream manifests and belong to no crate-layout layer.
+// Their consumption is still validated through the patched cargo graph.
+const VENDORED_CRATE_DIRECTORY = 'vendor';
+
+function isRepositoryOwnedPath(root, path) {
+  const repoPath = repositoryPath(root, path);
+  if (repoPath === null || repoPath === '') {
+    return false;
+  }
+  return repoPath !== VENDORED_CRATE_DIRECTORY
+    && !repoPath.startsWith(`${VENDORED_CRATE_DIRECTORY}/`);
+}
 
 const ALLOWED_TARGET_LAYERS = new Map([
   ['apps', new Set(['interfaces', 'assembly', 'adapters', 'services', 'execution', 'contracts'])],
@@ -334,6 +350,13 @@ const REQWEST_PACKAGE_PROFILES = new Map([
     dependencyFeatures: ['http2', 'json', 'query', 'rustls-no-provider', 'stream'],
     optional: false,
   }],
+  // The GPUI shell fetches its own release manifest, checksum, and archive for
+  // `--check-update` / `--self-update`; no JSON or form API is used.
+  ['openbitfun-gpui-shell', {
+    dependencyFeatures: ['http2', 'rustls-no-provider', 'stream'],
+    optional: false,
+    tlsProviderDependency: 'openbitfun-services-core',
+  }],
   ['openbitfun-miniapp-market-service', {
     dependencyFeatures: ['form', 'http2', 'json', 'rustls-no-provider'],
     optional: false,
@@ -559,6 +582,11 @@ const THIRD_PARTY_CAPABILITY_PROFILES = new Map([
       ['openbitfun-desktop', dependencyProfile(['bmp', 'gif', 'jpeg', 'png', 'webp'], {
         useDefaultFeatures: false,
       })],
+      // The gpui-shell tray decodes the embedded brand PNG into the
+      // StatusNotifierItem pixmap; PNG is all it reads.
+      ['openbitfun-gpui-shell', dependencyProfile(['png'], {
+        useDefaultFeatures: false,
+      })],
       ['openbitfun-miniapp-market-service', dependencyProfile(['jpeg', 'png', 'webp'], {
         useDefaultFeatures: false,
       })],
@@ -574,7 +602,8 @@ const THIRD_PARTY_CAPABILITY_PROFILES = new Map([
       ['openbitfun-skin-market-service', dependencyProfile(['gif', 'jpeg', 'png', 'webp'], {
         useDefaultFeatures: false,
       })],
-      ['openbitfun-webdriver', dependencyProfile(['png'], {
+      // The embedded bridge captures PNG and encodes JPEG previews itself.
+      ['openbitfun-webdriver', dependencyProfile(['jpeg', 'png'], {
         useDefaultFeatures: false,
       })],
     ]),
@@ -841,9 +870,15 @@ const RESOLVED_THIRD_PARTY_CAPABILITY_POLICIES = new Map([
   ['image', {
     versionPrefix: '0.25.',
     ignoredVersionPrefixes: ['0.24.'],
-    // macOS clipboard support currently adds TIFF through arboard. The other
-    // formats are the codecs selected by reviewed OpenBitFun owners.
-    allowedFeatures: new Set(['bmp', 'gif', 'jpeg', 'png', 'tiff', 'webp']),
+    // macOS clipboard support currently adds TIFF through arboard. The base
+    // formats are the codecs selected by reviewed OpenBitFun owners. gpui
+    // 0.2.2 declares `image` with default features enabled and cannot be
+    // narrowed from our manifests, so its meta-features and remaining default
+    // codecs enter the resolved union through that reviewed owner.
+    allowedFeatures: new Set([
+      'avif', 'bmp', 'dds', 'default', 'default-formats', 'exr', 'ff', 'gif',
+      'hdr', 'ico', 'jpeg', 'png', 'pnm', 'qoi', 'rayon', 'tga', 'tiff', 'webp',
+    ]),
   }],
 ]);
 
@@ -1355,7 +1390,7 @@ export function findCargoLayerViolations(
   const declaredDependencies = [];
   for (const sourcePackage of packages) {
     for (const dependency of sourcePackage.dependencies ?? []) {
-      if (!dependency.path || repositoryPath(root, dependency.path) === null) {
+      if (!dependency.path || !isRepositoryOwnedPath(root, dependency.path)) {
         continue;
       }
 
@@ -2574,13 +2609,13 @@ function resolvedDependencyRecords(metadata, root) {
 
   for (const node of metadata.resolve?.nodes ?? []) {
     const sourcePackage = packageById.get(node.id);
-    if (!sourcePackage || repositoryPath(root, sourcePackage.manifest_path) === null) {
+    if (!sourcePackage || !isRepositoryOwnedPath(root, sourcePackage.manifest_path)) {
       continue;
     }
 
     for (const dependency of node.deps ?? []) {
       const targetPackage = packageById.get(dependency.pkg);
-      if (!targetPackage || repositoryPath(root, targetPackage.manifest_path) === null) {
+      if (!targetPackage || !isRepositoryOwnedPath(root, targetPackage.manifest_path)) {
         continue;
       }
 
@@ -2662,7 +2697,7 @@ export function collectCargoMetadataGraph({
     });
     const workspaceMemberIds = new Set(metadata.workspace_members ?? []);
     for (const pkg of metadata.packages ?? []) {
-      if (repositoryPath(root, pkg.manifest_path) === null) {
+      if (!isRepositoryOwnedPath(root, pkg.manifest_path)) {
         continue;
       }
       const packageManifestKey = normalizedPath(pkg.manifest_path);

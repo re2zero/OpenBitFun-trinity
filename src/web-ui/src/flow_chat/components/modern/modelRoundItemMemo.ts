@@ -1,5 +1,6 @@
 import type { ModelRound, FlowToolItem, TokenUsage } from '../../types/flow-chat';
 import type { ModelRoundItemGroup } from './modelRoundItemGrouping';
+import { isModelRoundGroupingDisabled } from '../../grouping/roundGroups';
 
 export interface ModelRoundItemProps {
   blockPart?: 'content' | 'header' | 'footer';
@@ -44,7 +45,7 @@ export function areModelRoundItemPropsEqual(prev: ModelRoundItemProps, next: Mod
     prev.blockPart === next.blockPart &&
     prev.round.id === next.round.id &&
     prev.round.renderHints?.continuedAfterInterruption === next.round.renderHints?.continuedAfterInterruption &&
-    prev.round.renderHints?.disableExploreGrouping === next.round.renderHints?.disableExploreGrouping &&
+    isModelRoundGroupingDisabled(prev.round) === isModelRoundGroupingDisabled(next.round) &&
     prev.round.items === next.round.items &&
     sameProjectedGroups(prev.projectedGroups, next.projectedGroups) &&
     prev.round.attempts === next.round.attempts &&

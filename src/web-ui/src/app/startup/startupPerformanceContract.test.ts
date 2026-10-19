@@ -160,7 +160,14 @@ describe('startup performance contract', () => {
     expect(desktopAppearanceSource).toContain('__OPENBITFUN_BOOTSTRAP_WORKSPACE_STARTUP_STATE__');
     expect(desktopAppearanceSource).toContain('MAX_BOOTSTRAP_WORKSPACE_STATE_JSON_BYTES');
     expect(desktopLibSource).toContain('prepare_workspace_startup_bootstrap_snapshot');
-    expect(desktopLibSource).toContain('tokio::task::block_in_place');
+    // The desktop entry point stays synchronous and keeps the Tauri event loop
+    // outside any tokio runtime context, because plugins that block on DBus
+    // (single-instance via zbus) lazily start their own blocking runtime on the
+    // calling thread and tokio panics when that happens inside another runtime.
+    // The bootstrap snapshot therefore runs through the runtime handle, and
+    // this path must not re-enter the runtime through `tokio::task::block_in_place`.
+    expect(desktopLibSource).toContain('pub fn run(handle: tokio::runtime::Handle)');
+    expect(desktopLibSource).not.toContain('tokio::task::block_in_place');
     expect(desktopLibSource).not.toContain('tauri::async_runtime::block_on(prepare_workspace_startup_bootstrap_snapshot');
     expect(desktopCommandsSource).toContain('initialize_workspace_startup_state_impl');
     expect(globalStateSource).toContain('consumeBootstrapWorkspaceStartupStateSnapshot');
@@ -847,12 +854,17 @@ describe('startup performance contract', () => {
     expect(source).toContain("import('@/flow_chat/utils/agentCompanionActivity')");
     expect(source).toContain("import('@/flow_chat/services/AgentCompanionActivityBridge')");
     expect(source).toContain("import('./services/openAgentCompanionSession')");
-    expect(staticImportSpecifiers(mainSource)).toContain(
+    expect(staticImportSpecifiers(mainSource)).not.toContain(
       './app/components/AgentCompanionDesktopPet/AgentCompanionDesktopPet'
     );
-    expect(dynamicImportSpecifiers(mainSource)).not.toContain(
+    expect(dynamicImportSpecifiers(mainSource)).toContain(
       './app/components/AgentCompanionDesktopPet/AgentCompanionDesktopPet'
     );
+    expect(staticImportSpecifiers(mainSource)).not.toContain('./app/App');
+    expect(staticImportSpecifiers(mainSource)).not.toContain('./infrastructure/contexts/WorkspaceProvider');
+    expect(dynamicImportSpecifiers(mainSource)).toContain('./app/startup/MainApplicationRoot');
+    expect(mainSource).toContain('let windowModule;');
+    expect(mainSource.indexOf('let windowModule')).toBeLessThan(mainSource.indexOf('await initializeBeforeRender()'));
     expect(source).toContain("listen(\n        'agent-companion://ready'");
     expect(source).toContain("emit('agent-companion://settings-updated', settings)");
     expect(source).toContain('emitAgentCompanionActivity(buildAgentCompanionActivity())');

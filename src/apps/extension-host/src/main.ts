@@ -120,6 +120,7 @@ async function main() {
       rpc: backend,
       streams,
       cacheDirectory: handshake.cacheDirectory,
+      capabilities: new Set(handshake.capabilities ?? []),
       gatewayFactory: createGateway,
       preparePlugins: prepareBunPlugins,
       shell: Bun.$,

@@ -30,6 +30,8 @@ export type SceneTabId =
   | 'insights'
   | 'shell'
   | `content:${string}`
+  | 'trinity'
+  | 'trinity-memory'
   | `session:${string}`
   | `miniapp:${string}`;
 

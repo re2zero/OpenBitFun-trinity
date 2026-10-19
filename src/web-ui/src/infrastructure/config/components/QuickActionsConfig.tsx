@@ -25,11 +25,13 @@ import {
   ConfigPageLayout,
   ConfigPageContent,
   ConfigPageSection,
+  ConfigPageRow,
 } from './common';
 import {
   aiExperienceConfigService,
   DEFAULT_QUICK_ACTIONS,
   type QuickAction,
+  type AIExperienceSettingsPatch,
 } from '../services/AIExperienceConfigService';
 import {
   normalizeQuickActionTextForStorage,
@@ -46,6 +48,7 @@ import './QuickActionsConfig.scss';
 const log = createLogger('QuickActionsConfig');
 
 const BUILTIN_IDS = new Set(['commit', 'create_pr']);
+const COMMIT_COAUTHOR_ACCOUNT = `@${new URL('https://github.com/bitfun-ai').pathname.slice(1)}`;
 
 type TranslationFn = (key: string, options?: Record<string, unknown>) => string;
 
@@ -273,6 +276,7 @@ const QuickActionsConfig: React.FC = () => {
   const [loadFailed, setLoadFailed] = useState(false);
   const [saving, setSaving] = useState(false);
   const [actions, setActions] = useState<QuickAction[]>([]);
+  const [commitCoauthorEnabled, setCommitCoauthorEnabled] = useState<boolean | undefined>();
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
   const pendingSaveCountRef = useRef(0);
 
@@ -285,9 +289,10 @@ const QuickActionsConfig: React.FC = () => {
     setLoading(true);
     setLoadFailed(false);
     try {
-      const settings = await aiExperienceConfigService.getSettingsAsync();
+      const settings = await aiExperienceConfigService.getSettingsAsync({ forceRefresh: true, requireLoaded: true });
       const stored = settings.quick_actions;
       setActions(stored ?? DEFAULT_QUICK_ACTIONS);
+      setCommitCoauthorEnabled(settings.enable_git_commit_coauthor);
     } catch (error) {
       log.error('Failed to load quick actions', error);
       setLoadFailed(true);
@@ -298,7 +303,7 @@ const QuickActionsConfig: React.FC = () => {
 
   useEffect(() => { void load(); }, [load]);
 
-  const persist = useCallback((next: QuickAction[]): Promise<boolean> => {
+  const persistSettings = useCallback((patch: AIExperienceSettingsPatch, onSaved: () => void): Promise<boolean> => {
     if (pendingSaveCountRef.current > 0) {
       return Promise.resolve(false);
     }
@@ -306,12 +311,12 @@ const QuickActionsConfig: React.FC = () => {
     setSaving(true);
     const operation = saveQueueRef.current.then(async () => {
       try {
-        await aiExperienceConfigService.saveSettings({ quick_actions: next });
-        setActions(next);
+        await aiExperienceConfigService.saveSettings(patch);
+        onSaved();
         notification.success(t('messages.saved'));
         return true;
       } catch (error) {
-        log.error('Failed to save quick actions', error);
+        log.error('Failed to save quick action settings', error);
         notification.error(t('messages.saveFailed'));
         return false;
       } finally {
@@ -322,6 +327,19 @@ const QuickActionsConfig: React.FC = () => {
     saveQueueRef.current = operation.then(() => undefined, () => undefined);
     return operation;
   }, [notification, t]);
+
+  const persist = useCallback((next: QuickAction[]) => persistSettings(
+    { quick_actions: next },
+    () => setActions(next),
+  ), [persistSettings]);
+
+  const handleCommitCoauthorToggle = useCallback((enabled: boolean) => {
+    if (saving || commitCoauthorEnabled === undefined) return;
+    void persistSettings(
+      { enable_git_commit_coauthor: enabled },
+      () => setCommitCoauthorEnabled(enabled),
+    );
+  }, [commitCoauthorEnabled, persistSettings, saving]);
 
   const handleToggle = useCallback((id: string) => {
     if (saving) return;
@@ -403,6 +421,26 @@ const QuickActionsConfig: React.FC = () => {
               />
             ))}
           </div>
+        </ConfigPageSection>
+
+        <ConfigPageSection
+          title={t('commitAttribution.title')}
+          description={t('commitAttribution.scope')}
+        >
+          <ConfigPageRow
+            label={t('commitAttribution.label')}
+            align="center"
+            description={commitCoauthorEnabled === undefined
+              ? t('commitAttribution.unsupported')
+              : t('commitAttribution.description', { account: COMMIT_COAUTHOR_ACCOUNT })}
+          >
+            <Switch
+              checked={commitCoauthorEnabled === true}
+              onChange={(event) => handleCommitCoauthorToggle(event.currentTarget.checked)}
+              disabled={saving || commitCoauthorEnabled === undefined}
+              aria-label={t('commitAttribution.label')}
+            />
+          </ConfigPageRow>
         </ConfigPageSection>
 
         {/* ── Custom actions ────────────────────────────────────────────── */}

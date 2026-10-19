@@ -171,6 +171,8 @@ export interface AIExperienceConfig {
   voice_input: VoiceInputSettings;
   /** User-defined quick actions shown in the post-coding actions menu. */
   quick_actions?: Array<{ id: string; label: string; prompt: string; enabled: boolean }>;
+  /** Absent on older hosts that do not support commit co-author preferences. */
+  enable_git_commit_coauthor?: boolean;
 }
 
 export interface VoiceInputSettings {

@@ -11,7 +11,7 @@
 //! `Recv` → `Actions` → `Inner` → `Arc<Mutex<_>>` → `RecvStream` → hyper's
 //! `Incoming`), into the MCP remote transport, then out through roughly ten
 //! nested `async fn` bodies from `agentic::coordination::scheduler` to the
-//! `tokio::spawn` in `api::remote_connect_api`.
+//! `tauri::async_runtime::spawn` in `api::remote_connect_api`.
 //!
 //! Most of that depth is in third-party types, so `Box::pin`-ing one of our own
 //! futures does not collapse it; only erasing a mid-chain future to
@@ -22,6 +22,7 @@
 
 pub mod api;
 pub mod appearance;
+mod beings;
 mod builtin_browser_host;
 pub mod computer_use;
 pub mod crash_diagnostics;
@@ -34,6 +35,7 @@ pub mod runtime;
 pub mod sleep_prevention;
 pub mod startup_trace;
 pub mod tray;
+mod trinity;
 mod webview_recovery;
 mod window_state_support;
 #[cfg(target_os = "windows")]
@@ -405,9 +407,15 @@ fn get_startup_native_trace(
     state.snapshot()
 }
 
-/// Tauri application entry point
+/// Tauri application entry point.
+///
+/// The async startup steps run inside the runtime behind `handle`, but the
+/// Tauri event loop itself must own the main thread OUTSIDE any tokio runtime
+/// context: plugins that block on DBus (single-instance via zbus) lazily start
+/// their own blocking runtime on the calling thread, and tokio panics when a
+/// runtime is started on a thread that already drives one.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub async fn run() {
+pub fn run(handle: tokio::runtime::Handle) {
     let startup_started = Instant::now();
     let startup_trace_id = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -458,16 +466,17 @@ pub async fn run() {
     }
 
     let step_started = Instant::now();
-    if let Err(e) = openbitfun_core::service::config::initialize_global_config().await {
+    if let Err(e) = handle.block_on(openbitfun_core::service::config::initialize_global_config()) {
         log::error!("Failed to initialize global config service: {}", e);
         show_fatal_startup_error(&format!(
             "OpenBitFun could not initialize its configuration and cannot continue.\n\n{e}\n\nSee early-startup.log for details."
         ));
         return;
     }
-    if let Ok(config_service) = openbitfun_core::service::config::get_global_config_service().await
+    if let Ok(config_service) =
+        handle.block_on(openbitfun_core::service::config::get_global_config_service())
     {
-        for diagnostic in config_service.load_diagnostics().await {
+        for diagnostic in handle.block_on(config_service.load_diagnostics()) {
             log::warn!(
                 "Startup configuration diagnostic: code={}, path={}, recoverability={:?}",
                 diagnostic.code,
@@ -480,22 +489,23 @@ pub async fn run() {
     startup_trace.record_elapsed_step("native_pre_tauri", "initialize_global_config", step_started);
 
     let step_started = Instant::now();
-    match openbitfun_core::plugin_host::initialize_configured_plugin_host_with_log_file(
-        PLUGIN_HOST_LAUNCH_POLICY,
-        Some(session_log_dir.join("plugin-host.log")),
-    )
-    .await
-    {
+    match handle.block_on(
+        openbitfun_core::plugin_host::initialize_configured_plugin_host_with_log_file(
+            PLUGIN_HOST_LAUNCH_POLICY,
+            Some(session_log_dir.join("plugin-host.log")),
+        ),
+    ) {
         Ok(openbitfun_core::plugin_host::PluginHostStartup::Disabled) => {}
         Ok(status) => log::info!("Plugin host initialization completed: {:?}", status),
         Err(error) => {
             log::error!("Failed to initialize configured plugin host: {}", error);
-            openbitfun_core::plugin_host::report_configured_plugin_activation_failure(
-                "Desktop startup",
-                None,
-                error,
-            )
-            .await;
+            handle.block_on(
+                openbitfun_core::plugin_host::report_configured_plugin_activation_failure(
+                    "Desktop startup",
+                    None,
+                    error,
+                ),
+            );
         }
     }
     startup_timings.record_elapsed("initialize_plugin_host", step_started);
@@ -510,7 +520,7 @@ pub async fn run() {
         i18n_duration_ms,
         (startup_log_level, log_level_duration_ms),
         (ai_factory_result, ai_factory_duration_ms),
-    ) = {
+    ) = handle.block_on(async {
         use openbitfun_core::service::config::get_global_config_service;
         use openbitfun_core::service::i18n::initialize_global_i18n_service;
 
@@ -543,7 +553,7 @@ pub async fn run() {
         };
 
         tokio::join!(i18n_task, log_level_task, ai_factory_task)
-    };
+    });
 
     startup_timings.push_duration("initialize_global_i18n_service", i18n_duration_ms);
     startup_trace.record_step(
@@ -575,7 +585,7 @@ pub async fn run() {
 
     let step_started = Instant::now();
     let (coordinator, scheduler, event_queue, event_router, ai_client_factory, token_usage_service) =
-        match init_agentic_system().await {
+        match handle.block_on(init_agentic_system()) {
             Ok(state) => state,
             Err(e) => {
                 log::error!("Failed to initialize agentic system: {}", e);
@@ -586,7 +596,7 @@ pub async fn run() {
     startup_trace.record_elapsed_step("native_pre_tauri", "init_agentic_system", step_started);
 
     let step_started = Instant::now();
-    if let Err(e) = init_function_agents(ai_client_factory.clone()).await {
+    if let Err(e) = handle.block_on(init_function_agents(ai_client_factory.clone())) {
         log::error!("Failed to initialize function agents: {}", e);
         return;
     }
@@ -595,7 +605,7 @@ pub async fn run() {
 
     let step_started = Instant::now();
     let workspace_search_enabled =
-        openbitfun_core::service::search::workspace_search_feature_enabled().await;
+        handle.block_on(openbitfun_core::service::search::workspace_search_feature_enabled());
     startup_trace.record_elapsed_step(
         "native_pre_tauri",
         "workspace_search_feature_enabled",
@@ -610,7 +620,7 @@ pub async fn run() {
     );
 
     let step_started = Instant::now();
-    let app_state = match AppState::new_async(token_usage_service).await {
+    let app_state = match handle.block_on(AppState::new_async(token_usage_service)) {
         Ok(state) => state,
         Err(e) => {
             log::error!("Failed to initialize AppState: {}", e);
@@ -774,6 +784,17 @@ pub async fn run() {
                 step_started,
             );
             startup_trace.record_logging_ready_and_stop_persistence();
+
+            // Trinity cognitive engine: spawn/reuse the daemon and register
+            // cognitive hooks + tools. Non-blocking; failures degrade gracefully.
+            tauri::async_runtime::spawn(async move {
+                trinity::init().await;
+            });
+
+            // Signals bypass the Tauri event loop, so an external `kill` or a
+            // session manager stopping this app's unit would end the process
+            // without running any exit cleanup.
+            install_termination_signal_handler(app.handle());
 
             let bundled_frontend = if cfg!(debug_assertions) {
                 let development_dist = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -982,28 +1003,26 @@ pub async fn run() {
                 // `initialize_workspace_startup_state` command path.
                 const WORKSPACE_STARTUP_SNAPSHOT_TIMEOUT: std::time::Duration =
                     std::time::Duration::from_secs(4);
-                tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(async {
-                        match tokio::time::timeout(
-                            WORKSPACE_STARTUP_SNAPSHOT_TIMEOUT,
-                            prepare_workspace_startup_bootstrap_snapshot(
-                                &app_state,
-                                &app_handle,
-                                &startup_trace_state,
-                            ),
-                        )
-                        .await
-                        {
-                            Ok(snapshot) => snapshot,
-                            Err(_) => {
-                                log::warn!(
-                                    "Workspace startup bootstrap snapshot timed out after {:?}; frontend will fall back to the initialize_workspace_startup_state command",
-                                    WORKSPACE_STARTUP_SNAPSHOT_TIMEOUT
-                                );
-                                None
-                            }
+                tauri::async_runtime::block_on(async {
+                    match tokio::time::timeout(
+                        WORKSPACE_STARTUP_SNAPSHOT_TIMEOUT,
+                        prepare_workspace_startup_bootstrap_snapshot(
+                            &app_state,
+                            &app_handle,
+                            &startup_trace_state,
+                        ),
+                    )
+                    .await
+                    {
+                        Ok(snapshot) => snapshot,
+                        Err(_) => {
+                            log::warn!(
+                                "Workspace startup bootstrap snapshot timed out after {:?}; frontend will fall back to the initialize_workspace_startup_state command",
+                                WORKSPACE_STARTUP_SNAPSHOT_TIMEOUT
+                            );
+                            None
                         }
-                    })
+                    }
                 })
                 .and_then(|snapshot| {
                     serde_json::to_value(snapshot)
@@ -1069,7 +1088,7 @@ pub async fn run() {
                 let workspace_id = app_state.workspace_id.clone();
                 let macos_edit_menu_mode = app_state.macos_edit_menu_mode.clone();
 
-                tokio::spawn(async move {
+                tauri::async_runtime::spawn(async move {
                     let language = config_service
                         .get_config::<String>(Some("app.language"))
                         .await
@@ -1133,7 +1152,7 @@ pub async fn run() {
                     app.state();
                 let terminal_state_inner = api::terminal_api::TerminalState::new();
                 let app_handle_clone = app_handle.clone();
-                tokio::spawn(async move {
+                tauri::async_runtime::spawn(async move {
                     api::terminal_api::start_terminal_event_loop(
                         terminal_state_inner,
                         app_handle_clone,
@@ -1660,6 +1679,7 @@ pub async fn run() {
             open_workspace,
             open_remote_workspace,
             create_assistant_workspace,
+            ensure_cognitive_being_assistant,
             get_primary_assistant_workspace,
             set_primary_assistant_workspace,
             delete_assistant_workspace,
@@ -1696,6 +1716,36 @@ pub async fn run() {
             api::update_api::download_update,
             api::update_api::get_pending_update,
             api::update_api::install_pending_update,
+            api::trinity_api::trinity_get_cognitive_state,
+            api::trinity_api::trinity_express,
+            api::trinity_api::trinity_self_perception,
+            api::trinity_api::trinity_get_status,
+            api::trinity_api::trinity_cognition_history,
+            api::trinity_api::trinity_memory_timeline,
+            api::trinity_api::trinity_memory_stats,
+            api::trinity_api::trinity_recall_memory,
+            api::trinity_api::trinity_memorize,
+            api::trinity_api::trinity_forget_memory,
+            api::trinity_api::trinity_reinforce_memory,
+            api::trinity_api::trinity_memory_export,
+            api::trinity_api::trinity_memory_import,
+            api::trinity_api::trinity_awaken,
+            api::trinity_api::trinity_morning_report,
+            api::trinity_api::trinity_cloud_status,
+            api::trinity_api::trinity_cloud_signup,
+            api::trinity_api::trinity_cloud_login,
+            api::trinity_api::trinity_cloud_setup_key,
+            api::trinity_api::trinity_cloud_sync_now,
+            api::trinity_api::trinity_cloud_backup,
+            api::trinity_api::trinity_cloud_restore,
+            api::trinity_api::trinity_llm_get_config,
+            api::trinity_api::trinity_llm_set_config,
+            api::trinity_api::trinity_llm_test_connection,
+            api::trinity_api::trinity_shutdown,
+            api::being_api::get_core_being,
+            api::being_api::list_beings,
+            api::being_api::delete_assistant_being,
+            api::being_api::get_cognitive_framework_info,
             api::system_api::open_html_file_in_browser,
             restart_app,
             send_system_notification,
@@ -2138,13 +2188,13 @@ async fn init_function_agents(ai_client_factory: Arc<AIClientFactory>) -> anyhow
 }
 
 fn init_mcp_servers(app_handle: tauri::AppHandle) {
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         let _ = app_handle;
     });
 }
 
 fn init_acp_clients(app_handle: tauri::AppHandle) {
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         let state: tauri::State<'_, api::AppState> = app_handle.state();
         if let Some(service) = state.acp_client_service.as_ref() {
             if let Err(error) = service.initialize_all().await {
@@ -2234,6 +2284,12 @@ static PROCESS_EXIT_CLEANUP_COMPLETE: AtomicBool = AtomicBool::new(false);
 static DESKTOP_EXIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 static PROCESS_EXIT_CLEANUP_NOTIFY: OnceLock<tokio::sync::Notify> = OnceLock::new();
 
+/// Upper bound for the Trinity daemon shutdown on the exit path. The blocking
+/// shutdown needs up to ~8s in its worst case (1.5s connect + 2s write + 2s
+/// read + 2.5s wait), so this deadline sits above it and only guards against a
+/// wedged daemon.
+const TRINITY_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(10);
+
 pub(crate) async fn perform_process_exit_cleanup() -> bool {
     let notify = PROCESS_EXIT_CLEANUP_NOTIFY.get_or_init(tokio::sync::Notify::new);
     if PROCESS_EXIT_CLEANUP_STARTED.swap(true, Ordering::AcqRel) {
@@ -2247,6 +2303,28 @@ pub(crate) async fn perform_process_exit_cleanup() -> bool {
     }
 
     log::info!("Desktop process graceful shutdown started");
+    // Stop the trinityd daemon this process spawned. Runs on a blocking thread
+    // so the ~2.5s graceful wait never occupies a tokio worker. An independent
+    // or probed daemon is left untouched.
+    match tokio::time::timeout(
+        TRINITY_SHUTDOWN_DEADLINE,
+        tokio::task::spawn_blocking(crate::trinity::backend::shutdown_owned_trinityd),
+    )
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => log::warn!("[trinity] daemon shutdown task failed: {error}"),
+        Err(_elapsed) => {
+            // A `spawn_blocking` task cannot be cancelled, so it may still be
+            // running. Kill the tracked child here so a slow daemon cannot
+            // outlive the host. The call is idempotent: it takes the slot.
+            log::warn!(
+                "[trinity] daemon shutdown timed out after {}s; killing the owned daemon",
+                TRINITY_SHUTDOWN_DEADLINE.as_secs()
+            );
+            crate::trinity::backend::kill_owned_trinityd_now();
+        }
+    }
     match openbitfun_core::plugin_host::shutdown_configured_plugin_host().await {
         Ok(Some(report)) => log::info!(
             "Desktop plugin host shutdown completed: generation={}, disposition={:?}, rpc_completed={}, exit_code={:?}, duration_ms={}",
@@ -2297,8 +2375,54 @@ pub(crate) fn perform_process_exit_cleanup_emergency() -> bool {
         search_service.shutdown_blocking();
     }
     openbitfun_core::util::process_manager::cleanup_all_processes();
+    // Panic/exit path: kill the owned trinityd child without the graceful wait.
+    crate::trinity::backend::kill_owned_trinityd_now();
     api::remote_connect_api::cleanup_on_exit();
     true
+}
+
+/// Run exit cleanup when the process is terminated by a signal instead of one of
+/// its own exit paths.
+///
+/// Signals are delivered outside the Tauri event loop, so without a handler the
+/// process dies on the default disposition with every cleanup step skipped,
+/// leaving any Trinity daemon this host spawned running. The handler performs
+/// the emergency cleanup (which kills that daemon) and then exits normally.
+fn install_termination_signal_handler(app: &tauri::AppHandle) {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut terminate = match signal(SignalKind::terminate()) {
+                Ok(stream) => stream,
+                Err(error) => {
+                    log::warn!("Cannot observe SIGTERM: {}", error);
+                    return;
+                }
+            };
+            let mut interrupt = match signal(SignalKind::interrupt()) {
+                Ok(stream) => stream,
+                Err(error) => {
+                    log::warn!("Cannot observe SIGINT: {}", error);
+                    return;
+                }
+            };
+            let signal = tokio::select! {
+                _ = terminate.recv() => "SIGTERM",
+                _ = interrupt.recv() => "SIGINT",
+            };
+            log::warn!("Desktop termination signal received: {signal}; running emergency cleanup");
+            crash_diagnostics::mark_clean_shutdown(signal);
+            perform_process_exit_cleanup_emergency();
+            app.exit(0);
+        });
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = app;
+    }
 }
 
 fn configure_workspace_search_daemon_env() -> Option<std::path::PathBuf> {
@@ -2589,7 +2713,7 @@ fn start_event_loop_with_transport(
     transport: Arc<TauriTransportAdapter>,
     session_event_journal: Arc<SessionEventJournal>,
 ) {
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         event_loop_driver(event_queue, event_router, |event| {
             let transport = transport.clone();
             let session_event_journal = session_event_journal.clone();
@@ -2607,7 +2731,7 @@ fn init_services(app_handle: tauri::AppHandle, default_log_level: log::LevelFilt
     spawn_runtime_log_level_listener(default_log_level);
     spawn_workspace_search_feature_listener(app_handle.clone());
 
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         let transport = Arc::new(TauriTransportAdapter::new(app_handle.clone()));
         let emitter = create_event_emitter(transport);
         let workspace_identity_watch_service = {
@@ -2664,7 +2788,7 @@ async fn resolve_runtime_log_level(default_level: log::LevelFilter) -> log::Leve
 fn spawn_runtime_log_level_listener(default_level: log::LevelFilter) {
     use openbitfun_core::service::config::{subscribe_config_updates, ConfigUpdateEvent};
 
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         if let Some(mut receiver) = subscribe_config_updates() {
             loop {
                 match receiver.recv().await {
@@ -2732,7 +2856,7 @@ fn spawn_workspace_search_feature_listener(app_handle: tauri::AppHandle) {
     let workspace_id = app_state.workspace_id.clone();
     let workspace_service = app_state.workspace_service.clone();
 
-    tokio::spawn(async move {
+    tauri::async_runtime::spawn(async move {
         let mut feature_enabled =
             openbitfun_core::service::search::workspace_search_feature_enabled().await;
 

@@ -1296,7 +1296,7 @@ describe('handleModelRoundStart', () => {
     expect(turn?.modelRounds[0]?.effectiveModelName).toBeUndefined();
   });
 
-  it('trims and stores model identity fields when present', async () => {
+  it('trims model identity fields and preserves explicit host grouping policy', async () => {
     createSessionWithTurn({
       id: 'turn-1',
       sessionId: 'session-1',
@@ -1319,6 +1319,7 @@ describe('handleModelRoundStart', () => {
       roundIndex: 0,
       modelConfigId: '  config-1  ',
       effectiveModelName: '  gpt-4o  ',
+      renderHints: { disableExploreGrouping: true },
     } as any);
 
     const turn = FlowChatStore.getInstance()
@@ -1330,6 +1331,7 @@ describe('handleModelRoundStart', () => {
     expect(turn?.modelRounds[0]).toMatchObject({
       modelConfigId: 'config-1',
       effectiveModelName: 'gpt-4o',
+      renderHints: { disableExploreGrouping: true, disableExploreGroupingSource: 'host' },
     });
   });
 });

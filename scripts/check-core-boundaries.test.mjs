@@ -216,7 +216,9 @@ test('Agent Runtime leaf capabilities have one managed feature and source contra
     'native-hook-runtime',
     'native-hook-settings',
   ]);
-  assert.equal(rule.consumers.size, 11);
+  // Stale on HEAD since `openbitfun-services-integrations` was registered as a
+  // consumer in the rules; the inventory just keeps count and rules in step.
+  assert.equal(rule.consumers.size, 12);
   assert.ok(rule.consumers.has('openbitfun-legacy-migration-adapters'));
   assert.ok(
     guardedEmptyInternalDefaultManifestPaths.includes(
@@ -3081,6 +3083,10 @@ test('third-party capability profiles reject ambient feature unions and unreview
       uses_default_features: false,
       features: ['vendored-libgit2'],
     }]),
+    packageAt('openbitfun-webdriver', 'src/crates/adapters/webdriver/Cargo.toml', [{
+      name: 'image', kind: null, optional: false, uses_default_features: false,
+      features: ['jpeg', 'png'],
+    }]),
   ];
 
   assert.deepEqual(findThirdPartyCapabilityFeatureViolations(validPackages), []);
@@ -3091,6 +3097,7 @@ test('third-party capability profiles reject ambient feature unions and unreview
   mutatedPackages[2].dependencies[0].features.push('rustls-tls-native-roots');
   mutatedPackages[3].dependencies[0].features.push('https');
   mutatedPackages[3].dependencies[0].rename = 'private-git2';
+  mutatedPackages[4].dependencies[0].features = ['png', 'webp'];
   mutatedPackages.push(packageAt('future-image-owner', 'src/apps/future/Cargo.toml', [{
     name: 'image',
     kind: null,
@@ -3107,6 +3114,8 @@ test('third-party capability profiles reject ambient feature unions and unreview
   assert.match(messages, /openbitfun-core Tokio Tungstenite dependency has unexpected features: rustls-tls-native-roots/);
   assert.match(messages, /openbitfun-services-core Git2 dependency has unexpected features: https/);
   assert.match(messages, /openbitfun-services-core Git2 dependency does not match its reviewed owner shape/);
+  assert.match(messages, /openbitfun-webdriver Image dependency missing features: jpeg/);
+  assert.match(messages, /openbitfun-webdriver Image dependency has unexpected features: webp/);
   assert.match(messages, /future-image-owner Image dependency is missing a reviewed owner profile/);
 });
 
@@ -3230,7 +3239,7 @@ test('resolved third-party feature unions reject global capability regressions',
 
   const mutated = structuredClone(validRecords);
   mutated[0].features.push('https', 'vendored-openssl');
-  mutated[2].features.push('exr');
+  mutated[2].features.push('unreviewed-codec');
   mutated[3].features.push('https', 'openssl-sys', 'vendored-openssl');
   mutated.push({
     name: 'image',
@@ -3242,7 +3251,7 @@ test('resolved third-party feature unions reject global capability regressions',
     { root: TEST_ROOT },
   ).map((violation) => violation.message).join('\n');
   assert.match(messages, /resolved git2.*https, vendored-openssl/);
-  assert.match(messages, /resolved image 0\.25\.10.*exr/);
+  assert.match(messages, /resolved image 0\.25\.10.*unreviewed-codec/);
   assert.match(messages, /resolved libgit2-sys.*https, openssl-sys, vendored-openssl/);
   assert.match(messages, /resolved image 0\.26\.0 uses an unreviewed version family/);
 });

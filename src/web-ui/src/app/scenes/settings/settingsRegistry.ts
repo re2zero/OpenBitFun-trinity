@@ -204,6 +204,19 @@ export const SETTINGS_PAGE_MANIFESTS: readonly SettingsPageManifest[] = [
     load: () => import('../../../infrastructure/config/components/MemorySettingsPage'),
   }),
   definePage({
+    id: 'ai.trinity',
+    categoryId: 'ai',
+    labelKey: 'navigation.pages.trinity.label',
+    descriptionKey: 'navigation.pages.trinity.description',
+    keywords: ['trinity', 'cognitive', 'psi', 'emotion', 'mindgraph', 'memory', 'awaken'],
+    namespaces: ['settings'],
+    searchPhrases: [
+      phrase('settings', 'navigation.pages.trinity.label'),
+      phrase('settings', 'navigation.pages.trinity.description'),
+    ],
+    load: () => import('../../../infrastructure/config/components/TrinityEngineConfig'),
+  }),
+  definePage({
     id: 'workspace.session',
     categoryId: 'workspace',
     labelKey: 'navigation.pages.sessionWorkspace.label',
@@ -283,8 +296,13 @@ export const SETTINGS_PAGE_MANIFESTS: readonly SettingsPageManifest[] = [
       {
         id: 'quick-actions',
         labelKey: 'navigation.views.quick-actions',
-        keywords: ['quick action', 'commit', 'pull request', 'post coding'],
-        searchPhrases: [phrase('settings/quick-actions', 'page.title'), phrase('settings/quick-actions', 'page.subtitle')],
+        keywords: ['quick action', 'commit', 'pull request', 'post coding', 'co-author', 'coauthor', 'attribution', 'github', 'https://github.com/bitfun-ai'],
+        searchPhrases: [
+          phrase('settings/quick-actions', 'page.title'),
+          phrase('settings/quick-actions', 'page.subtitle'),
+          phrase('settings/quick-actions', 'commitAttribution.title'),
+          phrase('settings/quick-actions', 'commitAttribution.label'),
+        ],
       },
       {
         id: 'hooks',

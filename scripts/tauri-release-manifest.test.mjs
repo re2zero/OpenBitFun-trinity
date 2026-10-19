@@ -87,6 +87,32 @@ test('1.0.0-beta manifest keeps the updater URL separate from the manual install
   assert.equal(verified.status, 0, verified.stderr);
 });
 
+test('updater manifest carries the version release notes for the update prompt', () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'openbitfun-release-notes-'));
+  const updater = path.join(temp, 'updater');
+  const out = path.join(temp, 'latest-v1.json');
+  const notes = path.join(temp, '1.0.3.md');
+  fs.mkdirSync(updater, { recursive: true });
+  fs.writeFileSync(path.join(updater, 'OpenBitFun_1.0.3_windows-x86_64-setup.exe'), 'setup');
+  fs.writeFileSync(path.join(updater, 'OpenBitFun_1.0.3_windows-x86_64-setup.exe.sig'), 'signature');
+  fs.writeFileSync(notes, '系统优化 AI 对话界面与整体性能，让对话更清晰、交互更流畅。\n');
+
+  const generated = run('scripts/generate-tauri-latest-json.mjs', [
+    '--assets-dir', updater,
+    '--version', '1.0.3',
+    '--tag', 'v1.0.3',
+    '--repo', 'GCWing/OpenBitFun',
+    '--notes-file', notes,
+    '--out', out,
+    '--required-platforms', 'windows-x86_64',
+  ]);
+  assert.equal(generated.status, 0, generated.stderr);
+  assert.equal(
+    JSON.parse(fs.readFileSync(out, 'utf8')).notes,
+    '系统优化 AI 对话界面与整体性能，让对话更清晰、交互更流畅。',
+  );
+});
+
 test('manifest declares the signed macOS .dmg installers next to the .app.tar.gz updater packages', (t) => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'openbitfun-latest-dmg-'));
   t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
@@ -294,7 +320,7 @@ test(`${version} Linux CLI and Relay manifests keep signed assets on the version
   const tag = `v${version}`;
   const assets = [];
   for (const target of ['x86_64-unknown-linux-gnu', 'aarch64-unknown-linux-gnu']) {
-    for (const name of [`openbitfun-cli-${version}-${target}.tar.gz`, `openbitfun-relay-server-${target}.tar.gz`]) {
+    for (const name of [`openbitfun-cli-${version}-${target}.tar.gz`, `openbitfun-relay-server-${target}.tar.gz`, `openbitfun-gpui-shell-${version}-${target}.tar.gz`]) {
       for (const suffix of ['', '.sha256', '.sig', '.sha256.sig']) {
         const filename = path.join(temp, name + suffix);
         fs.writeFileSync(filename, `fixture ${name}${suffix}`);
@@ -313,7 +339,7 @@ test(`${version} Linux CLI and Relay manifests keep signed assets on the version
   assert.equal(manifest.tag, tag);
   assert.deepEqual(Object.keys(manifest.platforms).sort(), ['linux-aarch64', 'linux-x86_64']);
   for (const platform of Object.values(manifest.platforms)) {
-    for (const artifact of [platform.cli, platform.relay]) {
+    for (const artifact of [platform.cli, platform.relay, platform.gpuiShell]) {
       assert.equal(artifact.url, `https://github.com/test-owner/OpenBitFun/releases/download/${tag}/${artifact.filename}`);
       assert.equal(artifact.sha256Url, `${artifact.url}.sha256`);
       assert.equal(artifact.sigUrl, `${artifact.url}.sig`);

@@ -1777,6 +1777,8 @@ impl ExecutionEngine {
                 None,
             )
             .await?;
+        // Optional host-level cognitive protocol (no-op when unregistered).
+        let system_prompt = super::cognitive_injector::decorate_system_prompt(system_prompt).await;
 
         Self::log_turn_prompt_scaffold(
             &input.context.session_id,
@@ -3814,6 +3816,25 @@ impl ExecutionEngine {
                 &send_prepended_reminders,
             )
             .await?;
+
+            // Optional per-turn cognitive state: prepend to the latest user
+            // message so the system prompt prefix stays byte-stable.
+            let latest_user_text = messages
+                .iter()
+                .rev()
+                .find(|message| message.role == MessageRole::User)
+                .map(|message| match &message.content {
+                    MessageContent::Text(text) => text.as_str(),
+                    MessageContent::Multimodal { text, .. } => text.as_str(),
+                    _ => "",
+                })
+                .unwrap_or("");
+            let ai_messages = super::cognitive_injector::decorate_latest_user_message(
+                ai_messages,
+                latest_user_text,
+                &context.dialog_turn_id,
+            )
+            .await;
 
             let round_lifecycle =
                 active_round_lifecycle.get_or_insert_with(ModelRoundLifecycle::new);

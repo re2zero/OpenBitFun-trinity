@@ -6,7 +6,11 @@ export const HOST_CAPABILITIES = [
   "config-contributors-v1",
   "config-contributions-v2",
   "generation-fencing-v1",
+  "ui-contributions-v1",
 ] as const
+export const UI_CONTRIBUTIONS_V1 = "ui-contributions-v1"
+export const MAX_UI_FILE_BYTES = 256 * 1024
+export const MAX_UI_SCENES = 8
 export const DEFAULT_MAX_FRAME_BYTES = 16 * 1024 * 1024
 export const MAX_MAX_FRAME_BYTES = 64 * 1024 * 1024
 export const MAX_STREAM_CHUNK_BYTES = 64 * 1024
@@ -192,6 +196,20 @@ export const HttpResponseSchema = z.object({
   headers: HeadersSchema,
   body: StreamDescriptorSchema.optional(),
 })
+export const UiEventPayloadSchema = z.union([
+  z.object({ kind: z.literal("text"), value: z.string() }),
+  z.object({ kind: z.literal("number"), value: z.number() }),
+  z.object({ kind: z.literal("boolean"), value: z.boolean() }),
+])
+export const UiPluginRefSchema = z.object({
+  id: z.string().optional(),
+  spec: z.string().min(1),
+})
+export const UiRegistrationSchema = z.object({
+  plugin: PluginMetaSchema,
+  contributions: JsonValueSchema,
+  files: z.record(z.string(), z.string()),
+})
 
 type MethodDefinition = { params: z.ZodType; result: z.ZodType }
 type MethodDefinitions = Record<string, MethodDefinition>
@@ -256,6 +274,7 @@ export const HostMethodSchemas = {
       auth: z.array(AuthRegistrationSchema),
       providers: z.array(ProviderRegistrationSchema),
       workspaces: z.array(WorkspaceRegistrationSchema),
+      ui: z.array(UiRegistrationSchema),
       gatewayURL: z.string().url(),
     }),
   },
@@ -419,6 +438,36 @@ export const HostMethodSchemas = {
       ]),
     }),
   },
+  "host.ui.describe": {
+    params: z.object({
+      instanceID: z.string().min(1),
+      generationKey: z.string().min(1).optional(),
+      revision: z.string().min(1).optional(),
+    }),
+    result: z.object({
+      instanceID: z.string().min(1).optional(),
+      generationKey: z.string().min(1).optional(),
+      revision: z.string().min(1).optional(),
+      ui: z.array(UiRegistrationSchema),
+    }),
+  },
+  "host.ui.event": {
+    params: z.object({
+      instanceID: z.string().min(1),
+      generationKey: z.string().min(1).optional(),
+      revision: z.string().min(1).optional(),
+      plugin: UiPluginRefSchema,
+      sceneID: z.string().min(1),
+      action: z.string().min(1),
+      payload: UiEventPayloadSchema.optional(),
+    }),
+    result: z.object({
+      instanceID: z.string().min(1).optional(),
+      generationKey: z.string().min(1).optional(),
+      revision: z.string().min(1).optional(),
+      tree: JsonValueSchema.nullable(),
+    }),
+  },
   "host.stream.read": { params: StreamReadParamsSchema, result: StreamReadResultSchema },
   "host.stream.cancel": { params: StreamCancelParamsSchema, result: CancelResultSchema },
 } satisfies MethodDefinitions
@@ -498,3 +547,5 @@ export type StreamDescriptor = z.infer<typeof StreamDescriptorSchema>
 export type StreamReadParams = z.infer<typeof StreamReadParamsSchema>
 export type StreamReadResult = z.infer<typeof StreamReadResultSchema>
 export type RpcErrorObject = z.infer<typeof RpcErrorObjectSchema>
+export type UiEventPayload = z.infer<typeof UiEventPayloadSchema>
+export type UiRegistration = z.infer<typeof UiRegistrationSchema>

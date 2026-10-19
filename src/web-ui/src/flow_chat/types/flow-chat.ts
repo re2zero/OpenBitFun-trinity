@@ -189,6 +189,8 @@ export interface ModelRoundRenderHints {
    * collapsible tools and adjacent narrative into an explore group.
    */
   disableExploreGrouping?: boolean;
+  /** Explicit host policy; absent on older retry-derived hints. */
+  disableExploreGroupingSource?: 'host';
 }
 
 export interface ModelRoundAttempt {

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { cpSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
@@ -95,4 +95,55 @@ test('product and data identities reject display names and path fragments', () =
     () => resolveProductDefinition({ rootDir: ROOT, productConfig: config, member: 'cli' }),
     (error) => error instanceof ProductDefinitionError && error.code === 'invalid_stable_id',
   );
+});
+
+
+test('gui host defaults to tauri and travels into the desktop assembly only', () => {
+  const openbitfun = resolveProductDefinition({ rootDir: ROOT, member: 'desktop' });
+  assert.equal(openbitfun.assembly.guiHost, 'tauri', 'definitions without the field keep the historical delivery');
+
+  const acmeCli = resolveProductDefinition({ rootDir: ROOT, productConfig: ACME, member: 'cli' });
+  assert.equal(acmeCli.assembly.guiHost, undefined, 'GUI host is a GUI fact, not a CLI one');
+  assert.equal(resolveProductDefinition({ rootDir: ROOT, productConfig: ACME, member: 'desktop' }).assembly.guiHost, 'tauri');
+});
+
+test('a registered non-default gui host resolves and changes the assembly digest', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'openbitfun-product-gpui-host-'));
+  cpSync(join(ROOT, 'products', 'fixtures', 'acme', 'locales'), join(directory, 'locales'), {
+    recursive: true,
+  });
+  const source = readFileSync(ACME, 'utf8').replace('"guiHost": "tauri"', '"guiHost": "gpui-shell"');
+  const config = join(directory, 'product.jsonc');
+  writeFileSync(config, source, 'utf8');
+  try {
+    const gpui = resolveProductDefinition({ rootDir: ROOT, productConfig: config, member: 'desktop' });
+    assert.equal(gpui.assembly.guiHost, 'gpui-shell');
+    assert.notEqual(gpui.assembly.assemblyDigest, resolveProductDefinition({ rootDir: ROOT, productConfig: ACME, member: 'desktop' }).assembly.assemblyDigest);
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
+});
+
+test('unregistered or malformed gui host ids fail the build', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'openbitfun-product-bad-host-'));
+  cpSync(join(ROOT, 'products', 'fixtures', 'acme', 'locales'), join(directory, 'locales'), {
+    recursive: true,
+  });
+  const write = (replacement) => {
+    const config = join(directory, `product-${Math.random().toString(36).slice(2)}.jsonc`);
+    writeFileSync(config, readFileSync(ACME, 'utf8').replace('"guiHost": "tauri"', replacement), 'utf8');
+    return config;
+  };
+  try {
+    assert.throws(
+      () => resolveProductDefinition({ rootDir: ROOT, productConfig: write('"guiHost": "ghost-ui"'), member: 'desktop' }),
+      (error) => error instanceof ProductDefinitionError && error.code === 'unknown_gui_host',
+    );
+    assert.throws(
+      () => resolveProductDefinition({ rootDir: ROOT, productConfig: write('"guiHost": "GPUI-Shell"'), member: 'desktop' }),
+      (error) => error instanceof ProductDefinitionError && error.code === 'invalid_stable_id',
+    );
+  } finally {
+    rmSync(directory, { force: true, recursive: true });
+  }
 });

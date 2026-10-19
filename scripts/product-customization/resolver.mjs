@@ -17,7 +17,17 @@ const ROOT_FIELDS = new Set([
 ]);
 const MEMBERS_FIELDS = new Set(['desktop', 'cli']);
 const COMMON_MEMBER_FIELDS = new Set(['displayNameKey', 'binaryName']);
-const BUNDLED_MEMBER_FIELDS = new Set([...COMMON_MEMBER_FIELDS, 'bundleId']);
+const BUNDLED_MEMBER_FIELDS = new Set([...COMMON_MEMBER_FIELDS, 'bundleId', 'guiHost']);
+
+// Registered GUI hosts (blueprint §7: the product definition may only select
+// registered shell IDs, never component paths). An ID may be added here only
+// together with the packaging adapter that actually consumes it; a definition
+// naming anything else fails the build.
+const DEFAULT_GUI_HOST = 'tauri';
+const REGISTERED_GUI_HOSTS = new Map([
+  ['tauri', 'Tauri desktop delivery (web-ui in the Tauri WebView); scripts/desktop-tauri-build.mjs'],
+  ['gpui-shell', 'Native GPUI shell delivery (openbitfun-gpui-shell); scripts/gpui-shell-package.mjs'],
+]);
 
 export class ProductDefinitionError extends Error {
   constructor(code, message, action) {
@@ -198,7 +208,20 @@ function validateMember(raw, member) {
     displayNameKey: requiredString(value.displayNameKey, `${owner}.displayNameKey`),
     binaryName: binaryName(value.binaryName, `${owner}.binaryName`),
   };
-  if (bundled) result.bundleId = bundleId(value.bundleId, `${owner}.bundleId`);
+  if (bundled) {
+    result.bundleId = bundleId(value.bundleId, `${owner}.bundleId`);
+    // Absent keeps the historical default so existing definitions keep
+    // resolving to the same delivery they always did.
+    const host = value.guiHost === undefined ? DEFAULT_GUI_HOST : stableId(value.guiHost, `${owner}.guiHost`);
+    if (!REGISTERED_GUI_HOSTS.has(host)) {
+      fail(
+        'unknown_gui_host',
+        `${owner}.guiHost "${host}" is not a registered GUI host.`,
+        `Use one of: ${[...REGISTERED_GUI_HOSTS.keys()].join(', ')}.`,
+      );
+    }
+    result.guiHost = host;
+  }
   return result;
 }
 
@@ -286,6 +309,7 @@ export function resolveProductDefinition({ rootDir, productConfig, member }) {
     fallbackLocale: locales.fallbackLocale,
   };
   if (selected.bundleId) assemblyContent.bundleId = selected.bundleId;
+  if (member === 'desktop') assemblyContent.guiHost = selected.guiHost;
   const assembly = { ...assemblyContent, assemblyDigest: sha256(canonicalJson(assemblyContent)) };
   return {
     rootDir: canonicalRoot,

@@ -1,0 +1,200 @@
+/**
+ * Trinity cognitive engine API.
+ *
+ * Thin wrappers over the `trinity_*` Tauri commands. Every call forwards to
+ * the `trinityd` daemon via the desktop host; the daemon owns all cognitive
+ * state. All methods degrade to a thrown error when the daemon is offline.
+ */
+
+import { api } from './ApiClient';
+import { createTauriCommandError } from '../errors/TauriCommandError';
+
+/** One tool exposed by the cognitive framework group. */
+export interface CognitiveFrameworkTool {
+  name: string;
+  description: string;
+}
+
+/** Core cognitive being read from the engine-owned identity registry. */
+export interface CoreBeingInfo {
+  id: string;
+  name: string;
+  userName: string;
+  persona: string;
+  awakened: boolean;
+  awakenedAt: number | null;
+  createdAt: number;
+  soulExcerpt: string;
+}
+
+/**
+ * Cognitive framework group: the registered cognitive tools, the live PSI state
+ * and the core being. `cognitiveState` mirrors `getCognitiveState()`.
+ */
+export interface CognitiveFrameworkInfo {
+  id: string;
+  tools: CognitiveFrameworkTool[];
+  cognitiveState: Record<string, unknown> | null;
+  being: CoreBeingInfo | null;
+}
+
+export class TrinityAPI {
+  private async invoke(command: string, params: Record<string, unknown> = {}): Promise<any> {
+    try {
+      // Tauri binds JS args by Rust parameter name: the commands take
+      // `request: Option<TrinityRequest>` with an inner `params` object.
+      return await api.invoke(command, { request: { params } });
+    } catch (error) {
+      throw createTauriCommandError(command, error, params);
+    }
+  }
+
+  // ── Cognitive state ────────────────────────────────────────────
+
+  async getCognitiveState(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_get_cognitive_state', params);
+  }
+
+  async express(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_express', params);
+  }
+
+  async selfPerception(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_self_perception', params);
+  }
+
+  async getStatus(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_get_status', params);
+  }
+
+  async cognitionHistory(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_cognition_history', params);
+  }
+
+  // ── Memory (MindGraph) ─────────────────────────────────────────
+
+  async memoryTimeline(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_memory_timeline', params);
+  }
+
+  async memoryStats(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_memory_stats', params);
+  }
+
+  async recallMemory(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_recall_memory', params);
+  }
+
+  async memorize(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_memorize', params);
+  }
+
+  async forgetMemory(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_forget_memory', params);
+  }
+
+  async reinforceMemory(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_reinforce_memory', params);
+  }
+
+  /**
+   * Export the whole MindGraph as a trinity-graph container (F5/T10). The
+   * path comes from a host save dialog; the daemon writes the file.
+   */
+  async memoryExport(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_memory_export', params);
+  }
+
+  /**
+   * Import a trinity-graph container (F5/T10). A being_id mismatch is
+   * rejected with both ids in the error; retry with confirm_being_id: true
+   * after explicit user confirmation.
+   */
+  async memoryImport(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_memory_import', params);
+  }
+
+  // ── Cloud memory ───────────────────────────────────────────────
+
+  async cloudStatus(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_cloud_status', params);
+  }
+
+  async cloudSignup(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_cloud_signup', params);
+  }
+
+  async cloudLogin(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_cloud_login', params);
+  }
+
+  async cloudSetupKey(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_cloud_setup_key', params);
+  }
+
+  async cloudSyncNow(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_cloud_sync_now', params);
+  }
+
+  async cloudBackup(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_cloud_backup', params);
+  }
+
+  async cloudRestore(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_cloud_restore', params);
+  }
+
+  // ── Morning report ─────────────────────────────────────────────
+
+  /**
+   * Today's morning report (date/greeting/last-night thoughts/urges). The
+   * daemon lazily generates it on the first pull of the day and keeps it
+   * idempotent per calendar date; a past date is query-only.
+   */
+  async morningReport(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_morning_report', params);
+  }
+
+  // ── Awakening ceremony ─────────────────────────────────────────
+
+  async awaken(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_awaken', params);
+  }
+
+  // ── Cognitive engine LLM config ────────────────────────────────
+
+  async llmGetConfig(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_llm_get_config', params);
+  }
+
+  async llmSetConfig(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_llm_set_config', params);
+  }
+
+  async llmTestConnection(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_llm_test_connection', params);
+  }
+
+  // ── Shutdown ───────────────────────────────────────────────────
+
+  async shutdown(params: Record<string, unknown> = {}): Promise<any> {
+    return this.invoke('trinity_shutdown', params);
+  }
+
+  // ── Cognitive framework ────────────────────────────────────────
+
+  /**
+   * Cognitive framework group (tools + live state + core being). Returns null
+   * while the daemon or the identity registry is unreadable, so callers can
+   * render the rest of the console with the section omitted.
+   */
+  async getCognitiveFrameworkInfo(): Promise<CognitiveFrameworkInfo | null> {
+    try {
+      return (await api.invoke('get_cognitive_framework_info')) as CognitiveFrameworkInfo;
+    } catch {
+      return null;
+    }
+  }
+}
+
+export const trinityAPI = new TrinityAPI();

@@ -55,6 +55,7 @@ export function explainProduct(resolution) {
     member: resolution.assembly.member,
     binaryName: resolution.assembly.binaryName,
     bundleId: resolution.assembly.bundleId,
+    guiHost: resolution.assembly.guiHost,
     localizedNames: resolution.productNames,
     localeDigest: resolution.assembly.localeDigest,
     assemblyDigest: resolution.assembly.assemblyDigest,

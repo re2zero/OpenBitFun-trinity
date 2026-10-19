@@ -49,6 +49,7 @@ const TodosScene      = lazyWithRecovery(() => import('./todos/TodosScene'));
 const InsightsScene   = lazyWithRecovery(() => import('./my-agent/InsightsScene'));
 const ShellScene      = lazyWithRecovery(() => import('./shell/ShellScene'));
 const MiniAppScene    = lazyWithRecovery(() => import('./miniapps/MiniAppScene'));
+const TrinityScene    = lazyWithRecovery(() => import('./trinity/TrinityScene'));
 
 const SCENE_ENTRY_DURATION_MS = 480;
 const EMPTY_SCENE_ID = '__empty-scene__' as const;
@@ -328,6 +329,8 @@ function renderScene(
       return <BrowserScene />;
     case 'assistant':
       return <AssistantScene />;
+    case 'trinity':
+      return <TrinityScene />;
     case 'todos':
       return <TodosScene />;
     case 'insights':

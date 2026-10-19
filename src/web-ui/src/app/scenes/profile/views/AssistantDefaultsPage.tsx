@@ -43,7 +43,11 @@ import { useI18n } from '@/infrastructure/i18n';
 import { notificationService } from '@/shared/notification-system';
 import type { ToolInfo } from '@/shared/types/agent-api';
 import { createLogger } from '@/shared/utils/logger';
-import { isUserSelectableToolName } from '@/shared/utils/toolVisibility';
+import { trinityAPI } from '@/infrastructure/api';
+import {
+  COGNITIVE_FRAMEWORK_TOOL_ID,
+  isUserSelectableToolName,
+} from '@/shared/utils/toolVisibility';
 import { useNurseryStore } from '../nurseryStore';
 import {
   differsFromProductDefault,
@@ -155,7 +159,27 @@ const AssistantDefaultsPage: React.FC = () => {
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [detail, setDetail] = useState<TemplateDetail | null>(null);
   const [detailOpen, setDetailOpen] = useState(false);
+  // Tool names the cognitive framework group expands to, read from the host
+  // when the group's detail panel opens (null = not loaded yet).
+  const [cognitiveFrameworkTools, setCognitiveFrameworkTools] = useState<string[] | null>(null);
   const loadRequestIdRef = useRef(0);
+
+  // The framework row owns one group id, so its detail panel is the only place
+  // that lists the concrete tools the switch enables. Read once, on demand.
+  useEffect(() => {
+    const isFrameworkDetail = detailOpen
+      && detail?.type === 'tool'
+      && detail.tool.name === COGNITIVE_FRAMEWORK_TOOL_ID;
+    if (!isFrameworkDetail || cognitiveFrameworkTools !== null) return undefined;
+    let cancelled = false;
+    void (async () => {
+      const info = await trinityAPI.getCognitiveFrameworkInfo();
+      if (!cancelled) setCognitiveFrameworkTools(info?.tools.map((tool) => tool.name) ?? []);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [cognitiveFrameworkTools, detail, detailOpen]);
 
   // Distinguish "host doesn't expose a catalog" / "read failed" / "really no
   // tools" so the UI doesn't collapse all three into an empty list. See #2428 #5.
@@ -382,8 +406,23 @@ const AssistantDefaultsPage: React.FC = () => {
   }, [assistantModeConfig, getMcpStatusLabel, mcpServers, t]);
 
   const builtinRows = useMemo(
-    () => builtinTools.map((tool) => buildToolRow(tool, false)),
-    [buildToolRow, builtinTools],
+    () => {
+      // The cognitive framework is one group id, not five loose tools: render
+      // it as a single row so it stays visible and switchable.
+      const cognitiveFrameworkTool: ToolInfo = {
+        name: COGNITIVE_FRAMEWORK_TOOL_ID,
+        description: t('nursery.template.cognitiveFrameworkHint'),
+        input_schema: {},
+        is_readonly: true,
+        is_concurrency_safe: false,
+      };
+      const cognitiveFrameworkRow = {
+        ...buildToolRow(cognitiveFrameworkTool, false),
+        name: t('nursery.template.cognitiveFramework'),
+      };
+      return [cognitiveFrameworkRow, ...builtinTools.map((tool) => buildToolRow(tool, false))];
+    },
+    [buildToolRow, builtinTools, t],
   );
   const mcpRows = useMemo(
     () => mcpTools.map((tool) => buildToolRow(tool, true)),
@@ -985,6 +1024,16 @@ const AssistantDefaultsPage: React.FC = () => {
             <p className="assistant-defaults-detail__permission-hint">{row.accessHint}</p>
           </div>
         </FormSection>
+        {detail.type === 'tool' && detail.tool.name === COGNITIVE_FRAMEWORK_TOOL_ID
+          && (cognitiveFrameworkTools?.length ?? 0) > 0 && (
+            <FormSection headingAs="h3" title={t('nursery.template.detailSections.cognitiveTools')}>
+              <ul className="assistant-defaults-detail__tool-list">
+                {cognitiveFrameworkTools?.map((toolName) => (
+                  <li key={toolName}>{toolName}</li>
+                ))}
+              </ul>
+            </FormSection>
+          )}
       </>
     ));
   };

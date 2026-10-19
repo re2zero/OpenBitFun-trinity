@@ -7,6 +7,12 @@
  * the exact data-directory ignore entry and the one-time migration documents,
  * migrator app/service boundary, and fixtures used for in-place upgrades.
  *
+ * Saved insights reports persist their OPENBITFUN.md additions under a key
+ * spelled with the retired token. Those files stay on disk across an upgrade,
+ * so the report reader has to name that key; it is on-disk data spelling, not
+ * product identity. Lines whose only retired token sits inside the legacy
+ * insights report key stay allowed.
+ *
  * The retired token also survives inside two external GitHub identifiers that
  * must keep their published spelling: the committed-by attribution email and
  * the organization profile URL. Those are allowed only as whole-line matches
@@ -84,6 +90,26 @@ function isExternalAttributionOnlyLine(lineText) {
   return !new RegExp(retiredProductPatternSource, 'iu').test(remaining);
 }
 
+/**
+ * The insights report persists its OPENBITFUN.md additions under a key that
+ * embeds the retired token (reports written before the rename keep that
+ * spelling on disk). Reading those reports has to name the key; only lines
+ * whose retired tokens all sit inside that key are allowed.
+ */
+function isLegacyInsightsReportKeyOnlyLine(lineText) {
+  if (typeof lineText !== 'string') {
+    return false;
+  }
+
+  const legacyInsightsReportKey = `${retiredProductToken}_md_additions`;
+  if (!lineText.includes(legacyInsightsReportKey)) {
+    return false;
+  }
+
+  const remaining = lineText.split(legacyInsightsReportKey).join('');
+  return !new RegExp(retiredProductPatternSource, 'iu').test(remaining);
+}
+
 const identityRules = Object.freeze([
   Object.freeze({
     id: 'noncanonical-openbitfun-casing',
@@ -108,7 +134,8 @@ const identityRules = Object.freeze([
         return true;
       }
       return location.location === 'content'
-        && isExternalAttributionOnlyLine(location.lineText);
+        && (isExternalAttributionOnlyLine(location.lineText)
+          || isLegacyInsightsReportKeyOnlyLine(location.lineText));
     },
     allowedFiles: retiredIdentityDataBoundaryFiles,
     allowedFilePrefixes: retiredIdentityDataBoundaryPrefixes,

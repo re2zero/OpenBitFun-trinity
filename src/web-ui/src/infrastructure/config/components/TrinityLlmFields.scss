@@ -1,0 +1,60 @@
+.openbitfun-trinity-llm-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--openbitfun-space-3);
+
+  &__presets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--openbitfun-space-2);
+  }
+
+  &__preset {
+    border: 1px solid var(--openbitfun-color-border-default);
+    border-radius: var(--openbitfun-radius-md);
+    background: transparent;
+    color: var(--openbitfun-color-content-primary);
+    cursor: pointer;
+    font-size: var(--openbitfun-type-label-sm-font-size);
+    padding: var(--openbitfun-space-1) var(--openbitfun-space-3);
+
+    &:hover {
+      border-color: var(--openbitfun-color-border-strong);
+    }
+
+    &.is-active {
+      border-color: var(--openbitfun-color-accent-default);
+      color: var(--openbitfun-color-accent-default);
+    }
+  }
+
+  &__field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--openbitfun-space-1);
+
+    span {
+      color: var(--openbitfun-color-content-muted);
+      font-size: var(--openbitfun-type-label-sm-font-size);
+    }
+  }
+
+  &__actions {
+    align-items: center;
+    display: flex;
+    gap: var(--openbitfun-space-3);
+  }
+
+  &__test-result {
+    font-size: var(--openbitfun-type-body-sm-font-size);
+    word-break: break-word;
+
+    &.is-ok {
+      color: var(--openbitfun-color-status-success-content);
+    }
+
+    &.is-fail {
+      color: var(--openbitfun-color-status-danger-content);
+    }
+  }
+}

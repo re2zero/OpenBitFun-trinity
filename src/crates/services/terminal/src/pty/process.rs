@@ -40,6 +40,9 @@ mod shutdown {
     pub(super) const EXIT_CONFIRM_TIMEOUT_MS: u64 = 5_000;
     /// Poll interval while confirming termination after a kill request.
     pub(super) const EXIT_CONFIRM_POLL_MS: u64 = 10;
+    /// Interval for noticing a process that exited on its own (no command and
+    /// no PTY EOF event precedes it).
+    pub(super) const EXIT_POLL_MS: u64 = 250;
 }
 
 /// Resize constants for Windows ConPTY
@@ -482,7 +485,33 @@ pub fn spawn_pty(
         #[cfg(windows)]
         let mut delayed_resize_triggered = false;
 
-        while let Some(cmd) = command_rx.recv().await {
+        // Nothing else observes the child: a shell that exits on its own
+        // (Ctrl+D, `exit`) would otherwise never surface as an exit at all.
+        // Poll it alongside the command channel and report the real code.
+        let mut exit_poll =
+            tokio::time::interval(tokio::time::Duration::from_millis(shutdown::EXIT_POLL_MS));
+        exit_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+        loop {
+            let cmd = tokio::select! {
+                cmd = command_rx.recv() => match cmd {
+                    Some(cmd) => cmd,
+                    None => break,
+                },
+                _ = exit_poll.tick() => {
+                    match child.try_wait() {
+                        Ok(Some(status)) => {
+                            has_exited_cmd.store(true, Ordering::Relaxed);
+                            let _ = event_tx.try_send(PtyEvent::Exit {
+                                exit_code: Some(status.exit_code()),
+                            });
+                            break;
+                        }
+                        // Still running, or a transient wait error: keep serving.
+                        _ => continue,
+                    }
+                }
+            };
             match cmd {
                 InternalCommand::Write(data) => {
                     if let Ok(mut writer_guard) = writer.lock() {

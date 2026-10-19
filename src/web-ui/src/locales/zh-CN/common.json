@@ -86,7 +86,8 @@
       "terminal": "Shell",
       "git": "Git",
       "miniApps": "小应用",
-      "insights": "洞察"
+      "insights": "洞察",
+      "trinity": "元一"
     },
     "tooltips": {
       "persona": "智能成员 — 展开查看基于角色和记忆的成员会话",
@@ -1548,7 +1549,8 @@
     "assistant": "$t(shared:agents.Claw)",
     "todos": "任务看板",
     "shell": "Shell",
-    "panelView": "面板视图"
+    "panelView": "面板视图",
+    "trinity": "认知体"
   },
   "sceneBar": {
     "tabsLabel": "场景标签页",
@@ -2040,6 +2042,193 @@
     "nextMonth": "下个月",
     "now": "此刻",
     "close": "关闭"
+  },
+  "trinity": {
+    "being": {
+      "title": "认知体",
+      "expand": "展开认知体",
+      "collapse": "收起认知体",
+      "state": "认知状态",
+      "offlineHint": "认知引擎离线",
+      "awakenAction": "开始觉醒仪式",
+      "cloudMemory": "云端记忆",
+      "cloudMemoryHint": "注册 / 登录",
+      "comingSoon": "即将上线",
+      "openPanel": "打开完整面板"
+    },
+    "phase": {
+      "offline": "未连接",
+      "dormant": "待觉醒",
+      "awake": "已觉醒"
+    },
+    "emotion": {
+      "positive_high": "雀跃",
+      "positive_mild": "舒展",
+      "neutral": "平静",
+      "curious": "好奇",
+      "confused": "困惑",
+      "negative_mild": "低落",
+      "negative_high": "沮丧"
+    },
+    "focus": {
+      "respond": "应答",
+      "reflect": "反思",
+      "explore": "探索中",
+      "plan": "规划",
+      "idle": "待命"
+    },
+    "needs": {
+      "competence": "胜任",
+      "autonomy": "自主",
+      "relatedness": "归属",
+      "certainty": "确定",
+      "growth": "成长"
+    },
+    "memory": {
+      "reinforce": "强化",
+      "forget": "遗忘",
+      "forgetConfirm": "再点一次确认遗忘",
+      "searchPlaceholder": "搜索记忆…",
+      "backToTimeline": "返回时间线",
+      "addMemory": "添加记忆",
+      "addContentPlaceholder": "写下要记住的事…",
+      "addProject": "项目（可选）",
+      "addSubmit": "保存",
+      "loadEarlier": "加载更早",
+      "noMore": "已到最早",
+      "searchResults": "搜索结果",
+      "noSearchResults": "没有匹配的记忆。",
+      "editSave": "保存修正",
+      "editSaving": "保存中…",
+      "edited": "修正已生效。",
+      "editNotFound": "原记忆已不存在（可能已被遗忘）。",
+      "export": "导出",
+      "exportDone": "已导出 {{nodes}} 条记忆、{{triples}} 条关联 → {{path}}",
+      "import": "导入",
+      "importDone": "已导入，新增 {{added}} 条记忆。",
+      "importConfirmTitle": "跨身份记忆迁移",
+      "importConfirmMessage": "这个记忆容器属于「{{container}}」，而本机认知体是「{{local}}」。合并会把另一段人生的记忆迁入本机。确认继续？",
+      "importConfirm": "确认合并"
+    },
+    "status": {
+      "title": "认知状态",
+      "online": "在线",
+      "offline": "离线",
+      "unknown": "未知",
+      "unavailable": "Trinity 认知引擎不可用。请启动 trinityd 或检查 daemon 端口。",
+      "confidence": "置信度",
+      "needs": "需求",
+      "memory": "记忆",
+      "memoryNodes": "{{count}} 节点",
+      "memoryTriples": "{{count}} 三元组",
+      "vocabulary": "{{count}} 词表",
+      "openPanel": "打开面板",
+      "awaken": "觉醒"
+    },
+    "scene": {
+      "title": "唤醒",
+      "subtitle": "认知体 — PSI 状态、记忆与觉醒",
+      "refresh": "刷新",
+      "awakenTitle": "觉醒仪式",
+      "awakenDescription": "认知体尚未觉醒。运行仪式为其命名并建立羁绊。",
+      "awakenName": "银月",
+      "awakenNameLabel": "认知体名称",
+      "awakenUserNameLabel": "你的称呼",
+      "awakenPersonaLabel": "人格",
+      "userName": "公子",
+      "persona": {
+        "dolores": "多洛丽丝 — 温暖共情",
+        "arnold": "阿诺德 — 直率果断",
+        "sage": "智者 — 沉稳睿智",
+        "guardian": "守护者 — 忠诚守护",
+        "explorer": "探索者 — 好奇探索",
+        "neutral": "中性 — 均衡默认"
+      },
+      "awaken": "觉醒",
+      "awakening": "觉醒中…",
+      "memoryTimeline": "她的日记",
+      "noMemories": "暂无记忆。",
+      "trend": "认知趋势",
+      "awakenFailed": "觉醒失败：{{message}}",
+      "createIdentityTitle": "创建身份",
+      "createIdentityDescription": "认知体在当前工作区中没有身份（例如重置工作区后）。可根据认知引擎中保存的唤醒身份重建主助理。",
+      "createIdentity": "创建身份",
+      "creatingIdentity": "创建中…",
+      "createIdentityConfirmTitle": "创建认知体身份？",
+      "createIdentityConfirmMessage": "这会向认知体工作区写入 IDENTITY.md、SOUL.md、USER.md，并将其设为主助理，同时覆盖当前的人格文件。",
+      "createIdentityMissingIdentity": "认知引擎未返回唤醒名称，请先连接后再创建身份。",
+      "createIdentityFailed": "创建身份失败：{{message}}"
+    },
+    "cloud": {
+      "title": "云端记忆",
+      "desc": "记忆端到端加密后同步，服务端不可读。账号密码 ≠ 记忆口令。",
+      "userId": "账号",
+      "password": "密码",
+      "signup": "注册并绑定设备",
+      "login": "登录并绑定设备",
+      "toLogin": "已有账号？去登录",
+      "toSignup": "没有账号？去注册",
+      "keyDesc": "设置记忆口令（至少 8 位）以包裹主密钥。遗忘口令 = 云端记忆永久丢失，无后门。",
+      "passphrase": "记忆口令",
+      "setupKey": "启用云端加密",
+      "syncNow": "立即同步",
+      "backup": "备份快照",
+      "restore": "从云端恢复",
+      "pendingOps": "{{count}} 条待同步",
+      "engineRunning": "同步引擎运行中",
+      "engineStopped": "同步引擎未运行（重启认知引擎后接管）",
+      "unavailable": "云端记忆状态不可用（daemon 可能未启用云同步）。"
+    },
+    "morning": {
+      "title": "晨报",
+      "overnight": "昨夜整理（{{date}}）",
+      "thoughts": "昨夜的想法（{{count}}）",
+      "urges": "未竟之事（{{count}}）",
+      "unavailable": "暂时取不到晨报。",
+      "notifyTitle": "{{name}} 的晨报",
+      "notifyBody": "她为你准备好了今天的晨报。"
+    },
+    "personaShort": {
+      "dolores": "多洛丽丝",
+      "arnold": "阿诺德",
+      "sage": "智者",
+      "guardian": "守护者",
+      "explorer": "探索者",
+      "neutral": "中性"
+    },
+    "profile": {
+      "birthday": "生日"
+    },
+    "framework": {
+      "chip": "认知框架 · {{count}} 个工具"
+    },
+    "onboarding": {
+      "welcome": "在开始之前，为她取一个名字。这个名字将出现在她所有的记忆与对话里。",
+      "personaHint": "选择人格预设——它塑造她回应世界的方式。",
+      "ownerHint": "她会如何称呼你？",
+      "llmHint": "连接一个大模型作为她的思维。可以留空，稍后在设置中配置。",
+      "steps": {
+        "identity": "命名",
+        "persona": "人格",
+        "owner": "认主",
+        "llm": "思维"
+      },
+      "personaDesc": {
+        "dolores": "共情你的情绪，先接住感受再解决问题。",
+        "arnold": "直来直往，给结论也给理由。",
+        "sage": "沉稳克制，想得深也说得少。",
+        "guardian": "谨慎保守，把你的安全和边界放在第一位。",
+        "explorer": "好奇心旺盛，喜欢和你一起试新东西。",
+        "neutral": "均衡默认，不过分偏向任何一种风格。"
+      },
+      "begin": "开始觉醒",
+      "next": "下一步",
+      "back": "上一步",
+      "later": "稍后再说",
+      "completeTitle": "{{name}} 醒了",
+      "completeMessage": "她的记忆与情感将在认知周期中持续成长。",
+      "enter": "开始对话"
+    }
   },
   "computerControl": {
     "title": "应用控制",

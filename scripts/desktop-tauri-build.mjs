@@ -14,6 +14,7 @@ import {
   writeFileSync,
 } from 'fs';
 import { ensureFlashgrepBinary } from './prepare-flashgrep-resource.mjs';
+import { configureLinuxOcrAbiLinkage } from './prepare-linux-ocr-abi.mjs';
 import { extractProductConfigArg } from './product-customization/cli.mjs';
 import { productBuildEnvironment } from './product-customization/projections.mjs';
 import { resolveProductDefinition } from './product-customization/resolver.mjs';
@@ -55,6 +56,9 @@ async function main() {
     desktopDir,
   );
   process.env.FLASHGREP_DAEMON_BIN = flashgrepBinary;
+  // The deb declares its leptonica runtime dependency by package name, so the
+  // link step has to follow that generation instead of the build host's.
+  configureLinuxOcrAbiLinkage({ target: optionValue(forward, '--target') });
   // Tauri CLI reads CI and rejects numeric "1" (common in CI providers).
   process.env.CI = 'true';
   if (process.platform === 'darwin' && requestsDmgBundle(forward)) {
@@ -119,7 +123,7 @@ async function main() {
   process.exit(r.status ?? 1);
 }
 
-function rustHostTargetTriple() {
+export function rustHostTargetTriple() {
   const result = spawnSync('rustc', ['-vV'], {
     cwd: ROOT,
     encoding: 'utf8',
@@ -313,6 +317,17 @@ export function prepareTauriConfig(
   baseConfigPath,
   { desktopDir, flashgrepBinary, resolution, releaseChannel }
 ) {
+  // The product definition picks the default GUI host (blueprint §7). This
+  // script produces the Tauri delivery, so a definition pointing elsewhere is
+  // a wrong-package build, not a silent one; the override exists to produce
+  // the fallback delivery after a default switch.
+  const guiHost = resolution?.assembly?.guiHost;
+  if (guiHost && guiHost !== 'tauri' && process.env.OPENBITFUN_ALLOW_NONDEFAULT_GUI_HOST !== '1') {
+    throw new Error(
+      `Product definition selects GUI host "${guiHost}", but this script builds the Tauri delivery. ` +
+        'Set OPENBITFUN_ALLOW_NONDEFAULT_GUI_HOST=1 to build it as the fallback delivery.',
+    );
+  }
   const config = JSON.parse(readFileSync(baseConfigPath, 'utf8'));
   if (resolution) {
     const productName =
@@ -330,6 +345,7 @@ export function prepareTauriConfig(
   // compiles the profile before Tauri copies resources.
   injectDshProfileResource(config);
   injectExternalFrontendResource(config);
+  injectTrinitydSidecar(config, desktopDir);
 
   const release = releaseChannel
     ?? resolveReleaseChannel(process.env.OPENBITFUN_RELEASE_CHANNEL);
@@ -410,6 +426,28 @@ function injectExternalFrontendResource(config) {
   config.bundle = {
     ...(config.bundle || {}),
     resources,
+  };
+}
+
+// The cognitive daemon ships as a Tauri sidecar, but it is built from the
+// separate trinity checkout and staged as `trinityd-<host triple>` by
+// scripts/build-trinity-deb.sh (.gitignore keeps the binary out of the tree).
+// A clean checkout has no sidecar, and tauri_build refuses a config naming a
+// missing external binary, so a base-config entry would break every
+// `cargo build` of this crate — CI included. Add the entry only when the
+// staged binary is actually there.
+function injectTrinitydSidecar(config, desktopDir) {
+  const sidecar = `trinityd-${rustHostTargetTriple()}`;
+  if (!existsSync(join(desktopDir, sidecar))) {
+    console.log(
+      `[tauri-build] No ${sidecar} sidecar staged; packaging without the bundled cognitive daemon ` +
+        '(run scripts/build-trinity-deb.sh to bundle it).',
+    );
+    return;
+  }
+  config.bundle = {
+    ...(config.bundle || {}),
+    externalBin: [...(config.bundle?.externalBin || []), 'trinityd'],
   };
 }
 

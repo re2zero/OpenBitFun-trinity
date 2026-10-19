@@ -1171,8 +1171,9 @@ impl GitService {
         }
     }
 
-    /// Gets ahead/behind counts.
-    fn get_ahead_behind_count(
+    /// Gets ahead/behind counts. A branch without an upstream reads as
+    /// `(0, 0)`, which is also the contract of `GitRepositoryOverview`.
+    pub(crate) fn get_ahead_behind_count(
         repo: &Repository,
         branch_name: &str,
     ) -> Result<(i32, i32), GitError> {

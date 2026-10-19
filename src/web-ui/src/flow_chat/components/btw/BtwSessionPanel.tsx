@@ -157,6 +157,7 @@ const BtwSessionPanelContent: React.FC<BtwSessionPanelProps & { viewState: BtwPa
   viewState,
 }) => {
   const { t } = useTranslation('flow-chat');
+  useEffect(() => childSessionId ? flowChatStore.retainSessionHistory(childSessionId) : undefined, [childSessionId]);
   const { childSession, parentMetadata, reviewTaskOutcome } = useBtwSessionState(
     childSessionId, parentSessionId, viewKind === 'review-check',
   );

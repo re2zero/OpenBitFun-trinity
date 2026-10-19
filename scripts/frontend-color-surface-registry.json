@@ -199,6 +199,43 @@
       }
     },
     {
+      "id": "gpui-shell",
+      "label": "GPUI desktop shell",
+      "kind": "native-desktop",
+      "owner": "src/apps/gpui-shell rendering canonical @openbitfun design-token authoring sources embedded with include_str!",
+      "root": "src/apps/gpui-shell",
+      "audit": {
+        "engine": "rust-surface",
+        "baseline": "scripts/theme-color-governance-baseline.gpui-shell.json",
+        "includeContracts": [
+          "design-system/packages/theme-openbitfun/src/reference.tokens.json",
+          "design-system/packages/theme-openbitfun/src/light.tokens.json",
+          "design-system/packages/theme-openbitfun/src/dark.tokens.json",
+          "src/apps/cli/themes/presets/openbitfun-cyber.json",
+          "src/apps/cli/themes/presets/openbitfun-dark.json",
+          "src/apps/cli/themes/presets/openbitfun-ink-night.json",
+          "src/apps/cli/themes/presets/openbitfun-light.json",
+          "src/apps/cli/themes/presets/openbitfun-midnight.json",
+          "src/apps/cli/themes/presets/openbitfun-tokyo-night.json"
+        ],
+        "rawColorOwners": [
+          {
+            "kind": "protocol-palette",
+            "file": "src/terminal/colors.rs",
+            "startMarker": "pub const XTERM_BASE16: [u32; 16] = [",
+            "endMarker": "];",
+            "reason": "The xterm-256color base-16 palette is a terminal protocol constant, not shell chrome; every app renders against these bytes."
+          },
+          {
+            "kind": "contrast-fallback",
+            "file": "src/theme.rs",
+            "linePattern": "^\\s*\"#(?:000000|ffffff)\"\\.into\\(\\)$",
+            "reason": "WCAG relative-luminance fallback fore/background for presets whose own color is unreadable; the same two values any contrast solver converges to."
+          }
+        ]
+      }
+    },
+    {
       "id": "native-android",
       "label": "Native Android",
       "kind": "native-mobile",

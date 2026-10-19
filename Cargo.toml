@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "src/apps/cli",
+    "src/apps/gpui-shell",
     "src/apps/sdk-host",
     "src/apps/desktop",
     "src/apps/data-migrator",
@@ -55,6 +56,11 @@ members = [
 
 exclude = [
     "OpenBitFun-Installer/src-tauri",
+    # Vendored `[patch.crates-io]` replacement for leptonica-sys. It is a
+    # standalone package (auto-generated manifest, no `[workspace]` table), so
+    # it must be excluded or cargo refuses to resolve it from inside the
+    # workspace tree.
+    "vendor/leptonica-sys",
     "third_party/eioc",
 ]
 
@@ -62,7 +68,7 @@ resolver = "2"
 
 # Shared package metadata — single source of truth for version
 [workspace.package]
-version = "1.0.2" # x-release-please-version
+version = "1.0.3" # x-release-please-version
 authors = ["OpenBitFun Team"]
 edition = "2021"
 
@@ -176,6 +182,9 @@ git2 = { version = "0.21", default-features = false, features = ["vendored-libgi
 # Terminal
 portable-pty = "0.8"
 vte = "0.15.0"
+# VT screen model (grid/scrollback/alternate screen) on top of vte parsing.
+# gpui-shell M7 uses it as the terminal emulator backend; serde default is off.
+alacritty_terminal = { version = "=0.26.0", default-features = false }
 clap = { version = "4.6.1", features = ["derive"] }
 crossterm = "0.28"
 ratatui = "0.29"
@@ -209,7 +218,8 @@ rusqlite = { version = "0.32", default-features = false }
 # Tauri (desktop only)
 tauri = { version = "2.11" }
 tauri-plugin-opener = "2.5"
-tauri-plugin-dialog = "2.7"
+tauri-plugin-dialog = { version = "2.7", default-features = false, features = ["xdg-portal"] }
+
 tauri-plugin-fs = "2.5"
 tauri-plugin-log = "2.8"
 tauri-plugin-autostart = "2.5"
@@ -217,6 +227,16 @@ tauri-plugin-notification = "2.3"
 tauri-plugin-updater = "2.10"
 tauri-plugin-single-instance = "2.4"
 notify-rust = { version = "4.18", default-features = false }
+# M22 gpui-shell tray (StatusNotifierItem) and launch-at-login, sharing the
+# auto-launch version the desktop's tauri-plugin-autostart already pins. ksni
+# needs one of its runtime features; the shell drives it from a plain thread
+# through the blocking facade. The `async-io` flavor is load-bearing: with
+# `tokio` the workspace unifies zbus onto the tokio executor, and then
+# gpui-base's reduce-motion portal follower panics on the executor-less gpui
+# main thread ("there is no reactor running"). Both flavors run the tray the
+# same way; async-io needs no ambient reactor anywhere in the shell.
+ksni = { version = "0.3", default-features = false, features = ["async-io", "blocking"] }
+auto-launch = "0.5"
 tauri-build = { version = "2.6", features = [] }
 keepawake = "0.6.0"
 
@@ -299,6 +319,12 @@ shellexpand = "3"
 ssh_config = "0.1"
 rustls = { version = "0.23", default-features = false }
 
+# GPUI desktop shell (experimental native frontend in src/apps/gpui-shell).
+# D20: single-dependency line on gpui-kit; its pinned gpui-pre (zed main
+# snapshot) carries x11/wayland/font-kit by default, so no platform features
+# are selected here.
+gpui-kit = "=0.7.1"
+
 [patch.crates-io]
 # Keep Socket.IO on the product-owned ring provider; see the patch note.
 eioc = { path = "third_party/eioc" }
@@ -308,6 +334,10 @@ eioc = { path = "third_party/eioc" }
 tauri-runtime = { git = "https://github.com/tauri-apps/tauri.git", rev = "7cc68e74ff6981f5c50a52a67d56c5eb2d227188" }
 tauri-runtime-wry = { git = "https://github.com/tauri-apps/tauri.git", rev = "7cc68e74ff6981f5c50a52a67d56c5eb2d227188" }
 tauri-utils = { git = "https://github.com/tauri-apps/tauri.git", rev = "7cc68e74ff6981f5c50a52a67d56c5eb2d227188" }
+# Trinity fusion patch: libclang freestanding 环境无 atomics 导致 leptonica
+# environ.h 编译失败（unknown type name 'atomic_int'），强制 -std=c99 走 int
+# fallback。与 trinity 仓库 vendor 补丁同源。
+leptonica-sys = { path = "vendor/leptonica-sys" }
 
 [profile.dev]
 # Line tables only: keeps panic backtrace line numbers while shrinking PDB/DWARF

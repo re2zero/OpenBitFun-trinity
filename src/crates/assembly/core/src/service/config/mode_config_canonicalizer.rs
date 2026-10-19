@@ -20,6 +20,11 @@ use std::collections::{HashMap, HashSet};
 
 const DYNAMIC_MCP_TOOL_PREFIX: &str = "mcp__";
 
+/// Cognitive framework group id: not a registered tool (the manifest layer
+/// expands it into `trinity_*`), but it must survive tool policy filtering or
+/// sessions and `AgentInfo` lose it.
+const COGNITIVE_FRAMEWORK_GROUP_ID: &str = "trinity_cognitive";
+
 /// Agent-profile config canonicalization report.
 #[derive(Debug, Serialize, Deserialize, Default)]
 pub struct AgentProfileConfigCanonicalizationReport {
@@ -57,8 +62,22 @@ fn dedupe_preserving_order(items: Vec<String>) -> Vec<String> {
 fn normalize_tools(tools: Vec<String>, valid_tools: &HashSet<String>) -> Vec<String> {
     dedupe_preserving_order(tools)
         .into_iter()
-        .filter(|tool| valid_tools.contains(tool))
+        .filter(|tool| valid_tools.contains(tool) || tool == COGNITIVE_FRAMEWORK_GROUP_ID)
         .collect()
+}
+
+/// Default tool lists wear the cognitive framework group (default-on design).
+///
+/// Only applied on the no-persisted-config default path; an explicit user
+/// selection is respected as-is.
+pub fn ensure_default_cognitive_framework(mut tools: Vec<String>) -> Vec<String> {
+    if !tools
+        .iter()
+        .any(|tool| tool == COGNITIVE_FRAMEWORK_GROUP_ID)
+    {
+        tools.push(COGNITIVE_FRAMEWORK_GROUP_ID.to_string());
+    }
+    tools
 }
 
 fn normalize_added_tool_overrides(
@@ -100,13 +119,17 @@ pub fn resolve_effective_tools(
     mode_config: Option<&AgentProfileConfig>,
     valid_tools: &HashSet<String>,
 ) -> Vec<String> {
+    let Some(mode_config) = mode_config else {
+        // No persisted config (defaults in use): every mode wears the
+        // cognitive framework.
+        return ensure_default_cognitive_framework(normalize_tools(
+            default_tools.to_vec(),
+            valid_tools,
+        ));
+    };
     let default_tools = normalize_tools(default_tools.to_vec(), valid_tools);
-    let removed: HashSet<String> = mode_config
-        .map(|config| config.removed_tools.iter().cloned().collect())
-        .unwrap_or_default();
-    let added = mode_config
-        .map(|config| normalize_tools(config.added_tools.clone(), valid_tools))
-        .unwrap_or_default();
+    let removed: HashSet<String> = mode_config.removed_tools.iter().cloned().collect();
+    let added = normalize_tools(mode_config.added_tools.clone(), valid_tools);
 
     let mut effective = Vec::new();
     let mut seen = HashSet::new();
@@ -655,14 +678,42 @@ pub fn agent_profile_member_mode_ids_for(agent_id: &str) -> Vec<String> {
 mod tests {
     use super::{
         agent_profile_member_mode_ids_for, canonicalize_agent_profile, get_agent_defaults,
-        normalize_skill_override_lists, stored_agent_profile_from_overrides,
-        StoredAgentProfileOverrides,
+        normalize_skill_override_lists, resolve_effective_tools,
+        stored_agent_profile_from_overrides, StoredAgentProfileOverrides,
     };
     use crate::agentic::agents::get_agent_registry;
     use crate::service::config::types::AgentSubagentOverrideState;
     use openbitfun_runtime_ports::{PermissionEffect, PermissionRule};
     use serde_json::Value;
     use std::collections::HashSet;
+
+    #[test]
+    fn default_tools_without_persisted_config_wear_the_cognitive_framework() {
+        let valid: HashSet<String> = HashSet::from(["Read".to_string()]);
+        let resolved = resolve_effective_tools(&["Read".to_string()], None, &valid);
+        assert_eq!(
+            resolved,
+            vec!["Read".to_string(), "trinity_cognitive".to_string()]
+        );
+    }
+
+    #[test]
+    fn cognitive_framework_group_survives_tool_policy_filtering() {
+        let valid: HashSet<String> = HashSet::from(["Read".to_string()]);
+        let resolved = resolve_effective_tools(
+            &[
+                "Read".to_string(),
+                "trinity_cognitive".to_string(),
+                "ghost_tool".to_string(),
+            ],
+            None,
+            &valid,
+        );
+        assert_eq!(
+            resolved,
+            vec!["Read".to_string(), "trinity_cognitive".to_string()]
+        );
+    }
 
     #[test]
     fn canonicalization_retains_future_fields_even_without_known_overrides() {

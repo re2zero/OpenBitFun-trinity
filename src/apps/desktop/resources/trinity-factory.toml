@@ -1,0 +1,137 @@
+# OpenBitFun factory configuration for the Trinity cognitive engine.
+#
+# The desktop host installs this file to the user configuration directory when
+# the user has none (~/.config/trinity/trinity.toml; XDG_CONFIG_HOME wins) and
+# never overwrites an existing file. trinityd is started without CLI overrides
+# and reads `[daemon]` from here, so the host derives its port and API key from
+# the same values.
+#
+# `{{DAEMON_KEY}}` is replaced on install with a randomly generated key that is
+# unique to this device and this install. Do not copy this file by hand: the
+# placeholder would become a literal key. The installed file is never rewritten
+# — reinstalling or upgrading OpenBitFun keeps the same configuration and the
+# same key. Deleting it regenerates both, so stop any daemon still started from
+# the old file before doing that.
+#
+# Deliberate omissions:
+#   * `[slot]` — the OpenBitFun package ships only trinityd, so slot binaries
+#     (bin/slot-*) cannot be started.
+#   * `[rsi]` — self-evolution needs a Trinity source checkout; there is none on
+#     a user machine. It stays disabled (trinityd default).
+
+[agent]
+name = "Trinity"
+persona = "dolores"
+user_name = ""
+awakened = false
+
+# Out of the box the engine runs simulated. Model endpoints are written from
+# the UI (Settings -> Cognitive engine), which also switches the backend.
+[cerebellum]
+primary = "simulated"
+backup = []
+
+[llm]
+backend = "simulated"
+model = ""
+api_url = ""
+temperature = 0.7
+max_tokens = 8192
+
+[daemon]
+enabled = true
+port = 11656
+host = "127.0.0.1"
+max_connections = 10
+request_timeout_ms = 30000
+keys = ["{{DAEMON_KEY}}"]
+
+[nap]
+enabled = true
+en_threshold = 3
+cjk_ratio_floor = 0.1
+task_aware_narrative = true
+
+[mindgraph]
+enabled = true
+backend = "sqlite"
+# `~` expands to $HOME; the database stays out of the source tree.
+storage_path = "~/.local/share/trinity/mindgraph.db"
+promotion_min_count = 3
+decay_rate = 0.001
+min_strength = 0.1
+prune_threshold = 0.05
+query_max_results = 5
+fts_bonus = 0.15
+chain_bonus = 0.1
+max_association_depth = 3
+triple_extraction = true
+trusted_predicates = []
+
+[rsi]
+enabled = false
+
+[cron]
+enabled = false
+
+[autonomy]
+enabled = false
+cycle_interval_ms = 60000
+seed_goals = []
+safety_policy = "log"
+
+[desire]
+enabled = false
+tick_interval_secs = 30
+seed_desires = []
+
+[cloud]
+enabled = false
+
+[modules.personality]
+enabled = true
+weight = 1.0
+
+[modules.attachment]
+enabled = true
+weight = 1.0
+
+[modules.perception]
+enabled = true
+weight = 0.5
+
+[modules.meta_cognitive]
+enabled = true
+weight = 0.5
+
+[modules.central_brain]
+enabled = true
+weight = 0.5
+
+[modules.markov_intuition]
+enabled = true
+weight = 0.5
+
+[modules.curriculum]
+enabled = true
+weight = 0.5
+
+[modules.skill_consolidator]
+enabled = true
+weight = 0.3
+
+[modules.continuous_learning]
+enabled = true
+weight = 0.5
+
+[modules.analogical]
+enabled = true
+weight = 0.5
+
+[modules.causal_engine]
+enabled = true
+weight = 0.5
+
+[modules.factorized_aif]
+enabled = true
+weight = 0.5

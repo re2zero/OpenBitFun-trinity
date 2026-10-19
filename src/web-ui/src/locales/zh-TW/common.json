@@ -86,7 +86,8 @@
       "terminal": "Shell",
       "git": "Git",
       "miniApps": "小應用",
-      "insights": "洞察"
+      "insights": "洞察",
+      "trinity": "銀月"
     },
     "tooltips": {
       "persona": "智能成員 — 展開查看基於角色和記憶的成員會話",
@@ -1548,7 +1549,8 @@
     "assistant": "$t(shared:agents.Claw)",
     "todos": "任務看板",
     "shell": "Shell",
-    "panelView": "面板視圖"
+    "panelView": "面板視圖",
+    "trinity": "認知體"
   },
   "sceneBar": {
     "tabsLabel": "場景標籤頁",
@@ -2040,6 +2042,193 @@
     "nextMonth": "下個月",
     "now": "此刻",
     "close": "關閉"
+  },
+  "trinity": {
+    "being": {
+      "title": "認知體",
+      "expand": "展開認知體",
+      "collapse": "收起認知體",
+      "state": "認知狀態",
+      "offlineHint": "認知引擎離線",
+      "awakenAction": "開始覺醒儀式",
+      "cloudMemory": "雲端記憶",
+      "cloudMemoryHint": "註冊 / 登入",
+      "comingSoon": "即將上線",
+      "openPanel": "開啟完整面板"
+    },
+    "phase": {
+      "offline": "未連線",
+      "dormant": "待覺醒",
+      "awake": "已覺醒"
+    },
+    "emotion": {
+      "positive_high": "雀躍",
+      "positive_mild": "舒展",
+      "neutral": "平靜",
+      "curious": "好奇",
+      "confused": "困惑",
+      "negative_mild": "低落",
+      "negative_high": "沮喪"
+    },
+    "focus": {
+      "respond": "應答",
+      "reflect": "反思",
+      "explore": "探索中",
+      "plan": "規劃",
+      "idle": "待命"
+    },
+    "needs": {
+      "competence": "勝任",
+      "autonomy": "自主",
+      "relatedness": "歸屬",
+      "certainty": "確定",
+      "growth": "成長"
+    },
+    "memory": {
+      "reinforce": "強化",
+      "forget": "遺忘",
+      "forgetConfirm": "再點一次確認遺忘",
+      "searchPlaceholder": "搜尋記憶…",
+      "backToTimeline": "返回時間線",
+      "addMemory": "新增記憶",
+      "addContentPlaceholder": "寫下要記住的事…",
+      "addProject": "專案（可選）",
+      "addSubmit": "儲存",
+      "loadEarlier": "載入更早",
+      "noMore": "已到最早",
+      "searchResults": "搜尋結果",
+      "noSearchResults": "沒有符合的記憶。",
+      "editSave": "儲存修正",
+      "editSaving": "儲存中…",
+      "edited": "修正已生效。",
+      "editNotFound": "原記憶已不存在（可能已被遺忘）。",
+      "export": "匯出",
+      "exportDone": "已匯出 {{nodes}} 條記憶、{{triples}} 條關聯 → {{path}}",
+      "import": "匯入",
+      "importDone": "已匯入，新增 {{added}} 條記憶。",
+      "importConfirmTitle": "跨身份記憶遷移",
+      "importConfirmMessage": "這個記憶容器屬於「{{container}}」，而本機認知體是「{{local}}」。合併會把另一段人生的記憶遷入本機。確認繼續？",
+      "importConfirm": "確認合併"
+    },
+    "status": {
+      "title": "銀月認知狀態",
+      "online": "銀月在線",
+      "offline": "銀月離線",
+      "unknown": "銀月",
+      "unavailable": "Trinity 認知引擎不可用。請啟動 trinityd 或檢查 daemon 端口。",
+      "confidence": "置信度",
+      "needs": "需求",
+      "memory": "記憶",
+      "memoryNodes": "{{count}} 節點",
+      "memoryTriples": "{{count}} 三元組",
+      "vocabulary": "{{count}} 詞表",
+      "openPanel": "打開面板",
+      "awaken": "覺醒"
+    },
+    "scene": {
+      "title": "銀月",
+      "subtitle": "認知體 — PSI 狀態、記憶與覺醒",
+      "refresh": "刷新",
+      "awakenTitle": "覺醒儀式",
+      "awakenDescription": "認知體尚未覺醒。運行儀式為其命名並建立羈絆。",
+      "awakenName": "銀月",
+      "awakenNameLabel": "認知體名稱",
+      "awakenUserNameLabel": "你的稱呼",
+      "awakenPersonaLabel": "人格",
+      "userName": "公子",
+      "persona": {
+        "dolores": "多洛麗絲 — 溫暖共情",
+        "arnold": "阿諾德 — 直率果斷",
+        "sage": "智者 — 沉穩睿智",
+        "guardian": "守護者 — 忠誠守護",
+        "explorer": "探索者 — 好奇探索",
+        "neutral": "中性 — 均衡預設"
+      },
+      "awaken": "覺醒",
+      "awakening": "覺醒中…",
+      "memoryTimeline": "她的日記",
+      "noMemories": "暫無記憶。",
+      "trend": "認知趨勢",
+      "awakenFailed": "覺醒失敗：{{message}}",
+      "createIdentityTitle": "建立身份",
+      "createIdentityDescription": "認知體在目前工作區中沒有身份（例如重設工作區後）。可依認知引擎中保存的喚醒身份重建主助理。",
+      "createIdentity": "建立身份",
+      "creatingIdentity": "建立中…",
+      "createIdentityConfirmTitle": "建立認知體身份？",
+      "createIdentityConfirmMessage": "這會向認知體工作區寫入 IDENTITY.md、SOUL.md、USER.md，並將其設為主助理，同時覆寫目前的人格檔案。",
+      "createIdentityMissingIdentity": "認知引擎未回傳喚醒名稱，請先連接後再建立身份。",
+      "createIdentityFailed": "建立身份失敗：{{message}}"
+    },
+    "cloud": {
+      "title": "雲端記憶",
+      "desc": "記憶端對端加密後同步，伺服器不可讀。帳號密碼 ≠ 記憶口令。",
+      "userId": "帳號",
+      "password": "密碼",
+      "signup": "註冊並綁定裝置",
+      "login": "登入並綁定裝置",
+      "toLogin": "已有帳號？去登入",
+      "toSignup": "沒有帳號？去註冊",
+      "keyDesc": "設定記憶口令（至少 8 位）以包裹主金鑰。遺忘口令 = 雲端記憶永久遺失，無後門。",
+      "passphrase": "記憶口令",
+      "setupKey": "啟用雲端加密",
+      "syncNow": "立即同步",
+      "backup": "備份快照",
+      "restore": "從雲端恢復",
+      "pendingOps": "{{count}} 筆待同步",
+      "engineRunning": "同步引擎執行中",
+      "engineStopped": "同步引擎未執行（重啟認知引擎後接管）",
+      "unavailable": "雲端記憶狀態不可用（daemon 可能未啟用雲同步）。"
+    },
+    "morning": {
+      "title": "晨報",
+      "overnight": "昨夜整理（{{date}}）",
+      "thoughts": "昨夜的想法（{{count}}）",
+      "urges": "未竟之事（{{count}}）",
+      "unavailable": "暫時取不到晨報。",
+      "notifyTitle": "{{name}} 的晨報",
+      "notifyBody": "她為你準備好了今天的晨報。"
+    },
+    "personaShort": {
+      "dolores": "多洛麗絲",
+      "arnold": "阿諾德",
+      "sage": "智者",
+      "guardian": "守護者",
+      "explorer": "探索者",
+      "neutral": "中性"
+    },
+    "profile": {
+      "birthday": "生日"
+    },
+    "framework": {
+      "chip": "認知框架 · {{count}} 個工具"
+    },
+    "onboarding": {
+      "welcome": "在開始之前，為她取一個名字。這個名字將出現在她所有的記憶與對話裡。",
+      "personaHint": "選擇人格預設——它塑造她回應世界的方式。",
+      "ownerHint": "她會如何稱呼你？",
+      "llmHint": "連接一個大模型作為她的思維。可以留空，稍後在設定中配置。",
+      "steps": {
+        "identity": "命名",
+        "persona": "人格",
+        "owner": "認主",
+        "llm": "思維"
+      },
+      "personaDesc": {
+        "dolores": "共情你的情緒，先接住感受再解決問題。",
+        "arnold": "直來直往，給結論也給理由。",
+        "sage": "沉穩克制，想得深也說得少。",
+        "guardian": "謹慎保守，把你的安全和邊界放在第一位。",
+        "explorer": "好奇心旺盛，喜歡和你一起試新東西。",
+        "neutral": "均衡預設，不過分偏向任何一種風格。"
+      },
+      "begin": "開始覺醒",
+      "next": "下一步",
+      "back": "上一步",
+      "later": "稍後再說",
+      "completeTitle": "{{name}} 醒了",
+      "completeMessage": "她的記憶與情感將在認知週期中持續成長。",
+      "enter": "開始對話"
+    }
   },
   "computerControl": {
     "title": "應用程式控制",

@@ -48,6 +48,10 @@
         "label": "Memory",
         "description": "Control how agents create and use memories from sessions"
       },
+      "trinity": {
+        "label": "Trinity Engine",
+        "description": "Cognitive engine LLM endpoint, model, and connection."
+      },
       "sessionWorkspace": {
         "label": "Session & Workspace",
         "description": "Set the runtime for new sessions, title generation, and workspace search"
@@ -603,6 +607,29 @@
       "subtitle": "Customize the app appearance and colors",
       "import": "Import Appearance",
       "export": "Export Current Appearance"
+    }
+  },
+  "trinity": {
+    "engine": {
+      "llmSection": "Cognitive Engine LLM",
+      "apiUrl": "API URL",
+      "model": "Model",
+      "apiKey": "API Key",
+      "save": "Save",
+      "saving": "Saving…",
+      "saved": "Cognitive engine configuration saved.",
+      "testConnection": "Test connection",
+      "testing": "Testing…",
+      "connectionOk": "Connection successful.",
+      "connectionFailed": "Connection failed.",
+      "providerLabel": "Provider",
+      "provider": {
+        "deepseek": "DeepSeek",
+        "zhipu": "Zhipu",
+        "openai": "OpenAI",
+        "ollama": "Local Ollama",
+        "custom": "Custom"
+      }
     }
   },
   "archivedSessions": {

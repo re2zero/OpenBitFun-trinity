@@ -2289,7 +2289,7 @@ function handleModelRoundStart(context: FlowChatContext, event: ModelRoundStarte
     ...(event.modelConfigId ? { modelConfigId: event.modelConfigId.trim() } : {}),
     ...(event.effectiveModelName ? { effectiveModelName: event.effectiveModelName.trim() } : {}),
     ...(disableExploreGrouping
-      ? { renderHints: { disableExploreGrouping: true } }
+      ? { renderHints: { disableExploreGrouping: true, disableExploreGroupingSource: 'host' } }
       : {}),
   };
 

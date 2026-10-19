@@ -6,15 +6,24 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
+import { createRustSurfaceColorReport } from './audit-rust-surface-colors.mjs';
+
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
 const REPOSITORY_ROOT = path.resolve(path.dirname(SCRIPT_PATH), '..');
 const DEFAULT_REGISTRY_PATH = path.join(REPOSITORY_ROOT, 'scripts/frontend-color-surface-registry.json');
 const THEME_AUDITOR_PATH = path.join(REPOSITORY_ROOT, 'scripts/audit-theme-colors.mjs');
 const CLI_AUDITOR_PATH = path.join(REPOSITORY_ROOT, 'scripts/audit-cli-theme-colors.mjs');
 const MINIAPP_SOURCE_EXTENSIONS = new Set(['.css', '.html', '.js', '.jsx', '.mjs', '.scss', '.svg', '.ts', '.tsx']);
-const SPECIALIZED_COLOR_OWNER_KINDS = new Set(['bespoke-theme', 'data-viz', 'game-renderer', 'slide-renderer']);
-const SURFACE_KINDS = new Set(['canonical-web', 'contract-owner', 'miniapp', 'native-mobile', 'terminal']);
-const AUDIT_ENGINES = new Set(['cli', 'miniapp', 'native', 'theme']);
+const SPECIALIZED_COLOR_OWNER_KINDS = new Set([
+  'bespoke-theme',
+  'contrast-fallback',
+  'data-viz',
+  'game-renderer',
+  'protocol-palette',
+  'slide-renderer',
+]);
+const SURFACE_KINDS = new Set(['canonical-web', 'contract-owner', 'miniapp', 'native-desktop', 'native-mobile', 'terminal']);
+const AUDIT_ENGINES = new Set(['cli', 'miniapp', 'native', 'rust-surface', 'theme']);
 const CANONICAL_ZERO_METRICS = [
   'colorScopes.appUi.occurrences',
   'colorScopes.appUi.uniqueColors',
@@ -168,11 +177,22 @@ export function validateRegistry(registry, { repositoryRoot = REPOSITORY_ROOT } 
       ? 'cli'
       : surface.kind === 'native-mobile'
         ? 'native'
-        : surface.kind === 'miniapp'
-          ? 'miniapp'
-          : 'theme';
+        : surface.kind === 'native-desktop'
+          ? 'rust-surface'
+          : surface.kind === 'miniapp'
+            ? 'miniapp'
+            : 'theme';
     if (surface.audit.engine !== expectedEngine) {
       failures.push(`${label}.audit.engine must be ${expectedEngine} for ${surface.kind}.`);
+    }
+    for (const [contractIndex, contractPath] of (surface.audit.includeContracts ?? []).entries()) {
+      resolveRegistryPath(
+        repositoryRoot,
+        contractPath,
+        `${label}.audit.includeContracts[${contractIndex}]`,
+        failures,
+        { allowDirectory: false }
+      );
     }
     if (surface.audit.baseline) {
       resolveRegistryPath(repositoryRoot, surface.audit.baseline, `${label}.audit.baseline`, failures, { allowDirectory: false });
@@ -713,6 +733,8 @@ export function runFrontendColorAudit({
       report = auditCliSurface(surface, repositoryRoot);
     } else if (surface.audit.engine === 'native') {
       report = auditNativeSurface(surface, { repositoryRoot });
+    } else if (surface.audit.engine === 'rust-surface') {
+      report = createRustSurfaceColorReport(surface, { repositoryRoot });
     } else {
       report = auditMiniappSurface(surface, miniappContract, { repositoryRoot });
     }
@@ -796,6 +818,12 @@ function formatSurfaceSummary(surfaceReport) {
   }
   if (surfaceReport.engine === 'native') {
     return `${surfaceReport.filesScanned} files, raw=${surfaceReport.rawColorOccurrences}`;
+  }
+  if (surfaceReport.engine === 'rust-surface') {
+    const owners = surfaceReport.owners.map(owner => `${owner.kind}:${owner.occurrences}`).join(', ') || 'none';
+    return `${surfaceReport.filesScanned} files, production=${surfaceReport.productionColorOccurrences}, ` +
+      `unowned=${surfaceReport.unownedColorOccurrences}, owners=${owners}, ` +
+      `include-contracts=${surfaceReport.includeContractsSatisfied.length}/${surfaceReport.includeContracts.length}`;
   }
   if (surfaceReport.engine === 'miniapp') {
     const specialized = surfaceReport.specializedOwners.map(owner => `${owner.kind}:${owner.occurrences}`).join(', ') || 'none';

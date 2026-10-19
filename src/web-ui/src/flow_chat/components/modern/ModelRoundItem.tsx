@@ -31,6 +31,7 @@ import {
   buildModelRoundItemGroups,
   buildInlineToolGroupData,
   getModelRoundActiveItems,
+  isModelRoundGroupingDisabled,
   type ModelRoundItemGroup,
 } from '../../grouping/roundGroups';
 import { FlowGroupRenderer } from './FlowGroupRenderer';
@@ -462,6 +463,7 @@ export const ModelRoundItem = React.memo<ModelRoundItemProps>(
 
     // Collect settled exploration while keeping narrative and critical items
     // in their original transcript positions.
+    const disableExploreGrouping = isModelRoundGroupingDisabled(round);
     const groupedItems = useMemo(() => {
       if (projectedGroups) return projectedGroups;
       const visibleItems = isTurnComplete
@@ -470,10 +472,10 @@ export const ModelRoundItem = React.memo<ModelRoundItemProps>(
       return buildModelRoundItemGroups({
         items: visibleItems,
         isStreaming: round.isStreaming,
-        disableExploreGrouping: round.renderHints?.disableExploreGrouping === true,
+        disableExploreGrouping,
         isCollapsibleTool,
       });
-    }, [isTurnComplete, projectedGroups, round.isStreaming, round.renderHints?.disableExploreGrouping, sortedItems]);
+    }, [disableExploreGrouping, isTurnComplete, projectedGroups, round.isStreaming, sortedItems]);
 
     const groupSummary = useMemo(
       () => renderTraceEnabled ? summarizeModelRoundItemGroups(groupedItems) : null,

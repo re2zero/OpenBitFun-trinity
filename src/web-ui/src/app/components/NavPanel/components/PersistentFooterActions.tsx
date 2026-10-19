@@ -30,6 +30,9 @@ import { useAnchoredPopoverPosition } from '@/shared/utils/useAnchoredPopoverPos
 import { useSettingsStore } from '@/app/scenes/settings/settingsStore';
 import { PeerConnectionStatus } from '@/infrastructure/peer-device/PeerConnectionStatus';
 import DeviceStatusControl from './DeviceStatusControl';
+import TrinityStatusControl from './TrinityStatusControl';
+import { useTrinityMorningReport } from '@/app/scenes/trinity/useTrinityMorningReport';
+import TrinityStatusPanel from './TrinityStatusPanel';
 import AppearanceQuickSwitchMenuItem from './AppearanceQuickSwitchMenuItem';
 import { UpdateIndicator } from '@/infrastructure/update/UpdateIndicator';
 import { useHasAppUpdate } from '@/infrastructure/update/useHasAppUpdate';
@@ -46,6 +49,7 @@ const PersistentFooterActions: React.FC = () => {
   const [menuClosing, setMenuClosing] = useState(false);
   const [appearanceSubmenuOpen, setAppearanceSubmenuOpen] = useState(false);
   const [deviceOverviewOpen, setDeviceOverviewOpen] = useState(false);
+  const [trinityStatusOpen, setTrinityStatusOpen] = useState(false);
   const menuTriggerRef = useRef<HTMLButtonElement>(null);
   const menuPopoverRef = useRef<HTMLDivElement>(null);
   const menuLayout = useAnchoredPopoverPosition({
@@ -57,6 +61,9 @@ const PersistentFooterActions: React.FC = () => {
     gap: 6,
   });
   const hasAppUpdate = useHasAppUpdate();
+  // Morning-report notification: gates on the derived awake phase, fires at
+  // most once per day inside the morning window (no daemon polling added).
+  useTrinityMorningReport();
   const updateVersion = useUpdateInstallStore(state => state.downloadVersion ?? state.availableUpdate?.latestVersion);
   const [showRemoteConnect, setShowRemoteConnect] = useState(false);
   const [remoteInitialGroup, setRemoteInitialGroup] = useState<'network' | 'bot' | 'account' | undefined>(undefined);
@@ -104,6 +111,13 @@ const PersistentFooterActions: React.FC = () => {
       closeMenu();
     }
     setDeviceOverviewOpen(nextOpen);
+  }, [closeMenu, menuOpen]);
+
+  const handleTrinityStatusOpenChange = useCallback((nextOpen: boolean) => {
+    if (nextOpen && menuOpen) {
+      closeMenu();
+    }
+    setTrinityStatusOpen(nextOpen);
   }, [closeMenu, menuOpen]);
 
   const handleOpenSettings = useCallback(() => {
@@ -163,6 +177,11 @@ const PersistentFooterActions: React.FC = () => {
 
   return (
     <>
+      {/* Inline cognitive-state expansion anchored above the footer. */}
+      <TrinityStatusPanel
+        open={trinityStatusOpen}
+        onOpenChange={setTrinityStatusOpen}
+      />
       <PeerConnectionStatus />
       <div className="openbitfun-nav-panel__footer" data-openbitfun-component="nav-panel" data-openbitfun-part="footer">
         <div className="openbitfun-nav-panel__footer-left">
@@ -170,6 +189,10 @@ const PersistentFooterActions: React.FC = () => {
             open={deviceOverviewOpen}
             onOpenChange={handleDeviceOverviewOpenChange}
             onManageDevices={handleRemoteConnect}
+          />
+          <TrinityStatusControl
+            open={trinityStatusOpen}
+            onOpenChange={handleTrinityStatusOpenChange}
           />
         </div>
 

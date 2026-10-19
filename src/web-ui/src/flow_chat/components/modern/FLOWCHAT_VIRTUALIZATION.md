@@ -31,6 +31,17 @@ cancelled rounds precede it. That boundary prevents cross-round grouping from
 hiding the label; ordinary within-round tool folding remains available. Round ids
 and virtual row keys stay unchanged, with no viewport writes or mount animation.
 
+Retry history seals the preceding collection once, while the current effective
+attempt starts a new collection that can receive following model rounds. Attempt
+normalization must not disable grouping for the whole round. Failed attempts stay
+in their independent history disclosure and never join the current collection.
+For old records, the display policy disregards an unqualified
+`disableExploreGrouping` hint only when multiple recorded attempts all use the
+native Runtime identity `<round-id>:attempt:<index>`. Explicit host policies carry
+the optional `disableExploreGroupingSource: "host"` provenance; older hints with
+unrecognized attempt identities remain authoritative. Projection never rewrites
+the saved hint, attempts, or member identities.
+
 ## Measurement compensation and cached offsets
 
 When the viewport owner accepts a shift for a measured row wholly above the

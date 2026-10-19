@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import {
+  cpSync, existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -8,6 +9,7 @@ import {
   configureWindowsSigning,
   prepareMacOSFlashgrepForSigning,
   prepareTauriConfig,
+  rustHostTargetTriple,
   shouldRetryMacDmgBuild,
 } from './desktop-tauri-build.mjs';
 import { resolveProductDefinition } from './product-customization/resolver.mjs';
@@ -342,6 +344,48 @@ test('Desktop Tauri projection consumes only the resolved member identity', () =
   }
 });
 
+test('Tauri packaging refuses a product definition whose default GUI host is not tauri', () => {
+  const fixture = join(tmpdir(), `openbitfun-tauri-host-guard-${process.pid}-${Date.now()}`);
+  mkdirSync(fixture, { recursive: true });
+  cpSync(join(ROOT, 'products', 'fixtures', 'acme', 'locales'), join(fixture, 'locales'), { recursive: true });
+  const configPath = join(fixture, 'product.jsonc');
+  writeFileSync(
+    configPath,
+    readFileSync(join(ROOT, 'products', 'fixtures', 'acme', 'product.jsonc'), 'utf8').replace(
+      '"guiHost": "tauri"',
+      '"guiHost": "gpui-shell"',
+    ),
+    'utf8',
+  );
+  const baseConfig = join(fixture, 'tauri.conf.json');
+  writeFileSync(baseConfig, JSON.stringify({ productName: 'X', identifier: 'com.x.desktop', bundle: { resources: {} } }));
+  const resolution = resolveProductDefinition({ rootDir: ROOT, productConfig: configPath, member: 'desktop' });
+  assert.equal(resolution.assembly.guiHost, 'gpui-shell');
+  assert.throws(
+    () =>
+      prepareTauriConfig(baseConfig, {
+        desktopDir: fixture,
+        flashgrepBinary: join(fixture, 'flashgrep'),
+        resolution,
+      }),
+    (error) => error.message.includes('selects GUI host "gpui-shell"'),
+  );
+  // The explicit fallback-delivery override lets a switched product still
+  // produce its Tauri escape hatch.
+  process.env.OPENBITFUN_ALLOW_NONDEFAULT_GUI_HOST = '1';
+  try {
+    const generated = prepareTauriConfig(baseConfig, {
+      desktopDir: fixture,
+      flashgrepBinary: join(fixture, 'flashgrep'),
+      resolution,
+    });
+    assert.ok(existsSync(generated));
+  } finally {
+    delete process.env.OPENBITFUN_ALLOW_NONDEFAULT_GUI_HOST;
+    rmSync(fixture, { force: true, recursive: true });
+  }
+});
+
 test('Desktop packaging includes only the selected Flashgrep target', () => {
   const fixture = join(tmpdir(), `openbitfun-without-flashgrep-${process.pid}-${Date.now()}`);
   mkdirSync(fixture, { recursive: true });
@@ -360,6 +404,36 @@ test('Desktop packaging includes only the selected Flashgrep target', () => {
     ]);
     assert.equal(config.bundle.resources['../../../resources/flashgrep'], undefined);
     assert.equal(config.bundle.resources['../../../dist'], 'frontend/dist');
+  } finally {
+    rmSync(fixture, { force: true, recursive: true });
+  }
+});
+
+test('Desktop packaging bundles the cognitive daemon only when its sidecar is staged', () => {
+  const fixture = join(tmpdir(), `openbitfun-tauri-trinityd-${process.pid}-${Date.now()}`);
+  mkdirSync(fixture, { recursive: true });
+  const baseConfig = join(fixture, 'tauri.conf.json');
+  writeFileSync(baseConfig, JSON.stringify({ bundle: { resources: {} } }));
+  const sidecar = join(fixture, `trinityd-${rustHostTargetTriple()}`);
+  try {
+    // A clean checkout — CI included — has no staged daemon, and tauri_build
+    // refuses to build a config that names a missing external binary, so the
+    // base config must not demand one.
+    const bare = prepareTauriConfig(baseConfig, {
+      desktopDir: fixture, flashgrepBinary: join(fixture, 'flashgrep'),
+    });
+    assert.equal(JSON.parse(readFileSync(bare, 'utf8')).bundle.externalBin, undefined);
+
+    // scripts/build-trinity-deb.sh stages the sidecar; packaging must then
+    // declare it so the deb ships the daemon beside the app binary.
+    writeFileSync(sidecar, '');
+    const staged = prepareTauriConfig(baseConfig, {
+      desktopDir: fixture, flashgrepBinary: join(fixture, 'flashgrep'),
+    });
+    assert.deepEqual(
+      JSON.parse(readFileSync(staged, 'utf8')).bundle.externalBin,
+      ['trinityd'],
+    );
   } finally {
     rmSync(fixture, { force: true, recursive: true });
   }

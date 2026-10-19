@@ -8,6 +8,7 @@
 @use '@/shared/styles/surface-recipes' as surfaces;
 @use '../../styles/nav-panel-font-scope.scss' as nav-font;
 @use '../../styles/workspace-shell-surfaces' as shell-surfaces;
+@use '../../styles/cognitive-emotion.scss' as cognitive-emotion;
 
 $_item-height: 30px;
 $_section-header-height: 22px;
@@ -2948,4 +2949,237 @@ $_section-header-height: 22px;
 
 .openbitfun-nav-panel__sections-slot {
   display: contents;
+}
+
+// ──────────────────────────────────────────────
+// Cognitive Being (认知体) sidebar entry
+// ──────────────────────────────────────────────
+
+.openbitfun-nav-panel__being-slot {
+  width: 100%;
+  min-width: 0;
+}
+
+// Live emotion dot — colored per valence via data-openbitfun-emotion.
+.openbitfun-nav-panel__being-dot {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--openbitfun-color-content-muted);
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 12%);
+
+  &--lg {
+    width: 14px;
+    height: 14px;
+  }
+
+  @include cognitive-emotion.emotion-dots;
+}
+
+// ──────────────────────────────────────────────
+// Trinity inline status panel (expands above the footer)
+// ──────────────────────────────────────────────
+
+.openbitfun-nav-panel__trinity-panel {
+  flex-shrink: 0;
+  overflow: hidden;
+  max-height: 0;
+  opacity: 0;
+  visibility: hidden;
+  border-top: 1px solid transparent;
+  transition: max-height 0.24s var(--openbitfun-motion-easing-standard),
+              opacity 0.16s var(--openbitfun-motion-easing-standard),
+              border-color var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard),
+              visibility 0s linear 0.24s;
+
+  &.is-open {
+    max-height: 440px;
+    opacity: 1;
+    visibility: visible;
+    border-top-color: var(--openbitfun-color-border-default);
+    @include shell-surfaces.sidebar-hairline-color;
+    transition: max-height 0.24s var(--openbitfun-motion-easing-standard),
+                opacity 0.16s var(--openbitfun-motion-easing-standard),
+                border-color var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard),
+                visibility 0s;
+  }
+}
+
+.openbitfun-nav-panel__trinity-panel-inner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--openbitfun-space-2);
+  padding: var(--openbitfun-space-2);
+}
+
+.openbitfun-nav-panel__trinity-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--openbitfun-space-2);
+}
+
+.openbitfun-nav-panel__trinity-panel-title {
+  color: var(--openbitfun-color-content-muted);
+  font-size: var(--openbitfun-type-overline-sm-font-size);
+  font-weight: 600;
+}
+
+.openbitfun-nav-panel__trinity-panel-phase {
+  margin-left: var(--openbitfun-space-2);
+  padding: 1px 8px;
+  border-radius: var(--openbitfun-radius-pill);
+  border: 1px solid var(--openbitfun-color-border-default);
+  color: var(--openbitfun-color-content-muted);
+  font-size: var(--openbitfun-type-overline-sm-font-size);
+
+  &[data-openbitfun-state='awake'] {
+    color: var(--openbitfun-color-status-success-content);
+    border-color: currentcolor;
+  }
+
+  &[data-openbitfun-state='dormant'] {
+    color: var(--openbitfun-color-status-warning-content);
+    border-color: currentcolor;
+  }
+}
+
+.openbitfun-nav-panel__trinity-panel-dormant {
+  display: flex;
+  flex-direction: column;
+  gap: var(--openbitfun-space-2);
+
+  p {
+    margin: 0;
+    color: var(--openbitfun-color-content-muted);
+    font-size: var(--openbitfun-type-label-sm-font-size);
+  }
+}
+
+.openbitfun-nav-panel__trinity-panel-cloud {
+  color: var(--openbitfun-color-content-muted);
+  font-size: var(--openbitfun-type-overline-sm-font-size);
+
+  [data-openbitfun-state='online'] {
+    color: var(--openbitfun-color-status-success-content);
+  }
+
+  [data-openbitfun-state='offline'] {
+    color: var(--openbitfun-color-status-warning-content);
+  }
+}
+
+.openbitfun-nav-panel__trinity-panel-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: var(--openbitfun-radius-sm);
+  background: transparent;
+  color: var(--openbitfun-color-content-muted);
+  cursor: pointer;
+
+  &:hover,
+  &:focus-visible {
+    background: var(--openbitfun-color-action-quiet-hover);
+    color: var(--openbitfun-color-content-primary);
+  }
+}
+
+.openbitfun-nav-panel__trinity-panel-offline {
+  margin: 0;
+  color: var(--openbitfun-color-content-muted);
+  font-size: var(--openbitfun-type-label-sm-font-size);
+}
+
+.openbitfun-nav-panel__trinity-panel-hero {
+  display: flex;
+  align-items: center;
+  gap: var(--openbitfun-space-2);
+  min-width: 0;
+}
+
+.openbitfun-nav-panel__trinity-panel-emotion {
+  color: var(--openbitfun-color-content-primary);
+  font-size: var(--openbitfun-type-label-md-font-size);
+  font-weight: 600;
+}
+
+.openbitfun-nav-panel__trinity-panel-focus {
+  color: var(--openbitfun-color-content-muted);
+  font-size: var(--openbitfun-type-label-sm-font-size);
+}
+
+.openbitfun-nav-panel__trinity-panel-confidence {
+  margin-left: auto;
+  color: var(--openbitfun-color-content-muted);
+  font-size: var(--openbitfun-type-overline-sm-font-size);
+  font-variant-numeric: tabular-nums;
+}
+
+.openbitfun-nav-panel__trinity-panel-needs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.openbitfun-nav-panel__trinity-panel-need {
+  display: flex;
+  align-items: center;
+  gap: var(--openbitfun-space-2);
+  font-size: var(--openbitfun-type-overline-sm-font-size);
+}
+
+.openbitfun-nav-panel__trinity-panel-need-label {
+  flex: 0 0 34px;
+  color: var(--openbitfun-color-content-muted);
+}
+
+.openbitfun-nav-panel__trinity-panel-need-track {
+  flex: 1 1 auto;
+  height: 4px;
+  border-radius: var(--openbitfun-radius-pill);
+  background: var(--openbitfun-color-surface-raised);
+  overflow: hidden;
+}
+
+.openbitfun-nav-panel__trinity-panel-need-fill {
+  display: block;
+  height: 100%;
+  border-radius: var(--openbitfun-radius-pill);
+  background: var(--openbitfun-color-accent-default);
+  transition: width var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard);
+
+  // One hue per need state, shared with the full being console.
+  &[data-openbitfun-need-state='low'] {
+    background: var(--openbitfun-color-status-warning-content);
+  }
+
+  &[data-openbitfun-need-state='high'] {
+    background: var(--openbitfun-color-status-success-content);
+  }
+}
+
+.openbitfun-nav-panel__trinity-panel-need-value {
+  flex: 0 0 32px;
+  text-align: right;
+  color: var(--openbitfun-color-content-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.openbitfun-nav-panel__trinity-panel-memory {
+  color: var(--openbitfun-color-content-muted);
+  font-size: var(--openbitfun-type-label-sm-font-size);
+}
+
+.openbitfun-nav-panel__trinity-panel-awaken {
+  align-self: flex-start;
+}
+
+.openbitfun-nav-panel__trinity-panel-open {
+  align-self: flex-end;
 }

@@ -772,7 +772,7 @@ async fn do_cleanup_log_sessions(
 }
 
 pub fn spawn_log_cleanup_task() {
-    tokio::spawn(async {
+    tauri::async_runtime::spawn(async {
         cleanup_old_log_sessions().await;
     });
 }

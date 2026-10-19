@@ -51,7 +51,8 @@
       "properties": {
         "displayNameKey": { "type": "string", "minLength": 1 },
         "binaryName": { "$ref": "#/$defs/binaryName" },
-        "bundleId": { "$ref": "#/$defs/bundleId" }
+        "bundleId": { "$ref": "#/$defs/bundleId" },
+        "guiHost": { "$ref": "#/$defs/stableId" }
       }
     }
   }

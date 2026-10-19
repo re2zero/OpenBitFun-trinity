@@ -1,0 +1,551 @@
+/**
+ * Cognitive Being scene styles.
+ *
+ * Visual language shared with the sidebar being entry: per-valence emotion
+ * hues (data-openbitfun-emotion), localized need bars with an unmet-attention
+ * highlight, cloud-memory console, and a management-enabled memory timeline.
+ */
+
+@use '../../styles/cognitive-emotion.scss' as cognitive-emotion;
+
+.openbitfun-trinity-scene {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+
+  &__scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  &__content {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: var(--openbitfun-space-6);
+    display: flex;
+    flex-direction: column;
+    gap: var(--openbitfun-space-4);
+  }
+
+  &__header {
+    display: flex;
+    flex-direction: column;
+    gap: var(--openbitfun-space-2);
+  }
+
+  &__title-row {
+    display: flex;
+    align-items: center;
+    gap: var(--openbitfun-space-3);
+
+    h1 {
+      flex: 1 1 auto;
+      margin: 0;
+      font-size: var(--openbitfun-font-size-lg);
+      font-weight: 600;
+    }
+  }
+
+  &__persona-badge,
+  &__daemon-badge {
+    flex-shrink: 0;
+    padding: 2px 10px;
+    border-radius: var(--openbitfun-radius-pill);
+    background: var(--openbitfun-color-surface-raised);
+    border: 1px solid var(--openbitfun-color-border-default);
+    color: var(--openbitfun-color-content-muted);
+    font-size: var(--openbitfun-type-overline-sm-font-size);
+  }
+
+  &__daemon-badge {
+    &[data-openbitfun-state='online'] {
+      color: var(--openbitfun-color-status-success-content);
+      border-color: currentcolor;
+    }
+
+    &[data-openbitfun-state='offline'] {
+      color: var(--openbitfun-color-status-danger-content);
+      border-color: currentcolor;
+    }
+  }
+
+  &__subtitle {
+    margin: 0;
+    color: var(--openbitfun-color-content-muted);
+    font-size: var(--openbitfun-font-size-sm);
+  }
+
+  &__offline {
+    p {
+      margin: 0;
+      color: var(--openbitfun-color-status-danger-content);
+    }
+  }
+
+  // Card headers/titles use h2; reset the browser default margin — card
+  // rhythm is owned by the Card component (root padding + gap).
+  h2 {
+    margin: 0;
+  }
+
+  &__awaken {
+    p {
+      margin: 0;
+      color: var(--openbitfun-color-content-muted);
+    }
+  }
+
+  // ── Cognitive identity recovery ─────────────
+
+  &__identity-description {
+    margin: 0;
+    color: var(--openbitfun-color-content-muted);
+    font-size: var(--openbitfun-font-size-sm);
+  }
+
+  &__identity-error {
+    margin: var(--openbitfun-space-2) 0 0;
+    color: var(--openbitfun-color-status-danger-content);
+    font-size: var(--openbitfun-font-size-sm);
+  }
+
+  // ── Awakening profile (birthday) ──
+
+  &__profile {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--openbitfun-space-1) var(--openbitfun-space-4);
+    font-size: var(--openbitfun-font-size-sm);
+    color: var(--openbitfun-color-content-muted);
+  }
+
+  // ── Emotion hero ────────────────────────────
+
+  &__hero {
+    display: flex;
+    align-items: center;
+    gap: var(--openbitfun-space-3);
+    padding: var(--openbitfun-space-2) var(--openbitfun-space-3);
+    border-radius: var(--openbitfun-radius-md);
+    background: var(--openbitfun-color-surface-raised);
+    border: 1px solid var(--openbitfun-color-border-default);
+  }
+
+  // One row, two flag groups: being-state (emotion + focus) and engine-state
+  // (confidence + cycle) pushed to the far end.
+  &__hero-group {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--openbitfun-space-2);
+    min-width: 0;
+
+    &--end {
+      margin-inline-start: auto;
+      gap: var(--openbitfun-space-3);
+    }
+  }
+
+  &__hero-dot {
+    flex-shrink: 0;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--openbitfun-color-content-muted);
+    box-shadow: 0 0 0 2px rgb(0 0 0 / 8%);
+
+    @include cognitive-emotion.emotion-dots;
+  }
+
+  &__hero-emotion {
+    font-size: var(--openbitfun-font-size-md);
+    font-weight: 600;
+  }
+
+  &__hero-focus,
+  &__hero-meta {
+    color: var(--openbitfun-color-content-muted);
+    font-size: var(--openbitfun-font-size-sm);
+    font-variant-numeric: tabular-nums;
+  }
+
+  // ── Needs ───────────────────────────────────
+
+  &__needs {
+    display: flex;
+    flex-direction: column;
+    gap: var(--openbitfun-space-2);
+    margin-top: var(--openbitfun-space-4);
+
+    h3 {
+      margin: 0 0 var(--openbitfun-space-1);
+      font-size: var(--openbitfun-font-size-sm);
+      font-weight: 600;
+    }
+  }
+
+  &__need {
+    display: flex;
+    align-items: center;
+    gap: var(--openbitfun-space-2);
+    font-size: var(--openbitfun-font-size-sm);
+  }
+
+  &__need-label {
+    width: 44px;
+    flex: 0 0 auto;
+    color: var(--openbitfun-color-content-muted);
+  }
+
+  &__need-track {
+    flex: 1 1 auto;
+    height: 6px;
+    border-radius: var(--openbitfun-radius-pill);
+    background: var(--openbitfun-color-surface-raised);
+    overflow: hidden;
+  }
+
+  &__need-fill {
+    display: block;
+    height: 100%;
+    border-radius: var(--openbitfun-radius-pill);
+    background: var(--openbitfun-color-accent-default);
+    transition: width var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard);
+
+    // One hue per need state, shared with the sidebar being panel.
+    &[data-openbitfun-need-state='low'] {
+      background: var(--openbitfun-color-status-warning-content);
+    }
+
+    &[data-openbitfun-need-state='high'] {
+      background: var(--openbitfun-color-status-success-content);
+    }
+  }
+
+  &__need-value {
+    width: 44px;
+    flex: 0 0 auto;
+    text-align: right;
+    color: var(--openbitfun-color-content-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  // ── Valence trend ───────────────────────────
+
+  &__trend {
+    margin-top: var(--openbitfun-space-4);
+
+    h3 {
+      margin: 0 0 var(--openbitfun-space-1);
+      font-size: var(--openbitfun-font-size-sm);
+      font-weight: 600;
+    }
+  }
+
+  &__trend-svg {
+    display: block;
+    width: 100%;
+    height: 32px;
+    color: var(--openbitfun-color-accent-default);
+  }
+
+  &__memory-scale {
+    margin-top: var(--openbitfun-space-3);
+    font-size: var(--openbitfun-font-size-sm);
+    color: var(--openbitfun-color-content-muted);
+  }
+
+  // ── Cognitive framework chip ────────────────
+
+  // The panel only reports that the framework is wired up; the tool list and
+  // its switch live in the assistant defaults page.
+  &__framework-chip {
+    padding: 1px 8px;
+    border: 1px solid var(--openbitfun-color-border-default);
+    border-radius: var(--openbitfun-radius-pill);
+    color: var(--openbitfun-color-content-muted);
+    font-size: var(--openbitfun-type-overline-sm-font-size);
+  }
+
+  // ── Morning report card ─────────────────────
+
+  &__morning-greeting {
+    margin: 0 0 var(--openbitfun-space-2);
+    font-size: var(--openbitfun-font-size-md);
+    line-height: 1.6;
+  }
+
+  &__morning-meta {
+    margin: 0 0 var(--openbitfun-space-2);
+    color: var(--openbitfun-color-content-muted);
+    font-size: var(--openbitfun-font-size-sm);
+  }
+
+  &__morning-empty {
+    margin: 0;
+    color: var(--openbitfun-color-content-muted);
+    font-size: var(--openbitfun-font-size-sm);
+  }
+
+  &__morning-section {
+    margin-top: var(--openbitfun-space-3);
+
+    h3 {
+      margin: 0 0 var(--openbitfun-space-1);
+      color: var(--openbitfun-color-content-muted);
+      font-size: var(--openbitfun-font-size-sm);
+      font-weight: 500;
+    }
+  }
+
+  &__morning-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: var(--openbitfun-space-1);
+    font-size: var(--openbitfun-font-size-sm);
+  }
+
+  // ── Cloud memory console ────────────────────
+
+  &__cloud-desc {
+    margin: 0 0 var(--openbitfun-space-3);
+    color: var(--openbitfun-color-content-muted);
+    font-size: var(--openbitfun-font-size-sm);
+  }
+
+  &__cloud-unavailable {
+    margin: 0;
+    color: var(--openbitfun-color-content-muted);
+    font-size: var(--openbitfun-font-size-sm);
+  }
+
+  &__cloud-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--openbitfun-space-3);
+  }
+
+  &__cloud-field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--openbitfun-space-1);
+    font-size: var(--openbitfun-font-size-sm);
+
+    > span {
+      color: var(--openbitfun-color-content-muted);
+    }
+  }
+
+  &__cloud-warning {
+    margin: 0;
+    color: var(--openbitfun-color-status-warning-content);
+    font-size: var(--openbitfun-font-size-sm);
+  }
+
+  &__cloud-ready {
+    display: flex;
+    flex-direction: column;
+    gap: var(--openbitfun-space-3);
+  }
+
+  &__cloud-status-lines {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--openbitfun-space-1) var(--openbitfun-space-3);
+    font-size: var(--openbitfun-font-size-sm);
+    color: var(--openbitfun-color-content-muted);
+
+    [data-openbitfun-state='online'] {
+      color: var(--openbitfun-color-status-success-content);
+    }
+
+    [data-openbitfun-state='offline'] {
+      color: var(--openbitfun-color-status-warning-content);
+    }
+  }
+
+  &__cloud-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--openbitfun-space-2);
+  }
+
+  &__cloud-message {
+    margin: var(--openbitfun-space-2) 0 0;
+    color: var(--openbitfun-color-content-muted);
+    font-size: var(--openbitfun-font-size-sm);
+  }
+
+  // ── Memory timeline + management ────────────
+
+  &__timeline-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--openbitfun-space-2);
+    margin-bottom: var(--openbitfun-space-3);
+  }
+
+  &__toolbar-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--openbitfun-space-2);
+  }
+
+  &__search {
+    display: flex;
+    flex: 1 1 auto;
+    align-items: center;
+    gap: var(--openbitfun-space-2);
+    min-width: 0;
+
+    input {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+  }
+
+  &__add-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--openbitfun-space-2);
+    margin-bottom: var(--openbitfun-space-3);
+  }
+
+  &__add-row {
+    display: flex;
+    align-items: center;
+    gap: var(--openbitfun-space-2);
+
+    input {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+  }
+
+  &__section-label {
+    margin: 0 0 var(--openbitfun-space-2);
+    font-size: var(--openbitfun-font-size-xs);
+    font-weight: 600;
+    color: var(--openbitfun-color-content-muted);
+  }
+
+  &__memory-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--openbitfun-space-2);
+  }
+
+  &__memory-item {
+    display: flex;
+    align-items: baseline;
+    gap: var(--openbitfun-space-2);
+    font-size: var(--openbitfun-font-size-sm);
+    padding: var(--openbitfun-space-2) var(--openbitfun-space-3);
+    border-radius: var(--openbitfun-radius-md);
+    background: var(--openbitfun-color-surface-raised);
+
+    &:hover &-actions,
+    &:focus-within &-actions {
+      opacity: 1;
+      pointer-events: auto;
+    }
+  }
+
+  &__memory-kind,
+  &__memory-layer {
+    flex: 0 0 auto;
+    padding: 1px 8px;
+    border-radius: var(--openbitfun-radius-pill);
+    background: var(--openbitfun-color-surface-subtle);
+    border: 1px solid var(--openbitfun-color-border-default);
+    font-size: var(--openbitfun-font-size-xs);
+    color: var(--openbitfun-color-content-muted);
+  }
+
+  &__memory-layer[data-openbitfun-layer='interaction'] {
+    color: var(--openbitfun-color-status-warning-content);
+    border-color: currentcolor;
+  }
+
+  &__memory-content {
+    flex: 1 1 auto;
+    min-width: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  &__memory-strength {
+    flex: 0 0 auto;
+    color: var(--openbitfun-color-content-muted);
+    font-size: var(--openbitfun-font-size-xs);
+    font-variant-numeric: tabular-nums;
+  }
+
+  &__memory-time {
+    flex: 0 0 auto;
+    color: var(--openbitfun-color-content-muted);
+    font-size: var(--openbitfun-font-size-xs);
+    font-variant-numeric: tabular-nums;
+  }
+
+  &__memory-actions {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--openbitfun-motion-duration-fast) var(--openbitfun-motion-easing-standard);
+  }
+
+  &__memory-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border: none;
+    border-radius: var(--openbitfun-radius-sm);
+    background: transparent;
+    color: var(--openbitfun-color-content-muted);
+    cursor: pointer;
+
+    &:hover,
+    &:focus-visible {
+      background: var(--openbitfun-color-surface-subtle);
+      color: var(--openbitfun-color-content-primary);
+    }
+
+    &.is-armed {
+      color: var(--openbitfun-color-status-danger-content);
+      background: var(--openbitfun-color-surface-subtle);
+    }
+  }
+
+  &__timeline-more {
+    display: flex;
+    justify-content: center;
+    margin-top: var(--openbitfun-space-2);
+  }
+
+  &__timeline-end {
+    margin: var(--openbitfun-space-2) 0 0;
+    text-align: center;
+    color: var(--openbitfun-color-content-muted);
+    font-size: var(--openbitfun-font-size-xs);
+  }
+
+  &__empty {
+    margin: 0;
+    color: var(--openbitfun-color-content-muted);
+    font-size: var(--openbitfun-font-size-sm);
+  }
+}

@@ -1,5 +1,5 @@
 import path from "node:path"
-import { realpath } from "node:fs/promises"
+import { readFile, realpath, stat } from "node:fs/promises"
 import { createHash } from "node:crypto"
 import type {
   AuthHook,
@@ -28,7 +28,7 @@ import {
   loadPreparedPlugins,
   type PreparePluginsResult,
 } from "./loader"
-import { HostMethodSchemas } from "./protocol"
+import { HostMethodSchemas, MAX_UI_FILE_BYTES, MAX_UI_SCENES, UI_CONTRIBUTIONS_V1, type UiEventPayload, type UiRegistration } from "./protocol"
 import { toolParametersToJsonSchema, validateToolArguments } from "./tool-schema"
 import { cloneWireValue, type WireValue } from "./wire"
 
@@ -128,6 +128,19 @@ type ActiveTool = {
   stoppedAfterAbort: boolean
 }
 
+type UiTreeDoc = { schemaVersion: number; root: unknown }
+
+type UiEventHandler = (input: {
+  sceneID: string
+  action: string
+  payload?: UiEventPayload
+}) => UiTreeDoc | undefined | Promise<UiTreeDoc | undefined>
+
+type UiHandlerRegistration = {
+  plugin: PluginMeta
+  event: UiEventHandler
+}
+
 type Instance = {
   id: string
   generationKey?: string
@@ -142,6 +155,8 @@ type Instance = {
   auth: Map<string, AuthRegistration>
   providers: Map<string, ProviderRegistration>
   workspaces: Map<string, WorkspaceRegistration>
+  ui: Map<string, UiRegistration>
+  uiHandlers: Map<string, UiHandlerRegistration>
   flows: Map<string, OAuthFlow>
   fetches: Map<string, AuthFetch>
   activeTools: Map<string, ActiveTool>
@@ -179,6 +194,7 @@ export class ExtensionHost {
   readonly #rpc: RpcConnection
   readonly #streams: StreamBridge
   readonly #cacheDirectory: string
+  readonly #capabilities: ReadonlySet<string>
   readonly #gatewayFactory: GatewayFactory
   readonly #preparePlugins: (input: LoadPluginsInput) => Promise<PreparePluginsResult>
   readonly #shell: PluginInput["$"]
@@ -194,6 +210,7 @@ export class ExtensionHost {
     rpc: RpcConnection
     streams: StreamBridge
     cacheDirectory: string
+    capabilities?: ReadonlySet<string>
     gatewayFactory: GatewayFactory
     preparePlugins: (input: LoadPluginsInput) => Promise<PreparePluginsResult>
     shell: PluginInput["$"]
@@ -201,6 +218,7 @@ export class ExtensionHost {
     this.#rpc = input.rpc
     this.#streams = input.streams
     this.#cacheDirectory = input.cacheDirectory
+    this.#capabilities = input.capabilities ?? new Set<string>()
     this.#gatewayFactory = input.gatewayFactory
     this.#preparePlugins = input.preparePlugins
     this.#shell = input.shell
@@ -302,6 +320,8 @@ export class ExtensionHost {
         auth: new Map(),
         providers: new Map(),
         workspaces: new Map(),
+        ui: new Map(),
+        uiHandlers: new Map(),
         flows: new Map(),
         fetches: new Map(),
         activeTools: new Map(),
@@ -444,6 +464,7 @@ export class ExtensionHost {
 
         this.#assertOpening(instance)
         this.#indexRegistrations(instance, diagnostics)
+        await this.#loadUiSections(instance, loaded.loaded)
         this.#assertOpening(instance)
         const result = HostMethodSchemas["host.instance.open"].result.parse(
           openResult(instance, config, diagnostics, configContributions),
@@ -980,9 +1001,103 @@ export class ExtensionHost {
     }
   }
 
+  describeUi(input: { instanceID: string; generationKey?: string; revision?: string }) {
+    const instance = this.#instance(input.instanceID)
+    assertGeneration(instance, input.generationKey, input.revision)
+    return {
+      instanceID: instance.id,
+      generationKey: instance.generationKey,
+      revision: instance.revision,
+      ui: Array.from(instance.ui.values()),
+    }
+  }
+
+  async dispatchUiEvent(input: {
+    instanceID: string
+    generationKey?: string
+    revision?: string
+    plugin: { id?: string; spec: string }
+    sceneID: string
+    action: string
+    payload?: UiEventPayload
+  }) {
+    const instance = this.#instance(input.instanceID)
+    assertGeneration(instance, input.generationKey, input.revision)
+    const registration = instance.uiHandlers.get(input.plugin.id ?? input.plugin.spec)
+    if (!registration) {
+      return {
+        instanceID: instance.id,
+        generationKey: instance.generationKey,
+        revision: instance.revision,
+        tree: null,
+      }
+    }
+    try {
+      const tree = await registration.event({
+        sceneID: input.sceneID,
+        action: input.action,
+        ...(input.payload === undefined ? {} : { payload: input.payload }),
+      })
+      if (tree === undefined || tree === null) {
+        return {
+          instanceID: instance.id,
+          generationKey: instance.generationKey,
+          revision: instance.revision,
+          tree: null,
+        }
+      }
+      if (typeof tree !== "object" || Array.isArray(tree)) {
+        throw new TypeError("ui.event must return a tree object or undefined")
+      }
+      return {
+        instanceID: instance.id,
+        generationKey: instance.generationKey,
+        revision: instance.revision,
+        tree: cloneWireValue(tree as WireValue, "tree"),
+      }
+    } catch (error) {
+      throw pluginError(registration.plugin, "ui.event", error)
+    }
+  }
+
   #assertAccepting() {
     if (this.#status === "running") return
     throw new ExtensionHostError(-32004, "Extension host is shutting down", { kind: "host_shutting_down" })
+  }
+
+  // Reads every activated plugin's declarative UI section (contributions.json
+  // plus the scene entry files it references) into the instance registration
+  // table. The host is a bounded, path-confined file reader here — schema and
+  // limit verdicts belong to the Rust projection (single validation funnel).
+  // A missing ui/ section means "no UI contributions" and is not an error.
+  async #loadUiSections(instance: Instance, loaded: LoadedPlugin[]) {
+    if (!this.#capabilities.has(UI_CONTRIBUTIONS_V1)) {
+      if (loaded.length > 0) {
+        await publishDiagnostic(this.#rpc, {
+          level: "warn",
+          message: "ui-contributions-v1 was not negotiated; plugin UI contributions stay inactive",
+          instanceID: instance.id,
+          operation: "ui",
+        }).catch(() => {})
+      }
+      return
+    }
+    for (const plugin of loaded) {
+      this.#assertOpening(instance)
+      try {
+        const registration = await loadUiSection(plugin)
+        if (registration) instance.ui.set(uiPluginKey(plugin), registration)
+      } catch (error) {
+        await publishDiagnostic(this.#rpc, {
+          level: "error",
+          message: `Plugin ${plugin.spec} UI contributions were rejected: ${errorMessage(error)}`,
+          instanceID: instance.id,
+          plugin: { ...(plugin.entrypoints[0]?.id ? { id: plugin.entrypoints[0].id } : {}), spec: plugin.spec },
+          operation: "ui",
+          error: errorData(error),
+        }).catch(() => {})
+      }
+    }
   }
 
   #assertOpening(instance: Instance) {
@@ -1072,6 +1187,8 @@ export class ExtensionHost {
       await instance.gateway.close().catch(() => {})
       instance.flows.clear()
       instance.fetches.clear()
+      instance.ui.clear()
+      instance.uiHandlers.clear()
 
       for (const retained of instance.hooks) {
         if (instance.disposed.has(retained)) continue
@@ -1200,8 +1317,84 @@ export class ExtensionHost {
       if (retained.hooks.provider) {
         instance.providers.set(retained.hooks.provider.id, { plugin: retained.plugin, hook: retained.hooks.provider })
       }
+      const ui = (retained.hooks as Hooks & { ui?: { event?: UiEventHandler } }).ui
+      if (typeof ui?.event === "function") {
+        instance.uiHandlers.set(uiPluginKey(retained.plugin), { plugin: retained.plugin, event: ui.event })
+      }
     }
   }
+}
+
+function uiPluginKey(plugin: { id?: string; spec: string }) {
+  return plugin.id ?? plugin.spec
+}
+
+async function loadUiSection(plugin: LoadedPlugin): Promise<UiRegistration | null> {
+  // A file plugin's target is its entry file; the package directory is what
+  // carries ui/ (same normalization as readPluginPackage).
+  const info = await stat(plugin.target)
+  const packageDirectory = info.isDirectory() ? plugin.target : path.dirname(plugin.target)
+  let manifestRaw: string
+  try {
+    manifestRaw = await readFile(path.join(packageDirectory, "ui", "contributions.json"), "utf8")
+  } catch (error) {
+    if (isMissingFileError(error)) return null
+    throw error
+  }
+  if (Buffer.byteLength(manifestRaw, "utf8") > MAX_UI_FILE_BYTES) {
+    throw new Error(`ui/contributions.json exceeds ${MAX_UI_FILE_BYTES} bytes`)
+  }
+  let contributions: unknown
+  try {
+    contributions = JSON.parse(manifestRaw)
+  } catch (error) {
+    throw new Error(`ui/contributions.json is not valid JSON: ${errorMessage(error)}`)
+  }
+  if (typeof contributions !== "object" || contributions === null || Array.isArray(contributions)) {
+    throw new TypeError("ui/contributions.json must be a JSON object")
+  }
+  const scenes = (contributions as { scenes?: unknown }).scenes
+  if (scenes !== undefined && !Array.isArray(scenes)) {
+    throw new TypeError("ui/contributions.json scenes must be an array")
+  }
+  const files: Record<string, string> = {}
+  for (const scene of (scenes ?? []).slice(0, MAX_UI_SCENES)) {
+    const entry = (scene as { entry?: unknown } | null)?.entry
+    if (typeof entry !== "string") throw new TypeError("scene entry must be a string")
+    const relpath = confinedUiEntry(entry)
+    if (files[relpath] !== undefined) continue
+    const body = await readFile(path.join(packageDirectory, ...relpath.split("/")), "utf8")
+    if (Buffer.byteLength(body, "utf8") > MAX_UI_FILE_BYTES) {
+      throw new Error(`UI scene file ${relpath} exceeds ${MAX_UI_FILE_BYTES} bytes`)
+    }
+    files[relpath] = body
+  }
+  const entrypoint = plugin.entrypoints[0]
+  return {
+    plugin: {
+      ...(entrypoint?.id ? { id: entrypoint.id } : {}),
+      spec: plugin.spec,
+      entry: plugin.entry,
+      index: entrypoint?.index ?? 0,
+    },
+    contributions: contributions as UiRegistration["contributions"],
+    files,
+  }
+}
+
+function confinedUiEntry(entry: string): string {
+  if (entry.length === 0 || entry.includes("\0") || entry.includes("\\")) {
+    throw new TypeError(`scene entry ${JSON.stringify(entry)} is not a relative ui/ path`)
+  }
+  const normalized = path.posix.normalize(entry)
+  if (normalized.startsWith("/") || normalized.split("/").includes("..") || !normalized.startsWith("ui/")) {
+    throw new TypeError(`scene entry ${JSON.stringify(entry)} is not a relative ui/ path`)
+  }
+  return normalized
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "ENOENT"
 }
 
 async function promiseWithDeadline<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
@@ -1260,6 +1453,7 @@ function openResult(
       name: adapter.name,
       description: adapter.description,
     })),
+    ui: Array.from(instance.ui.values()),
   }
 }
 
