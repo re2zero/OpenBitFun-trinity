@@ -2028,6 +2028,23 @@ pub(crate) struct ShellWindow {
     /// (`provider`, `configured`); fetched when the settings view opens.
     pub(crate) websearch_status: Option<(String, bool)>,
     pub(crate) websearch_credential_input: Entity<InputState>,
+    /// G-P1: the task editor dialog's inputs and page flags. The inputs live
+    /// on the window like the other dialog fields so a re-render keeps text;
+    /// the flags below select the schedule/target shape and the edit target.
+    pub(crate) task_name_input: Entity<InputState>,
+    pub(crate) task_prompt_input: Entity<TextareaState>,
+    pub(crate) task_at_input: Entity<InputState>,
+    pub(crate) task_every_input: Entity<InputState>,
+    pub(crate) task_anchor_input: Entity<InputState>,
+    pub(crate) task_cron_input: Entity<InputState>,
+    pub(crate) task_tz_input: Entity<InputState>,
+    pub(crate) task_editor_target: Option<String>,
+    pub(crate) task_editor_kind: crate::tasks::TaskScheduleKind,
+    pub(crate) task_editor_unit: crate::tasks::TaskIntervalUnit,
+    pub(crate) task_editor_target_kind: crate::tasks::TaskTargetKind,
+    pub(crate) task_editor_session: Option<String>,
+    pub(crate) task_editor_enabled: bool,
+    pub(crate) task_editor_error: Option<String>,
     /// R7b plugin UI contributions: the projection (fixture provider behind
     /// the env gate) plus the per-scene shell runtime (control entities and
     /// visible diagnostics). Rendering dispatches through `crate::plugin_ui`.
@@ -2106,6 +2123,15 @@ impl ShellWindow {
         let mcp_import_text = cx.new(|cx| TextareaState::new(window, cx));
         let mcp_import_path = cx.new(|cx| InputState::new(window, cx));
         let websearch_credential_input = cx.new(|cx| InputState::new(window, cx));
+        let task_name_input = cx.new(|cx| InputState::new(window, cx));
+        let task_prompt_input = cx.new(|cx| TextareaState::new(window, cx));
+        let task_at_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("YYYY-MM-DDTHH:MM"));
+        let task_every_input = cx.new(|cx| InputState::new(window, cx).placeholder("1"));
+        let task_anchor_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("YYYY-MM-DDTHH:MM"));
+        let task_cron_input = cx.new(|cx| InputState::new(window, cx).placeholder("0 8 * * *"));
+        let task_tz_input = cx.new(|cx| InputState::new(window, cx).placeholder("Asia/Shanghai"));
         let settings_search_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(text.settings_nav_search_placeholder.clone())
         });
@@ -2273,6 +2299,20 @@ impl ShellWindow {
             usage_activity_loading: false,
             websearch_status: None,
             websearch_credential_input,
+            task_name_input,
+            task_prompt_input,
+            task_at_input,
+            task_every_input,
+            task_anchor_input,
+            task_cron_input,
+            task_tz_input,
+            task_editor_target: None,
+            task_editor_kind: crate::tasks::TaskScheduleKind::At,
+            task_editor_unit: crate::tasks::TaskIntervalUnit::Hour,
+            task_editor_target_kind: crate::tasks::TaskTargetKind::Workspace,
+            task_editor_session: None,
+            task_editor_enabled: true,
+            task_editor_error: None,
             plugin_ui,
             plugin_ui_scenes: std::collections::BTreeMap::new(),
             plugin_ui_auto_open: Self::plugin_ui_auto_open_requested(),
@@ -13334,6 +13374,104 @@ mod tests {
             content.size.height,
             container.size.height
         );
+    }
+
+    /// G-P1: the scheduled-job dialog opens over the shell window (dialogs are
+    /// window overlays, so this needs a real root-view frame) and prefills from
+    /// the edited job through the window-owned inputs the save path reads.
+    #[gpui_kit::test]
+    fn task_editor_opens_prefilled_from_the_edited_job(cx: &mut gpui_kit::TestAppContext) {
+        use openbitfun_core::service::cron::{
+            CronJob, CronJobPayload, CronJobTarget, CronSchedule, CronWorkspaceRef,
+        };
+
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let editor_tx = tx.clone();
+        // Dialogs live on the gpui-component window root, so the test window
+        // needs the same `Root` wrapper the real `gpui_kit::open_window`
+        // installs; a bare view would panic at `WindowState`.
+        let (root, window) = cx.add_window_view(|window, cx| {
+            let shell = cx.new(|cx| ShellWindow::new(tx, rx, window, cx));
+            gpui_kit::base::Root::new(shell, window, cx)
+        });
+        let shell = window.update(|_, cx| {
+            root.read(cx)
+                .view()
+                .clone()
+                .downcast::<ShellWindow>()
+                .ok()
+                .expect("the window root wraps the shell")
+        });
+        let job = CronJob {
+            id: "job-edit".to_string(),
+            name: "Nightly".to_string(),
+            schedule: CronSchedule::Cron {
+                expr: "0 9 * * *".to_string(),
+                tz: Some("Asia/Shanghai".to_string()),
+            },
+            payload: CronJobPayload {
+                text: "Summarize the day".to_string(),
+            },
+            enabled: false,
+            target: CronJobTarget::Workspace {
+                workspace: CronWorkspaceRef {
+                    workspace_id: Some("ws-1".to_string()),
+                    workspace_path: "/tmp/ws".to_string(),
+                    project_workspace_path: None,
+                    execution_target: None,
+                    remote_connection_id: None,
+                    remote_ssh_host: None,
+                },
+                launch: Default::default(),
+            },
+            created_at_ms: 0,
+            config_updated_at_ms: 0,
+            updated_at_ms: 0,
+            state: Default::default(),
+        };
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.tabs.open(TabKind::Scene(tabs::SceneId::Tasks));
+                shell.tasks.loaded = true;
+                cx.notify();
+            });
+            crate::tasks::open_task_editor(
+                shell.downgrade(),
+                Some(job.clone()),
+                editor_tx.clone(),
+                window,
+                cx,
+            );
+        });
+        draw_window_for_test(window);
+        let editor = window
+            .debug_bounds("task-editor")
+            .expect("the task editor dialog renders over the window");
+        assert!(editor.size.width >= px(500.));
+
+        window.update(|_, cx| {
+            let shell = shell.read(cx);
+            assert_eq!(
+                shell.task_name_input.read(cx).value().to_string(),
+                "Nightly"
+            );
+            assert_eq!(
+                shell.task_prompt_input.read(cx).value().to_string(),
+                "Summarize the day"
+            );
+            assert_eq!(shell.task_editor_kind, crate::tasks::TaskScheduleKind::Cron);
+            assert_eq!(
+                shell.task_cron_input.read(cx).value().to_string(),
+                "0 9 * * *"
+            );
+            assert_eq!(
+                shell.task_tz_input.read(cx).value().to_string(),
+                "Asia/Shanghai"
+            );
+            assert_eq!(shell.task_editor_target.as_deref(), Some("job-edit"));
+            assert!(!shell.task_editor_enabled);
+        });
     }
 
     /// The trinity tab fetches status and timeline on independent flags: the

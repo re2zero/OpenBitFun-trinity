@@ -1,22 +1,32 @@
 //! Shell task board (R4): the management slice of the shared cron service
 //! laid out as an overview card, a month calendar, and the job list (enable /
-//! disable / run now / delete). Job creation stays with the agent tool and the
-//! desktop for now; the board always shows the full shared store, labelled
-//! with each job's target, so jobs from other surfaces are visible instead of
-//! filtered away. The calendar only marks instants the store actually carries
-//! (next scheduled run, latest finished run) — the service keeps no run
-//! history, so past days stay blank on purpose.
+//! disable / run now / edit / delete). G-P1 adds the create/edit dialog, so
+//! the board can schedule a job without leaving the shell; the board always
+//! shows the full shared store, labelled with each job's target, so jobs from
+//! other surfaces are visible instead of filtered away. The calendar only
+//! marks instants the store actually carries (next scheduled run, latest
+//! finished run) — the service keeps no run history, so past days stay blank
+//! on purpose.
 
-use chrono::TimeZone as _;
+use chrono::{DateTime, Local, NaiveDateTime, SecondsFormat, TimeZone as _};
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
-use gpui_kit::component::{ActiveTheme, Sizable, StyledExt as _};
+use gpui_kit::component::input::{Input, Textarea};
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::switch::Switch;
+use gpui_kit::component::{ActiveTheme, Disableable, Sizable, StyledExt as _, WindowExt};
 use gpui_kit::InteractiveElement as _;
-use gpui_kit::{div, prelude::*, px, App, SharedString};
-use openbitfun_core::service::cron::{CronJob, CronSchedule};
+use gpui_kit::{
+    div, prelude::*, px, Anchor, App, ClickEvent, IntoElement, SharedString, WeakEntity, Window,
+};
+use openbitfun_core::service::cron::{
+    CreateCronJobRequest, CronJob, CronJobPayload, CronJobTarget, CronLaunchSpec, CronSchedule,
+    CronWorkspaceRef, UpdateCronJobRequest,
+};
 use tokio::sync::mpsc;
 
 use crate::i18n::ShellText;
 use crate::runtime::{self, RuntimeEvent};
+use crate::shell::ShellWindow;
 
 /// State of the task board; lives on the shell window and is updated only
 /// through [`RuntimeEvent`] projections.
@@ -28,6 +38,369 @@ pub(crate) struct TasksPageState {
     pub loaded: bool,
     /// G-P2: the calendar day whose detail panel is open (web `selectedDayKey`).
     pub selected_day: Option<chrono::NaiveDate>,
+}
+
+/// G-P1: which schedule shape the editor is filling in (web `ScheduleKind`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TaskScheduleKind {
+    At,
+    Every,
+    Cron,
+}
+
+/// G-P1: interval units offered by the editor. The wire format stays
+/// milliseconds; the unit only decides how a value is entered and read back,
+/// so a daily job reads "every 1 day" rather than "every 1440 minutes".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TaskIntervalUnit {
+    Minute,
+    Hour,
+    Day,
+}
+
+/// G-P1: where a job runs — a fresh session in the current workspace or a
+/// bound existing session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TaskTargetKind {
+    Workspace,
+    Session,
+}
+
+pub(crate) const TASK_MINUTE_MS: u64 = 60_000;
+pub(crate) const TASK_HOUR_MS: u64 = 60 * TASK_MINUTE_MS;
+pub(crate) const TASK_DAY_MS: u64 = 24 * TASK_HOUR_MS;
+/// The web editor caps the prompt at 1000 characters (`TodoEditor.tsx`).
+pub(crate) const TASK_PROMPT_MAX_CHARS: usize = 1_000;
+
+impl TaskIntervalUnit {
+    pub(crate) fn ms(self) -> u64 {
+        match self {
+            Self::Minute => TASK_MINUTE_MS,
+            Self::Hour => TASK_HOUR_MS,
+            Self::Day => TASK_DAY_MS,
+        }
+    }
+}
+
+impl TaskScheduleKind {
+    fn from_schedule(schedule: &CronSchedule) -> Self {
+        match schedule {
+            CronSchedule::At { .. } => Self::At,
+            CronSchedule::Every { .. } => Self::Every,
+            CronSchedule::Cron { .. } => Self::Cron,
+        }
+    }
+}
+
+impl TaskTargetKind {
+    fn from_target(target: &CronJobTarget) -> Self {
+        match target {
+            CronJobTarget::Session { .. } => Self::Session,
+            CronJobTarget::Workspace { .. } => Self::Workspace,
+        }
+    }
+}
+
+/// A local wall-clock value (`YYYY-MM-DDTHH:MM`) to RFC 3339. The editor
+/// shows local time (web `LocalizedDateTimeField`); the store wants an
+/// absolute instant. A time that does not exist in the local calendar (a DST
+/// gap) is rejected rather than silently shifted.
+pub(crate) fn local_input_to_rfc3339(value: &str) -> Option<String> {
+    let value = value.trim();
+    let naive = NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S")
+        .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M"))
+        .ok()?;
+    let local = Local.from_local_datetime(&naive).earliest()?;
+    Some(local.to_rfc3339_opts(SecondsFormat::Secs, true))
+}
+
+/// The inverse used to prefill the editor, truncated to the minute the input
+/// accepts. A value the wire could not have written is passed through so the
+/// user sees (and can fix) it instead of an empty field.
+pub(crate) fn rfc3339_to_local_input(at: &str) -> String {
+    DateTime::parse_from_rfc3339(at)
+        .map(|at| {
+            at.with_timezone(&Local)
+                .format("%Y-%m-%dT%H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|_| at.to_string())
+}
+
+fn now_local_input() -> String {
+    Local::now().format("%Y-%m-%dT%H:%M").to_string()
+}
+
+fn timestamp_ms_to_local_input(at_ms: i64) -> String {
+    Local
+        .timestamp_millis_opt(at_ms)
+        .single()
+        .map(|at| at.format("%Y-%m-%dT%H:%M").to_string())
+        .unwrap_or_default()
+}
+
+fn format_interval_value(value: f64) -> String {
+    if value.fract() == 0.0 {
+        format!("{}", value as u64)
+    } else {
+        let text = format!("{value:.2}");
+        text.trim_end_matches('0').trim_end_matches('.').to_string()
+    }
+}
+
+/// Milliseconds to the largest unit that divides them evenly, so a value the
+/// editor saved reads back the way it was entered. Sub-minute intervals stay
+/// fractional minutes (web `splitInterval`).
+pub(crate) fn split_interval(every_ms: u64) -> (String, TaskIntervalUnit) {
+    if every_ms > 0 && every_ms % TASK_DAY_MS == 0 {
+        ((every_ms / TASK_DAY_MS).to_string(), TaskIntervalUnit::Day)
+    } else if every_ms > 0 && every_ms % TASK_HOUR_MS == 0 {
+        (
+            (every_ms / TASK_HOUR_MS).to_string(),
+            TaskIntervalUnit::Hour,
+        )
+    } else {
+        (
+            format_interval_value(every_ms as f64 / TASK_MINUTE_MS as f64),
+            TaskIntervalUnit::Minute,
+        )
+    }
+}
+
+/// The editor's interval value in the selected unit, rounded to whole
+/// milliseconds. `None` for anything the user could not have meant.
+fn interval_value_to_ms(value: &str, unit: TaskIntervalUnit) -> Option<u64> {
+    let value: f64 = value.trim().parse().ok()?;
+    if !value.is_finite() || value <= 0.0 {
+        return None;
+    }
+    let ms = (value * unit.ms() as f64).round();
+    if ms.is_finite() && ms >= 1.0 {
+        Some(ms as u64)
+    } else {
+        None
+    }
+}
+
+/// G-P1 editor state as plain data, so schedule construction and validation
+/// stay testable without a window.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TaskDraft {
+    pub name: String,
+    pub prompt: String,
+    pub schedule_kind: TaskScheduleKind,
+    /// Local `YYYY-MM-DDTHH:MM` for the `at` schedule.
+    pub at: String,
+    /// Free-form interval value in `interval_unit`.
+    pub every_value: String,
+    /// Local `YYYY-MM-DDTHH:MM` the interval counts from; blank means the
+    /// creation time (web `anchorMs`).
+    pub anchor: String,
+    pub interval_unit: TaskIntervalUnit,
+    pub cron_expr: String,
+    pub timezone: String,
+    pub target_kind: TaskTargetKind,
+    pub session_id: Option<String>,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TaskDraftError {
+    Name,
+    Prompt,
+    PromptTooLong,
+    At,
+    Every,
+    Anchor,
+    Cron,
+    Session,
+    Workspace,
+}
+
+impl TaskDraftError {
+    pub(crate) fn message(self, text: &ShellText) -> String {
+        match self {
+            Self::Name => text.tasks_editor_error_name.clone(),
+            Self::Prompt => text.tasks_editor_error_prompt.clone(),
+            Self::PromptTooLong => text.tasks_editor_error_prompt_long.clone(),
+            Self::At => text.tasks_editor_error_at.clone(),
+            Self::Every => text.tasks_editor_error_every.clone(),
+            Self::Anchor => text.tasks_editor_error_anchor.clone(),
+            Self::Cron => text.tasks_editor_error_cron.clone(),
+            Self::Session => text.tasks_editor_error_session.clone(),
+            Self::Workspace => text.tasks_editor_error_workspace.clone(),
+        }
+    }
+}
+
+impl TaskDraft {
+    /// The create dialog's starting point (web `createEmptyDraft`): one-shot
+    /// at the current local minute, an hourly interval, and the daily cron
+    /// example.
+    pub(crate) fn blank() -> Self {
+        Self {
+            name: String::new(),
+            prompt: String::new(),
+            schedule_kind: TaskScheduleKind::At,
+            at: now_local_input(),
+            every_value: "1".to_string(),
+            anchor: String::new(),
+            interval_unit: TaskIntervalUnit::Hour,
+            cron_expr: "0 8 * * *".to_string(),
+            timezone: String::new(),
+            target_kind: TaskTargetKind::Workspace,
+            session_id: None,
+            enabled: true,
+        }
+    }
+
+    /// Prefill from an existing job (web `jobToDraft`), preserving the
+    /// interval unit the value was entered in.
+    pub(crate) fn from_job(job: &CronJob) -> Self {
+        let mut draft = Self::blank();
+        draft.name = job.name.clone();
+        draft.prompt = job.payload.text.clone();
+        draft.enabled = job.enabled;
+        draft.target_kind = TaskTargetKind::from_target(&job.target);
+        draft.session_id = job.session_id().map(str::to_string);
+        draft.schedule_kind = TaskScheduleKind::from_schedule(&job.schedule);
+        match &job.schedule {
+            CronSchedule::At { at } => draft.at = rfc3339_to_local_input(at),
+            CronSchedule::Every {
+                every_ms,
+                anchor_ms,
+            } => {
+                let (value, unit) = split_interval(*every_ms);
+                draft.every_value = value;
+                draft.interval_unit = unit;
+                draft.anchor = (*anchor_ms)
+                    .map(timestamp_ms_to_local_input)
+                    .unwrap_or_default();
+            }
+            CronSchedule::Cron { expr, tz } => {
+                draft.cron_expr = expr.clone();
+                draft.timezone = tz.clone().unwrap_or_default();
+            }
+        }
+        draft
+    }
+
+    pub(crate) fn schedule(&self) -> Result<CronSchedule, TaskDraftError> {
+        match self.schedule_kind {
+            TaskScheduleKind::At => Ok(CronSchedule::At {
+                at: local_input_to_rfc3339(&self.at).ok_or(TaskDraftError::At)?,
+            }),
+            TaskScheduleKind::Every => {
+                let every_ms = interval_value_to_ms(&self.every_value, self.interval_unit)
+                    .ok_or(TaskDraftError::Every)?;
+                let anchor = self.anchor.trim();
+                let anchor_ms = if anchor.is_empty() {
+                    None
+                } else {
+                    Some(
+                        local_input_to_rfc3339(anchor)
+                            .and_then(|at| DateTime::parse_from_rfc3339(&at).ok())
+                            .map(|at| at.timestamp_millis())
+                            .ok_or(TaskDraftError::Anchor)?,
+                    )
+                };
+                Ok(CronSchedule::Every {
+                    every_ms,
+                    anchor_ms,
+                })
+            }
+            TaskScheduleKind::Cron => {
+                let expr = self.cron_expr.trim();
+                if expr.is_empty() {
+                    return Err(TaskDraftError::Cron);
+                }
+                let tz = self.timezone.trim();
+                Ok(CronSchedule::Cron {
+                    expr: expr.to_string(),
+                    tz: (!tz.is_empty()).then(|| tz.to_string()),
+                })
+            }
+        }
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), TaskDraftError> {
+        if self.name.trim().is_empty() {
+            return Err(TaskDraftError::Name);
+        }
+        if self.prompt.trim().is_empty() {
+            return Err(TaskDraftError::Prompt);
+        }
+        if self.prompt.chars().count() > TASK_PROMPT_MAX_CHARS {
+            return Err(TaskDraftError::PromptTooLong);
+        }
+        if self.target_kind == TaskTargetKind::Session
+            && self
+                .session_id
+                .as_deref()
+                .map(str::trim)
+                .is_none_or(str::is_empty)
+        {
+            return Err(TaskDraftError::Session);
+        }
+        self.schedule().map(|_| ())
+    }
+
+    pub(crate) fn target(
+        &self,
+        workspace: CronWorkspaceRef,
+    ) -> Result<CronJobTarget, TaskDraftError> {
+        match self.target_kind {
+            TaskTargetKind::Workspace => Ok(CronJobTarget::Workspace {
+                workspace,
+                launch: CronLaunchSpec::default(),
+            }),
+            TaskTargetKind::Session => {
+                let session_id = self
+                    .session_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .ok_or(TaskDraftError::Session)?;
+                Ok(CronJobTarget::Session {
+                    session_id: session_id.to_string(),
+                    workspace,
+                })
+            }
+        }
+    }
+
+    pub(crate) fn create_request(
+        &self,
+        workspace: CronWorkspaceRef,
+    ) -> Result<CreateCronJobRequest, TaskDraftError> {
+        self.validate()?;
+        Ok(CreateCronJobRequest {
+            name: self.name.trim().to_string(),
+            schedule: self.schedule()?,
+            payload: CronJobPayload {
+                text: self.prompt.trim().to_string(),
+            },
+            enabled: self.enabled,
+            target: self.target(workspace)?,
+        })
+    }
+
+    /// Every field the editor can change, including the interval anchor.
+    pub(crate) fn update_request(
+        &self,
+        workspace: CronWorkspaceRef,
+    ) -> Result<UpdateCronJobRequest, TaskDraftError> {
+        self.validate()?;
+        Ok(UpdateCronJobRequest {
+            name: Some(self.name.trim().to_string()),
+            schedule: Some(self.schedule()?),
+            payload: Some(CronJobPayload {
+                text: self.prompt.trim().to_string(),
+            }),
+            enabled: Some(self.enabled),
+            target: Some(self.target(workspace)?),
+        })
+    }
 }
 
 /// Web `TodoItemRow` badges: the row flags this store can answer.
@@ -180,6 +553,8 @@ pub(crate) fn render_page(
     cx: &App,
 ) -> gpui_kit::AnyElement {
     let reload_tx = tx.clone();
+    let new_view = view.clone();
+    let new_tx = tx.clone();
     // Natural height: `h_full()` capped the page inside its scroll wrapper at
     // the viewport height, so a long job list had no scroll extent.
     let mut column = div()
@@ -202,16 +577,38 @@ pub(crate) fn render_page(
                         .child(text.tasks_title.clone()),
                 )
                 .child(
-                    Button::new("tasks-reload")
-                        .icon(gpui_kit::assets::IconName::RefreshCw)
-                        .small()
-                        .with_variant(ButtonVariant::Ghost)
-                        .tooltip(text.sessions_reload.clone())
-                        .on_click(move |_, _, _| {
-                            if let Some(handle) = runtime::runtime_handle() {
-                                handle.reload_cron_jobs(reload_tx.clone());
-                            }
-                        }),
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            Button::new("tasks-new")
+                                .label(text.tasks_new.clone())
+                                .small()
+                                .with_variant(ButtonVariant::Primary)
+                                .on_click(move |_, window, cx| {
+                                    open_task_editor(
+                                        new_view.clone(),
+                                        None,
+                                        new_tx.clone(),
+                                        window,
+                                        cx,
+                                    );
+                                }),
+                        )
+                        .child(
+                            Button::new("tasks-reload")
+                                .icon(gpui_kit::assets::IconName::RefreshCw)
+                                .small()
+                                .with_variant(ButtonVariant::Ghost)
+                                .tooltip(text.sessions_reload.clone())
+                                .on_click(move |_, _, _| {
+                                    if let Some(handle) = runtime::runtime_handle() {
+                                        handle.reload_cron_jobs(reload_tx.clone());
+                                    }
+                                }),
+                        ),
                 ),
         );
 
@@ -251,7 +648,7 @@ pub(crate) fn render_page(
         return column.into_any_element();
     }
 
-    column = column.child(render_job_list(state, tx, text, cx));
+    column = column.child(render_job_list(state, &view, tx, text, cx));
 
     column.into_any_element()
 }
@@ -714,6 +1111,7 @@ fn legend_item(color: gpui_kit::Hsla, label: String, cx: &App) -> gpui_kit::Div 
 /// visible as such instead of silently missing.
 fn render_job_list(
     state: &TasksPageState,
+    view: &WeakEntity<ShellWindow>,
     tx: &mpsc::UnboundedSender<RuntimeEvent>,
     text: &ShellText,
     cx: &App,
@@ -732,9 +1130,11 @@ fn render_job_list(
         match inactive_reason(job) {
             None => {
                 let badges = job_badges(job, next_id.as_deref(), now_ms);
-                active = active.child(render_job_row(job, &badges, None, tx, text, cx));
+                active = active.child(render_job_row(job, &badges, None, view, tx, text, cx));
             }
-            Some(reason) => inactive.push(render_job_row(job, &[], Some(reason), tx, text, cx)),
+            Some(reason) => {
+                inactive.push(render_job_row(job, &[], Some(reason), view, tx, text, cx))
+            }
         }
     }
 
@@ -760,6 +1160,7 @@ fn render_job_row(
     job: &CronJob,
     badges: &[JobBadge],
     inactive: Option<InactiveReason>,
+    view: &WeakEntity<ShellWindow>,
     tx: &mpsc::UnboundedSender<RuntimeEvent>,
     text: &ShellText,
     cx: &App,
@@ -769,6 +1170,9 @@ fn render_job_row(
     let enabled = job.enabled;
     let run_tx = tx.clone();
     let job_id_run = job.id.clone();
+    let edit_view = view.clone();
+    let edit_job = job.clone();
+    let edit_tx = tx.clone();
     let delete_tx = tx.clone();
     let job_id_delete = job.id.clone();
 
@@ -857,6 +1261,21 @@ fn render_job_row(
                         }),
                 )
                 .child(
+                    Button::new(SharedString::from(format!("task-edit-{}", job.id)))
+                        .label(crate::i18n::shared_term("tools.edit", cx))
+                        .small()
+                        .with_variant(ButtonVariant::Ghost)
+                        .on_click(move |_, window, cx| {
+                            open_task_editor(
+                                edit_view.clone(),
+                                Some(edit_job.clone()),
+                                edit_tx.clone(),
+                                window,
+                                cx,
+                            );
+                        }),
+                )
+                .child(
                     Button::new(SharedString::from(format!("task-delete-{}", job.id)))
                         .icon(gpui_kit::assets::IconName::X)
                         .small()
@@ -899,6 +1318,558 @@ fn format_every(every_ms: u64) -> String {
     } else {
         format!("{}s", every_ms / SECOND)
     }
+}
+
+fn tasks_editor_field(
+    label: &str,
+    label_color: gpui_kit::Hsla,
+    field: impl IntoElement,
+) -> gpui_kit::AnyElement {
+    div()
+        .v_flex()
+        .gap_1()
+        .child(
+            div()
+                .text_xs()
+                .text_color(label_color)
+                .child(label.to_string()),
+        )
+        .child(field)
+        .into_any_element()
+}
+
+fn schedule_kind_label(kind: TaskScheduleKind, text: &ShellText) -> String {
+    match kind {
+        TaskScheduleKind::At => text.tasks_editor_kind_at.clone(),
+        TaskScheduleKind::Every => text.tasks_editor_kind_every.clone(),
+        TaskScheduleKind::Cron => text.tasks_editor_kind_cron.clone(),
+    }
+}
+
+fn interval_unit_label(unit: TaskIntervalUnit, text: &ShellText) -> String {
+    match unit {
+        TaskIntervalUnit::Minute => text.tasks_editor_unit_minute.clone(),
+        TaskIntervalUnit::Hour => text.tasks_editor_unit_hour.clone(),
+        TaskIntervalUnit::Day => text.tasks_editor_unit_day.clone(),
+    }
+}
+
+fn target_kind_label(kind: TaskTargetKind, text: &ShellText) -> String {
+    match kind {
+        TaskTargetKind::Workspace => text.tasks_editor_target_workspace.clone(),
+        TaskTargetKind::Session => text.tasks_editor_target_session.clone(),
+    }
+}
+
+/// A dialog choice button that rewrites one shell flag and repaints the
+/// window (the dialog builder rebuilds its content from those flags, the same
+/// contract the custom-agent kind selector uses).
+fn task_choice_button(
+    id: &'static str,
+    label: String,
+    active: bool,
+    view: WeakEntity<ShellWindow>,
+    select: impl Fn(&mut ShellWindow) + 'static,
+) -> gpui_kit::AnyElement {
+    Button::new(id)
+        .label(label)
+        .small()
+        .with_variant(if active {
+            ButtonVariant::Primary
+        } else {
+            ButtonVariant::Ghost
+        })
+        .on_click(move |_, _window, cx| {
+            if let Some(shell) = view.upgrade() {
+                shell.update(cx, |shell, cx| {
+                    select(shell);
+                    cx.notify();
+                });
+            }
+        })
+        .into_any_element()
+}
+
+fn task_schedule_kind_row(
+    view: WeakEntity<ShellWindow>,
+    active: TaskScheduleKind,
+    text: &ShellText,
+) -> gpui_kit::AnyElement {
+    let mut row = div().flex().flex_row().items_center().gap_2();
+    for kind in [
+        TaskScheduleKind::At,
+        TaskScheduleKind::Every,
+        TaskScheduleKind::Cron,
+    ] {
+        let id = match kind {
+            TaskScheduleKind::At => "task-kind-at",
+            TaskScheduleKind::Every => "task-kind-every",
+            TaskScheduleKind::Cron => "task-kind-cron",
+        };
+        row = row.child(task_choice_button(
+            id,
+            schedule_kind_label(kind, text),
+            kind == active,
+            view.clone(),
+            move |shell| shell.task_editor_kind = kind,
+        ));
+    }
+    row.into_any_element()
+}
+
+/// Opens the create (or edit) dialog. This mirrors the web `TodoEditor`
+/// minimum: name, prompt, the three schedule shapes, and the run target. The
+/// inputs live on the window because the dialog builder runs every frame; the
+/// selection flags live on the shell for the same reason.
+pub(crate) fn open_task_editor(
+    view: WeakEntity<ShellWindow>,
+    job: Option<CronJob>,
+    tx: mpsc::UnboundedSender<RuntimeEvent>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(shell) = view.upgrade() else {
+        return;
+    };
+    let (name_input, prompt_input, at_input, every_input, anchor_input, cron_input, tz_input) = {
+        let shell = shell.read(cx);
+        (
+            shell.task_name_input.clone(),
+            shell.task_prompt_input.clone(),
+            shell.task_at_input.clone(),
+            shell.task_every_input.clone(),
+            shell.task_anchor_input.clone(),
+            shell.task_cron_input.clone(),
+            shell.task_tz_input.clone(),
+        )
+    };
+    let draft = job
+        .as_ref()
+        .map(TaskDraft::from_job)
+        .unwrap_or_else(TaskDraft::blank);
+    name_input.update(cx, |input, cx| {
+        input.set_value(draft.name.clone(), window, cx);
+    });
+    prompt_input.update(cx, |input, cx| {
+        input.set_value(draft.prompt.clone(), window, cx);
+    });
+    at_input.update(cx, |input, cx| {
+        input.set_value(draft.at.clone(), window, cx);
+    });
+    every_input.update(cx, |input, cx| {
+        input.set_value(draft.every_value.clone(), window, cx);
+    });
+    anchor_input.update(cx, |input, cx| {
+        input.set_value(draft.anchor.clone(), window, cx);
+    });
+    cron_input.update(cx, |input, cx| {
+        input.set_value(draft.cron_expr.clone(), window, cx);
+    });
+    tz_input.update(cx, |input, cx| {
+        input.set_value(draft.timezone.clone(), window, cx);
+    });
+    shell.update(cx, |shell, cx| {
+        shell.task_editor_target = job.as_ref().map(|job| job.id.clone());
+        shell.task_editor_kind = draft.schedule_kind;
+        shell.task_editor_unit = draft.interval_unit;
+        shell.task_editor_target_kind = draft.target_kind;
+        shell.task_editor_session = draft.session_id.clone();
+        shell.task_editor_enabled = draft.enabled;
+        shell.task_editor_error = None;
+        cx.notify();
+    });
+
+    let confirm_view = view.clone();
+    let confirm_tx = tx.clone();
+    let confirm_name = name_input.clone();
+    let confirm_prompt = prompt_input.clone();
+    let confirm_at = at_input.clone();
+    let confirm_every = every_input.clone();
+    let confirm_anchor = anchor_input.clone();
+    let confirm_cron = cron_input.clone();
+    let confirm_tz = tz_input.clone();
+    let confirm = move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+        let Some(shell) = confirm_view.upgrade() else {
+            return;
+        };
+        let (schedule_kind, interval_unit, target_kind, session_id, enabled, edit_id) = {
+            let shell = shell.read(cx);
+            (
+                shell.task_editor_kind,
+                shell.task_editor_unit,
+                shell.task_editor_target_kind,
+                shell.task_editor_session.clone(),
+                shell.task_editor_enabled,
+                shell.task_editor_target.clone(),
+            )
+        };
+        let draft = TaskDraft {
+            name: confirm_name.read(cx).value().trim().to_string(),
+            prompt: confirm_prompt.read(cx).value().trim().to_string(),
+            schedule_kind,
+            at: confirm_at.read(cx).value().to_string(),
+            every_value: confirm_every.read(cx).value().to_string(),
+            anchor: confirm_anchor.read(cx).value().to_string(),
+            interval_unit,
+            cron_expr: confirm_cron.read(cx).value().to_string(),
+            timezone: confirm_tz.read(cx).value().to_string(),
+            target_kind,
+            session_id,
+            enabled,
+        };
+        let text = crate::i18n::current(cx);
+        let fail = |message: String, cx: &mut App| {
+            shell.update(cx, |shell, cx| {
+                shell.task_editor_error = Some(message);
+                cx.notify();
+            });
+        };
+        if let Err(error) = draft.validate() {
+            fail(error.message(&text), cx);
+            return;
+        }
+        let Some(handle) = runtime::runtime_handle() else {
+            fail(TaskDraftError::Workspace.message(&text), cx);
+            return;
+        };
+        let workspace = handle.workspace();
+        if workspace.root_path.as_os_str().is_empty() {
+            fail(TaskDraftError::Workspace.message(&text), cx);
+            return;
+        }
+        let workspace_ref = CronWorkspaceRef {
+            workspace_id: Some(workspace.id.clone()),
+            workspace_path: workspace.root_path.to_string_lossy().to_string(),
+            project_workspace_path: None,
+            execution_target: None,
+            remote_connection_id: None,
+            remote_ssh_host: None,
+        };
+        let request = match edit_id {
+            Some(job_id) => match draft.update_request(workspace_ref) {
+                Ok(request) => {
+                    handle.update_cron_job(job_id, request, confirm_tx.clone());
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            },
+            None => match draft.create_request(workspace_ref) {
+                Ok(request) => {
+                    handle.create_cron_job(request, confirm_tx.clone());
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            },
+        };
+        if let Err(error) = request {
+            fail(error.message(&text), cx);
+            return;
+        }
+        shell.update(cx, |shell, cx| {
+            shell.task_editor_target = None;
+            shell.task_editor_error = None;
+            cx.notify();
+        });
+        window.close_dialog(cx);
+    };
+
+    let cancel_view = view.clone();
+    let cancel = move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+        if let Some(shell) = cancel_view.upgrade() {
+            shell.update(cx, |shell, cx| {
+                shell.task_editor_target = None;
+                shell.task_editor_error = None;
+                cx.notify();
+            });
+        }
+        window.close_dialog(cx);
+    };
+
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let text = crate::i18n::current(cx);
+        let Some(shell) = view.upgrade() else {
+            return dialog;
+        };
+        let (
+            schedule_kind,
+            interval_unit,
+            target_kind,
+            session_id,
+            enabled,
+            error,
+            editing,
+            sessions,
+            workspace_name,
+        ) = {
+            let shell = shell.read(cx);
+            (
+                shell.task_editor_kind,
+                shell.task_editor_unit,
+                shell.task_editor_target_kind,
+                shell.task_editor_session.clone(),
+                shell.task_editor_enabled,
+                shell.task_editor_error.clone(),
+                shell.task_editor_target.is_some(),
+                shell
+                    .sessions
+                    .iter()
+                    .filter(|session| !session.archived)
+                    .map(|session| (session.id.clone(), session.name.clone()))
+                    .collect::<Vec<_>>(),
+                runtime::runtime_handle().map(|handle| handle.workspace().name),
+            )
+        };
+        let label_color = cx.theme().muted_foreground;
+        let mut content = div()
+            .w(px(520.))
+            .v_flex()
+            .gap_3()
+            .debug_selector(|| "task-editor".to_string())
+            .child(tasks_editor_field(
+                &text.tasks_editor_name,
+                label_color,
+                Input::new(&name_input),
+            ))
+            .child(tasks_editor_field(
+                &text.tasks_editor_prompt,
+                label_color,
+                Textarea::new(&prompt_input),
+            ))
+            .child(tasks_editor_field(
+                &text.tasks_editor_schedule,
+                label_color,
+                task_schedule_kind_row(view.clone(), schedule_kind, &text),
+            ));
+
+        match schedule_kind {
+            TaskScheduleKind::At => {
+                content = content
+                    .child(tasks_editor_field(
+                        &text.tasks_editor_at,
+                        label_color,
+                        Input::new(&at_input),
+                    ))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(label_color)
+                            .child(text.tasks_editor_at_hint.clone()),
+                    );
+            }
+            TaskScheduleKind::Every => {
+                let unit_view = view.clone();
+                let unit_label = interval_unit_label(interval_unit, &text);
+                let unit_menu_text = text.clone();
+                let unit_button = Button::new("task-unit-picker")
+                    .label(unit_label)
+                    .small()
+                    .with_variant(ButtonVariant::Secondary)
+                    .dropdown_menu_with_anchor(Anchor::BottomLeft, move |menu, _window, _cx| {
+                        let mut menu = menu;
+                        for unit in [
+                            TaskIntervalUnit::Minute,
+                            TaskIntervalUnit::Hour,
+                            TaskIntervalUnit::Day,
+                        ] {
+                            let pick_view = unit_view.clone();
+                            menu = menu.item(
+                                PopupMenuItem::new(interval_unit_label(unit, &unit_menu_text))
+                                    .checked(unit == interval_unit)
+                                    .on_click(move |_, _window, cx| {
+                                        if let Some(shell) = pick_view.upgrade() {
+                                            shell.update(cx, |shell, cx| {
+                                                shell.task_editor_unit = unit;
+                                                cx.notify();
+                                            });
+                                        }
+                                    }),
+                            );
+                        }
+                        menu
+                    });
+                content = content
+                    .child(tasks_editor_field(
+                        &text.tasks_editor_every,
+                        label_color,
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .w_full()
+                            .child(div().flex_1().child(Input::new(&every_input)))
+                            .child(unit_button),
+                    ))
+                    .child(tasks_editor_field(
+                        &text.tasks_editor_anchor,
+                        label_color,
+                        Input::new(&anchor_input),
+                    ))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(label_color)
+                            .child(text.tasks_editor_anchor_hint.clone()),
+                    );
+            }
+            TaskScheduleKind::Cron => {
+                content = content
+                    .child(tasks_editor_field(
+                        &text.tasks_editor_cron_expr,
+                        label_color,
+                        Input::new(&cron_input),
+                    ))
+                    .child(tasks_editor_field(
+                        &text.tasks_editor_cron_tz,
+                        label_color,
+                        Input::new(&tz_input),
+                    ));
+            }
+        }
+
+        let mut target_row = div().flex().flex_row().items_center().gap_2();
+        for kind in [TaskTargetKind::Workspace, TaskTargetKind::Session] {
+            let id = match kind {
+                TaskTargetKind::Workspace => "task-target-workspace",
+                TaskTargetKind::Session => "task-target-session",
+            };
+            target_row = target_row.child(task_choice_button(
+                id,
+                target_kind_label(kind, &text),
+                kind == target_kind,
+                view.clone(),
+                move |shell| shell.task_editor_target_kind = kind,
+            ));
+        }
+        content = content.child(tasks_editor_field(
+            &text.tasks_editor_target,
+            label_color,
+            target_row,
+        ));
+        match target_kind {
+            TaskTargetKind::Workspace => {
+                let name = workspace_name.unwrap_or_default();
+                content = content.child(div().text_xs().text_color(label_color).child(
+                    if name.is_empty() {
+                        text.tasks_editor_error_workspace.clone()
+                    } else {
+                        name
+                    },
+                ));
+            }
+            TaskTargetKind::Session => {
+                let selected_label = session_id
+                    .as_ref()
+                    .and_then(|id| {
+                        sessions
+                            .iter()
+                            .find(|(session_id, _)| session_id == id)
+                            .map(|(_, name)| name.clone())
+                    })
+                    .unwrap_or_else(|| text.tasks_editor_session_placeholder.clone());
+                let picker: gpui_kit::AnyElement = if sessions.is_empty() {
+                    Button::new("task-session-picker")
+                        .label(selected_label)
+                        .small()
+                        .with_variant(ButtonVariant::Secondary)
+                        .disabled(true)
+                        .into_any_element()
+                } else {
+                    let picker_view = view.clone();
+                    let picker_sessions = sessions.clone();
+                    Button::new("task-session-picker")
+                        .label(selected_label)
+                        .small()
+                        .with_variant(ButtonVariant::Secondary)
+                        .dropdown_menu_with_anchor(Anchor::BottomLeft, move |menu, _window, _cx| {
+                            let mut menu = menu;
+                            for (id, name) in &picker_sessions {
+                                let pick_view = picker_view.clone();
+                                let value = id.clone();
+                                menu = menu.item(
+                                    PopupMenuItem::new(name.clone())
+                                        .checked(session_id.as_deref() == Some(id.as_str()))
+                                        .on_click(move |_, _window, cx| {
+                                            if let Some(shell) = pick_view.upgrade() {
+                                                shell.update(cx, |shell, cx| {
+                                                    shell.task_editor_session = Some(value.clone());
+                                                    cx.notify();
+                                                });
+                                            }
+                                        }),
+                                );
+                            }
+                            menu
+                        })
+                        .into_any_element()
+                };
+                content =
+                    content
+                        .child(div().flex().flex_row().items_center().child(picker))
+                        .child(div().text_xs().text_color(label_color).child(
+                            if sessions.is_empty() {
+                                text.tasks_editor_no_sessions.clone()
+                            } else {
+                                String::new()
+                            },
+                        ));
+            }
+        }
+
+        let enabled_view = view.clone();
+        content = content.child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(Switch::new("task-enabled").checked(enabled).on_click(
+                    move |checked: &bool, _window, cx| {
+                        if let Some(shell) = enabled_view.upgrade() {
+                            let next = *checked;
+                            shell.update(cx, |shell, cx| {
+                                shell.task_editor_enabled = next;
+                                cx.notify();
+                            });
+                        }
+                    },
+                ))
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().foreground)
+                        .child(text.tasks_editor_enabled.clone()),
+                ),
+        );
+        if let Some(error) = error {
+            content = content.child(div().text_xs().text_color(cx.theme().danger).child(error));
+        }
+
+        let title = if editing {
+            text.tasks_editor_edit_title.clone()
+        } else {
+            text.tasks_editor_create_title.clone()
+        };
+        dialog.title(div().child(title)).child(content).footer(
+            div()
+                .flex()
+                .flex_row()
+                .justify_end()
+                .gap_2()
+                .child(
+                    Button::new("task-editor-cancel")
+                        .label(text.session_action_cancel.clone())
+                        .with_variant(ButtonVariant::Ghost)
+                        .on_click(cancel.clone()),
+                )
+                .child(
+                    Button::new("task-editor-confirm")
+                        .label(text.session_action_confirm.clone())
+                        .with_variant(ButtonVariant::Primary)
+                        .on_click(confirm.clone()),
+                ),
+        )
+    });
 }
 
 #[cfg(test)]
@@ -1191,5 +2162,254 @@ mod tests {
         assert_eq!(entries[1].job_name, "nine");
         assert_eq!(entries[1].kind, DayEntryKind::NextRun);
         assert!(day_entries(&jobs, day + chrono::Duration::days(2)).is_empty());
+    }
+
+    fn task_workspace() -> CronWorkspaceRef {
+        CronWorkspaceRef {
+            workspace_id: Some("ws-1".to_string()),
+            workspace_path: "/tmp/ws".to_string(),
+            project_workspace_path: None,
+            execution_target: None,
+            remote_connection_id: None,
+            remote_ssh_host: None,
+        }
+    }
+
+    /// G-P1: the editor's local wall clock is what the store reads back, and
+    /// a malformed value is rejected instead of being silently shifted.
+    #[test]
+    fn local_datetime_round_trips_and_rejects_garbage() {
+        let rfc3339 = local_input_to_rfc3339("2030-01-02T03:04").expect("valid local time");
+        assert_eq!(rfc3339_to_local_input(&rfc3339), "2030-01-02T03:04");
+        // The wire value keeps the local offset; the store parses RFC 3339.
+        assert!(chrono::DateTime::parse_from_rfc3339(&rfc3339).is_ok());
+        assert_eq!(
+            rfc3339_to_local_input(&local_input_to_rfc3339(" 2030-01-02T03:04:05 ").unwrap()),
+            "2030-01-02T03:04"
+        );
+        assert!(local_input_to_rfc3339("").is_none());
+        assert!(local_input_to_rfc3339("2030-01-02").is_none());
+        assert!(local_input_to_rfc3339("tomorrow").is_none());
+    }
+
+    /// G-P1: milliseconds read back in the largest whole unit, and a
+    /// sub-minute interval stays fractional minutes.
+    #[test]
+    fn split_interval_picks_the_largest_whole_unit() {
+        assert_eq!(
+            split_interval(TASK_DAY_MS),
+            ("1".to_string(), TaskIntervalUnit::Day)
+        );
+        assert_eq!(
+            split_interval(3 * TASK_HOUR_MS),
+            ("3".to_string(), TaskIntervalUnit::Hour)
+        );
+        assert_eq!(
+            split_interval(90 * TASK_MINUTE_MS),
+            ("90".to_string(), TaskIntervalUnit::Minute)
+        );
+        assert_eq!(
+            split_interval(5_400_000),
+            ("90".to_string(), TaskIntervalUnit::Minute)
+        );
+        assert_eq!(
+            split_interval(90_000),
+            ("1.5".to_string(), TaskIntervalUnit::Minute)
+        );
+    }
+
+    /// G-P1: each schedule shape builds the wire value the service validates,
+    /// including the blank-timezone and fractional-interval cases.
+    #[test]
+    fn task_draft_builds_each_schedule_shape() {
+        let mut draft = TaskDraft::blank();
+        draft.schedule_kind = TaskScheduleKind::At;
+        draft.at = "2030-01-02T03:04".to_string();
+        match draft.schedule().expect("at schedule") {
+            CronSchedule::At { at } => {
+                assert_eq!(at, local_input_to_rfc3339("2030-01-02T03:04").unwrap())
+            }
+            other => panic!("expected at, got {other:?}"),
+        }
+
+        draft.schedule_kind = TaskScheduleKind::Every;
+        draft.every_value = "1.5".to_string();
+        draft.interval_unit = TaskIntervalUnit::Hour;
+        assert_eq!(
+            draft.schedule().expect("every schedule"),
+            CronSchedule::Every {
+                every_ms: 5_400_000,
+                anchor_ms: None,
+            }
+        );
+        draft.anchor = "2030-01-02T03:04".to_string();
+        let anchored = draft.schedule().expect("anchored every schedule");
+        let expected_anchor =
+            DateTime::parse_from_rfc3339(&local_input_to_rfc3339("2030-01-02T03:04").unwrap())
+                .unwrap()
+                .timestamp_millis();
+        assert_eq!(
+            anchored,
+            CronSchedule::Every {
+                every_ms: 5_400_000,
+                anchor_ms: Some(expected_anchor),
+            }
+        );
+        draft.anchor = "not a time".to_string();
+        assert_eq!(draft.schedule(), Err(TaskDraftError::Anchor));
+        draft.anchor.clear();
+
+        draft.schedule_kind = TaskScheduleKind::Cron;
+        draft.cron_expr = " 0 9 * * * ".to_string();
+        draft.timezone = "  ".to_string();
+        assert_eq!(
+            draft.schedule().expect("cron schedule"),
+            CronSchedule::Cron {
+                expr: "0 9 * * *".to_string(),
+                tz: None,
+            }
+        );
+        draft.timezone = "Asia/Shanghai".to_string();
+        assert_eq!(
+            draft.schedule().expect("cron schedule with a zone"),
+            CronSchedule::Cron {
+                expr: "0 9 * * *".to_string(),
+                tz: Some("Asia/Shanghai".to_string()),
+            }
+        );
+    }
+
+    /// G-P1: the required fields are checked before the runtime sees them.
+    #[test]
+    fn task_draft_rejects_missing_required_fields() {
+        let mut draft = TaskDraft::blank();
+        draft.name = "  ".to_string();
+        assert_eq!(draft.validate(), Err(TaskDraftError::Name));
+
+        draft.name = "Nightly".to_string();
+        draft.prompt = String::new();
+        assert_eq!(draft.validate(), Err(TaskDraftError::Prompt));
+
+        draft.prompt = "x".repeat(TASK_PROMPT_MAX_CHARS + 1);
+        assert_eq!(draft.validate(), Err(TaskDraftError::PromptTooLong));
+
+        draft.prompt = "Summarize".to_string();
+        draft.at = "not a time".to_string();
+        assert_eq!(draft.validate(), Err(TaskDraftError::At));
+
+        draft.schedule_kind = TaskScheduleKind::Every;
+        draft.every_value = "0".to_string();
+        assert_eq!(draft.validate(), Err(TaskDraftError::Every));
+        draft.every_value = "-2".to_string();
+        assert_eq!(draft.validate(), Err(TaskDraftError::Every));
+
+        draft.schedule_kind = TaskScheduleKind::Cron;
+        draft.cron_expr = "  ".to_string();
+        assert_eq!(draft.validate(), Err(TaskDraftError::Cron));
+
+        draft.cron_expr = "0 9 * * *".to_string();
+        draft.target_kind = TaskTargetKind::Session;
+        draft.session_id = None;
+        assert_eq!(draft.validate(), Err(TaskDraftError::Session));
+        draft.session_id = Some("  ".to_string());
+        assert_eq!(draft.validate(), Err(TaskDraftError::Session));
+        draft.session_id = Some("session-1".to_string());
+        assert_eq!(draft.validate(), Ok(()));
+    }
+
+    /// G-P1: the target keeps the workspace reference the store validates and
+    /// binds the picked session only in session mode.
+    #[test]
+    fn task_draft_targets_the_workspace_or_a_session() {
+        let mut draft = TaskDraft::blank();
+        draft.name = "Nightly".to_string();
+        draft.prompt = "Summarize".to_string();
+        draft.cron_expr = "0 9 * * *".to_string();
+        draft.schedule_kind = TaskScheduleKind::Cron;
+        let workspace = task_workspace();
+        let request = draft
+            .create_request(workspace.clone())
+            .expect("workspace job");
+        assert_eq!(request.name, "Nightly");
+        assert_eq!(request.payload.text, "Summarize");
+        assert!(request.enabled);
+        assert_eq!(
+            request.target,
+            CronJobTarget::Workspace {
+                workspace: workspace.clone(),
+                launch: CronLaunchSpec::default(),
+            }
+        );
+
+        draft.target_kind = TaskTargetKind::Session;
+        draft.session_id = Some(" session-1 ".to_string());
+        assert_eq!(
+            draft.target(workspace.clone()).expect("session target"),
+            CronJobTarget::Session {
+                session_id: "session-1".to_string(),
+                workspace: workspace.clone(),
+            }
+        );
+    }
+
+    /// G-P1: editing prefills from the stored job and preserves an existing
+    /// interval anchor, which the dialog does not expose.
+    #[test]
+    fn task_draft_prefills_from_a_job_and_keeps_its_anchor() {
+        let job = CronJob {
+            id: "job-1".to_string(),
+            name: "Hourly".to_string(),
+            schedule: CronSchedule::Every {
+                every_ms: 2 * TASK_HOUR_MS,
+                anchor_ms: Some(1_000),
+            },
+            payload: CronJobPayload {
+                text: "Check the build".to_string(),
+            },
+            enabled: false,
+            target: CronJobTarget::Session {
+                session_id: "session-1".to_string(),
+                workspace: task_workspace(),
+            },
+            created_at_ms: 0,
+            config_updated_at_ms: 0,
+            updated_at_ms: 0,
+            state: Default::default(),
+        };
+        let draft = TaskDraft::from_job(&job);
+        assert_eq!(draft.name, "Hourly");
+        assert_eq!(draft.prompt, "Check the build");
+        assert!(!draft.enabled);
+        assert_eq!(draft.schedule_kind, TaskScheduleKind::Every);
+        assert_eq!(draft.every_value, "2");
+        assert_eq!(draft.interval_unit, TaskIntervalUnit::Hour);
+        assert_eq!(draft.target_kind, TaskTargetKind::Session);
+        assert_eq!(draft.session_id.as_deref(), Some("session-1"));
+        assert_eq!(draft.anchor, timestamp_ms_to_local_input(1_000));
+
+        let update = draft
+            .update_request(task_workspace())
+            .expect("update request");
+        // The editor works in whole local minutes, so the stored anchor reads
+        // back truncated to the minute (web `toLocalDateTimeInput`).
+        let expected_anchor = DateTime::parse_from_rfc3339(
+            &local_input_to_rfc3339(&draft.anchor).expect("anchor input"),
+        )
+        .expect("anchor rfc3339")
+        .timestamp_millis();
+        assert_eq!(
+            update.schedule,
+            Some(CronSchedule::Every {
+                every_ms: 2 * TASK_HOUR_MS,
+                anchor_ms: Some(expected_anchor),
+            })
+        );
+        assert_eq!(
+            update.target,
+            Some(CronJobTarget::Session {
+                session_id: "session-1".to_string(),
+                workspace: task_workspace(),
+            })
+        );
     }
 }

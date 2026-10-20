@@ -1648,6 +1648,62 @@ impl RuntimeHandle {
         });
     }
 
+    /// G-P1: creates one scheduled job from the task editor. The editor
+    /// already validated the schedule shape; core remains the authority on
+    /// cron/timezone parsing and rejects with [`RuntimeEvent::CronFailed`].
+    pub(crate) fn create_cron_job(
+        &self,
+        request: openbitfun_core::service::cron::CreateCronJobRequest,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+    ) {
+        self.tokio.spawn(async move {
+            let Some(service) = openbitfun_core::service::cron::get_global_cron_service() else {
+                let _ = tx.send(RuntimeEvent::CronFailed(
+                    "cron: service is not initialized".to_string(),
+                ));
+                return;
+            };
+            match service.create_job(request).await {
+                Ok(job) => {
+                    tracing::info!("Scheduled job {} created", job.id);
+                    let _ = tx.send(RuntimeEvent::CronJobs(service.list_jobs().await));
+                }
+                Err(error) => {
+                    tracing::error!("Failed to create a scheduled job: {error}");
+                    let _ = tx.send(RuntimeEvent::CronFailed(format!("cron: {error}")));
+                }
+            }
+        });
+    }
+
+    /// G-P1: applies one editor save to an existing job. Fields left `None`
+    /// keep their stored value (core's update contract).
+    pub(crate) fn update_cron_job(
+        &self,
+        job_id: String,
+        request: openbitfun_core::service::cron::UpdateCronJobRequest,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+    ) {
+        self.tokio.spawn(async move {
+            let Some(service) = openbitfun_core::service::cron::get_global_cron_service() else {
+                let _ = tx.send(RuntimeEvent::CronFailed(
+                    "cron: service is not initialized".to_string(),
+                ));
+                return;
+            };
+            match service.update_job(&job_id, request).await {
+                Ok(job) => {
+                    tracing::info!("Scheduled job {} updated", job.id);
+                    let _ = tx.send(RuntimeEvent::CronJobs(service.list_jobs().await));
+                }
+                Err(error) => {
+                    tracing::error!("Failed to update scheduled job {job_id}: {error}");
+                    let _ = tx.send(RuntimeEvent::CronFailed(format!("cron: {error}")));
+                }
+            }
+        });
+    }
+
     /// Deletes one scheduled job.
     pub(crate) fn delete_cron_job(&self, job_id: String, tx: mpsc::UnboundedSender<RuntimeEvent>) {
         self.tokio.spawn(async move {
