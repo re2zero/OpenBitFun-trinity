@@ -507,6 +507,15 @@
 - **G-P1 新建/编辑任务对话框**：web `components/TodoEditor.tsx:211-503`（名称/工作区 Combobox/agent 类型/
   schedule kind at|every|cron/时区/锚点/绑定 session/启用/prompt 1000 字）；壳只有列表操作（启停/立即运行/删除，`tasks.rs`）。
   动作：完整编辑器（core cron 写面已有）。**B 档（本组最大项）**。
+  **✅ 交付**（2026-10-20，G-P1 批次）****：看板头「新建任务」+ 每行「编辑」打开同一对话框
+  （标题按新建/编辑切换）：名称、prompt（1000 字上限校验）、schedule 三型（单次=本地 `YYYY-MM-DDTHH:MM`
+  文本 + 本地时间提示；周期=数值 + 分钟/小时/天菜单 + 可选取「起算时间」；Cron=表达式 + 可选取时区）、
+  目标（当前工作区启动 / 已有会话下拉，无会话时禁用并提示）、启用开关；保存经
+  `RuntimeHandle::create_cron_job`/`update_cron_job` 走共享 cron 服务，成功事件重拉列表，失败进页头错误条。
+  纯数据层 `TaskDraft`（blank/from_job/schedule/validate/create_request/update_request）+ 本地时间↔RFC3339、
+  间隔毫秒↔最大整单位拆分均有单测；编辑保留原 `anchor_ms`（锚点输入框预填）。
+  **口径差异（记录）**：web 的工作区 Combobox 与 agent 类型选择器不搬——壳的看板只服务当前工作区、
+  `CronLaunchSpec` 固定默认 `Standard`（与 web 在单工作区/默认模式的路径一致）；日详情不做「点日新建」。
 - **G-P2 日详情面板**：web `TodosScene.tsx:615-673`（点日期看当日 occurrence + clear day）；壳月历无点击详情。**A 档**。
   **✅ 交付**（2026-10-15，A 批 3）****：日历格可点（唯一 id + 选中底色；再点同格=取消，同 web `onSelectDay` 的 toggle），
   卡片出日详情：标题「选中日期 · YYYY-MM-DD」（参数化键）+「清除」+ 当日条目（时间 + 任务名 + 
@@ -678,7 +687,7 @@
 
 | 序 | 项 | 编号 | 依赖/说明 | 预估 |
 |---|---|---|---|---|
-| 1 | 任务编辑器（at/every/cron/时区/绑定 session） | G-P1 | core cron 写面已有 | 1 会话 |
+| 1 | 任务编辑器（at/every/cron/时区/绑定 session） | G-P1 **✅ 交付 2026-10-20** | core cron 写面已有 | 1 会话 |
 | 2 | 记忆设置页 | G-SE13 **✅ 交付 2026-10-18** | core 记忆能力在，纯 UI | 0.5-1 |
 | 3 | Trinity 引擎配置页 | G-SE14 **✅ 交付 2026-10-18** | trinityd 配置面已有（web 同源） | 0.5 |
 | 4 | 技能管理写面（添加/删除/分组/详情/搜索） | G-K2..K5 | 部分需 core 写面核对 | 1 |
@@ -862,6 +871,7 @@ turn footer 完成时间/耗时 meta（=G-S1）与 copy 成功态图标反馈（
 
 | 日期 | 变更 |
 |---|---|
+| 2026-10-20 | **B 档 G-P1 任务编辑器（新建/编辑对话框）**。看板头新增「新建任务」，每行新增「编辑」，共用同一对话框（标题按新建/编辑切换）：名称、prompt（1000 字符上限）、Schedule 三型（单次=本地 `YYYY-MM-DDTHH:MM` 文本 + 本地时区提示；周期=数值 + 分钟/小时/天下拉 + 可选取「起算时间」；Cron=表达式 + 可选时区）、目标（当前工作区启动 / 已有会话下拉，无会话时禁用并提示）、启用开关。保存经新增的 `RuntimeHandle::create_cron_job`/`update_cron_job` 走共享 cron 服务（成功后 `CronJobs` 重拉列表，失败进页头错误条）；编辑保留并预填 `anchor_ms`（按本地分钟回读，与 web 的 `toLocalDateTimeInput` 同口径）。纯数据层 `TaskDraft`（blank/from_job/schedule/validate/create_request/update_request）与本地时间↔RFC3339、毫秒↔最大整单位拆分、DST 不存在时间拒绝均有单测；另加一项真 root-view 窗口测试：把 ShellWindow 包进 `gpui_base::Root`（对话框插件所在根）后打开对话框，断言预填与 `task-editor` 渲染，防「只在真实窗口才 panic」的坑。**在案分歧**：无工作区 Combobox 与 agent 类型选择器（壳只服务当前工作区，`CronLaunchSpec` 固定默认 `Standard`）；锚点、时区不做 web 的高级折叠区，直接随对应 schedule 形态显示。**坑**：`WindowExt`（`open_dialog`/`close_dialog`）必须显式引入 `gpui_kit::component::WindowExt`；`Button::dropdown_menu_with_anchor` 返回 `DropdownMenuPopover<Button>` 而不是 `Button`，条件分支要转 `AnyElement`；`DropdownMenuPopover` 没有 `debug_selector`。ftl 1171→**1205 ×3**；`i18n:audit` 0 告警；壳 lib **368 全绿**（0 告警）；`check:core-boundaries` / `fmt:rs` 绿。 |
 | 2026-10-20 | **B 档设置字段族第四批（G-SE25 Hooks 导入 / 位置 / 兼容性）**。自动化页新增三段：① 声明位置（用户 `config/hooks.json`、项目 `.openbitfun/config/hooks.json` 两行说明）；② 已导入的 Hooks——进页按需拉快照、刷新按钮强制重探来源更新，逐源行含名称、启用 Switch（总开关关闭时禁用）、五种状态文案（当前/有更新/来源丢失/检查失败/托管文件缺失）、审阅更新与移除；移除与损坏索引重置均行内两段式确认，损坏诊断按 `.user_global` 后缀选出 scope；③ 审阅计划行内块——逐条 handler（event · command · matcher · 超时）、跳过计数、权限警告，`stale` 时显示「本次未写入」并换新计划；Apply 才写入，Remove 只删托管副本；④ Codex 兼容段（合约说明 + 系统 opener 打开文档）。新增运行时事件四型与四个 `RuntimeHandle` 方法（快照/变更/计划/应用）接 core `external_hook_import_*`。**在案分歧**：行内审阅块替代模态框；依赖明细不逐条展开；壳运行时始终本地，未复刻 remoteUnsupported 提示。ftl 1131→**1171 ×3**；`i18n:audit` 0 告警；壳 lib **361 全绿**；`fmt:rs` 绿。 |
 | 2026-10-20 | **B 档设置字段族第三批（G-SE12 高级模型配置，测试连接 / 行编辑 / 高级请求面一次交付）**。① 测试连接：模型清单每行一个「测试连接」按钮，运行时走与桌面 `test_ai_config_connection` 同一条临时客户端管线（`build_stream_options_for_model` + subscription auth/profile + 全局 proxy / 行内 skip-SSL），多模态模型并跑图片输入腿并按桌面规则合并回执；判定/耗时/诊断码本地化提示/原始错误显示在行下，不落盘。② 行编辑器：点「Edit」在清单下展开——分类（web 四档 + 未知存量值原样保留）、上下文窗口（≥32K）、最大输出（0=自动，>40% 上下文拒绝写入，缩窗口时失效的显式上限自动回退自动档）、思考默认预设（存量预设中选择 + 动作摘要只读，禁用/无动作预设不提供选择）。③ 高级面：请求格式只读（改格式属于 web 的 provider 选择器）、`<think>` 解析开关、跳过 SSL（带风险说明）、自定义 Headers JSON 对象（空=清除，非字符串值拒绝）、Headers 应用模式 replace/merge、自定义请求体 JSON 对象（空=清除）、请求体模式 merge/trim；半写的 JSON 只留在页内草稿，解析成功才落盘。全部写入走 `update_config("ai.models")` 单锁读改写，行内与同列表的未知键原样保留。**在案分歧**：思考预设的编写面板（models.dev 绑定 / 自定义预设增删 / 补丁 JSON）仍在 web/桌面；请求体 trim 的四条供应商专属说明合并为一条通用提示。ftl 1080→**1131 ×3**；`i18n:audit` 0 告警（未抬 baseline）；壳 lib **361 全绿**（新增 2 项纯函数测试：未知分类保留、JSON 草稿形状）。 |
 | 2026-10-20 | **B 档设置字段族第二批（G-SE15 / G-SE16 / G-SE17 / G-SE24 / G-SE29 一次交付）**。① G-SE15：`workspace.session` 页新增默认 Harness（跟随上次 / 固定默认 + 四档 Harness 菜单 + 兼容值后缀，描述显示上次选择）与会话标题生成（开关 + 模型菜单），写 `app.flow_chat` 两键一次合并写（新增 `persist_object_keys`）、`app.ai_experience.enable_session_title_generation`、`ai.task_models.session_title`；legacy `default_mode_id` 按 fixed 读。② G-SE16：`workspace.worktrees` 页新增会话隔离五项（根路径 / 分支前缀 / 复制改动 / 自动删除 + 1–100 上限，关时上限禁用），**按共享文档的 camelCase 键**（`rootPath` 等）单键合并写 `app.worktrees`，默认值取共享 `WorktreeSettings::default`。③ G-SE17：执行与权限页新增全局规则只读列表 + 行内编辑器（操作/资源/效果三列，上移/下移/删除/新增/保存/放弃，缺字段红字 + 保存禁用；草稿全局、未保存不落盘），保存整数组合并写 `tool_permissions.policy.rules`。④ G-SE24：自动化页新增快捷动作管理（内置开关 + 编辑；自定义开关 + 编辑/两段式删除/新增；行内名称/指令编辑器），整数组写 `app.ai_experience.quick_actions`，内置文案按 web 归一规则写回规范英文默认。⑤ G-SE29：用量页补齐模型/供应商/端点三块分布 + 页内搜索过滤 + 逐行缓存命中率（数据取 `UsageStatistics.by_*`，每块前 20 行）。⑥ 顺带清零上轮遗留 **25 条 lib-test 告警**（`cargo fix` 21 条 + 4 条 dead code：删 `ArchivedFieldHarness`/`E2E_PRODUCT_HOME_ENV`/`HISTORY_LIMIT`，batch 描述文案改到行内使用）。ftl 1016→**1080 ×3**；`i18n:audit` 0 错 0 警（首轮「Edit」撞共享词 `tools.edit` → 改用 `i18n::shared_term`，未抬 baseline）；**壳 lib 359 全绿（0 告警）**；`check:repo-hygiene` / `check:core-boundaries` / `fmt:rs` 绿。 |
