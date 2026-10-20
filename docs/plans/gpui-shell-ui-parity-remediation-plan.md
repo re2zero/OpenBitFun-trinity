@@ -326,10 +326,35 @@
   重读失败会把已加载态打回离线（`ConfigFailed` 清 `loaded`）——web 此态只留空字段，壳取「说清状况」的降级。
 - **G-SE15 默认 Harness / 会话标题生成**：web `DefaultHarnessConfig.tsx:166-208`、`SessionTitleConfig.tsx:184-222`；
   壳无 UI（core 配置在）。**B 档**。
+  **✅ 交付**（2026-10-20，B 档设置字段族）：`workspace.session` 页新增两节 —— **默认智能体执行框架**
+  （默认方式 = 跟随上一次选择 / 固定默认模式；固定档出四档 Harness 菜单，标签取自共享 `shared.agents.*`，
+  存储里本构建不认识的 id 原样列出并带「兼容配置」后缀；跟随档描述显示 `last_mode_id` 的真实名称，
+  未记录时回退 Standard）与**会话标题自动生成**（开关 + 模型菜单：当前会话模型 / 快速 / 主力 / 已启用模型 +
+  已停用或不存在项）。写入：`app.flow_chat` 的 `default_mode_strategy`+`default_mode_id` **一次合并写**
+  （新增 `persist_object_keys`，避免两键乱序覆盖兄弟键；切 fixed 且无 id 时按 web 取 `last_mode_id ?? Standard`）、
+  `app.ai_experience.enable_session_title_generation`、`ai.task_models.session_title`（共享 `{kind,model_id}` 文档）。
+  升级兼容：`default_mode_strategy` 缺失而 `default_mode_id` 存在时按历史语义视为 fixed（web `normalizeChatInputModePreference` 同规则）。
 - **G-SE16 工作树隔离设置**：web `WorktreeSettingsPage.tsx:472-543`（根路径/分支前缀/复制改动/自动删除+上限）；
   壳跳转卡直达 Git 面板 Worktrees，无设置字段。**B 档**。
+  **✅ 交付**（2026-10-20，B 档设置字段族）：`workspace.worktrees` 页跳转卡之上新增「会话隔离」节 ——
+  Worktree 根目录 / 分支前缀（空输入被忽略，绝不落空值）、默认复制本地改动、自动删除旧 Worktree（关时上限行禁用）、
+  每个工作区保留数量（1–100，写入即夹紧）。全部单键合并写 `app.worktrees`，默认值直接取共享
+  `GlobalConfig::default().app.worktrees`（首次运行与桌面页一致）。Worktree 管理本体仍归 Git 面板（在案形态）。
 - **G-SE17 全局权限规则对话框**：web `GlobalPermissionRulesDialog.tsx:395-552`（规则表格/新增/排序/保存）；
   壳只有预设 + 自动批准。**B 档**。
+  **✅ 交付**（2026-10-20，B 档设置字段族）：执行与权限页预设行下方新增「全局规则」节。只读态列出
+  `操作 · 资源 → 效果` 与「管理规则」入口；编辑态为行内表格 —— 操作/资源输入、效果菜单（允许/询问/拒绝）、
+  上移/下移/删除、添加规则、保存/放弃，任一行缺操作或资源即红字提示且保存禁用。草稿在全局
+  `PermissionRulesDraft`（行 id 稳定，重排/删除不串输入），**未保存不落盘**；保存把整数组一次合并写
+  `tool_permissions.policy.rules`（走 `persist_object_key`，预设与未来键不被旧壳抹掉）。内置动作不可删。
+- **G-SE24 快捷操作管理面**：web `QuickActionsConfig.tsx:409-520`（内置启停/编辑/删除 + 自定义新增）；
+  壳 T2-10 只读消费（聊天头部菜单），无管理面。**B 档**。
+  **✅ 交付**（2026-10-20，B 档设置字段族）：自动化页新增「快捷动作」节 —— 内置动作（开关 + 编辑）与
+  自定义动作（开关 + 编辑/两段式删除 + 添加动作）；行内编辑器两个输入（动作名称 / 触发指令）+ 保存/取消，
+  空值即红字且保存禁用。内置项的文案规则与 web `normalizeQuickActionTextForStorage` 同义：仅当存储值仍是
+  规范英文默认且提交值等于当前本地化文案时写回规范默认，自定义/改过的值逐字保留（「编辑」按钮直接用共享词
+  `shared.tools.edit`，不新增重复文案）。写入 = 整数组 `app.ai_experience.quick_actions`（聊天头部菜单同帧生效）。
+  **刻意分歧**：壳用行内编辑器而非 web 模态框（壳对话框族按需建；字段与校验同源）。
 - **G-SE18 工具执行超时 / 用户提问超时**：web `RuntimeSettingsPages.tsx:1299-1340`；壳无。**A 档**。
   **✅ 交付**（2026-10-15，A 批 2）：执行与权限页「工具运行」分节两行数字（0–3600 秒，0 = 不限时）。
   工具超时 0 落 `null`（核心「None = 不限时」）；提问超时 0 落 `0`（核心「null 或 0 均不限时」，与 web 写入值一致）。
@@ -358,6 +383,11 @@
   **B 档**。
 - **G-SE29 用量分布与缓存/endpoint**：web `UsageStatisticsConfig.tsx:453-501`（模型/分组分布、筛选、缓存命中率、
   endpoint 分布）；壳 = 范围 + 汇总 + 趋势图 + 热力图（T2-8 已做）。**B 档**。
+  **✅ 交付**（2026-10-20，B 档设置字段族）：用量页趋势图下方补齐 **模型 / 供应商 / 端点** 三个分布块
+  （行 = 名称 · 供应商 + 请求数 · Token · 缓存命中率），三块共用页顶一个搜索框（按名称/供应商大小写不敏感过滤，
+  无命中出「没有匹配项」；筛选是页内状态 `UsageFilter`，同 web 的 page-local search）。数据直接取
+  `UsageStatistics.by_model/by_group/by_endpoint`（服务端已聚合），每块最多 20 行（web 的 5 行 +「查看全部」折叠
+  在壳改为直接列出前 20，页内无折叠态）。汇总行的缓存命中率与逐行命中率同一口径（有遥测才显示）。
 - **G-SE30 归档页按工作区分组**：web `ArchivedSessionsConfig.tsx:515-536`（可折叠 + 计数）；壳平铺列表。**A 档**。
   **⏳ 暂缓（2026-10-15，A 批 2 判）**：该页在 web 侧是**跨全部已打开工作区**拉归档会话再分组，而壳的归档列表只持当前工作区的行
   （`ShellWindow::sessions`；其它工作区的请求明确 `include_archived: false`）。1:1 需要先加一条「按工作区列归档会话」的运行时投影
@@ -634,12 +664,12 @@
 | 7 | Git 尾巴（AI commit message、branches/graph） | G-G2,G-G4 | branches/graph 为净新增（§1.6） | 1-1.5 |
 | 8 | 搜索 actions/entities | G-Q1 | action 目录 + 聚合查询 | 1 |
 | 9 | 洞察补齐（模型/五阶段/图表/TOC） | G-I2..I4 | 复用报告结构，图表自绘 | 1-1.5 |
-| 10 | 设置字段族（执行/自动化/模型高级） | G-SE12,17,24,25,29 | 多数为配置项 UI | 1.5-2 |
+| 10 | 设置字段族（执行/自动化/模型高级） | G-SE17/24/29 **✅ 交付 2026-10-20**；G-SE12/25 余 | 多数为配置项 UI | 1.5-2 |
 | 11 | 快捷键只读页 | G-SE7 **✅ 交付 2026-10-18** | 键位表投影 | 0.5 |
 | 12 | 公告面 | G-X1 | 载体选型（横幅/中心） | 0.5-1 |
 | 13 | 防休眠 | G-SE1 | 选型先行（portal inhibit） | 0.5-1 |
 | 14 | 技能市场 | G-K1 | desktop 私有 HTTP 自实现（D44） | 1-1.5 |
-| 15 | 子代理设置/工作树设置/默认 Harness/会话标题 | G-SE15,G-SE16,G-SE19 | 配置字段族，可并入序 10 | 0.5-1 |
+| 15 | 子代理设置/工作树设置/默认 Harness/会话标题 | G-SE15/G-SE16 **✅ 交付 2026-10-20**；G-SE19 ✅ 2026-10-15 | 配置字段族，可并入序 10 | 0.5-1 |
 
 ### 3.3 C 档（大项 / 独立里程碑，均需点名立项）
 
@@ -809,6 +839,7 @@ turn footer 完成时间/耗时 meta（=G-S1）与 copy 成功态图标反馈（
 
 | 日期 | 变更 |
 |---|---|
+| 2026-10-20 | **B 档设置字段族第二批（G-SE15 / G-SE16 / G-SE17 / G-SE24 / G-SE29 一次交付）**。① G-SE15：`workspace.session` 页新增默认 Harness（跟随上次 / 固定默认 + 四档 Harness 菜单 + 兼容值后缀，描述显示上次选择）与会话标题生成（开关 + 模型菜单），写 `app.flow_chat` 两键一次合并写（新增 `persist_object_keys`）、`app.ai_experience.enable_session_title_generation`、`ai.task_models.session_title`；legacy `default_mode_id` 按 fixed 读。② G-SE16：`workspace.worktrees` 页新增会话隔离五项（根路径 / 分支前缀 / 复制改动 / 自动删除 + 1–100 上限，关时上限禁用），**按共享文档的 camelCase 键**（`rootPath` 等）单键合并写 `app.worktrees`，默认值取共享 `WorktreeSettings::default`。③ G-SE17：执行与权限页新增全局规则只读列表 + 行内编辑器（操作/资源/效果三列，上移/下移/删除/新增/保存/放弃，缺字段红字 + 保存禁用；草稿全局、未保存不落盘），保存整数组合并写 `tool_permissions.policy.rules`。④ G-SE24：自动化页新增快捷动作管理（内置开关 + 编辑；自定义开关 + 编辑/两段式删除/新增；行内名称/指令编辑器），整数组写 `app.ai_experience.quick_actions`，内置文案按 web 归一规则写回规范英文默认。⑤ G-SE29：用量页补齐模型/供应商/端点三块分布 + 页内搜索过滤 + 逐行缓存命中率（数据取 `UsageStatistics.by_*`，每块前 20 行）。⑥ 顺带清零上轮遗留 **25 条 lib-test 告警**（`cargo fix` 21 条 + 4 条 dead code：删 `ArchivedFieldHarness`/`E2E_PRODUCT_HOME_ENV`/`HISTORY_LIMIT`，batch 描述文案改到行内使用）。ftl 1016→**1080 ×3**；`i18n:audit` 0 错 0 警（首轮「Edit」撞共享词 `tools.edit` → 改用 `i18n::shared_term`，未抬 baseline）；**壳 lib 359 全绿（0 告警）**；`check:repo-hygiene` / `check:core-boundaries` / `fmt:rs` 绿。 |
 | 2026-10-18 | **B 档首车：三页设置交付（G-SE14 认知引擎 / G-SE13 记忆 / G-SE7 快捷键只读）**（`071fd90d1`）。三页共享一条实现纪律：**设置页在窗口自身的 render 里构建**（`shell.rs::render` → `settings::render_page` → 组构建函数），那里窗口实体正被可变借用 —— 任何组构建函数直接 `view.upgrade().read(cx)` 都会 panic（`cannot read ShellWindow while it is already being updated`，本轮由 `settings_scene_nav_selects_pages_and_searches` 抓到）。修法 = 引擎页与记忆页的页内状态从窗口字段改成全局（`TrinityEngineState` / `MemoryPageState`，配 `current()`/`mutate()` 惰性物化），组构建函数与页内渲染闭包只读 `cx`；**断言/接口留给「延迟渲染闭包读窗口实体」这条既有安全路径**（`archived_sessions_field` 同款）。顺带修两条遗留红：导航元数据/树投影测试的硬编码页数 15（Trinity/Memory 登记后未跑过测试）→ 18（16 实页 + 2 跳转卡、隐藏 8→5），以及引擎页离线态回不去（`ConfigFailed` 现在清 `loaded`）。证据：壳 lib **352 全绿**（该计数含重复注册的同一测试；唯一测试 351，见 HANDOFF-090）；ftl 925→943（G-SE14 18 键）→1002（G-SE13 58 键 + 1 参数键）→**1016 ×3**（G-SE7 14 键）；`i18n:audit` / `check:core-boundaries` / `check:repo-hygiene` / `pnpm run fmt:rs` 四绿；Xvfb :83 隔离根冒烟 0 panic（唯一 ERROR = Xvfb xinput 既有噪声），证据帧 `b1-01..12`：启动态（搜索框 Ctrl K 提示）/设置导航三行新页/引擎页真 daemon 值（端点+模型已填、key 掩码）/记忆页基础（范围提示 + 关总开关时下游禁用）/管理菜单三项/高级块收起/展开点击态/七行数字（真存值 6·10·2·2000·1·64·30）/快捷键表四组/键位实测（Ctrl+B 折侧栏、Ctrl+K 开全局搜索）。**新坑登记**：`SettingItem` 不能在自定义元素里嵌套渲染（`render_item` 是 `pub(super)`），披露态探针改用独立标记项；`AsKeystroke` 不在 gpui prelude，测试要显式 `use gpui_kit::AsKeystroke as _`。 |
 | 2026-10-17 | **「停止」tooltip 滞留收口（W-8 ⑤，第三场）**：上轮登记的「composer 停止 tooltip 在按钮卸载后滞留」定机制并对壳侧收口。滞留者是 gpui-component 的 **managed tooltip**（窗口级 overlay，隐藏路径只有触发元素的 `on_hover(false)` → `request_hide`）：回合结算让发送/停止两个同 id 不同的按钮互换，指针静止压在按钮上时停止按钮被卸载，hover-end 永不到 → 弹层留在屏上（移开指针也无效，接班的发送按钮不会替它发 `request_hide`）。gpui 原生 tooltip 由拥有者每帧 prepaint 重新注册、拥有者消失即释放（gpui 自带 `tooltip_is_released_when_its_owner_disappears`），结构性不滞留——修法即把 composer 停止按钮的 tooltip 从 `Button::tooltip` 摘到**只与按钮同生共死**的 anchor 包装上（`div().flex().id("chat-stop-tooltip-anchor").tooltip(原生).child(按钮)`，`Tooltip::element` 保外观 + 供测试看见）。新回归测试 `stop_tooltip_releases_with_the_button_when_the_turn_settles`（真窗口 root view + 真帧，新 helper `draw_window_for_test`）：anchor 盒 32×32 → 悬停 600ms 弹层在帧内 → 结算帧（指针未动）anchor 与弹层同时消失；回退成 `Button::tooltip` 第一步即红（已验）；壳 lib **345 全绿**。真 turn 对照帧 `w9-01`(+`z`) 悬停有提示 / `w9-02`(+`z`) 结算后无滞留 / `w9-03` 移开仍无残留（与 `w9-02` 逐像素同），修前同现象 = `w8-06` |
 | 2026-10-17 | **G-X6 有内容态复验 + 转写重载语义修复（W-8）**：本地桩模型（OpenAI 兼容假服务 + 隔离根 `app.json` 单模型指向 127.0.0.1，零外网零 key）让壳跑通真 turn，「窗口非前台完成 → 未读圆点 / 面板带行 / 点行清除 / 清除所有」全链复验（帧 `w7-01..04`），「隔离冒烟 0 models 造不出真 turn」的缺口关闭。顺带修「转写刷新被当作打开」：`OpenedSession` 增 `reload` 事件事实（`reload_transcript` 置真、`emit_opened` 置假），消费侧只在 `!reload` 时清未读 / 覆盖 tab 标题与模型选择——此前**每回合结算后**该会话未读被立即清掉（T2-16 定案是「打开会话清」）、tab 标题被清空、模型选择回落「默认模型」（对照帧 `w7-05`/`w7-06`、`w7-07`/`w7-08`；新测试 `transcript_reloads_keep_unread_turns_until_the_session_is_opened` 三断言，去保护必红已验；壳 lib **343 全绿**）。另登记（未立项）：reload 的 `tabs.open` 会激活其 tab，可能把结算会话抢到前台 |
