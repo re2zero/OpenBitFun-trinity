@@ -3585,6 +3585,14 @@ impl ShellWindow {
                 });
                 cx.refresh_windows();
             }
+            RuntimeEvent::ModelTestFinished { model_id, result } => {
+                crate::settings::ModelTestState::mutate(cx, |state| {
+                    state
+                        .receipts
+                        .insert(model_id, crate::settings::ModelTestReceipt::Done(result));
+                });
+                cx.refresh_windows();
+            }
         }
         cx.notify();
     }

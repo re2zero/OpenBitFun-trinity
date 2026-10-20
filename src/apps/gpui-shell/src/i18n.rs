@@ -215,6 +215,48 @@ pub(crate) struct ShellText {
     pub models_empty: String,
     pub models_enabled: String,
     pub models_disabled: String,
+    /// G-SE12: the per-model connection probe labels and its result receipt.
+    pub models_test: String,
+    pub models_testing: String,
+    pub models_test_details: String,
+    /// G-SE12: the model row editor (category, limits, reasoning presets).
+    pub models_edit_title: String,
+    pub models_edit_close: String,
+    pub models_category: String,
+    pub models_category_general_chat: String,
+    pub models_category_multimodal: String,
+    pub models_category_image_generation: String,
+    pub models_category_speech_recognition: String,
+    pub models_context_window: String,
+    pub models_context_window_hint: String,
+    pub models_max_tokens: String,
+    pub models_max_tokens_hint: String,
+    pub models_reasoning_default: String,
+    pub models_reasoning_auto: String,
+    pub models_reasoning_presets: String,
+    pub models_reasoning_empty: String,
+    /// G-SE12-3: request shaping in the model editor's advanced block.
+    pub models_advanced: String,
+    pub models_advanced_note: String,
+    pub models_request_format: String,
+    pub models_inline_think: String,
+    pub models_inline_think_hint: String,
+    pub models_skip_ssl: String,
+    pub models_skip_ssl_warning: String,
+    pub models_headers: String,
+    pub models_headers_hint: String,
+    pub models_headers_mode: String,
+    pub models_headers_replace: String,
+    pub models_headers_merge: String,
+    pub models_headers_replace_hint: String,
+    pub models_headers_merge_hint: String,
+    pub models_body: String,
+    pub models_body_hint: String,
+    pub models_body_mode: String,
+    pub models_body_merge: String,
+    pub models_body_trim: String,
+    pub models_body_trim_hint: String,
+    pub models_json_invalid: String,
     pub chat_empty: String,
     pub chat_empty_title: String,
     /// Tabless landing face (R2b): the brand line and the pinned slogan. Web
@@ -1184,6 +1226,87 @@ pub(crate) fn shared_term(path: &str, cx: &App) -> String {
     resolve_with(&format!("shared.{path}"), TranslationArgs::new(), cx)
 }
 
+/// G-SE12: the verdict line of a finished connection test, with the wall
+/// clock the runtime measured. A real network probe always measures one, so
+/// the shell always shows it (the web omits a zero).
+pub(crate) fn model_test_result_label(success: bool, response_time_ms: u64, cx: &App) -> String {
+    resolve_with(
+        if success {
+            "gpui-shell-models-test-success"
+        } else {
+            "gpui-shell-models-test-failed"
+        },
+        TranslationArgs::new().with_string("ms", &response_time_ms.to_string()),
+        cx,
+    )
+}
+
+/// G-SE12: the setup failure line — no probe ran, so there is no wall clock
+/// to show.
+pub(crate) fn model_test_error_label(cx: &App) -> String {
+    resolve_with("gpui-shell-models-test-error", TranslationArgs::new(), cx)
+}
+
+/// G-SE12: the localized hint for the runtime's diagnosis code (web
+/// `translateConnectionTestMessage`).
+pub(crate) fn model_test_message_code(
+    code: &openbitfun_core::util::types::ConnectionTestMessageCode,
+    cx: &App,
+) -> String {
+    use openbitfun_core::util::types::ConnectionTestMessageCode as Code;
+    let key = match code {
+        Code::ToolCallsNotDetected => "gpui-shell-models-test-tool-calls",
+        Code::ImageInputCheckFailed => "gpui-shell-models-test-image-input",
+        Code::TlsOrCertificateIssue => "gpui-shell-models-test-tls",
+        Code::ProxyIssue => "gpui-shell-models-test-proxy",
+        Code::NetworkIssue => "gpui-shell-models-test-network",
+    };
+    resolve_with(key, TranslationArgs::new(), cx)
+}
+
+/// G-SE12: one reasoning preset action described the way the web preset
+/// summary does.
+pub(crate) fn reasoning_action_summary(
+    action: &openbitfun_core::service::config::types::ReasoningPresetAction,
+    cx: &App,
+) -> String {
+    use openbitfun_core::service::config::types::ReasoningPresetAction as Action;
+    match action {
+        Action::Effort { value } => resolve_with(
+            "gpui-shell-models-reasoning-effort",
+            TranslationArgs::new().with_string("value", value),
+            cx,
+        ),
+        Action::Toggle { enabled: true } => {
+            resolve_with("gpui-shell-models-reasoning-on", TranslationArgs::new(), cx)
+        }
+        Action::Toggle { enabled: false } => resolve_with(
+            "gpui-shell-models-reasoning-off",
+            TranslationArgs::new(),
+            cx,
+        ),
+        Action::BudgetTokens { value } => resolve_with(
+            "gpui-shell-models-reasoning-budget",
+            TranslationArgs::new().with_number("value", f64::from(*value)),
+            cx,
+        ),
+        Action::RequestPatch { .. } => resolve_with(
+            "gpui-shell-models-reasoning-patch",
+            TranslationArgs::new().with_number("count", 1_f64),
+            cx,
+        ),
+    }
+}
+
+/// G-SE12: the summary line for a preset that carries no actions.
+pub(crate) fn reasoning_no_actions(cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-models-reasoning-no-actions",
+        TranslationArgs::new(),
+        cx,
+    )
+}
+
 /// G-SE15: the default-Harness description when a last selection was
 /// recorded (web `defaultHarness.followLastDescription`).
 pub(crate) fn default_harness_follow_description(name: &str, cx: &App) -> String {
@@ -1806,6 +1929,61 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
             .to_string(),
         models_enabled: "enabled".to_string(),
         models_disabled: "disabled".to_string(),
+        models_test: "Test Connection".to_string(),
+        models_testing: "Testing…".to_string(),
+        models_test_details: "Error details".to_string(),
+        models_edit_title: "Model settings".to_string(),
+        models_edit_close: "Close".to_string(),
+        models_category: "Model Category".to_string(),
+        models_category_general_chat: "Text Generation".to_string(),
+        models_category_multimodal: "Image Understanding".to_string(),
+        models_category_image_generation: "Image Generation".to_string(),
+        models_category_speech_recognition: "Speech Recognition".to_string(),
+        models_context_window: "Context Window Size".to_string(),
+        models_context_window_hint:
+            "Determines when context is compacted; may be lower than the model's supported limit."
+                .to_string(),
+        models_max_tokens: "Max Output Tokens".to_string(),
+        models_max_tokens_hint:
+            "Limits tokens in a single response; 0 keeps the automatic cap.".to_string(),
+        models_reasoning_default: "Default preset".to_string(),
+        models_reasoning_auto: "Auto (model default)".to_string(),
+        models_reasoning_presets: "Reasoning presets".to_string(),
+        models_reasoning_empty: "No custom presets.".to_string(),
+        models_advanced: "Advanced Settings".to_string(),
+        models_advanced_note:
+            "Adapt requests and responses to service-specific requirements; keep the defaults if unsure."
+                .to_string(),
+        models_request_format: "Request format".to_string(),
+        models_inline_think: "Parse <think> Tags In Text".to_string(),
+        models_inline_think_hint:
+            "Display content inside <think>...</think> tags as reasoning.".to_string(),
+        models_skip_ssl: "Skip SSL Certificate Verification".to_string(),
+        models_skip_ssl_warning:
+            "Skipping SSL verification is a security risk, use only in test or internal network environments!"
+                .to_string(),
+        models_headers: "Custom Headers".to_string(),
+        models_headers_hint: "Add or modify HTTP request headers.".to_string(),
+        models_headers_mode: "Apply Mode".to_string(),
+        models_headers_replace: "Replace".to_string(),
+        models_headers_merge: "Merge".to_string(),
+        models_headers_replace_hint:
+            "Replace all default headers; provide required fields such as Content-Type and Authorization yourself."
+                .to_string(),
+        models_headers_merge_hint:
+            "Keep default headers and override matching fields with custom values.".to_string(),
+        models_body: "Custom Request Body".to_string(),
+        models_body_hint:
+            "Enter request body fields in JSON format to override default request parameters."
+                .to_string(),
+        models_body_mode: "Apply Mode".to_string(),
+        models_body_merge: "Merge".to_string(),
+        models_body_trim: "Trim".to_string(),
+        models_body_trim_hint:
+            "Keep only the essential runtime fields before applying the custom request body."
+                .to_string(),
+        models_json_invalid: "Invalid JSON; the shared configuration was not changed."
+            .to_string(),
         chat_empty: "Pick a session on the left, or create a new one.".to_string(),
         chat_empty_title: "Start a conversation".to_string(),
         welcome_title: "OpenBitFun,".to_string(),
@@ -2891,6 +3069,49 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         models_empty: service.t("gpui-shell-models-empty").await,
         models_enabled: service.t("gpui-shell-models-enabled").await,
         models_disabled: service.t("gpui-shell-models-disabled").await,
+        models_test: service.t("gpui-shell-models-test").await,
+        models_testing: service.t("gpui-shell-models-testing").await,
+        models_test_details: service.t("gpui-shell-models-test-details").await,
+        models_edit_title: service.t("gpui-shell-models-edit-title").await,
+        models_edit_close: service.t("action-close").await,
+        models_category: service.t("gpui-shell-models-category").await,
+        models_category_general_chat: service.t("gpui-shell-models-category-general-chat").await,
+        models_category_multimodal: service.t("gpui-shell-models-category-multimodal").await,
+        models_category_image_generation: service
+            .t("gpui-shell-models-category-image-generation")
+            .await,
+        models_category_speech_recognition: service
+            .t("gpui-shell-models-category-speech-recognition")
+            .await,
+        models_context_window: service.t("gpui-shell-models-context-window").await,
+        models_context_window_hint: service.t("gpui-shell-models-context-window-hint").await,
+        models_max_tokens: service.t("gpui-shell-models-max-tokens").await,
+        models_max_tokens_hint: service.t("gpui-shell-models-max-tokens-hint").await,
+        models_reasoning_default: service.t("gpui-shell-models-reasoning-default").await,
+        models_reasoning_auto: service.t("gpui-shell-models-reasoning-auto").await,
+        models_reasoning_presets: service.t("gpui-shell-models-reasoning-presets").await,
+        models_reasoning_empty: service.t("gpui-shell-models-reasoning-empty").await,
+        models_advanced: service.t("gpui-shell-models-advanced").await,
+        models_advanced_note: service.t("gpui-shell-models-advanced-note").await,
+        models_request_format: service.t("gpui-shell-models-request-format").await,
+        models_inline_think: service.t("gpui-shell-models-inline-think").await,
+        models_inline_think_hint: service.t("gpui-shell-models-inline-think-hint").await,
+        models_skip_ssl: service.t("gpui-shell-models-skip-ssl").await,
+        models_skip_ssl_warning: service.t("gpui-shell-models-skip-ssl-warning").await,
+        models_headers: service.t("gpui-shell-models-headers").await,
+        models_headers_hint: service.t("gpui-shell-models-headers-hint").await,
+        models_headers_mode: service.t("gpui-shell-models-headers-mode").await,
+        models_headers_replace: service.t("gpui-shell-models-headers-replace").await,
+        models_headers_merge: service.t("gpui-shell-models-headers-merge").await,
+        models_headers_replace_hint: service.t("gpui-shell-models-headers-replace-hint").await,
+        models_headers_merge_hint: service.t("gpui-shell-models-headers-merge-hint").await,
+        models_body: service.t("gpui-shell-models-body").await,
+        models_body_hint: service.t("gpui-shell-models-body-hint").await,
+        models_body_mode: service.t("gpui-shell-models-body-mode").await,
+        models_body_merge: service.t("gpui-shell-models-body-merge").await,
+        models_body_trim: service.t("gpui-shell-models-body-trim").await,
+        models_body_trim_hint: service.t("gpui-shell-models-body-trim-hint").await,
+        models_json_invalid: service.t("gpui-shell-models-json-invalid").await,
         chat_empty: service.t("gpui-shell-chat-empty").await,
         chat_empty_title: service.t("gpui-shell-chat-empty-title").await,
         welcome_title: service.t("gpui-shell-welcome-title").await,

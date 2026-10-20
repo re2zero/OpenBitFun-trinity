@@ -97,6 +97,102 @@ pub(crate) fn runtime_handle() -> Option<&'static RuntimeHandle> {
     RUNTIME_HANDLE.get()
 }
 
+/// G-SE12: builds a disposable client for one stored model and probes it.
+/// Mirrors the desktop command: stream options plus subscription auth/profile
+/// come from the live shared config, so a test never writes the config back.
+/// Multimodal models also run the image-input leg and merge both receipts.
+async fn test_model_connection_once(
+    model_id: &str,
+) -> Result<openbitfun_core::util::types::ConnectionTestResult, String> {
+    let service = get_global_config_service()
+        .await
+        .map_err(|error| format!("config service unavailable: {error}"))?;
+    let config: GlobalConfig = service
+        .get_config(None)
+        .await
+        .map_err(|error| format!("failed to read configuration: {error}"))?;
+    let model_config = config
+        .ai
+        .models
+        .iter()
+        .find(|model| model.id == model_id)
+        .cloned()
+        .ok_or_else(|| format!("model '{model_id}' is not configured"))?;
+
+    let supports_image_input = model_config.capabilities.iter().any(|capability| {
+        matches!(
+            capability,
+            openbitfun_core::service::config::types::ModelCapability::ImageUnderstanding
+        )
+    }) || matches!(
+        model_config.category,
+        openbitfun_core::service::config::types::ModelCategory::Multimodal
+    );
+
+    let auth = model_config.auth.clone();
+    let stream_options = openbitfun_core::infrastructure::ai::build_stream_options_for_model(
+        &config.ai,
+        Some(&model_config),
+    );
+    let mut ai_config: openbitfun_core::util::types::AIConfig = model_config
+        .try_into()
+        .map_err(|error| format!("failed to convert configuration: {error}"))?;
+    let skip_ssl_verify = ai_config.skip_ssl_verify;
+    let proxy_config = config.ai.proxy.enabled.then(|| config.ai.proxy.clone());
+    let subscription_options =
+        openbitfun_core::infrastructure::subscription_auth::SubscriptionHttpOptions::new(
+            proxy_config.clone(),
+            skip_ssl_verify,
+        );
+
+    openbitfun_core::infrastructure::ai::client_factory::apply_subscription_auth_with_options(
+        &auth,
+        &mut ai_config,
+        &subscription_options,
+    )
+    .await
+    .map_err(|error| format!("failed to resolve subscription auth: {error}"))?;
+
+    let client =
+        openbitfun_core::infrastructure::ai::client_factory::apply_subscription_request_profile(
+            &auth,
+            openbitfun_core::infrastructure::ai::AIClient::new_with_runtime_options(
+                ai_config,
+                proxy_config,
+                stream_options,
+            ),
+        );
+
+    let result = client
+        .test_connection()
+        .await
+        .map_err(|error| format!("connection test failed: {error}"))?;
+    if !result.success || !supports_image_input {
+        return Ok(result);
+    }
+
+    let image_result = client
+        .test_image_input_connection()
+        .await
+        .map_err(|error| format!("connection test failed: {error}"))?;
+    let response_time_ms = result.response_time_ms + image_result.response_time_ms;
+    Ok(openbitfun_core::util::types::ConnectionTestResult {
+        success: image_result.success,
+        response_time_ms,
+        model_response: image_result.model_response.or(result.model_response),
+        message_code: if image_result.success {
+            result.message_code
+        } else {
+            image_result.message_code
+        },
+        error_details: if image_result.success {
+            result.error_details
+        } else {
+            image_result.error_details
+        },
+    })
+}
+
 /// One-way notifications from the embedded runtime into the shell UI.
 // Turn ids ride along on turn events for the M5 permission/steering work;
 // the M4 view keys everything on session ids and round ids.
@@ -270,6 +366,13 @@ pub(crate) enum RuntimeEvent {
     /// Configured-model catalog for the pickers (session header + models
     /// settings page); sent once after bootstrap.
     ModelCatalog(Vec<ModelChoice>),
+    /// One model's connection test finished (G-SE12); the models page shows
+    /// the receipt inline. A setup failure is reported as `Err` so the row
+    /// keeps a usable message instead of losing the test.
+    ModelTestFinished {
+        model_id: String,
+        result: Result<openbitfun_core::util::types::ConnectionTestResult, String>,
+    },
     /// Workspaces the shell can switch to: the shared core catalog (recent
     /// first, then the rest of the opened set) plus workspaces visited by
     /// this process, with the active one always present.
@@ -1706,6 +1809,30 @@ impl RuntimeHandle {
                     let _ = tx.send(RuntimeEvent::ModelCatalog(Vec::new()));
                 }
             }
+        });
+    }
+
+    /// G-SE12: probes one configured model through the same transient-client
+    /// path the desktop `test_ai_config_connection` command uses, including
+    /// the image-input leg for multimodal models. Runs off the UI thread; the
+    /// result comes back as [`RuntimeEvent::ModelTestFinished`].
+    pub(crate) fn test_model_connection(&self, model_id: String) {
+        self.tokio.spawn(async move {
+            let result = test_model_connection_once(&model_id).await;
+            match &result {
+                Ok(receipt) => tracing::info!(
+                    "Model connection test finished: model={}, success={}, response_time={}ms",
+                    model_id,
+                    receipt.success,
+                    receipt.response_time_ms
+                ),
+                Err(error) => {
+                    tracing::warn!(
+                        "Model connection test failed to run: model={model_id}, error={error}"
+                    )
+                }
+            }
+            publish(RuntimeEvent::ModelTestFinished { model_id, result });
         });
     }
 
