@@ -15,6 +15,7 @@ use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, StyledExt, WindowExt};
@@ -319,6 +320,218 @@ impl SkillDialogsState {
         cx.refresh_windows();
         result
     }
+}
+
+/// G-K4: the user-defined skill groups persisted at `app.user_skill_groups`.
+/// The stored shape is owned by the shared config contract; this page only
+/// mirrors it into a Global so the settings render (inside the window borrow)
+/// can read it without touching the window entity.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct SkillGroupsCatalog {
+    pub(crate) loaded: bool,
+    /// A non-empty group mutation (move/delete/save) is in flight.
+    pub(crate) busy: bool,
+    pub(crate) error: Option<String>,
+    pub(crate) groups: Vec<openbitfun_core::service::config::UserSkillGroup>,
+}
+
+impl Global for SkillGroupsCatalog {}
+
+impl SkillGroupsCatalog {
+    pub(crate) fn current(cx: &App) -> Self {
+        cx.try_global::<Self>().cloned().unwrap_or_default()
+    }
+
+    pub(crate) fn set(catalog: Self, cx: &mut App) {
+        cx.set_global(catalog);
+        cx.refresh_windows();
+    }
+
+    pub(crate) fn mutate<R>(cx: &mut App, update: impl FnOnce(&mut Self) -> R) -> R {
+        let mut state = Self::current(cx);
+        let result = update(&mut state);
+        cx.set_global(state);
+        cx.refresh_windows();
+        result
+    }
+}
+
+/// G-K4: the open group editor or delete confirmation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum GroupDialog {
+    Edit {
+        /// `None` = create (including "copy as new"); `Some` = edit in place.
+        original: Option<openbitfun_core::service::config::UserSkillGroup>,
+    },
+    Delete(openbitfun_core::service::config::UserSkillGroup),
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct SkillGroupsDialogState {
+    pub(crate) dialog: Option<GroupDialog>,
+    /// Selected member keys, in selection order. Unresolved keys loaded from
+    /// an older catalog stay here so saving never silently drops them.
+    pub(crate) selected: Vec<String>,
+    pub(crate) busy: bool,
+    pub(crate) error: Option<String>,
+}
+
+impl Global for SkillGroupsDialogState {}
+
+impl SkillGroupsDialogState {
+    pub(crate) fn current(cx: &App) -> Self {
+        cx.try_global::<Self>().cloned().unwrap_or_default()
+    }
+
+    pub(crate) fn mutate<R>(cx: &mut App, update: impl FnOnce(&mut Self) -> R) -> R {
+        let mut state = Self::current(cx);
+        let result = update(&mut state);
+        cx.set_global(state);
+        cx.refresh_windows();
+        result
+    }
+}
+
+/// G-K4: validation failures mirrored from the web `saveUserSkillGroup`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GroupEditError {
+    NameRequired,
+    NameDuplicate,
+    /// The group changed elsewhere between load and save.
+    Conflict,
+}
+
+/// G-K4: applies one validated edit to the latest group list. Mirrors
+/// `features/skill-groups/skillGroups.ts::saveUserSkillGroup`: name is trimmed
+/// and required, names are unique case-insensitively, an edit may only replace
+/// the exact original snapshot, and member keys are trimmed + deduped.
+pub(crate) fn apply_group_edit(
+    groups: &[openbitfun_core::service::config::UserSkillGroup],
+    original: Option<&openbitfun_core::service::config::UserSkillGroup>,
+    edited: &openbitfun_core::service::config::UserSkillGroup,
+) -> Result<Vec<openbitfun_core::service::config::UserSkillGroup>, GroupEditError> {
+    let name = edited.name.trim();
+    if name.is_empty() {
+        return Err(GroupEditError::NameRequired);
+    }
+    let current = groups.iter().find(|group| group.id == edited.id);
+    let unchanged = match (current, original) {
+        (Some(current), Some(original)) => current == original,
+        (None, None) => true,
+        _ => false,
+    };
+    if !unchanged {
+        return Err(GroupEditError::Conflict);
+    }
+    let name_lower = name.to_lowercase();
+    if groups
+        .iter()
+        .any(|group| group.id != edited.id && group.name.to_lowercase() == name_lower)
+    {
+        return Err(GroupEditError::NameDuplicate);
+    }
+    let mut next = edited.clone();
+    next.name = name.to_string();
+    next.skill_keys = normalize_group_keys(&edited.skill_keys);
+    let mut out = groups.to_vec();
+    match out.iter().position(|group| group.id == edited.id) {
+        Some(index) => out[index] = next,
+        None => out.push(next),
+    }
+    Ok(out)
+}
+
+/// G-K4: deletes only if the snapshot still matches (web `deleteUserSkillGroup`).
+pub(crate) fn apply_group_delete(
+    groups: &[openbitfun_core::service::config::UserSkillGroup],
+    target: &openbitfun_core::service::config::UserSkillGroup,
+) -> Result<Vec<openbitfun_core::service::config::UserSkillGroup>, GroupEditError> {
+    match groups.iter().find(|group| group.id == target.id) {
+        Some(current) if current == target => Ok(groups
+            .iter()
+            .filter(|group| group.id != target.id)
+            .cloned()
+            .collect()),
+        _ => Err(GroupEditError::Conflict),
+    }
+}
+
+/// G-K4: swaps a group with its neighbour (web `moveUserSkillGroup`). An edge
+/// move is a no-op, not an error; a missing id is a conflict.
+pub(crate) fn apply_group_move(
+    groups: &[openbitfun_core::service::config::UserSkillGroup],
+    id: &str,
+    delta: i32,
+) -> Result<Vec<openbitfun_core::service::config::UserSkillGroup>, GroupEditError> {
+    let Some(index) = groups.iter().position(|group| group.id == id) else {
+        return Err(GroupEditError::Conflict);
+    };
+    let target = index as i32 + delta;
+    if target < 0 || target as usize >= groups.len() {
+        return Ok(groups.to_vec());
+    }
+    let mut out = groups.to_vec();
+    out.swap(index, target as usize);
+    Ok(out)
+}
+
+fn normalize_group_keys(keys: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for key in keys {
+        let key = key.trim();
+        if !key.is_empty() && !out.iter().any(|existing| existing == key) {
+            out.push(key.to_string());
+        }
+    }
+    out
+}
+
+/// G-K4: built-in `group_key` buckets with their member names, ordered the way
+/// the web resolver orders them (known keys first, then alphabetical).
+fn builtin_group_members(rows: &[SkillRow]) -> Vec<(String, Vec<String>)> {
+    const ORDER: [&str; 9] = [
+        "meta",
+        "miniapp",
+        "computer-use",
+        "office",
+        "canvas",
+        "debugging",
+        "coordination",
+        "planning",
+        "gstack",
+    ];
+    let mut buckets: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for row in rows {
+        if !row.builtin {
+            continue;
+        }
+        let Some(group) = row.group_key.as_deref().map(str::trim) else {
+            continue;
+        };
+        if group.is_empty() {
+            continue;
+        }
+        buckets
+            .entry(group.to_string())
+            .or_default()
+            .push(row.name.clone());
+    }
+    let mut out: Vec<(String, Vec<String>)> = buckets.into_iter().collect();
+    out.sort_by(|(left, left_members), (right, right_members)| {
+        let left_rank = ORDER
+            .iter()
+            .position(|key| key == left)
+            .unwrap_or(ORDER.len());
+        let right_rank = ORDER
+            .iter()
+            .position(|key| key == right)
+            .unwrap_or(ORDER.len());
+        left_rank
+            .cmp(&right_rank)
+            .then_with(|| left.cmp(right))
+            .then_with(|| left_members.len().cmp(&right_members.len()))
+    });
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -1097,6 +1310,8 @@ pub(crate) enum SkillFacet {
     Project,
     /// A built-in catalog group (`group_key` value).
     Group(String),
+    /// G-K4: the user-group management list (not a skill filter itself).
+    GroupManager,
     /// A non-native discovery ecosystem (`source_id` value).
     Source(String),
     /// The skill market placeholder (T3-17): an explicit degrade, not a fake.
@@ -1196,6 +1411,7 @@ pub(crate) fn skill_matches(row: &SkillRow, facet: &SkillFacet) -> bool {
             !row.builtin && !is_native_source(&row.source_id) && &row.source_id == source
         }
         SkillFacet::Market => false,
+        SkillFacet::GroupManager => false,
     }
 }
 
@@ -1338,6 +1554,8 @@ pub(crate) fn install_page_filters(window: &mut Window, cx: &mut Context<ShellWi
         input: Some(agents_placeholder),
     });
     cx.set_global(SkillDialogsState::default());
+    cx.set_global(SkillGroupsCatalog::default());
+    cx.set_global(SkillGroupsDialogState::default());
     cx.subscribe(
         &skills_input,
         |_: &mut ShellWindow, input, event: &InputEvent, cx| {
@@ -1668,19 +1886,28 @@ fn skills_page(text: &ShellText, view: WeakEntity<ShellWindow>, cx: &mut App) ->
             cx,
         ));
     }
-    if !facets.groups.is_empty() {
-        rail = rail.child(facet_group_title(text.skills_facet_groups.clone(), cx));
-        for (group, count) in &facets.groups {
-            let candidate = SkillFacet::Group(group.clone());
-            rail = rail.child(facet_row(
-                format!("skills-facet-group-{}", group),
-                group.clone(),
-                Some(*count),
-                facet == candidate,
-                set(candidate),
-                cx,
-            ));
-        }
+    // G-K4: the group manager sits above the derived built-in buckets; the
+    // section is always present now that user groups are editable.
+    let user_group_count = SkillGroupsCatalog::current(cx).groups.len();
+    rail = rail.child(facet_group_title(text.skills_facet_groups.clone(), cx));
+    rail = rail.child(facet_row(
+        "skills-facet-group-manager".to_string(),
+        text.skill_groups_manage.clone(),
+        Some(user_group_count),
+        facet == SkillFacet::GroupManager,
+        set(SkillFacet::GroupManager),
+        cx,
+    ));
+    for (group, count) in &facets.groups {
+        let candidate = SkillFacet::Group(group.clone());
+        rail = rail.child(facet_row(
+            format!("skills-facet-group-{}", group),
+            group.clone(),
+            Some(*count),
+            facet == candidate,
+            set(candidate),
+            cx,
+        ));
     }
     if !facets.sources.is_empty() {
         rail = rail.child(facet_group_title(text.skills_facet_sources.clone(), cx));
@@ -1720,6 +1947,16 @@ fn skills_page(text: &ShellText, view: WeakEntity<ShellWindow>, cx: &mut App) ->
             .min_w_0()
             .child(rail)
             .child(content);
+    }
+
+    if facet == SkillFacet::GroupManager {
+        return div()
+            .flex()
+            .gap_3()
+            .w_full()
+            .min_w_0()
+            .child(rail)
+            .child(skill_groups_page(text, view, cx));
     }
 
     // G-K5: the local filter row sits above the list, so the facet rail and
@@ -1777,6 +2014,7 @@ fn facet_key(facet: &SkillFacet) -> String {
         SkillFacet::Group(group) => format!("group-{}", group),
         SkillFacet::Source(source) => format!("source-{}", source),
         SkillFacet::Market => "market".to_string(),
+        SkillFacet::GroupManager => "group-manager".to_string(),
     }
 }
 
@@ -2363,6 +2601,612 @@ fn skill_validation_line(
             .child(i18n::skill_validation_failed(detail, cx))
             .into_any_element(),
     }
+}
+
+/// G-K4: the group manager facet. User groups are editable and reorderable;
+/// built-in `group_key` buckets are read-only and can only be copied into a
+/// user group. Mirrors `SkillGroupsView.tsx`, minus the per-row overflow menu
+/// (the shell renders the actions inline).
+fn skill_groups_page(
+    text: &ShellText,
+    view: WeakEntity<ShellWindow>,
+    cx: &mut App,
+) -> gpui_kit::Div {
+    let catalog = SkillGroupsCatalog::current(cx);
+    let skills = SkillCatalog::try_current(cx).unwrap_or_default();
+    let muted = cx.theme().muted_foreground;
+    let danger = cx.theme().danger;
+    let mut content = div().v_flex().gap_2().flex_1().min_w_0();
+
+    let new_view = view.clone();
+    content = content.child(
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .w_full()
+            .child(
+                div()
+                    .v_flex()
+                    .gap_0p5()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().foreground)
+                            .child(text.skill_groups_title.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .whitespace_normal()
+                            .child(text.skill_groups_subtitle.clone()),
+                    ),
+            )
+            .child(
+                Button::new("skill-group-new")
+                    .label(text.skill_group_new.clone())
+                    .small()
+                    .with_variant(ButtonVariant::Primary)
+                    .on_click(move |_, window, cx| {
+                        open_group_dialog(
+                            new_view.clone(),
+                            GroupDialog::Edit { original: None },
+                            None,
+                            window,
+                            cx,
+                        );
+                    }),
+            ),
+    );
+    if let Some(error) = &catalog.error {
+        content = content.child(
+            div()
+                .text_xs()
+                .text_color(danger)
+                .whitespace_normal()
+                .child(i18n::group_operation_failed(error, cx)),
+        );
+    }
+    if !catalog.loaded {
+        content = content.child(
+            div()
+                .text_sm()
+                .text_color(muted)
+                .child(text.skill_groups_loading.clone()),
+        );
+        return content;
+    }
+
+    content = content.child(group_section_title(text.skill_groups_mine.clone(), cx));
+    if catalog.groups.is_empty() {
+        content = content.child(
+            div()
+                .text_xs()
+                .text_color(muted)
+                .child(text.skill_groups_empty.clone()),
+        );
+    } else {
+        let count = catalog.groups.len();
+        for (index, group) in catalog.groups.iter().enumerate() {
+            let members: Vec<String> = group
+                .skill_keys
+                .iter()
+                .map(|key| {
+                    skills
+                        .skills
+                        .iter()
+                        .find(|row| &row.key == key)
+                        .map(|row| row.name.clone())
+                        .unwrap_or_else(|| key.clone())
+                })
+                .collect();
+            let unavailable = group
+                .skill_keys
+                .iter()
+                .filter(|key| !skills.skills.iter().any(|row| &row.key == *key))
+                .count();
+            content = content.child(render_group_row(
+                GroupRowModel {
+                    id: group.id.clone(),
+                    name: group.name.clone(),
+                    keys: group.skill_keys.clone(),
+                    members,
+                    unavailable,
+                    original: Some(group.clone()),
+                },
+                index == 0,
+                index + 1 == count,
+                view.clone(),
+                text,
+                cx,
+            ));
+        }
+    }
+
+    let builtin = builtin_group_members(&skills.skills);
+    if !builtin.is_empty() {
+        content = content.child(group_section_title(text.skill_groups_builtin.clone(), cx));
+        for (name, members) in builtin {
+            let keys: Vec<String> = skills
+                .skills
+                .iter()
+                .filter(|row| row.builtin && row.group_key.as_deref() == Some(name.as_str()))
+                .map(|row| row.key.clone())
+                .collect();
+            content = content.child(render_group_row(
+                GroupRowModel {
+                    id: format!("builtin:{name}"),
+                    name,
+                    keys,
+                    members,
+                    unavailable: 0,
+                    original: None,
+                },
+                true,
+                true,
+                view.clone(),
+                text,
+                cx,
+            ));
+        }
+    }
+    content
+}
+
+struct GroupRowModel {
+    id: String,
+    name: String,
+    keys: Vec<String>,
+    members: Vec<String>,
+    unavailable: usize,
+    /// `Some` = user group (edit/move/delete); `None` = built-in (copy only).
+    original: Option<openbitfun_core::service::config::UserSkillGroup>,
+}
+
+fn group_section_title(label: String, cx: &App) -> gpui_kit::Div {
+    div()
+        .text_xs()
+        .text_color(cx.theme().muted_foreground)
+        .pt_1()
+        .child(label)
+}
+
+fn render_group_row(
+    model: GroupRowModel,
+    first: bool,
+    last: bool,
+    view: WeakEntity<ShellWindow>,
+    text: &ShellText,
+    cx: &App,
+) -> gpui_kit::Div {
+    let busy = SkillGroupsCatalog::current(cx).busy;
+    let muted = cx.theme().muted_foreground;
+    let preview = if !model.members.is_empty() {
+        model.members.join(" · ")
+    } else if model.keys.is_empty() {
+        text.skill_groups_empty_group.clone()
+    } else {
+        text.skill_groups_unresolved.clone()
+    };
+    let mut actions = div().flex().flex_row().items_center().gap_1().flex_wrap();
+    if let Some(original) = model.original.clone() {
+        let edit_view = view.clone();
+        let edit_group = original.clone();
+        actions = actions.child(
+            Button::new(SharedString::from(format!("skill-group-edit-{}", model.id)))
+                .label(i18n::shared_term("tools.edit", cx))
+                .small()
+                .with_variant(ButtonVariant::Ghost)
+                .disabled(busy)
+                .on_click(move |_, window, cx| {
+                    open_group_dialog(
+                        edit_view.clone(),
+                        GroupDialog::Edit {
+                            original: Some(edit_group.clone()),
+                        },
+                        None,
+                        window,
+                        cx,
+                    );
+                }),
+        );
+        let up_id = model.id.clone();
+        actions = actions.child(
+            Button::new(SharedString::from(format!("skill-group-up-{}", model.id)))
+                .label(text.skill_group_up.clone())
+                .small()
+                .with_variant(ButtonVariant::Ghost)
+                .disabled(busy || first)
+                .on_click(move |_, _window, cx| {
+                    save_group_list(cx, |groups| apply_group_move(groups, &up_id, -1));
+                }),
+        );
+        let down_id = model.id.clone();
+        actions = actions.child(
+            Button::new(SharedString::from(format!("skill-group-down-{}", model.id)))
+                .label(text.skill_group_down.clone())
+                .small()
+                .with_variant(ButtonVariant::Ghost)
+                .disabled(busy || last)
+                .on_click(move |_, _window, cx| {
+                    save_group_list(cx, |groups| apply_group_move(groups, &down_id, 1));
+                }),
+        );
+        let delete_view = view.clone();
+        let delete_group = original;
+        actions = actions.child(
+            Button::new(SharedString::from(format!(
+                "skill-group-delete-{}",
+                model.id
+            )))
+            .label(text.skill_group_delete.clone())
+            .small()
+            .with_variant(ButtonVariant::Danger)
+            .disabled(busy)
+            .on_click(move |_, window, cx| {
+                open_group_dialog(
+                    delete_view.clone(),
+                    GroupDialog::Delete(delete_group.clone()),
+                    None,
+                    window,
+                    cx,
+                );
+            }),
+        );
+    }
+    let copy_view = view.clone();
+    let copy_base = model.name.clone();
+    let copy_keys = model.keys.clone();
+    actions = actions.child(
+        Button::new(SharedString::from(format!("skill-group-copy-{}", model.id)))
+            .label(text.skill_group_copy.clone())
+            .small()
+            .with_variant(ButtonVariant::Ghost)
+            .disabled(busy)
+            .on_click(move |_, window, cx| {
+                let groups = SkillGroupsCatalog::current(cx).groups;
+                let mut name = i18n::group_copy_name(&copy_base, cx);
+                let mut index = 2;
+                while groups
+                    .iter()
+                    .any(|group| group.name.to_lowercase() == name.to_lowercase())
+                {
+                    name = i18n::group_copy_name_numbered(&copy_base, index, cx);
+                    index += 1;
+                }
+                open_group_dialog(
+                    copy_view.clone(),
+                    GroupDialog::Edit { original: None },
+                    Some((name, copy_keys.clone())),
+                    window,
+                    cx,
+                );
+            }),
+    );
+
+    let count = i18n::group_member_count(model.keys.len(), cx);
+    div()
+        .v_flex()
+        .gap_1()
+        .p_2()
+        .rounded(cx.theme().radius)
+        .border_1()
+        .border_color(cx.theme().border)
+        .w_full()
+        .min_w_0()
+        .debug_selector(|| "skill-group-row".to_string())
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .min_w_0()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().foreground)
+                        .min_w_0()
+                        .truncate()
+                        .child(model.name.clone()),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(muted)
+                        .flex_shrink_0()
+                        .child(count),
+                )
+                .when(model.unavailable > 0, |row| {
+                    row.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().danger)
+                            .flex_shrink_0()
+                            .child(i18n::group_unavailable_count(model.unavailable, cx)),
+                    )
+                }),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(muted)
+                .min_w_0()
+                .truncate()
+                .child(preview),
+        )
+        .child(actions)
+}
+
+/// G-K4: runs a group-list mutation against the latest catalog, then persists
+/// through the runtime. Row-level actions (move) use this; dialogs keep their
+/// own busy/error state and save directly.
+fn save_group_list(
+    cx: &mut App,
+    update: impl FnOnce(
+        &[openbitfun_core::service::config::UserSkillGroup],
+    )
+        -> Result<Vec<openbitfun_core::service::config::UserSkillGroup>, GroupEditError>,
+) {
+    let groups = SkillGroupsCatalog::current(cx).groups;
+    match update(&groups) {
+        Ok(next) => {
+            SkillGroupsCatalog::mutate(cx, |state| {
+                state.busy = true;
+                state.error = None;
+            });
+            match crate::runtime::runtime_handle() {
+                Some(handle) => handle.save_skill_groups(next),
+                None => {
+                    let message = i18n::current(cx).manage_skill_runtime_unavailable.clone();
+                    SkillGroupsCatalog::mutate(cx, |state| {
+                        state.busy = false;
+                        state.error = Some(message);
+                    });
+                }
+            }
+        }
+        Err(error) => {
+            let message = i18n::group_edit_error(error, cx);
+            SkillGroupsCatalog::mutate(cx, |state| state.error = Some(message));
+        }
+    }
+}
+
+/// G-K4: opens (or retargets) the single group dialog. `prefill` supplies the
+/// name/member list for a new group created by "copy"; editing an existing
+/// group ignores it in favour of the group snapshot.
+pub(crate) fn open_group_dialog(
+    view: WeakEntity<ShellWindow>,
+    dialog: GroupDialog,
+    prefill: Option<(String, Vec<String>)>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(shell) = view.upgrade() else {
+        return;
+    };
+    let name_input = shell.read(cx).skill_group_name_input.clone();
+    let (name, selected) = match &dialog {
+        GroupDialog::Edit {
+            original: Some(group),
+        } => (group.name.clone(), group.skill_keys.clone()),
+        GroupDialog::Edit { original: None } => prefill.unwrap_or_default(),
+        GroupDialog::Delete(group) => (group.name.clone(), Vec::new()),
+    };
+    name_input.update(cx, |input, cx| input.set_value(name.clone(), window, cx));
+    let already_open =
+        window.has_active_dialog(cx) && SkillGroupsDialogState::current(cx).dialog.is_some();
+    SkillGroupsDialogState::mutate(cx, |state| {
+        state.dialog = Some(dialog);
+        state.selected = selected;
+        state.busy = false;
+        state.error = None;
+    });
+    if already_open {
+        return;
+    }
+
+    window.open_dialog(cx, move |dialog_el, _window, cx| {
+        let text = i18n::current(cx);
+        let state = SkillGroupsDialogState::current(cx);
+        let Some(kind) = state.dialog.clone() else {
+            return dialog_el;
+        };
+        let muted = cx.theme().muted_foreground;
+        let danger = cx.theme().danger;
+        match kind {
+            GroupDialog::Edit { original } => {
+                let mut content = div().w(px(520.)).v_flex().gap_3();
+                content = content.child(dialog_field(
+                    &text.skill_group_name_label,
+                    muted,
+                    div().w_full().child(Input::new(&name_input)),
+                ));
+                content = content.child(
+                    div()
+                        .text_xs()
+                        .text_color(muted)
+                        .child(i18n::group_member_count(state.selected.len(), cx)),
+                );
+                let skills = SkillCatalog::try_current(cx).unwrap_or_default();
+                let mut rows: Vec<&SkillRow> = skills.skills.iter().collect();
+                rows.sort_by_key(|row| row.name.to_lowercase());
+                let mut list = div()
+                    .v_flex()
+                    .gap_1()
+                    .max_h(px(320.))
+                    .overflow_y_scrollbar()
+                    .w_full();
+                for row in rows {
+                    let key = row.key.clone();
+                    let checked = state.selected.contains(&key);
+                    list = list.child(
+                        Checkbox::new(SharedString::from(format!(
+                            "skill-group-member-{}",
+                            row.key
+                        )))
+                        .label(row.name.clone())
+                        .checked(checked)
+                        .on_click(move |checked: &bool, _window, cx| {
+                            let key = key.clone();
+                            let checked = *checked;
+                            SkillGroupsDialogState::mutate(cx, |state| {
+                                if checked {
+                                    if !state.selected.contains(&key) {
+                                        state.selected.push(key);
+                                    }
+                                } else {
+                                    state.selected.retain(|existing| existing != &key);
+                                }
+                            });
+                        }),
+                    );
+                }
+                content = content.child(list);
+                if let Some(error) = &state.error {
+                    content =
+                        content.child(div().text_xs().text_color(danger).child(error.clone()));
+                }
+                let cancel = Button::new("skill-group-cancel")
+                    .label(text.session_action_cancel.clone())
+                    .with_variant(ButtonVariant::Ghost)
+                    .on_click(move |_, window, cx| {
+                        SkillGroupsDialogState::mutate(cx, |state| state.dialog = None);
+                        window.close_dialog(cx);
+                    });
+                let save_input = name_input.clone();
+                let save_original = original.clone();
+                let save = Button::new("skill-group-save")
+                    .label(text.skill_group_save.clone())
+                    .with_variant(ButtonVariant::Primary)
+                    .disabled(state.busy)
+                    .on_click(move |_, _window, cx| {
+                        let name = save_input.read(cx).value().trim().to_string();
+                        let selected = SkillGroupsDialogState::current(cx).selected;
+                        let id = save_original
+                            .as_ref()
+                            .map(|group| group.id.clone())
+                            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                        let edited = openbitfun_core::service::config::UserSkillGroup {
+                            id,
+                            name,
+                            skill_keys: selected,
+                        };
+                        let groups = SkillGroupsCatalog::current(cx).groups;
+                        match apply_group_edit(&groups, save_original.as_ref(), &edited) {
+                            Ok(next) => {
+                                SkillGroupsDialogState::mutate(cx, |state| {
+                                    state.busy = true;
+                                    state.error = None;
+                                });
+                                match crate::runtime::runtime_handle() {
+                                    Some(handle) => handle.save_skill_groups(next),
+                                    None => {
+                                        let message = i18n::current(cx)
+                                            .manage_skill_runtime_unavailable
+                                            .clone();
+                                        SkillGroupsDialogState::mutate(cx, |state| {
+                                            state.busy = false;
+                                            state.error = Some(message);
+                                        });
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                let message = i18n::group_edit_error(error, cx);
+                                SkillGroupsDialogState::mutate(cx, |state| {
+                                    state.error = Some(message);
+                                });
+                            }
+                        }
+                    });
+                dialog_el
+                    .title(div().child(text.skill_group_dialog_edit_title.clone()))
+                    .child(content.debug_selector(|| "skill-group-dialog".to_string()))
+                    .footer(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .justify_end()
+                            .gap_2()
+                            .child(cancel)
+                            .child(save),
+                    )
+            }
+            GroupDialog::Delete(target) => {
+                let mut content = div().w(px(420.)).v_flex().gap_2();
+                content = content.child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().foreground)
+                        .whitespace_normal()
+                        .child(i18n::group_delete_warning(&target.name, cx)),
+                );
+                if let Some(error) = &state.error {
+                    content =
+                        content.child(div().text_xs().text_color(danger).child(error.clone()));
+                }
+                let cancel = Button::new("skill-group-delete-cancel")
+                    .label(text.session_action_cancel.clone())
+                    .with_variant(ButtonVariant::Ghost)
+                    .on_click(move |_, window, cx| {
+                        SkillGroupsDialogState::mutate(cx, |state| state.dialog = None);
+                        window.close_dialog(cx);
+                    });
+                let delete_target = target.clone();
+                let delete = Button::new("skill-group-delete-confirm")
+                    .label(text.skill_group_delete.clone())
+                    .with_variant(ButtonVariant::Danger)
+                    .disabled(state.busy)
+                    .on_click(move |_, _window, cx| {
+                        let groups = SkillGroupsCatalog::current(cx).groups;
+                        match apply_group_delete(&groups, &delete_target) {
+                            Ok(next) => {
+                                SkillGroupsDialogState::mutate(cx, |state| {
+                                    state.busy = true;
+                                    state.error = None;
+                                });
+                                match crate::runtime::runtime_handle() {
+                                    Some(handle) => handle.save_skill_groups(next),
+                                    None => {
+                                        let message = i18n::current(cx)
+                                            .manage_skill_runtime_unavailable
+                                            .clone();
+                                        SkillGroupsDialogState::mutate(cx, |state| {
+                                            state.busy = false;
+                                            state.error = Some(message);
+                                        });
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                let message = i18n::group_edit_error(error, cx);
+                                SkillGroupsDialogState::mutate(cx, |state| {
+                                    state.error = Some(message);
+                                });
+                            }
+                        }
+                    });
+                dialog_el
+                    .title(div().child(text.skill_group_dialog_delete_title.clone()))
+                    .child(content.debug_selector(|| "skill-group-dialog".to_string()))
+                    .footer(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .justify_end()
+                            .gap_2()
+                            .child(cancel)
+                            .child(delete),
+                    )
+            }
+        }
+    });
 }
 
 fn badge(label: String, cx: &App) -> gpui_kit::Div {
@@ -5681,6 +6525,87 @@ mod tests {
             path: String::new(),
             deletable: false,
         }
+    }
+
+    fn group(
+        id: &str,
+        name: &str,
+        keys: &[&str],
+    ) -> openbitfun_core::service::config::UserSkillGroup {
+        openbitfun_core::service::config::UserSkillGroup {
+            id: id.to_string(),
+            name: name.to_string(),
+            skill_keys: keys.iter().map(|key| key.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn group_edit_trims_names_and_dedupes_members() {
+        let groups = vec![group("a", "Alpha", &[])];
+        let edited = group("b", "  Beta  ", &["k1", " k1 ", "", "k2"]);
+        let next = apply_group_edit(&groups, None, &edited).expect("valid edit");
+        assert_eq!(next.len(), 2);
+        assert_eq!(next[1].name, "Beta");
+        assert_eq!(next[1].skill_keys, vec!["k1", "k2"]);
+        assert_eq!(next[0], groups[0]);
+    }
+
+    #[test]
+    fn group_edit_rejects_empty_duplicate_and_stale_snapshots() {
+        let groups = vec![group("a", "Alpha", &[]), group("b", "Beta", &["k"])];
+        assert_eq!(
+            apply_group_edit(&groups, None, &group("c", "   ", &[])),
+            Err(GroupEditError::NameRequired)
+        );
+        assert_eq!(
+            apply_group_edit(&groups, None, &group("c", " beta ", &[])),
+            Err(GroupEditError::NameDuplicate)
+        );
+        // Editing with an outdated snapshot is a conflict, like the web.
+        let stale = group("b", "Old name", &[]);
+        assert_eq!(
+            apply_group_edit(&groups, Some(&stale), &group("b", "Beta 2", &[])),
+            Err(GroupEditError::Conflict)
+        );
+        // Creating with an id that already exists is a conflict too.
+        assert_eq!(
+            apply_group_edit(&groups, None, &group("a", "Gamma", &[])),
+            Err(GroupEditError::Conflict)
+        );
+        let next = apply_group_edit(&groups, Some(&groups[1]), &group("b", "Beta", &["k"]))
+            .expect("unchanged edit");
+        assert_eq!(next, groups);
+    }
+
+    #[test]
+    fn group_move_and_delete_follow_the_web_rules() {
+        let groups = vec![
+            group("a", "Alpha", &[]),
+            group("b", "Beta", &[]),
+            group("c", "Gamma", &[]),
+        ];
+        let moved = apply_group_move(&groups, "c", -1).expect("moved");
+        assert_eq!(
+            moved
+                .iter()
+                .map(|group| group.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "c", "b"]
+        );
+        assert_eq!(
+            apply_group_move(&groups, "a", -1).expect("edge no-op"),
+            groups
+        );
+        assert_eq!(
+            apply_group_move(&groups, "missing", 1),
+            Err(GroupEditError::Conflict)
+        );
+        let removed = apply_group_delete(&groups, &groups[1]).expect("removed");
+        assert_eq!(removed.len(), 2);
+        assert_eq!(
+            apply_group_delete(&groups, &group("b", "Other", &[])),
+            Err(GroupEditError::Conflict)
+        );
     }
 
     #[test]

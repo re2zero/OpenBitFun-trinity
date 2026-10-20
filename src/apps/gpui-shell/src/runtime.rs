@@ -429,6 +429,10 @@ pub(crate) enum RuntimeEvent {
     /// catalog.
     SkillAdded(Result<String, String>),
     SkillDeleted(Result<String, String>),
+    /// G-K4: the persisted user skill groups (`app.user_skill_groups`).
+    SkillGroups(Result<Vec<openbitfun_core::service::config::UserSkillGroup>, String>),
+    /// G-K4: a group-list write settled; Ok carries the saved list.
+    SkillGroupsSaved(Result<Vec<openbitfun_core::service::config::UserSkillGroup>, String>),
     AgentCatalog(crate::manage::AgentCatalog),
     McpCatalog(crate::manage::McpCatalog),
     /// T2-11: the skill selection projection for one agent (mode profile
@@ -2062,6 +2066,25 @@ impl RuntimeHandle {
         });
     }
 
+    /// G-K4: reads `app.user_skill_groups` into the group manager.
+    pub(crate) fn reload_skill_groups(&self) {
+        self.tokio.spawn(async move {
+            publish(RuntimeEvent::SkillGroups(read_user_skill_groups().await));
+        });
+    }
+
+    /// G-K4: writes the whole user-group list back through the `app` section,
+    /// preserving every sibling key the shell does not own.
+    pub(crate) fn save_skill_groups(
+        &self,
+        groups: Vec<openbitfun_core::service::config::UserSkillGroup>,
+    ) {
+        self.tokio.spawn(async move {
+            let result = write_user_skill_groups(&groups).await.map(|()| groups);
+            publish(RuntimeEvent::SkillGroupsSaved(result));
+        });
+    }
+
     /// M21: mode and subagent cards for the agents management page.
     pub(crate) fn reload_agent_catalog(&self) {
         let workspace = self.workspace();
@@ -3066,6 +3089,55 @@ impl RuntimeHandle {
 // M21 management catalog loaders (core service reads, projected into the
 // shell-owned row types so the UI layer stays free of MCP/registry types)
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// G-K4 user skill groups: the shared config contract owns the persisted shape
+// (`{version, groups:[{id,name,skillKeys}]}`); the shell only edits it.
+// ---------------------------------------------------------------------------
+
+async fn read_user_skill_groups(
+) -> Result<Vec<openbitfun_core::service::config::UserSkillGroup>, String> {
+    let service = get_global_config_service()
+        .await
+        .map_err(|error| format!("config service unavailable: {error}"))?;
+    let app: openbitfun_core::service::config::AppConfig = service
+        .get_config(Some("app"))
+        .await
+        .map_err(|error| format!("failed to read app configuration: {error}"))?;
+    let groups = app.user_skill_groups;
+    if groups.version != 1 {
+        return Err(format!(
+            "unsupported user skill groups version {}",
+            groups.version
+        ));
+    }
+    Ok(groups.groups)
+}
+
+async fn write_user_skill_groups(
+    groups: &[openbitfun_core::service::config::UserSkillGroup],
+) -> Result<(), String> {
+    let service = get_global_config_service()
+        .await
+        .map_err(|error| format!("config service unavailable: {error}"))?;
+    let payload = serde_json::json!({
+        "version": 1,
+        "groups": groups,
+    });
+    service
+        .update_config::<serde_json::Value, ()>("app", move |app| {
+            let Some(object) = app.as_object_mut() else {
+                return Err(openbitfun_core::util::errors::OpenBitFunError::config(
+                    "app section is not an object".to_string(),
+                ));
+            };
+            object.insert("user_skill_groups".to_string(), payload);
+            Ok(())
+        })
+        .await
+        .map_err(|error| format!("failed to save user skill groups: {error}"))?;
+    Ok(())
+}
 
 async fn fetch_skill_catalog(root: &Path, workspace_id: &str) -> crate::manage::SkillCatalog {
     use openbitfun_agent_runtime::skills::SkillLocation;
@@ -4333,6 +4405,7 @@ impl RuntimeHandle {
                 // The management catalogs are workspace-scoped (project skills
                 // and agents); refresh them together with the sessions.
                 handle.reload_skill_catalog();
+                handle.reload_skill_groups();
                 handle.reload_agent_catalog();
                 handle.reload_mcp_catalog();
             }
@@ -5217,6 +5290,7 @@ async fn bootstrap(tx: mpsc::UnboundedSender<RuntimeEvent>) -> Result<()> {
         handle.reload_model_catalog(tx.clone());
         handle.reload_workspaces(tx.clone());
         handle.reload_skill_catalog();
+        handle.reload_skill_groups();
         handle.reload_agent_catalog();
         handle.reload_mcp_catalog();
         match handle.agent_runtime.pending_permission_requests() {

@@ -2047,6 +2047,8 @@ pub(crate) struct ShellWindow {
     pub(crate) task_editor_error: Option<String>,
     /// G-K2/G-K3: the add-skill path field.
     pub(crate) skill_path_input: Entity<InputState>,
+    /// G-K4: the group editor's name field.
+    pub(crate) skill_group_name_input: Entity<InputState>,
     /// R7b plugin UI contributions: the projection (fixture provider behind
     /// the env gate) plus the per-scene shell runtime (control entities and
     /// visible diagnostics). Rendering dispatches through `crate::plugin_ui`.
@@ -2135,6 +2137,9 @@ impl ShellWindow {
         let task_cron_input = cx.new(|cx| InputState::new(window, cx).placeholder("0 8 * * *"));
         let task_tz_input = cx.new(|cx| InputState::new(window, cx).placeholder("Asia/Shanghai"));
         let skill_path_input = cx.new(|cx| InputState::new(window, cx));
+        let skill_group_name_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(text.skill_group_name_placeholder.clone())
+        });
         let settings_search_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(text.settings_nav_search_placeholder.clone())
         });
@@ -2310,6 +2315,7 @@ impl ShellWindow {
             task_cron_input,
             task_tz_input,
             skill_path_input,
+            skill_group_name_input,
             task_editor_target: None,
             task_editor_kind: crate::tasks::TaskScheduleKind::At,
             task_editor_unit: crate::tasks::TaskIntervalUnit::Hour,
@@ -3184,6 +3190,7 @@ impl ShellWindow {
                     tracing::info!("{message}");
                     crate::manage::SkillDialogsState::mutate(cx, |state| {
                         state.dialog = None;
+                        state.busy = false;
                         state.mutation_error = None;
                     });
                     window.close_dialog(cx);
@@ -3191,6 +3198,62 @@ impl ShellWindow {
                 Err(error) => {
                     crate::manage::SkillDialogsState::mutate(cx, |state| {
                         state.mutation_error = Some(error);
+                    });
+                }
+            },
+            RuntimeEvent::SkillGroups(result) => match result {
+                Ok(groups) => {
+                    crate::manage::SkillGroupsCatalog::set(
+                        crate::manage::SkillGroupsCatalog {
+                            loaded: true,
+                            busy: false,
+                            error: None,
+                            groups,
+                        },
+                        cx,
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!("Failed to load user skill groups: {error}");
+                    crate::manage::SkillGroupsCatalog::mutate(cx, |state| {
+                        state.loaded = true;
+                        state.busy = false;
+                        state.error = Some(error);
+                    });
+                }
+            },
+            RuntimeEvent::SkillGroupsSaved(result) => match result {
+                Ok(groups) => {
+                    let had_dialog = crate::manage::SkillGroupsDialogState::current(cx)
+                        .dialog
+                        .is_some();
+                    crate::manage::SkillGroupsCatalog::set(
+                        crate::manage::SkillGroupsCatalog {
+                            loaded: true,
+                            busy: false,
+                            error: None,
+                            groups,
+                        },
+                        cx,
+                    );
+                    crate::manage::SkillGroupsDialogState::mutate(cx, |state| {
+                        state.dialog = None;
+                        state.busy = false;
+                        state.error = None;
+                    });
+                    if had_dialog {
+                        window.close_dialog(cx);
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!("Failed to save user skill groups: {error}");
+                    crate::manage::SkillGroupsCatalog::mutate(cx, |state| {
+                        state.busy = false;
+                        state.error = Some(error.clone());
+                    });
+                    crate::manage::SkillGroupsDialogState::mutate(cx, |state| {
+                        state.busy = false;
+                        state.error = Some(error);
                     });
                 }
             },

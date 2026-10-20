@@ -540,6 +540,26 @@ pub(crate) struct ShellText {
     pub manage_skill_close: String,
     pub manage_skill_not_found: String,
     pub manage_skill_no_description: String,
+    /// G-K4: the user skill group manager and its editor/delete dialogs.
+    pub skill_groups_title: String,
+    pub skill_groups_subtitle: String,
+    pub skill_groups_manage: String,
+    pub skill_groups_mine: String,
+    pub skill_groups_builtin: String,
+    pub skill_groups_loading: String,
+    pub skill_groups_empty: String,
+    pub skill_groups_empty_group: String,
+    pub skill_groups_unresolved: String,
+    pub skill_group_new: String,
+    pub skill_group_name_label: String,
+    pub skill_group_name_placeholder: String,
+    pub skill_group_dialog_edit_title: String,
+    pub skill_group_dialog_delete_title: String,
+    pub skill_group_save: String,
+    pub skill_group_copy: String,
+    pub skill_group_up: String,
+    pub skill_group_down: String,
+    pub skill_group_delete: String,
     /// R4 facet sidebar: group titles and the market degrade card.
     pub skills_facet_library: String,
     pub skills_facet_all: String,
@@ -1375,6 +1395,66 @@ pub(crate) fn skill_delete_warning(name: &str, cx: &App) -> String {
         TranslationArgs::new().with_string("name", name.to_string()),
         cx,
     )
+}
+
+pub(crate) fn group_member_count(count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-skill-groups-member-count",
+        TranslationArgs::new().with_string("count", count.to_string()),
+        cx,
+    )
+}
+
+pub(crate) fn group_unavailable_count(count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-skill-groups-unavailable-count",
+        TranslationArgs::new().with_string("count", count.to_string()),
+        cx,
+    )
+}
+
+pub(crate) fn group_copy_name(name: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-skill-groups-copy-name",
+        TranslationArgs::new().with_string("name", name.to_string()),
+        cx,
+    )
+}
+
+pub(crate) fn group_copy_name_numbered(name: &str, count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-skill-groups-copy-name-numbered",
+        TranslationArgs::new()
+            .with_string("name", name.to_string())
+            .with_string("count", count.to_string()),
+        cx,
+    )
+}
+
+pub(crate) fn group_delete_warning(name: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-skill-groups-delete-warning",
+        TranslationArgs::new().with_string("name", name.to_string()),
+        cx,
+    )
+}
+
+pub(crate) fn group_operation_failed(detail: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-skill-groups-operation-failed",
+        TranslationArgs::new().with_string("detail", detail.to_string()),
+        cx,
+    )
+}
+
+pub(crate) fn group_edit_error(error: crate::manage::GroupEditError, cx: &App) -> String {
+    use crate::manage::GroupEditError;
+    let key = match error {
+        GroupEditError::NameRequired => "gpui-shell-skill-groups-name-required",
+        GroupEditError::NameDuplicate => "gpui-shell-skill-groups-name-duplicate",
+        GroupEditError::Conflict => "gpui-shell-skill-groups-conflict",
+    };
+    resolve_with(key, TranslationArgs::new(), cx)
 }
 
 /// G-SE12: the verdict line of a finished connection test, with the wall
@@ -2407,6 +2487,25 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         manage_skill_close: "Close".to_string(),
         manage_skill_not_found: "This skill is no longer in the catalog.".to_string(),
         manage_skill_no_description: "No description.".to_string(),
+        skill_groups_title: "Skill groups".to_string(),
+        skill_groups_subtitle: "Create and organize reusable groups of skills.".to_string(),
+        skill_groups_manage: "Manage groups".to_string(),
+        skill_groups_mine: "My groups".to_string(),
+        skill_groups_builtin: "Built-in groups".to_string(),
+        skill_groups_loading: "Loading skill groups…".to_string(),
+        skill_groups_empty: "No skill groups yet.".to_string(),
+        skill_groups_empty_group: "No skills added".to_string(),
+        skill_groups_unresolved: "Members are unavailable in the current catalog".to_string(),
+        skill_group_new: "New group".to_string(),
+        skill_group_name_label: "Group name".to_string(),
+        skill_group_name_placeholder: "For example: Everyday development".to_string(),
+        skill_group_dialog_edit_title: "Skill group".to_string(),
+        skill_group_dialog_delete_title: "Delete skill group".to_string(),
+        skill_group_save: "Save".to_string(),
+        skill_group_copy: "Copy".to_string(),
+        skill_group_up: "Move up".to_string(),
+        skill_group_down: "Move down".to_string(),
+        skill_group_delete: "Delete".to_string(),
         skills_facet_library: "Library".to_string(),
         skills_facet_all: "All".to_string(),
         skills_facet_groups: "Skill groups".to_string(),
@@ -3718,6 +3817,27 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         manage_skill_close: service.t("gpui-shell-manage-skill-close").await,
         manage_skill_not_found: service.t("gpui-shell-manage-skill-not-found").await,
         manage_skill_no_description: service.t("gpui-shell-manage-skill-no-description").await,
+        skill_groups_title: service.t("gpui-shell-skill-groups-title").await,
+        skill_groups_subtitle: service.t("gpui-shell-skill-groups-subtitle").await,
+        skill_groups_manage: service.t("gpui-shell-skill-groups-manage").await,
+        skill_groups_mine: service.t("gpui-shell-skill-groups-mine").await,
+        skill_groups_builtin: service.t("gpui-shell-skill-groups-builtin").await,
+        skill_groups_loading: service.t("gpui-shell-skill-groups-loading").await,
+        skill_groups_empty: service.t("gpui-shell-skill-groups-empty").await,
+        skill_groups_empty_group: service.t("gpui-shell-skill-groups-empty-group").await,
+        skill_groups_unresolved: service.t("gpui-shell-skill-groups-unresolved").await,
+        skill_group_new: service.t("gpui-shell-skill-group-new").await,
+        skill_group_name_label: service.t("gpui-shell-skill-group-name-label").await,
+        skill_group_name_placeholder: service.t("gpui-shell-skill-group-name-placeholder").await,
+        skill_group_dialog_edit_title: service.t("gpui-shell-skill-group-dialog-edit-title").await,
+        skill_group_dialog_delete_title: service
+            .t("gpui-shell-skill-group-dialog-delete-title")
+            .await,
+        skill_group_save: service.t("gpui-shell-skill-group-save").await,
+        skill_group_copy: service.t("gpui-shell-skill-group-copy").await,
+        skill_group_up: service.t("gpui-shell-skill-group-up").await,
+        skill_group_down: service.t("gpui-shell-skill-group-down").await,
+        skill_group_delete: service.t("gpui-shell-skill-group-delete").await,
         skills_facet_library: service.t("gpui-shell-skills-facet-library").await,
         skills_facet_all: service.t("gpui-shell-skills-facet-all").await,
         skills_facet_groups: service.t("gpui-shell-skills-facet-groups").await,
