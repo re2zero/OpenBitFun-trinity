@@ -442,8 +442,23 @@
   壳 = 品牌空态降级卡。动作：desktop 私有 HTTP 需自实现（D44）→ 独立立项。**B/C 档（原 T3 大项）**。
 - **G-K2 技能详情对话框**：web `SkillsScene.tsx:930-1122`（描述/来源/路径复制/在文件管理器打开/外部链接）；
   壳列表行无详情面。**A 档**。
+  **✅ 交付**（2026-10-20，会话 88）：每张技能卡新增「详情」ghost 按钮（`skill-detail-{key}`）→
+  `SkillDialog::Detail`；对话框展示等级/来源徽标（shadowed 红字）、名称、描述（空则「无描述」）、来源
+  与文件夹路径；路径行提供「复制路径」（`cx.write_to_clipboard`）与「在文件管理器显示」
+  （`markdown::open_external`，同会话标签的既有语义）。数据由 `SkillRow` 新增的 `path` / `source_*`
+  投影提供（runtime 从 `SkillInfo` 直填，native 来源显示共享词 `shared.product.name`）。
 - **G-K3 添加技能 / 删除技能**：web `:1124-1255`（level user/project + 路径输入/浏览 + 校验）；壳无写面。
   **B 档**。
+  **✅ 交付**（2026-10-20，会话 88）：页头过滤行右侧「添加技能」→ `SkillDialog::Add`——等级
+  user/project 二选一（默认 user）、路径输入 + 「校验」按钮（`RuntimeHandle::validate_skill_path` →
+  `SkillValidationFinished`），校验通过才启用「添加」（`RuntimeHandle::add_skill`）；结果行出错时按
+  Empty/NotFound/NotDirectory/MissingSkillFile/Unreadable/Parse 本地化，runtime 不可用单独提示。
+  详情对话框对 native 且非内置的技能给「删除」（`Danger`）→ 同模态切 `SkillDialog::Delete`，警告文案
+  含技能名，确认后 `RuntimeHandle::delete_skill`；三事件成功都会关闭对话框并清 busy/校验态，失败留在
+  模态内显示。写面安全：校验要求目录含 `SKILL.md`；添加按文件夹名冲突拒绝、拒绝把托管目录自身拷入
+  自身；删除只允许 native 非内置技能，托管根与技能路径都 `canonicalize` 后做 `starts_with` 包含校验，
+  再 `remove_dir_all`。**在案分歧**：不做 web 的目录浏览按钮（壳无桌面 picker 桥，改为键入路径 + 校验）；
+  外部链接字段（web 详情里的 homepage）本投影未携带，详情面不显示。
 - **G-K4 技能分组管理**：web `components/SkillGroupsView.tsx` + `SkillGroupEditor.tsx`（创建/编辑/复制/排序/删除）；
   壳 facet 有「分组」投影但无编辑（R4 判「用户分组 web 侧配置未接→不伪造」）。**B 档**。
 - **G-K5 技能页搜索 / shadowed 过滤**：web `SkillsScene.tsx:321-331,298-303`；壳 facet + 列表，无搜索框。**A 档**。
@@ -690,7 +705,7 @@
 | 1 | 任务编辑器（at/every/cron/时区/绑定 session） | G-P1 **✅ 交付 2026-10-20** | core cron 写面已有 | 1 会话 |
 | 2 | 记忆设置页 | G-SE13 **✅ 交付 2026-10-18** | core 记忆能力在，纯 UI | 0.5-1 |
 | 3 | Trinity 引擎配置页 | G-SE14 **✅ 交付 2026-10-18** | trinityd 配置面已有（web 同源） | 0.5 |
-| 4 | 技能管理写面（添加/删除/分组/详情/搜索） | G-K2..K5 | 部分需 core 写面核对 | 1 |
+| 4 | 技能管理写面（添加/删除/分组/详情/搜索） | G-K2/K3/K5 **✅ 交付 2026-10-20**；G-K4 待立项 | G-K4 需接 `app.user_skill_groups` 读写 | 1 |
 | 5 | 智能体编辑面（工具/子代理/模型覆盖/过滤/详情） | G-A1..A6 | profiles 写路径已通（T2-11/12） | 1-1.5 |
 | 6 | MCP OAuth + 导入/认证细分 | G-M1,G-M3 | OAuth 流程需 core 支持核对 | 1 |
 | 7 | Git 尾巴（AI commit message、branches/graph） | G-G2,G-G4 | branches/graph 为净新增（§1.6） | 1-1.5 |
@@ -871,6 +886,7 @@ turn footer 完成时间/耗时 meta（=G-S1）与 copy 成功态图标反馈（
 
 | 日期 | 变更 |
 |---|---|
+| 2026-10-20 | **A/B 档 G-K2 技能详情 + G-K3 添加/删除技能**。技能卡尾部统一出「详情」ghost 按钮，详情模态展示等级/来源/shadowed、名称、描述、来源与文件夹路径，并给「复制路径」「在文件管理器显示」；native 非内置技能可在详情内转入删除确认（警告含技能名）。过滤行右侧新增「添加技能」：user/project 等级 + 路径输入 + 「校验」，校验结果逐类本地化（空/不存在/不是目录/缺 SKILL.md/不可读/解析失败），通过后才可添加；运行时不可用单独提示。新增 runtime 三面：`validate_skill_path` / `add_skill` / `delete_skill` 与对应事件，`SkillRow` 补 `path` / `deletable`。写面守卫：添加拒绝同名文件夹与自拷（canonicalize 后比较），删除只对 native 非内置技能、托管根包含校验后 `remove_dir_all`。**在案分歧**：无目录浏览按钮（改为键入 + 校验）；详情不显示外部链接（投影未携带）。**坑**：`open_dialog` 的 builder 每帧重建，输入状态必须放窗口实体（`skill_path_input`）而对话框草稿放全局（`SkillDialogsState`）；builder 内先取 `i18n::current(cx)` 再调 `mutate(cx, …)`，否则闭包借用冲突（E0502）；重复 locale 字面量会撞 `sharedTermDuplicates`（`OpenBitFun` 改走 `service.t("shared.product.name")`，未抬 baseline）；不再经 `ShellText` 的校验/警告字段已删，统一用 `resolve_with` 参数化助手。ftl 1205→**1230 ×3**；`i18n:audit` 0 错 0 警；壳 lib **368 全绿（0 告警）**；`fmt:rs` 绿。 |
 | 2026-10-20 | **B 档 G-P1 任务编辑器（新建/编辑对话框）**。看板头新增「新建任务」，每行新增「编辑」，共用同一对话框（标题按新建/编辑切换）：名称、prompt（1000 字符上限）、Schedule 三型（单次=本地 `YYYY-MM-DDTHH:MM` 文本 + 本地时区提示；周期=数值 + 分钟/小时/天下拉 + 可选取「起算时间」；Cron=表达式 + 可选时区）、目标（当前工作区启动 / 已有会话下拉，无会话时禁用并提示）、启用开关。保存经新增的 `RuntimeHandle::create_cron_job`/`update_cron_job` 走共享 cron 服务（成功后 `CronJobs` 重拉列表，失败进页头错误条）；编辑保留并预填 `anchor_ms`（按本地分钟回读，与 web 的 `toLocalDateTimeInput` 同口径）。纯数据层 `TaskDraft`（blank/from_job/schedule/validate/create_request/update_request）与本地时间↔RFC3339、毫秒↔最大整单位拆分、DST 不存在时间拒绝均有单测；另加一项真 root-view 窗口测试：把 ShellWindow 包进 `gpui_base::Root`（对话框插件所在根）后打开对话框，断言预填与 `task-editor` 渲染，防「只在真实窗口才 panic」的坑。**在案分歧**：无工作区 Combobox 与 agent 类型选择器（壳只服务当前工作区，`CronLaunchSpec` 固定默认 `Standard`）；锚点、时区不做 web 的高级折叠区，直接随对应 schedule 形态显示。**坑**：`WindowExt`（`open_dialog`/`close_dialog`）必须显式引入 `gpui_kit::component::WindowExt`；`Button::dropdown_menu_with_anchor` 返回 `DropdownMenuPopover<Button>` 而不是 `Button`，条件分支要转 `AnyElement`；`DropdownMenuPopover` 没有 `debug_selector`。ftl 1171→**1205 ×3**；`i18n:audit` 0 告警；壳 lib **368 全绿**（0 告警）；`check:core-boundaries` / `fmt:rs` 绿。 |
 | 2026-10-20 | **B 档设置字段族第四批（G-SE25 Hooks 导入 / 位置 / 兼容性）**。自动化页新增三段：① 声明位置（用户 `config/hooks.json`、项目 `.openbitfun/config/hooks.json` 两行说明）；② 已导入的 Hooks——进页按需拉快照、刷新按钮强制重探来源更新，逐源行含名称、启用 Switch（总开关关闭时禁用）、五种状态文案（当前/有更新/来源丢失/检查失败/托管文件缺失）、审阅更新与移除；移除与损坏索引重置均行内两段式确认，损坏诊断按 `.user_global` 后缀选出 scope；③ 审阅计划行内块——逐条 handler（event · command · matcher · 超时）、跳过计数、权限警告，`stale` 时显示「本次未写入」并换新计划；Apply 才写入，Remove 只删托管副本；④ Codex 兼容段（合约说明 + 系统 opener 打开文档）。新增运行时事件四型与四个 `RuntimeHandle` 方法（快照/变更/计划/应用）接 core `external_hook_import_*`。**在案分歧**：行内审阅块替代模态框；依赖明细不逐条展开；壳运行时始终本地，未复刻 remoteUnsupported 提示。ftl 1131→**1171 ×3**；`i18n:audit` 0 告警；壳 lib **361 全绿**；`fmt:rs` 绿。 |
 | 2026-10-20 | **B 档设置字段族第三批（G-SE12 高级模型配置，测试连接 / 行编辑 / 高级请求面一次交付）**。① 测试连接：模型清单每行一个「测试连接」按钮，运行时走与桌面 `test_ai_config_connection` 同一条临时客户端管线（`build_stream_options_for_model` + subscription auth/profile + 全局 proxy / 行内 skip-SSL），多模态模型并跑图片输入腿并按桌面规则合并回执；判定/耗时/诊断码本地化提示/原始错误显示在行下，不落盘。② 行编辑器：点「Edit」在清单下展开——分类（web 四档 + 未知存量值原样保留）、上下文窗口（≥32K）、最大输出（0=自动，>40% 上下文拒绝写入，缩窗口时失效的显式上限自动回退自动档）、思考默认预设（存量预设中选择 + 动作摘要只读，禁用/无动作预设不提供选择）。③ 高级面：请求格式只读（改格式属于 web 的 provider 选择器）、`<think>` 解析开关、跳过 SSL（带风险说明）、自定义 Headers JSON 对象（空=清除，非字符串值拒绝）、Headers 应用模式 replace/merge、自定义请求体 JSON 对象（空=清除）、请求体模式 merge/trim；半写的 JSON 只留在页内草稿，解析成功才落盘。全部写入走 `update_config("ai.models")` 单锁读改写，行内与同列表的未知键原样保留。**在案分歧**：思考预设的编写面板（models.dev 绑定 / 自定义预设增删 / 补丁 JSON）仍在 web/桌面；请求体 trim 的四条供应商专属说明合并为一条通用提示。ftl 1080→**1131 ×3**；`i18n:audit` 0 告警（未抬 baseline）；壳 lib **361 全绿**（新增 2 项纯函数测试：未知分类保留、JSON 草稿形状）。 |
