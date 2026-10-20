@@ -461,6 +461,15 @@
   外部链接字段（web 详情里的 homepage）本投影未携带，详情面不显示。
 - **G-K4 技能分组管理**：web `components/SkillGroupsView.tsx` + `SkillGroupEditor.tsx`（创建/编辑/复制/排序/删除）；
   壳 facet 有「分组」投影但无编辑（R4 判「用户分组 web 侧配置未接→不伪造」）。**B 档**。
+  **✅ 交付**（2026-10-21，会话 88）：facet 栏「技能分组」段新增「管理分组」页（`SkillFacet::GroupManager`）——
+  「我的分组」逐行显示成员预览/总数/不可用成员，行动作 = 编辑/上移/下移/删除/复制（复制同时开编辑草稿，
+  命名按 web「X 副本 / X 2」避重）；「内置分组」按 `group_key` 分桶只读列出，仅可复制。编辑器 = 组名 +
+  全目录技能勾选（不可用成员保留原 key，保存不丢）；删除二次确认含组名。持久化直接使用共享契约
+  `app.user_skill_groups`（`AppConfig.user_skill_groups`，version 1），写回走 `update_config("app")`
+  的 camelCase JSON，保留所有兄弟键；校验对齐 web `saveUserSkillGroup`：名称 trim 必填、大小写不敏感重名、
+  快照冲突、成员去重，移动/删除为纯函数并有单测。**在案分歧**：编辑器无搜索框（壳目录规模可滚动）；
+  内置分组标题显示 `group_key`（web 本地化，壳 facet 既有行为一致）；加载失败只显错误、未加重试按钮
+  （启动/切工作区会重拉）。
 - **G-K5 技能页搜索 / shadowed 过滤**：web `SkillsScene.tsx:321-331,298-303`；壳 facet + 列表，无搜索框。**A 档**。
   **✅ 交付**（2026-10-15，A 批 3）****：技能页顶过滤行（`manage.rs::skills_filter_row`）—— 搜索框（名称/描述/技能 key，
   trim + 大小写不敏感；key 是行内保留的路径派生身份，web 的 path 字段壳未保留）+「隐藏重复项」勾选
@@ -705,7 +714,7 @@
 | 1 | 任务编辑器（at/every/cron/时区/绑定 session） | G-P1 **✅ 交付 2026-10-20** | core cron 写面已有 | 1 会话 |
 | 2 | 记忆设置页 | G-SE13 **✅ 交付 2026-10-18** | core 记忆能力在，纯 UI | 0.5-1 |
 | 3 | Trinity 引擎配置页 | G-SE14 **✅ 交付 2026-10-18** | trinityd 配置面已有（web 同源） | 0.5 |
-| 4 | 技能管理写面（添加/删除/分组/详情/搜索） | G-K2/K3/K5 **✅ 交付 2026-10-20**；G-K4 待立项 | G-K4 需接 `app.user_skill_groups` 读写 | 1 |
+| 4 | 技能管理写面（添加/删除/分组/详情/搜索） | G-K2..K5 **✅ 全部交付（K2/K3/K5 2026-10-20，K4 2026-10-21）** | 分组读写走 `app.user_skill_groups` | 1 |
 | 5 | 智能体编辑面（工具/子代理/模型覆盖/过滤/详情） | G-A1..A6 | profiles 写路径已通（T2-11/12） | 1-1.5 |
 | 6 | MCP OAuth + 导入/认证细分 | G-M1,G-M3 | OAuth 流程需 core 支持核对 | 1 |
 | 7 | Git 尾巴（AI commit message、branches/graph） | G-G2,G-G4 | branches/graph 为净新增（§1.6） | 1-1.5 |
@@ -886,6 +895,7 @@ turn footer 完成时间/耗时 meta（=G-S1）与 copy 成功态图标反馈（
 
 | 日期 | 变更 |
 |---|---|
+| 2026-10-21 | **B 档 G-K4 技能分组管理**。技能 facet 新增「管理分组」页：我的分组可编辑/复制/上移/下移/删除，内置 `group_key` 分组只读列出并可复制为我的分组；编辑器 = 组名 + 全目录技能勾选（不可用成员保留 key），删除二次确认。持久化直接复用共享契约 `app.user_skill_groups`（`AppConfig.user_skill_groups` version 1），写回 `update_config("app")` 的 camelCase JSON 并保留兄弟键；校验对齐 web `saveUserSkillGroup`（trim 必填/大小写不敏感重名/快照冲突/成员去重），移动与删除为纯函数并有 3 项单测。**在案分歧**：编辑器无搜索、内置分组标题取 `group_key`、加载失败无重试按钮。**坑**：`gpui_kit::Div` 的滚动需要 `gpui_kit::component::scroll::ScrollableElement` 在作用域内（仅 `overflow_y_scroll` 方法名不可用）；对话框输入仍放窗口实体（`skill_group_name_input`），勾选/错误态放全局。ftl 1230→**1258 ×3**；`i18n:audit` 0 错 0 警；壳 lib **371 全绿（0 告警）**；`fmt:rs` 绿。 |
 | 2026-10-20 | **A/B 档 G-K2 技能详情 + G-K3 添加/删除技能**。技能卡尾部统一出「详情」ghost 按钮，详情模态展示等级/来源/shadowed、名称、描述、来源与文件夹路径，并给「复制路径」「在文件管理器显示」；native 非内置技能可在详情内转入删除确认（警告含技能名）。过滤行右侧新增「添加技能」：user/project 等级 + 路径输入 + 「校验」，校验结果逐类本地化（空/不存在/不是目录/缺 SKILL.md/不可读/解析失败），通过后才可添加；运行时不可用单独提示。新增 runtime 三面：`validate_skill_path` / `add_skill` / `delete_skill` 与对应事件，`SkillRow` 补 `path` / `deletable`。写面守卫：添加拒绝同名文件夹与自拷（canonicalize 后比较），删除只对 native 非内置技能、托管根包含校验后 `remove_dir_all`。**在案分歧**：无目录浏览按钮（改为键入 + 校验）；详情不显示外部链接（投影未携带）。**坑**：`open_dialog` 的 builder 每帧重建，输入状态必须放窗口实体（`skill_path_input`）而对话框草稿放全局（`SkillDialogsState`）；builder 内先取 `i18n::current(cx)` 再调 `mutate(cx, …)`，否则闭包借用冲突（E0502）；重复 locale 字面量会撞 `sharedTermDuplicates`（`OpenBitFun` 改走 `service.t("shared.product.name")`，未抬 baseline）；不再经 `ShellText` 的校验/警告字段已删，统一用 `resolve_with` 参数化助手。ftl 1205→**1230 ×3**；`i18n:audit` 0 错 0 警；壳 lib **368 全绿（0 告警）**；`fmt:rs` 绿。 |
 | 2026-10-20 | **B 档 G-P1 任务编辑器（新建/编辑对话框）**。看板头新增「新建任务」，每行新增「编辑」，共用同一对话框（标题按新建/编辑切换）：名称、prompt（1000 字符上限）、Schedule 三型（单次=本地 `YYYY-MM-DDTHH:MM` 文本 + 本地时区提示；周期=数值 + 分钟/小时/天下拉 + 可选取「起算时间」；Cron=表达式 + 可选时区）、目标（当前工作区启动 / 已有会话下拉，无会话时禁用并提示）、启用开关。保存经新增的 `RuntimeHandle::create_cron_job`/`update_cron_job` 走共享 cron 服务（成功后 `CronJobs` 重拉列表，失败进页头错误条）；编辑保留并预填 `anchor_ms`（按本地分钟回读，与 web 的 `toLocalDateTimeInput` 同口径）。纯数据层 `TaskDraft`（blank/from_job/schedule/validate/create_request/update_request）与本地时间↔RFC3339、毫秒↔最大整单位拆分、DST 不存在时间拒绝均有单测；另加一项真 root-view 窗口测试：把 ShellWindow 包进 `gpui_base::Root`（对话框插件所在根）后打开对话框，断言预填与 `task-editor` 渲染，防「只在真实窗口才 panic」的坑。**在案分歧**：无工作区 Combobox 与 agent 类型选择器（壳只服务当前工作区，`CronLaunchSpec` 固定默认 `Standard`）；锚点、时区不做 web 的高级折叠区，直接随对应 schedule 形态显示。**坑**：`WindowExt`（`open_dialog`/`close_dialog`）必须显式引入 `gpui_kit::component::WindowExt`；`Button::dropdown_menu_with_anchor` 返回 `DropdownMenuPopover<Button>` 而不是 `Button`，条件分支要转 `AnyElement`；`DropdownMenuPopover` 没有 `debug_selector`。ftl 1171→**1205 ×3**；`i18n:audit` 0 告警；壳 lib **368 全绿**（0 告警）；`check:core-boundaries` / `fmt:rs` 绿。 |
 | 2026-10-20 | **B 档设置字段族第四批（G-SE25 Hooks 导入 / 位置 / 兼容性）**。自动化页新增三段：① 声明位置（用户 `config/hooks.json`、项目 `.openbitfun/config/hooks.json` 两行说明）；② 已导入的 Hooks——进页按需拉快照、刷新按钮强制重探来源更新，逐源行含名称、启用 Switch（总开关关闭时禁用）、五种状态文案（当前/有更新/来源丢失/检查失败/托管文件缺失）、审阅更新与移除；移除与损坏索引重置均行内两段式确认，损坏诊断按 `.user_global` 后缀选出 scope；③ 审阅计划行内块——逐条 handler（event · command · matcher · 超时）、跳过计数、权限警告，`stale` 时显示「本次未写入」并换新计划；Apply 才写入，Remove 只删托管副本；④ Codex 兼容段（合约说明 + 系统 opener 打开文档）。新增运行时事件四型与四个 `RuntimeHandle` 方法（快照/变更/计划/应用）接 core `external_hook_import_*`。**在案分歧**：行内审阅块替代模态框；依赖明细不逐条展开；壳运行时始终本地，未复刻 remoteUnsupported 提示。ftl 1131→**1171 ×3**；`i18n:audit` 0 告警；壳 lib **361 全绿**；`fmt:rs` 绿。 |
