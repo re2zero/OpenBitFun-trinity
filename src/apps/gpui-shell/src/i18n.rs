@@ -656,6 +656,47 @@ pub(crate) struct ShellText {
     pub settings_hooks_project_description: String,
     pub settings_git_coauthor: String,
     pub settings_git_coauthor_description: String,
+    /// G-SE25: Hook declaration locations, the imported-source manager and the
+    /// Codex contract reference on the automation page.
+    pub settings_hooks_locations_section: String,
+    pub settings_hooks_locations_note: String,
+    pub settings_hooks_user_file: String,
+    pub settings_hooks_user_file_desc: String,
+    pub settings_hooks_project_file: String,
+    pub settings_hooks_project_file_desc: String,
+    pub settings_hooks_imports_section: String,
+    pub settings_hooks_imports_note: String,
+    pub settings_hooks_imports_master_disabled: String,
+    pub settings_hooks_imports_refresh: String,
+    pub settings_hooks_imports_loading: String,
+    pub settings_hooks_imports_empty: String,
+    pub settings_hooks_imports_update: String,
+    pub settings_hooks_imports_remove: String,
+    pub settings_hook_import_state_current: String,
+    pub settings_hook_import_state_update_available: String,
+    pub settings_hook_import_state_source_missing: String,
+    pub settings_hook_import_state_update_check_failed: String,
+    pub settings_hook_import_state_bundle_missing: String,
+    pub settings_hooks_import_review_title: String,
+    pub settings_hooks_import_review_warning: String,
+    pub settings_hooks_import_timeout: String,
+    pub settings_hooks_import_skipped: String,
+    pub settings_hooks_import_toggle: String,
+    pub settings_hooks_import_confirm: String,
+    pub settings_hooks_import_confirm_update: String,
+    pub settings_hooks_import_stale: String,
+    pub settings_hooks_import_remove_title: String,
+    pub settings_hooks_import_remove_confirm_note: String,
+    pub settings_hooks_import_remove_confirm: String,
+    pub settings_hooks_import_store_invalid: String,
+    pub settings_hooks_import_reset: String,
+    pub settings_hooks_import_reset_title: String,
+    pub settings_hooks_import_reset_note: String,
+    pub settings_hooks_import_reset_confirm: String,
+    pub settings_hooks_compat_section: String,
+    pub settings_hooks_compat_note: String,
+    pub settings_hooks_compat_reference: String,
+    pub settings_hooks_compat_open: String,
     pub settings_websearch: String,
     pub settings_websearch_provider: String,
     pub settings_websearch_provider_description: String,
@@ -2412,6 +2453,83 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_git_coauthor_description: {
             "Add OpenBitFun as a co-author in built-in commit workflows.".to_string()
         },
+        settings_hooks_locations_section: "Where hooks are declared".to_string(),
+        settings_hooks_locations_note: {
+            "Changes to hooks.json take effect without restarting OpenBitFun.".to_string()
+        },
+        settings_hooks_user_file: "User hook file".to_string(),
+        settings_hooks_user_file_desc: {
+            "config/hooks.json in the OpenBitFun user config directory.".to_string()
+        },
+        settings_hooks_project_file: "Project hook file".to_string(),
+        settings_hooks_project_file_desc: {
+            ".openbitfun/config/hooks.json in the current workspace. Requires \"Enable project hook file\"."
+                .to_string()
+        },
+        settings_hooks_imports_section: "Imported hooks".to_string(),
+        settings_hooks_imports_note: {
+            "Review and manage hooks imported from Claude Code or Codex.".to_string()
+        },
+        settings_hooks_imports_master_disabled: {
+            "Imported hooks are preserved, but the master switch prevents them from running."
+                .to_string()
+        },
+        settings_hooks_imports_refresh: "Refresh".to_string(),
+        settings_hooks_imports_loading: "Loading imported hooks…".to_string(),
+        settings_hooks_imports_empty: {
+            "No imported hooks. Refresh to check Claude Code and Codex.".to_string()
+        },
+        settings_hooks_imports_update: "Review update".to_string(),
+        settings_hooks_imports_remove: "Remove".to_string(),
+        settings_hook_import_state_current: "Current snapshot".to_string(),
+        settings_hook_import_state_update_available: "An update is available".to_string(),
+        settings_hook_import_state_source_missing: {
+            "The source is missing; the reviewed snapshot remains available".to_string()
+        },
+        settings_hook_import_state_update_check_failed: {
+            "The update check failed; the reviewed snapshot remains available".to_string()
+        },
+        settings_hook_import_state_bundle_missing: {
+            "Managed files are missing; review the source again to repair them".to_string()
+        },
+        settings_hooks_import_review_title: "Review hooks from".to_string(),
+        settings_hooks_import_review_warning: {
+            "These commands run with your account privileges. Confirm only after reviewing every command below."
+                .to_string()
+        },
+        settings_hooks_import_timeout: "Effective timeout (seconds):".to_string(),
+        settings_hooks_import_skipped: "Skipped".to_string(),
+        settings_hooks_import_toggle: "Enable imported hooks from this source".to_string(),
+        settings_hooks_import_confirm: "Import reviewed hooks".to_string(),
+        settings_hooks_import_confirm_update: "Apply reviewed update".to_string(),
+        settings_hooks_import_stale: {
+            "The source changed. Nothing was written; review this refreshed plan.".to_string()
+        },
+        settings_hooks_import_remove_title: "Remove imported hooks?".to_string(),
+        settings_hooks_import_remove_confirm_note: {
+            "Only OpenBitFun's managed copy is removed. The Claude Code or Codex source is not changed."
+                .to_string()
+        },
+        settings_hooks_import_remove_confirm: "Remove managed copy".to_string(),
+        settings_hooks_import_store_invalid: {
+            "Imported hook state needs repair".to_string()
+        },
+        settings_hooks_import_reset: "Reset managed state".to_string(),
+        settings_hooks_import_reset_title: {
+            "Reset invalid imported hook state?".to_string()
+        },
+        settings_hooks_import_reset_note: {
+            "This removes the invalid OpenBitFun-managed index for this scope. Source application files are not changed."
+                .to_string()
+        },
+        settings_hooks_import_reset_confirm: "Reset managed state".to_string(),
+        settings_hooks_compat_section: "Codex compatibility".to_string(),
+        settings_hooks_compat_note: {
+            "OpenBitFun uses the Codex Hooks contract and can run compatible hook scripts directly."
+                .to_string()
+        },
+        settings_hooks_compat_reference: "Event and payload reference".to_string(),
+        settings_hooks_compat_open: "Open docs".to_string(),
         settings_websearch: "Web search".to_string(),
         settings_websearch_provider: "Provider".to_string(),
         settings_websearch_provider_description: {
@@ -3579,6 +3697,89 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         settings_git_coauthor_description: service
             .t("gpui-shell-settings-git-coauthor-description")
             .await,
+        settings_hooks_locations_section: service
+            .t("gpui-shell-settings-hooks-locations-section")
+            .await,
+        settings_hooks_locations_note: service.t("gpui-shell-settings-hooks-locations-note").await,
+        settings_hooks_user_file: service.t("gpui-shell-settings-hooks-user-file").await,
+        settings_hooks_user_file_desc: service.t("gpui-shell-settings-hooks-user-file-desc").await,
+        settings_hooks_project_file: service.t("gpui-shell-settings-hooks-project-file").await,
+        settings_hooks_project_file_desc: service
+            .t("gpui-shell-settings-hooks-project-file-desc")
+            .await,
+        settings_hooks_imports_section: service
+            .t("gpui-shell-settings-hooks-imports-section")
+            .await,
+        settings_hooks_imports_note: service.t("gpui-shell-settings-hooks-imports-note").await,
+        settings_hooks_imports_master_disabled: service
+            .t("gpui-shell-settings-hooks-imports-master-disabled")
+            .await,
+        settings_hooks_imports_refresh: service
+            .t("gpui-shell-settings-hooks-imports-refresh")
+            .await,
+        settings_hooks_imports_loading: service
+            .t("gpui-shell-settings-hooks-imports-loading")
+            .await,
+        settings_hooks_imports_empty: service.t("gpui-shell-settings-hooks-imports-empty").await,
+        settings_hooks_imports_update: service.t("gpui-shell-settings-hooks-imports-update").await,
+        settings_hooks_imports_remove: service.t("gpui-shell-settings-hooks-imports-remove").await,
+        settings_hook_import_state_current: service
+            .t("gpui-shell-settings-hook-import-state-current")
+            .await,
+        settings_hook_import_state_update_available: service
+            .t("gpui-shell-settings-hook-import-state-update-available")
+            .await,
+        settings_hook_import_state_source_missing: service
+            .t("gpui-shell-settings-hook-import-state-source-missing")
+            .await,
+        settings_hook_import_state_update_check_failed: service
+            .t("gpui-shell-settings-hook-import-state-update-check-failed")
+            .await,
+        settings_hook_import_state_bundle_missing: service
+            .t("gpui-shell-settings-hook-import-state-bundle-missing")
+            .await,
+        settings_hooks_import_review_title: service
+            .t("gpui-shell-settings-hooks-import-review-title")
+            .await,
+        settings_hooks_import_review_warning: service
+            .t("gpui-shell-settings-hooks-import-review-warning")
+            .await,
+        settings_hooks_import_timeout: service.t("gpui-shell-settings-hooks-import-timeout").await,
+        settings_hooks_import_skipped: service.t("gpui-shell-settings-hooks-import-skipped").await,
+        settings_hooks_import_toggle: service.t("gpui-shell-settings-hooks-import-toggle").await,
+        settings_hooks_import_confirm: service.t("gpui-shell-settings-hooks-import-confirm").await,
+        settings_hooks_import_confirm_update: service
+            .t("gpui-shell-settings-hooks-import-confirm-update")
+            .await,
+        settings_hooks_import_stale: service.t("gpui-shell-settings-hooks-import-stale").await,
+        settings_hooks_import_remove_title: service
+            .t("gpui-shell-settings-hooks-import-remove-title")
+            .await,
+        settings_hooks_import_remove_confirm_note: service
+            .t("gpui-shell-settings-hooks-import-remove-confirm-note")
+            .await,
+        settings_hooks_import_remove_confirm: service
+            .t("gpui-shell-settings-hooks-import-remove-confirm")
+            .await,
+        settings_hooks_import_store_invalid: service
+            .t("gpui-shell-settings-hooks-import-store-invalid")
+            .await,
+        settings_hooks_import_reset: service.t("gpui-shell-settings-hooks-import-reset").await,
+        settings_hooks_import_reset_title: service
+            .t("gpui-shell-settings-hooks-import-reset-title")
+            .await,
+        settings_hooks_import_reset_note: service
+            .t("gpui-shell-settings-hooks-import-reset-note")
+            .await,
+        settings_hooks_import_reset_confirm: service
+            .t("gpui-shell-settings-hooks-import-reset-confirm")
+            .await,
+        settings_hooks_compat_section: service.t("gpui-shell-settings-hooks-compat-section").await,
+        settings_hooks_compat_note: service.t("gpui-shell-settings-hooks-compat-note").await,
+        settings_hooks_compat_reference: service
+            .t("gpui-shell-settings-hooks-compat-reference")
+            .await,
+        settings_hooks_compat_open: service.t("gpui-shell-settings-hooks-compat-open").await,
         settings_websearch: service.t("gpui-shell-settings-websearch").await,
         settings_websearch_provider: service.t("gpui-shell-settings-websearch-provider").await,
         settings_websearch_provider_description: service

@@ -373,6 +373,20 @@ pub(crate) enum RuntimeEvent {
         model_id: String,
         result: Result<openbitfun_core::util::types::ConnectionTestResult, String>,
     },
+    /// G-SE25: the Hook-import projection for the automation page (imports,
+    /// catalog, corrupt-store diagnostics and the revision mutations expect).
+    HookImports(
+        Box<openbitfun_product_domains::external_hook_import::ExternalHookImportSnapshotV1>,
+    ),
+    /// G-SE25: a review plan for one import source, shown before applying.
+    HookImportPlan(Box<openbitfun_product_domains::external_hook_import::ExternalHookImportPlanV1>),
+    /// G-SE25: the reviewed plan went stale because the source changed; the
+    /// page swaps in the refreshed plan instead of applying the old one.
+    HookImportPlanStale(
+        Box<openbitfun_product_domains::external_hook_import::ExternalHookImportPlanV1>,
+    ),
+    /// G-SE25: a Hook-import action failed; the page shows the reason inline.
+    HookImportFailed(String),
     /// Workspaces the shell can switch to: the shared core catalog (recent
     /// first, then the rest of the opened set) plus workspaces visited by
     /// this process, with the active one always present.
@@ -1833,6 +1847,109 @@ impl RuntimeHandle {
                 }
             }
             publish(RuntimeEvent::ModelTestFinished { model_id, result });
+        });
+    }
+
+    /// G-SE25: reads the Hook-import projection for the active workspace.
+    /// `refresh_updates` re-probes source updates (the page's Refresh button);
+    /// a plain read uses the catalog cache.
+    pub(crate) fn reload_hook_imports(&self, refresh_updates: bool) {
+        let workspace = self.workspace().id;
+        self.tokio.spawn(async move {
+            match openbitfun_core::external_hook_import::external_hook_import_snapshot(
+                Some(&workspace),
+                refresh_updates,
+            )
+            .await
+            {
+                Ok(snapshot) => publish(RuntimeEvent::HookImports(Box::new(snapshot))),
+                Err(error) => publish(RuntimeEvent::HookImportFailed(error.to_string())),
+            }
+        });
+    }
+
+    /// G-SE25: applies one import mutation (toggle, remove, corrupt-store
+    /// reset) against the revision the page rendered.
+    pub(crate) fn mutate_hook_import(
+        &self,
+        expected_revision: String,
+        action: openbitfun_product_domains::external_hook_import::ExternalHookImportMutationV1,
+    ) {
+        use openbitfun_product_domains::external_hook_import::ExternalHookImportMutationRequestV1;
+        let workspace = self.workspace().id;
+        self.tokio.spawn(async move {
+            let request = ExternalHookImportMutationRequestV1 {
+                schema_version:
+                    openbitfun_product_domains::external_hook_import::EXTERNAL_HOOK_IMPORT_SCHEMA_V1,
+                expected_revision,
+                action,
+            };
+            match openbitfun_core::external_hook_import::mutate_external_hook_import(
+                Some(&workspace),
+                request,
+            )
+            .await
+            {
+                Ok(snapshot) => publish(RuntimeEvent::HookImports(Box::new(snapshot))),
+                Err(error) => publish(RuntimeEvent::HookImportFailed(error.to_string())),
+            }
+        });
+    }
+
+    /// G-SE25: prepares the review plan for one source's Update action.
+    pub(crate) fn plan_hook_import(
+        &self,
+        source: openbitfun_product_domains::external_sources::SourceKey,
+    ) {
+        let workspace = self.workspace().id;
+        self.tokio.spawn(async move {
+            match openbitfun_core::external_hook_import::plan_external_hook_import(
+                Some(&workspace),
+                source,
+            )
+            .await
+            {
+                Ok(plan) => publish(RuntimeEvent::HookImportPlan(Box::new(plan))),
+                Err(error) => publish(RuntimeEvent::HookImportFailed(error.to_string())),
+            }
+        });
+    }
+
+    /// G-SE25: applies a reviewed plan. A stale fingerprint returns the
+    /// refreshed plan instead of writing anything.
+    pub(crate) fn apply_hook_import(
+        &self,
+        source: openbitfun_product_domains::external_sources::SourceKey,
+        plan_fingerprint: String,
+    ) {
+        use openbitfun_product_domains::external_hook_import::{
+            ExternalHookImportApplyOutcomeV1, ExternalHookImportApplyRequestV1,
+        };
+        let workspace = self.workspace().id;
+        self.tokio.spawn(async move {
+            let request = ExternalHookImportApplyRequestV1 {
+                schema_version:
+                    openbitfun_product_domains::external_hook_import::EXTERNAL_HOOK_IMPORT_SCHEMA_V1,
+                source,
+                plan_fingerprint,
+            };
+            match openbitfun_core::external_hook_import::apply_external_hook_import(
+                Some(&workspace),
+                request,
+            )
+            .await
+            {
+                Ok(result) => match result.outcome {
+                    ExternalHookImportApplyOutcomeV1::Applied { snapshot }
+                    | ExternalHookImportApplyOutcomeV1::Unchanged { snapshot } => {
+                        publish(RuntimeEvent::HookImports(Box::new(snapshot)));
+                    }
+                    ExternalHookImportApplyOutcomeV1::Stale { refreshed_plan } => {
+                        publish(RuntimeEvent::HookImportPlanStale(Box::new(refreshed_plan)));
+                    }
+                },
+                Err(error) => publish(RuntimeEvent::HookImportFailed(error.to_string())),
+            }
         });
     }
 

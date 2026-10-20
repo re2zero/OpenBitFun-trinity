@@ -8862,6 +8862,7 @@ dependencies = [
  "openbitfun-core",
  "openbitfun-core-types",
  "openbitfun-events",
+ "openbitfun-product-domains",
  "openbitfun-runtime-ports",
  "openbitfun-services-core",
  "reqwest",

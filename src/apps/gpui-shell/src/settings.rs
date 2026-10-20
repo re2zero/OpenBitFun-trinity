@@ -17,6 +17,7 @@ use gpui_kit::component::setting::{
     NumberFieldOptions, SelectIndex, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
 };
 use gpui_kit::component::sidebar::{Sidebar, SidebarFooter, SidebarItem};
+use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme, Collapsible, Disableable, Sizable, StyledExt, WindowExt};
 use gpui_kit::{
     div, prelude::*, px, Anchor, App, Axis, Entity, FontWeight, Global, IntoElement, SharedString,
@@ -6023,6 +6024,557 @@ fn automation_group(text: &ShellText, cx: &App) -> SettingGroup {
         ),
     ];
     items.extend(quick_actions_items(text, cx));
+
+    // G-SE25: where hooks are declared, the imported-source manager, and the
+    // Codex contract reference (web `HooksConfig`).
+    items.push(section_heading_item(
+        "hook-locations",
+        text.settings_hooks_locations_section.clone(),
+        text.settings_hooks_locations_note.clone(),
+    ));
+    for (label, description) in [
+        (
+            text.settings_hooks_user_file.clone(),
+            text.settings_hooks_user_file_desc.clone(),
+        ),
+        (
+            text.settings_hooks_project_file.clone(),
+            text.settings_hooks_project_file_desc.clone(),
+        ),
+    ] {
+        items.push(
+            SettingItem::render(move |_options, _window, cx| {
+                div()
+                    .v_flex()
+                    .gap_0p5()
+                    .w_full()
+                    .child(div().text_sm().child(label.clone()))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(description.clone()),
+                    )
+                    .into_any_element()
+            })
+            .layout(Axis::Vertical),
+        );
+    }
+
+    let imports_note = if ShellConfig::current(cx).hooks_enabled {
+        text.settings_hooks_imports_note.clone()
+    } else {
+        text.settings_hooks_imports_master_disabled.clone()
+    };
+    items.push(section_heading_item(
+        "hook-imports",
+        text.settings_hooks_imports_section.clone(),
+        imports_note,
+    ));
+
+    let refresh_label = text.settings_hooks_imports_refresh.clone();
+    items.push(
+        SettingItem::render(move |_options, _window, cx| {
+            let state = HookImportState::current(cx);
+            let (status, color) = if let Some(error) = state.error.clone() {
+                (error, cx.theme().danger)
+            } else if state.loading {
+                (
+                    crate::i18n::current(cx).settings_hooks_imports_loading,
+                    cx.theme().muted_foreground,
+                )
+            } else {
+                (String::new(), cx.theme().muted_foreground)
+            };
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .w_full()
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_xs()
+                        .text_color(color)
+                        .child(status),
+                )
+                .child(
+                    Button::new("hook-imports-refresh")
+                        .label(refresh_label.clone())
+                        .small()
+                        .with_variant(ButtonVariant::Ghost)
+                        .loading(state.loading)
+                        .on_click(|_, _window, cx| fetch_hook_imports(true, cx)),
+                )
+                .into_any_element()
+        })
+        .layout(Axis::Vertical),
+    );
+
+    let page = HookImportState::current(cx);
+    let snapshot = page.snapshot.clone();
+    let imports = snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.imports.clone())
+        .unwrap_or_default();
+    let diagnostics = snapshot
+        .as_ref()
+        .map(|snapshot| {
+            snapshot
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| {
+                    diagnostic
+                        .code
+                        .starts_with("external_hook.import_store_corrupt.")
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let master_on = ShellConfig::current(cx).hooks_enabled;
+
+    if page.loaded && imports.is_empty() && diagnostics.is_empty() {
+        let empty_text = text.settings_hooks_imports_empty.clone();
+        items.push(
+            SettingItem::render(move |_options, _window, cx| {
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(empty_text.clone())
+                    .into_any_element()
+            })
+            .layout(Axis::Vertical),
+        );
+    }
+
+    for import in imports {
+        let import_id = import.import_id.clone();
+        let name = import.source.display_name.clone();
+        let state_label =
+            hook_import_state_label(&import.state, &import.source.location_hint, text);
+        let enabled = import.enabled;
+        let can_update = !matches!(
+            import.state,
+            openbitfun_product_domains::external_hook_import::ImportedHookSourceStateV1::SourceMissing
+        );
+        let busy = page.busy || page.loading;
+        let armed = page.confirm.as_deref() == Some(&format!("remove:{import_id}"));
+        let update_label = text.settings_hooks_imports_update.clone();
+        let remove_label = text.settings_hooks_imports_remove.clone();
+        let toggle_label = text.settings_hooks_import_toggle.clone();
+        let cancel_label = text.settings_quick_actions_cancel.clone();
+        let confirm_title = text.settings_hooks_import_remove_title.clone();
+        let confirm_note = text.settings_hooks_import_remove_confirm_note.clone();
+        let confirm_label = text.settings_hooks_import_remove_confirm.clone();
+        let row_id = import_id.clone();
+        let click_id = import_id.clone();
+        let update_id = import_id.clone();
+        let remove_id = import_id.clone();
+        let cancel_id = import_id.clone();
+        let confirm_id = import_id.clone();
+        let update_source = import.source.key.clone();
+        items.push(
+            SettingItem::render(move |_options, _window, cx| {
+                let mut column = div()
+                    .v_flex()
+                    .gap_1()
+                    .w_full()
+                    .debug_selector({
+                        let id = row_id.clone();
+                        move || format!("hook-import-{id}")
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .w_full()
+                            .child(div().min_w_0().truncate().text_sm().child(name.clone()))
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        Switch::new(SharedString::from(format!(
+                                            "hook-import-toggle-{click_id}"
+                                        )))
+                                        .checked(enabled)
+                                        .disabled(busy || !master_on)
+                                        .accessibility_label(toggle_label.clone())
+                                        .on_click({
+                                            let id = click_id.clone();
+                                            move |checked: &bool, _window, cx| {
+                                                set_hook_import_enabled(id.clone(), *checked, cx);
+                                            }
+                                        }),
+                                    )
+                                    .child(
+                                        Button::new(SharedString::from(format!(
+                                            "hook-import-update-{update_id}"
+                                        )))
+                                        .label(update_label.clone())
+                                        .small()
+                                        .with_variant(ButtonVariant::Ghost)
+                                        .disabled(busy || !can_update)
+                                        .on_click({
+                                            let source = update_source.clone();
+                                            move |_, _window, cx| {
+                                                review_hook_import(source.clone(), cx);
+                                            }
+                                        }),
+                                    )
+                                    .child(
+                                        Button::new(SharedString::from(format!(
+                                            "hook-import-remove-{remove_id}"
+                                        )))
+                                        .label(remove_label.clone())
+                                        .small()
+                                        .with_variant(ButtonVariant::Ghost)
+                                        .disabled(busy)
+                                        .on_click({
+                                            let id = remove_id.clone();
+                                            move |_, _window, cx| {
+                                                HookImportState::mutate(cx, |state| {
+                                                    state.confirm = Some(format!("remove:{id}"));
+                                                });
+                                                cx.refresh_windows();
+                                            }
+                                        }),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(state_label.clone()),
+                    );
+                if armed {
+                    column = column
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().danger)
+                                .child(format!("{confirm_title} {confirm_note}")),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .gap_2()
+                                .child(
+                                    Button::new(SharedString::from(format!(
+                                        "hook-import-remove-confirm-{confirm_id}"
+                                    )))
+                                    .label(confirm_label.clone())
+                                    .small()
+                                    .with_variant(ButtonVariant::Primary)
+                                    .on_click({
+                                        let id = confirm_id.clone();
+                                        move |_, _window, cx| {
+                                            remove_hook_import(id.clone(), cx);
+                                        }
+                                    }),
+                                )
+                                .child(
+                                    Button::new(SharedString::from(format!(
+                                        "hook-import-remove-cancel-{cancel_id}"
+                                    )))
+                                    .label(cancel_label.clone())
+                                    .small()
+                                    .with_variant(ButtonVariant::Ghost)
+                                    .on_click(
+                                        |_, _window, cx| {
+                                            HookImportState::mutate(cx, |state| {
+                                                state.confirm = None;
+                                            });
+                                            cx.refresh_windows();
+                                        },
+                                    ),
+                                ),
+                        );
+                }
+                column.into_any_element()
+            })
+            .layout(Axis::Vertical),
+        );
+    }
+
+    for diagnostic in diagnostics {
+        let scope = if diagnostic.code.ends_with(".user_global") {
+            openbitfun_product_domains::external_sources::ExternalSourceScope::UserGlobal
+        } else {
+            openbitfun_product_domains::external_sources::ExternalSourceScope::Project
+        };
+        let message = diagnostic.message.clone();
+        let code = diagnostic.code.clone();
+        let invalid_text = text.settings_hooks_import_store_invalid.clone();
+        let reset_label = text.settings_hooks_import_reset.clone();
+        let reset_title = text.settings_hooks_import_reset_title.clone();
+        let reset_note = text.settings_hooks_import_reset_note.clone();
+        let reset_confirm = text.settings_hooks_import_reset_confirm.clone();
+        let cancel_label = text.settings_quick_actions_cancel.clone();
+        let armed_key = format!("reset:{code}");
+        let armed = page.confirm.as_deref() == Some(armed_key.as_str());
+        let arm_code = code.clone();
+        let run_code = code.clone();
+        let cancel_code = code.clone();
+        items.push(
+            SettingItem::render(move |_options, _window, cx| {
+                let mut column = div()
+                    .v_flex()
+                    .gap_1()
+                    .w_full()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .w_full()
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_sm()
+                                    .text_color(cx.theme().danger)
+                                    .child(invalid_text.clone()),
+                            )
+                            .child(
+                                Button::new(SharedString::from(format!(
+                                    "hook-import-reset-{arm_code}"
+                                )))
+                                .label(reset_label.clone())
+                                .small()
+                                .with_variant(ButtonVariant::Primary)
+                                .on_click({
+                                    let key = format!("reset:{arm_code}");
+                                    move |_, _window, cx| {
+                                        HookImportState::mutate(cx, |state| {
+                                            state.confirm = Some(key.clone());
+                                        });
+                                        cx.refresh_windows();
+                                    }
+                                }),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(message.clone()),
+                    );
+                if armed {
+                    column = column
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().danger)
+                                .child(format!("{reset_title} {reset_note}")),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .gap_2()
+                                .child(
+                                    Button::new(SharedString::from(format!(
+                                        "hook-import-reset-confirm-{run_code}"
+                                    )))
+                                    .label(reset_confirm.clone())
+                                    .small()
+                                    .with_variant(ButtonVariant::Primary)
+                                    .on_click(
+                                        move |_, _window, cx| {
+                                            reset_hook_import_store(scope, cx);
+                                        },
+                                    ),
+                                )
+                                .child(
+                                    Button::new(SharedString::from(format!(
+                                        "hook-import-reset-cancel-{cancel_code}"
+                                    )))
+                                    .label(cancel_label.clone())
+                                    .small()
+                                    .with_variant(ButtonVariant::Ghost)
+                                    .on_click(
+                                        |_, _window, cx| {
+                                            HookImportState::mutate(cx, |state| {
+                                                state.confirm = None;
+                                            });
+                                            cx.refresh_windows();
+                                        },
+                                    ),
+                                ),
+                        );
+                }
+                column.into_any_element()
+            })
+            .layout(Axis::Vertical),
+        );
+    }
+
+    if let Some(plan) = page.plan.clone() {
+        let is_update = snapshot
+            .as_ref()
+            .map(|snapshot| {
+                snapshot.imports.iter().any(|import| {
+                    import.source.key.provider_id == plan.source.key.provider_id
+                        && import.source.key.source_id == plan.source.key.source_id
+                })
+            })
+            .unwrap_or(false);
+        let title = format!(
+            "{} · {}",
+            text.settings_hooks_import_review_title, plan.source.display_name
+        );
+        let warning = text.settings_hooks_import_review_warning.clone();
+        let stale = page
+            .plan_stale
+            .then(|| text.settings_hooks_import_stale.clone());
+        let timeout_label = text.settings_hooks_import_timeout.clone();
+        let skipped_label = text.settings_hooks_import_skipped.clone();
+        let handlers = plan.handlers.clone();
+        let skipped = plan.skipped.clone();
+        let confirm_label = if is_update {
+            text.settings_hooks_import_confirm_update.clone()
+        } else {
+            text.settings_hooks_import_confirm.clone()
+        };
+        let cancel_label = text.settings_quick_actions_cancel.clone();
+        let busy = page.busy;
+        items.push(
+            SettingItem::render(move |_options, _window, cx| {
+                let mut column = div()
+                    .v_flex()
+                    .gap_1()
+                    .w_full()
+                    .debug_selector(|| "hook-import-review".to_string())
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(title.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().danger)
+                            .child(warning.clone()),
+                    );
+                if let Some(stale) = stale.clone() {
+                    column = column.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(stale),
+                    );
+                }
+                for handler in &handlers {
+                    let matcher = handler
+                        .matcher
+                        .as_deref()
+                        .map(|matcher| format!(" · {matcher}"))
+                        .unwrap_or_default();
+                    let mut line = format!("{} · {}{}", handler.event, handler.command, matcher);
+                    if let Some(timeout) = handler.timeout_seconds {
+                        line.push_str(&format!(" · {timeout_label} {timeout}"));
+                    }
+                    column = column.child(
+                        div()
+                            .min_w_0()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(line),
+                    );
+                }
+                for skipped in &skipped {
+                    column = column.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!(
+                                "{skipped_label} {} · {}",
+                                skipped.count, skipped.reason_code
+                            )),
+                    );
+                }
+                column
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap_2()
+                            .child(
+                                Button::new("hook-import-review-confirm")
+                                    .label(confirm_label.clone())
+                                    .small()
+                                    .with_variant(ButtonVariant::Primary)
+                                    .loading(busy)
+                                    .on_click(|_, _window, cx| apply_hook_import_plan(cx)),
+                            )
+                            .child(
+                                Button::new("hook-import-review-cancel")
+                                    .label(cancel_label.clone())
+                                    .small()
+                                    .with_variant(ButtonVariant::Ghost)
+                                    .on_click(|_, _window, cx| dismiss_hook_import_plan(cx)),
+                            ),
+                    )
+                    .into_any_element()
+            })
+            .layout(Axis::Vertical),
+        );
+    }
+
+    items.push(section_heading_item(
+        "hooks-compat",
+        text.settings_hooks_compat_section.clone(),
+        text.settings_hooks_compat_note.clone(),
+    ));
+    let reference_label = text.settings_hooks_compat_reference.clone();
+    let open_label = text.settings_hooks_compat_open.clone();
+    items.push(
+        SettingItem::render(move |_options, _window, _cx| {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .w_full()
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_sm()
+                        .child(reference_label.clone()),
+                )
+                .child(
+                    Button::new("hooks-compat-open")
+                        .label(open_label.clone())
+                        .small()
+                        .with_variant(ButtonVariant::Ghost)
+                        .on_click(|_, _window, _cx| {
+                            crate::markdown::open_external("https://learn.chatgpt.com/docs/hooks");
+                        }),
+                )
+                .into_any_element()
+        })
+        .layout(Axis::Vertical),
+    );
+
     SettingGroup::new().items(items)
 }
 
@@ -7169,6 +7721,226 @@ impl ModelEditorState {
             cx.set_global(Self::default());
         }
         change(cx.global_mut::<Self>())
+    }
+}
+
+/// G-SE25: the automation page's Hook-import projection plus the page-local
+/// review/busy state. A global for the same reason the other settings pages
+/// keep theirs there: the page is built inside the window render.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct HookImportState {
+    pub(crate) loaded: bool,
+    pub(crate) loading: bool,
+    pub(crate) busy: bool,
+    pub(crate) snapshot:
+        Option<openbitfun_product_domains::external_hook_import::ExternalHookImportSnapshotV1>,
+    /// The reviewed plan currently shown, when any.
+    pub(crate) plan:
+        Option<openbitfun_product_domains::external_hook_import::ExternalHookImportPlanV1>,
+    /// The plan was rebuilt because the source changed; the page says nothing
+    /// was written yet.
+    pub(crate) plan_stale: bool,
+    /// The last action's failure, shown above the list.
+    pub(crate) error: Option<String>,
+    /// An armed destructive action: `remove:<import_id>` or `reset:<scope>`.
+    /// The second click on the same row runs it.
+    pub(crate) confirm: Option<String>,
+}
+
+impl Global for HookImportState {}
+
+impl HookImportState {
+    /// The current page state, or the empty default before the first load.
+    pub(crate) fn current(cx: &App) -> Self {
+        cx.try_global::<Self>().cloned().unwrap_or_default()
+    }
+
+    /// Mutates the page state, materializing the default on first use.
+    pub(crate) fn mutate<R>(cx: &mut App, change: impl FnOnce(&mut Self) -> R) -> R {
+        if cx.try_global::<Self>().is_none() {
+            cx.set_global(Self::default());
+        }
+        change(cx.global_mut::<Self>())
+    }
+}
+
+/// G-SE25: reads the import projection (Refresh re-probes source updates).
+pub(crate) fn fetch_hook_imports(refresh_updates: bool, cx: &mut App) {
+    let Some(handle) = crate::runtime::runtime_handle() else {
+        return;
+    };
+    let start = HookImportState::mutate(cx, |state| {
+        if state.loading || state.busy {
+            return false;
+        }
+        state.loading = true;
+        state.error = None;
+        true
+    });
+    if !start {
+        return;
+    }
+    handle.reload_hook_imports(refresh_updates);
+    cx.refresh_windows();
+}
+
+/// G-SE25: toggles one imported source. Mutations are revision-guarded; a
+/// stale revision surfaces as the refreshed snapshot (core re-reads it).
+pub(crate) fn set_hook_import_enabled(import_id: String, enabled: bool, cx: &mut App) {
+    let Some(handle) = crate::runtime::runtime_handle() else {
+        return;
+    };
+    let revision = HookImportState::current(cx)
+        .snapshot
+        .map(|snapshot| snapshot.revision);
+    let Some(revision) = revision else {
+        return;
+    };
+    HookImportState::mutate(cx, |state| {
+        if state.busy {
+            return;
+        }
+        state.busy = true;
+        state.error = None;
+        state.confirm = None;
+    });
+    handle.mutate_hook_import(
+        revision,
+        openbitfun_product_domains::external_hook_import::ExternalHookImportMutationV1::SetEnabled {
+            import_id,
+            enabled,
+        },
+    );
+    cx.refresh_windows();
+}
+
+/// G-SE25: removes the managed copy of one imported source (two-step).
+pub(crate) fn remove_hook_import(import_id: String, cx: &mut App) {
+    let Some(handle) = crate::runtime::runtime_handle() else {
+        return;
+    };
+    let revision = HookImportState::current(cx)
+        .snapshot
+        .map(|snapshot| snapshot.revision);
+    let Some(revision) = revision else {
+        return;
+    };
+    HookImportState::mutate(cx, |state| {
+        if state.busy {
+            return;
+        }
+        state.busy = true;
+        state.error = None;
+        state.confirm = None;
+    });
+    handle.mutate_hook_import(
+        revision,
+        openbitfun_product_domains::external_hook_import::ExternalHookImportMutationV1::Remove {
+            import_id,
+        },
+    );
+    cx.refresh_windows();
+}
+
+/// G-SE25: resets one corrupt import store (two-step). Source application
+/// files are never touched; only OpenBitFun's managed index is rebuilt.
+pub(crate) fn reset_hook_import_store(
+    scope: openbitfun_product_domains::external_sources::ExternalSourceScope,
+    cx: &mut App,
+) {
+    let Some(handle) = crate::runtime::runtime_handle() else {
+        return;
+    };
+    let revision = HookImportState::current(cx)
+        .snapshot
+        .map(|snapshot| snapshot.revision);
+    let Some(revision) = revision else {
+        return;
+    };
+    HookImportState::mutate(cx, |state| {
+        if state.busy {
+            return;
+        }
+        state.busy = true;
+        state.error = None;
+        state.confirm = None;
+    });
+    handle.mutate_hook_import(
+        revision,
+        openbitfun_product_domains::external_hook_import::ExternalHookImportMutationV1::ResetCorruptStore {
+            scope,
+        },
+    );
+    cx.refresh_windows();
+}
+
+/// G-SE25: prepares the review plan for an existing import or a catalog
+/// source's first import.
+pub(crate) fn review_hook_import(
+    source: openbitfun_product_domains::external_sources::SourceKey,
+    cx: &mut App,
+) {
+    let Some(handle) = crate::runtime::runtime_handle() else {
+        return;
+    };
+    HookImportState::mutate(cx, |state| {
+        if state.busy || state.loading {
+            return;
+        }
+        state.busy = true;
+        state.error = None;
+        state.plan = None;
+        state.plan_stale = false;
+    });
+    handle.plan_hook_import(source);
+    cx.refresh_windows();
+}
+
+/// G-SE25: applies the reviewed plan (nothing is written before this).
+pub(crate) fn apply_hook_import_plan(cx: &mut App) {
+    let Some(handle) = crate::runtime::runtime_handle() else {
+        return;
+    };
+    let plan = HookImportState::current(cx).plan;
+    let Some(plan) = plan else {
+        return;
+    };
+    HookImportState::mutate(cx, |state| {
+        if state.busy {
+            return;
+        }
+        state.busy = true;
+        state.error = None;
+    });
+    handle.apply_hook_import(plan.source.key, plan.plan_fingerprint);
+    cx.refresh_windows();
+}
+
+/// G-SE25: closes the review block without writing.
+pub(crate) fn dismiss_hook_import_plan(cx: &mut App) {
+    HookImportState::mutate(cx, |state| {
+        state.plan = None;
+        state.plan_stale = false;
+    });
+    cx.refresh_windows();
+}
+
+/// G-SE25: one import state's row copy (web `imports.state.*`).
+fn hook_import_state_label(
+    state: &openbitfun_product_domains::external_hook_import::ImportedHookSourceStateV1,
+    location: &str,
+    text: &ShellText,
+) -> String {
+    use openbitfun_product_domains::external_hook_import::ImportedHookSourceStateV1 as State;
+    match state {
+        State::Current => format!("{} · {location}", text.settings_hook_import_state_current),
+        State::UpdateAvailable => format!(
+            "{} · {location}",
+            text.settings_hook_import_state_update_available
+        ),
+        State::SourceMissing => text.settings_hook_import_state_source_missing.clone(),
+        State::UpdateCheckFailed => text.settings_hook_import_state_update_check_failed.clone(),
+        State::BundleMissing => text.settings_hook_import_state_bundle_missing.clone(),
     }
 }
 

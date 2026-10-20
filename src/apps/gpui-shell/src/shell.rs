@@ -3593,6 +3593,44 @@ impl ShellWindow {
                 });
                 cx.refresh_windows();
             }
+            RuntimeEvent::HookImports(snapshot) => {
+                settings::HookImportState::mutate(cx, |state| {
+                    state.snapshot = Some(*snapshot);
+                    state.loaded = true;
+                    state.loading = false;
+                    state.busy = false;
+                    state.error = None;
+                    state.plan = None;
+                    state.plan_stale = false;
+                    state.confirm = None;
+                });
+                cx.refresh_windows();
+            }
+            RuntimeEvent::HookImportPlan(plan) => {
+                settings::HookImportState::mutate(cx, |state| {
+                    state.plan = Some(*plan);
+                    state.plan_stale = false;
+                    state.busy = false;
+                    state.error = None;
+                });
+                cx.refresh_windows();
+            }
+            RuntimeEvent::HookImportPlanStale(plan) => {
+                settings::HookImportState::mutate(cx, |state| {
+                    state.plan = Some(*plan);
+                    state.plan_stale = true;
+                    state.busy = false;
+                });
+                cx.refresh_windows();
+            }
+            RuntimeEvent::HookImportFailed(error) => {
+                settings::HookImportState::mutate(cx, |state| {
+                    state.error = Some(error);
+                    state.loading = false;
+                    state.busy = false;
+                });
+                cx.refresh_windows();
+            }
         }
         cx.notify();
     }
@@ -4241,6 +4279,11 @@ impl ShellWindow {
         // the page's own retry.
         if page == settings::SettingsEntry::TrinityEngine {
             self.reload_trinity_engine(cx);
+        }
+        // G-SE25: the automation page reads the Hook-import projection on
+        // selection (web loads on mount); a plain read uses the catalog cache.
+        if page == settings::SettingsEntry::Automation {
+            settings::fetch_hook_imports(false, cx);
         }
         cx.notify();
     }
