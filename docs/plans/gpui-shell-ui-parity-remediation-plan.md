@@ -88,7 +88,7 @@
 | workspace.worktrees 工作树 | ✅ 跳转卡（开 Git 面板 Worktrees） | 同构 | G-SE16（隔离设置字段 UI） |
 | tools.execution 执行与权限 | ✅ 权限预设/自动批准 | 子集 | G-SE17..G-SE23 |
 | tools.desktop-control 桌面控制 | — | 不补 | 不补（平台硬约束：browser/computer-use） |
-| tools.automation 自动化 | ✅ hooks 三开关 | 子集 | G-SE24（quick actions 管理面）、G-SE25（hooks 导入/位置/兼容性） |
+| tools.automation 自动化 | ✅ hooks 三开关 + 声明位置 + 导入管理（启停/更新审阅/移除/损坏重置）+ Codex 兼容参考 | 同构 | **G-SE24 ✅ / G-SE25 ✅ 交付** |
 | tools.webSearch 网页搜索 | ✅ provider/HTTP 表单/凭证状态 | 同构 | 无（协议说明文档区留 web，在案） |
 | tools.mcp MCP | ✅ 列表/增删改/启停/重启/JSON/资源/交互 | 子集 | G-M1..G-M3 |
 | tools.acp ACP | — | 不补 | 不补（前置缺失：壳不接 ACP clients） |
@@ -392,6 +392,18 @@
   壳 T2-10 只读消费（聊天头部菜单），无管理面。**B 档**。
 - **G-SE25 hooks 导入 / 位置说明 / 兼容性**：web `HooksConfig.tsx:366-503`；壳只有总开关/项目开关/co-author。
   **B 档**。
+  **✅ 交付**（2026-10-20，B 档设置字段族第四批）：自动化页补齐三段。① 声明位置：用户
+  `config/hooks.json` 与项目 `.openbitfun/config/hooks.json` 两行说明（含「需开启项目 Hook 文件」提示）；
+  ② 已导入的 Hooks：进页按需拉快照（刷新按钮强制重探来源更新），逐源行 = 名称 + 启用 Switch（总开关关闭时禁用）
+  + 状态文案（当前快照/有可用更新/来源丢失/检查失败/托管文件缺失）+「审阅更新」「移除」；移除与损坏索引重置
+  都是**行内两段式确认**；损坏诊断按 `.user_global` 后缀选 scope 重置；③ 审阅计划：行内审查块列出每条
+  handler 的 event · command · matcher · 超时、跳过项计数，标明命令以账户权限运行；来源变化时核心返回
+  `stale`，壳显示「本次未写入」并换上新计划。写入全走核心 `plan → apply`（先审后写），`Remove` 只删
+  OpenBitFun 托管副本。④ Codex 兼容段：合约说明 + 「打开文档」走系统 opener。
+  **在案分歧**：审阅块以行内块代替 web 的模态框；依赖明细不逐条展开（只保留命令/超时/跳过计数）；
+  远程工作区导入面在壳不适用（壳运行时始终是本地 Embedded，web 的 remoteUnsupported 提示未复刻）。
+  证据：壳 lib 361 测全绿（断言面沿用既有设置页布局测试）、ftl 1131→1171×3、i18n 审计 0 告警、
+  `update_config` 之外新增 `external_hook_import_*` 运行时事件四型（快照/计划/过期计划/失败）。
 - **G-SE29 用量分布与缓存/endpoint**：web `UsageStatisticsConfig.tsx:453-501`（模型/分组分布、筛选、缓存命中率、
   endpoint 分布）；壳 = 范围 + 汇总 + 趋势图 + 热力图（T2-8 已做）。**B 档**。
   **✅ 交付**（2026-10-20，B 档设置字段族）：用量页趋势图下方补齐 **模型 / 供应商 / 端点** 三个分布块
@@ -675,7 +687,7 @@
 | 7 | Git 尾巴（AI commit message、branches/graph） | G-G2,G-G4 | branches/graph 为净新增（§1.6） | 1-1.5 |
 | 8 | 搜索 actions/entities | G-Q1 | action 目录 + 聚合查询 | 1 |
 | 9 | 洞察补齐（模型/五阶段/图表/TOC） | G-I2..I4 | 复用报告结构，图表自绘 | 1-1.5 |
-| 10 | 设置字段族（执行/自动化/模型高级） | G-SE17/24/29 **✅ 交付 2026-10-20**；G-SE12 **✅ 交付 2026-10-20**；G-SE25 余 | 多数为配置项 UI | 1.5-2 |
+| 10 | 设置字段族（执行/自动化/模型高级） | G-SE17/24/25/29 **✅ 交付 2026-10-20**；G-SE12 **✅ 交付 2026-10-20** | 多数为配置项 UI | 1.5-2 |
 | 11 | 快捷键只读页 | G-SE7 **✅ 交付 2026-10-18** | 键位表投影 | 0.5 |
 | 12 | 公告面 | G-X1 | 载体选型（横幅/中心） | 0.5-1 |
 | 13 | 防休眠 | G-SE1 | 选型先行（portal inhibit） | 0.5-1 |
@@ -850,6 +862,7 @@ turn footer 完成时间/耗时 meta（=G-S1）与 copy 成功态图标反馈（
 
 | 日期 | 变更 |
 |---|---|
+| 2026-10-20 | **B 档设置字段族第四批（G-SE25 Hooks 导入 / 位置 / 兼容性）**。自动化页新增三段：① 声明位置（用户 `config/hooks.json`、项目 `.openbitfun/config/hooks.json` 两行说明）；② 已导入的 Hooks——进页按需拉快照、刷新按钮强制重探来源更新，逐源行含名称、启用 Switch（总开关关闭时禁用）、五种状态文案（当前/有更新/来源丢失/检查失败/托管文件缺失）、审阅更新与移除；移除与损坏索引重置均行内两段式确认，损坏诊断按 `.user_global` 后缀选出 scope；③ 审阅计划行内块——逐条 handler（event · command · matcher · 超时）、跳过计数、权限警告，`stale` 时显示「本次未写入」并换新计划；Apply 才写入，Remove 只删托管副本；④ Codex 兼容段（合约说明 + 系统 opener 打开文档）。新增运行时事件四型与四个 `RuntimeHandle` 方法（快照/变更/计划/应用）接 core `external_hook_import_*`。**在案分歧**：行内审阅块替代模态框；依赖明细不逐条展开；壳运行时始终本地，未复刻 remoteUnsupported 提示。ftl 1131→**1171 ×3**；`i18n:audit` 0 告警；壳 lib **361 全绿**；`fmt:rs` 绿。 |
 | 2026-10-20 | **B 档设置字段族第三批（G-SE12 高级模型配置，测试连接 / 行编辑 / 高级请求面一次交付）**。① 测试连接：模型清单每行一个「测试连接」按钮，运行时走与桌面 `test_ai_config_connection` 同一条临时客户端管线（`build_stream_options_for_model` + subscription auth/profile + 全局 proxy / 行内 skip-SSL），多模态模型并跑图片输入腿并按桌面规则合并回执；判定/耗时/诊断码本地化提示/原始错误显示在行下，不落盘。② 行编辑器：点「Edit」在清单下展开——分类（web 四档 + 未知存量值原样保留）、上下文窗口（≥32K）、最大输出（0=自动，>40% 上下文拒绝写入，缩窗口时失效的显式上限自动回退自动档）、思考默认预设（存量预设中选择 + 动作摘要只读，禁用/无动作预设不提供选择）。③ 高级面：请求格式只读（改格式属于 web 的 provider 选择器）、`<think>` 解析开关、跳过 SSL（带风险说明）、自定义 Headers JSON 对象（空=清除，非字符串值拒绝）、Headers 应用模式 replace/merge、自定义请求体 JSON 对象（空=清除）、请求体模式 merge/trim；半写的 JSON 只留在页内草稿，解析成功才落盘。全部写入走 `update_config("ai.models")` 单锁读改写，行内与同列表的未知键原样保留。**在案分歧**：思考预设的编写面板（models.dev 绑定 / 自定义预设增删 / 补丁 JSON）仍在 web/桌面；请求体 trim 的四条供应商专属说明合并为一条通用提示。ftl 1080→**1131 ×3**；`i18n:audit` 0 告警（未抬 baseline）；壳 lib **361 全绿**（新增 2 项纯函数测试：未知分类保留、JSON 草稿形状）。 |
 | 2026-10-20 | **B 档设置字段族第二批（G-SE15 / G-SE16 / G-SE17 / G-SE24 / G-SE29 一次交付）**。① G-SE15：`workspace.session` 页新增默认 Harness（跟随上次 / 固定默认 + 四档 Harness 菜单 + 兼容值后缀，描述显示上次选择）与会话标题生成（开关 + 模型菜单），写 `app.flow_chat` 两键一次合并写（新增 `persist_object_keys`）、`app.ai_experience.enable_session_title_generation`、`ai.task_models.session_title`；legacy `default_mode_id` 按 fixed 读。② G-SE16：`workspace.worktrees` 页新增会话隔离五项（根路径 / 分支前缀 / 复制改动 / 自动删除 + 1–100 上限，关时上限禁用），**按共享文档的 camelCase 键**（`rootPath` 等）单键合并写 `app.worktrees`，默认值取共享 `WorktreeSettings::default`。③ G-SE17：执行与权限页新增全局规则只读列表 + 行内编辑器（操作/资源/效果三列，上移/下移/删除/新增/保存/放弃，缺字段红字 + 保存禁用；草稿全局、未保存不落盘），保存整数组合并写 `tool_permissions.policy.rules`。④ G-SE24：自动化页新增快捷动作管理（内置开关 + 编辑；自定义开关 + 编辑/两段式删除/新增；行内名称/指令编辑器），整数组写 `app.ai_experience.quick_actions`，内置文案按 web 归一规则写回规范英文默认。⑤ G-SE29：用量页补齐模型/供应商/端点三块分布 + 页内搜索过滤 + 逐行缓存命中率（数据取 `UsageStatistics.by_*`，每块前 20 行）。⑥ 顺带清零上轮遗留 **25 条 lib-test 告警**（`cargo fix` 21 条 + 4 条 dead code：删 `ArchivedFieldHarness`/`E2E_PRODUCT_HOME_ENV`/`HISTORY_LIMIT`，batch 描述文案改到行内使用）。ftl 1016→**1080 ×3**；`i18n:audit` 0 错 0 警（首轮「Edit」撞共享词 `tools.edit` → 改用 `i18n::shared_term`，未抬 baseline）；**壳 lib 359 全绿（0 告警）**；`check:repo-hygiene` / `check:core-boundaries` / `fmt:rs` 绿。 |
 | 2026-10-18 | **B 档首车：三页设置交付（G-SE14 认知引擎 / G-SE13 记忆 / G-SE7 快捷键只读）**（`071fd90d1`）。三页共享一条实现纪律：**设置页在窗口自身的 render 里构建**（`shell.rs::render` → `settings::render_page` → 组构建函数），那里窗口实体正被可变借用 —— 任何组构建函数直接 `view.upgrade().read(cx)` 都会 panic（`cannot read ShellWindow while it is already being updated`，本轮由 `settings_scene_nav_selects_pages_and_searches` 抓到）。修法 = 引擎页与记忆页的页内状态从窗口字段改成全局（`TrinityEngineState` / `MemoryPageState`，配 `current()`/`mutate()` 惰性物化），组构建函数与页内渲染闭包只读 `cx`；**断言/接口留给「延迟渲染闭包读窗口实体」这条既有安全路径**（`archived_sessions_field` 同款）。顺带修两条遗留红：导航元数据/树投影测试的硬编码页数 15（Trinity/Memory 登记后未跑过测试）→ 18（16 实页 + 2 跳转卡、隐藏 8→5），以及引擎页离线态回不去（`ConfigFailed` 现在清 `loaded`）。证据：壳 lib **352 全绿**（该计数含重复注册的同一测试；唯一测试 351，见 HANDOFF-090）；ftl 925→943（G-SE14 18 键）→1002（G-SE13 58 键 + 1 参数键）→**1016 ×3**（G-SE7 14 键）；`i18n:audit` / `check:core-boundaries` / `check:repo-hygiene` / `pnpm run fmt:rs` 四绿；Xvfb :83 隔离根冒烟 0 panic（唯一 ERROR = Xvfb xinput 既有噪声），证据帧 `b1-01..12`：启动态（搜索框 Ctrl K 提示）/设置导航三行新页/引擎页真 daemon 值（端点+模型已填、key 掩码）/记忆页基础（范围提示 + 关总开关时下游禁用）/管理菜单三项/高级块收起/展开点击态/七行数字（真存值 6·10·2·2000·1·64·30）/快捷键表四组/键位实测（Ctrl+B 折侧栏、Ctrl+K 开全局搜索）。**新坑登记**：`SettingItem` 不能在自定义元素里嵌套渲染（`render_item` 是 `pub(super)`），披露态探针改用独立标记项；`AsKeystroke` 不在 gpui prelude，测试要显式 `use gpui_kit::AsKeystroke as _`。 |
