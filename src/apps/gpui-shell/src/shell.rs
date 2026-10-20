@@ -906,7 +906,7 @@ impl SidebarItem for SidebarEntry {
                     .items_center()
                     .gap_1()
                     .flex_shrink_0()
-                    .when_some(review_kind, |this, kind| {
+                    .when_some(review_kind, |this, _kind| {
                         this.child(
                             div()
                                 .text_xs()
@@ -7878,8 +7878,9 @@ fn btw_question(input: &str) -> Option<&str> {
 /// defaults (English; `config-contracts` writes the same values). The
 /// localized copy replaces them only while the stored text still equals
 /// these defaults — a customized action keeps its stored text verbatim.
-const QUICK_ACTION_COMMIT_DEFAULTS: (&str, &str) = ("Commit", "Commit all current code changes");
-const QUICK_ACTION_CREATE_PR_DEFAULTS: (&str, &str) =
+pub(crate) const QUICK_ACTION_COMMIT_DEFAULTS: (&str, &str) =
+    ("Commit", "Commit all current code changes");
+pub(crate) const QUICK_ACTION_CREATE_PR_DEFAULTS: (&str, &str) =
     ("Create PR", "Create a Pull Request for the current branch");
 
 /// One stored-vs-default text of a built-in quick action (web
@@ -7895,7 +7896,7 @@ fn builtin_quick_action_text(stored: &str, default: &str, localized: &str) -> St
 /// Resolves a quick action's display label and the prompt a click sends
 /// (web `resolveQuickActionText` port): built-in `commit`/`create_pr`
 /// localize the shared English defaults, everything else stays verbatim.
-fn resolve_quick_action_text(
+pub(crate) fn resolve_quick_action_text(
     action: &openbitfun_core::service::config::types::AiExperienceQuickAction,
     text: &ShellText,
 ) -> (String, String) {
@@ -11334,7 +11335,7 @@ mod tests {
 
         // The card entry point opens the child; the opened echo settles the
         // subagent child context onto the pane.
-        window.update(|window, cx| {
+        window.update(|_window, cx| {
             shell.update(cx, |shell, cx| {
                 shell.open_subagent_run("child-1".into(), "parent".into(), cx);
             });
@@ -11353,7 +11354,7 @@ mod tests {
         });
 
         // Returning to the parent re-annotates the reloaded card.
-        window.update(|window, cx| {
+        window.update(|_window, cx| {
             shell.update(cx, |shell, cx| shell.return_from_child(cx));
         });
         window.update(|window, cx| {
@@ -11663,7 +11664,7 @@ mod tests {
         });
         let view = shell_view.clone();
         {
-            let mut window = cx.add_empty_window();
+            let window = cx.add_empty_window();
             window.draw(point(px(0.), px(0.)), size(px(1100.), px(900.)), {
                 let text = text.clone();
                 let view = view.clone();
@@ -11722,7 +11723,7 @@ mod tests {
                 ..Default::default()
             });
         });
-        let mut window = cx.add_empty_window();
+        let window = cx.add_empty_window();
         window.draw(point(px(0.), px(0.)), size(px(1100.), px(900.)), {
             let text = text.clone();
             let view = view.clone();
@@ -12202,7 +12203,7 @@ mod tests {
             ),
         ];
         for (page, sections) in cases {
-            let mut window = cx.add_empty_window();
+            let window = cx.add_empty_window();
             let text = text.clone();
             let view = shell_view.clone();
             let page = *page;
@@ -12425,20 +12426,6 @@ mod tests {
     impl Render for SettingsHarness {
         fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             settings::render_page(&self.text, self.view.clone(), self.page, cx)
-        }
-    }
-
-    /// Renders only the archived list body for the bulk-delete test (T1-4);
-    /// the field needs a view wrapper for the same layout reason as
-    /// [`SettingsHarness`].
-    struct ArchivedFieldHarness {
-        text: ShellText,
-        view: gpui_kit::WeakEntity<ShellWindow>,
-    }
-
-    impl Render for ArchivedFieldHarness {
-        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            settings::archived_sessions_field(self.view.clone(), &self.text, window, cx)
         }
     }
 
@@ -13135,7 +13122,7 @@ mod tests {
         let window = cx.add_empty_window();
         let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
 
-        window.update(|window, cx| {
+        window.update(|_window, cx| {
             shell.update(cx, |shell, cx| {
                 shell.tabs.open(TabKind::Scene(tabs::SceneId::Insights));
                 shell.insights.loaded = true;
@@ -13214,7 +13201,7 @@ mod tests {
         };
 
         // Tasks: a long all-jobs list.
-        window.update(|window, cx| {
+        window.update(|_window, cx| {
             shell.update(cx, |shell, cx| {
                 shell.tabs.open(TabKind::Scene(tabs::SceneId::Tasks));
                 shell.tasks.loaded = true;
@@ -13265,7 +13252,7 @@ mod tests {
         );
 
         // Trinity: a long memory timeline.
-        window.update(|window, cx| {
+        window.update(|_window, cx| {
             shell.update(cx, |shell, cx| {
                 shell.tabs.open(TabKind::Scene(tabs::SceneId::Trinity));
                 shell.trinity.loaded = true;
@@ -13725,9 +13712,9 @@ mod tests {
     fn flat_projection_orders_every_workspace_and_scopes_rows(cx: &mut gpui_kit::TestAppContext) {
         install_shell_globals(cx);
         let (tx, rx) = mpsc::unbounded_channel();
-        let mut window = cx.add_empty_window();
+        let window = cx.add_empty_window();
         let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
-        let text = sample_shell_text();
+        let _text = sample_shell_text();
 
         window.update(|window, cx| {
             shell.update(cx, |shell, cx| {
@@ -13894,7 +13881,7 @@ mod tests {
     fn foreign_group_rows_carry_their_workspace(cx: &mut gpui_kit::TestAppContext) {
         install_shell_globals(cx);
         let (tx, rx) = mpsc::unbounded_channel();
-        let mut window = cx.add_empty_window();
+        let window = cx.add_empty_window();
         let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
         let text = sample_shell_text();
 
@@ -14082,7 +14069,7 @@ mod tests {
     fn archived_settings_page_renders_the_bulk_delete(cx: &mut gpui_kit::TestAppContext) {
         install_shell_globals(cx);
         let (tx, rx) = mpsc::unbounded_channel();
-        let mut window = cx.add_empty_window();
+        let window = cx.add_empty_window();
         let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
         let text = sample_shell_text();
 
@@ -14190,7 +14177,7 @@ mod tests {
     fn trinity_engine_page_tracks_daemon_settlements(cx: &mut gpui_kit::TestAppContext) {
         install_shell_globals(cx);
         let (tx, rx) = mpsc::unbounded_channel();
-        let mut window = cx.add_empty_window();
+        let window = cx.add_empty_window();
         let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
         let text = sample_shell_text();
 
@@ -14320,7 +14307,7 @@ mod tests {
     fn memory_page_tracks_reset_and_clear_settlements(cx: &mut gpui_kit::TestAppContext) {
         install_shell_globals(cx);
         let (tx, rx) = mpsc::unbounded_channel();
-        let mut window = cx.add_empty_window();
+        let window = cx.add_empty_window();
         let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
         let text = sample_shell_text();
 
@@ -14443,7 +14430,7 @@ mod tests {
         cx.update(|cx| settings::install_global_shortcuts(cx));
 
         let (tx, rx) = mpsc::unbounded_channel();
-        let mut window = cx.add_empty_window();
+        let window = cx.add_empty_window();
         let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
         let text = sample_shell_text();
 
@@ -14605,7 +14592,7 @@ mod tests {
     fn background_subagent_badges_track_the_child_lifecycle(cx: &mut gpui_kit::TestAppContext) {
         install_shell_globals(cx);
         let (tx, _rx) = mpsc::unbounded_channel();
-        let mut window = cx.add_empty_window();
+        let window = cx.add_empty_window();
         let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, _rx, window, cx)));
         let task_card = |background: bool| RuntimeEvent::ToolUpdate {
             session_id: "parent".into(),
@@ -14726,7 +14713,7 @@ mod tests {
 
         install_shell_globals(cx);
         let (tx, _rx) = mpsc::unbounded_channel();
-        let mut window = cx.add_empty_window();
+        let window = cx.add_empty_window();
         let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, _rx, window, cx)));
         window.update(|window, cx| {
             shell.update(cx, |shell, cx| {
@@ -16201,7 +16188,7 @@ mod tests {
         window.update(|window, cx| {
             inject_terminal_tab(&shell, "one", window, cx);
             inject_terminal_tab(&shell, "two", window, cx);
-            shell.update(cx, |shell, cx| {
+            shell.update(cx, |shell, _cx| {
                 shell.terminal_open = true;
                 shell.active_terminal = 1;
                 assert_eq!(shell.terminals.len(), 2);
@@ -16226,7 +16213,7 @@ mod tests {
         // button, and the active pane all lay out inside the dock.
         window.update(|window, cx| {
             inject_terminal_tab(&shell, "again", window, cx);
-            shell.update(cx, |shell, cx| shell.terminal_open = true);
+            shell.update(cx, |shell, _cx| shell.terminal_open = true);
         });
         window.draw(point(px(0.), px(0.)), size(px(1200.), px(800.)), {
             let shell = shell.clone();
@@ -16301,7 +16288,7 @@ mod tests {
             cx.set_global(config);
             inject_terminal_tab(&shell, "one", window, cx);
             inject_terminal_profile_tab(&shell, "dev", window, cx);
-            shell.update(cx, |shell, cx| {
+            shell.update(cx, |shell, _cx| {
                 shell.terminal_open = true;
                 shell.active_terminal = 1;
             });

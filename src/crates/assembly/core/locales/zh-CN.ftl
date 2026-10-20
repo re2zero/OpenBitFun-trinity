@@ -384,6 +384,35 @@ gpui-shell-settings-policy-ask = 询问
 gpui-shell-settings-policy-full-access = 完全访问
 gpui-shell-settings-auto-approve = 自动批准请求
 gpui-shell-settings-auto-approve-desc = 自动应答交互式权限请求（仅对「询问」策略生效）。
+gpui-shell-settings-permission-rules-section = 全局规则
+gpui-shell-settings-permission-rules-desc = 适用于所有工作区；项目和智能体规则可覆盖，产品强制限制始终优先
+gpui-shell-settings-permission-rules-manage = 管理规则
+gpui-shell-settings-permission-rules-add = 添加规则
+gpui-shell-settings-permission-rules-save = 保存规则
+gpui-shell-settings-permission-rules-discard = 放弃更改
+gpui-shell-settings-permission-rules-empty = 尚未配置自定义全局规则。当前权限模式仍会生效。
+gpui-shell-settings-permission-rules-action = 操作
+gpui-shell-settings-permission-rules-resource = 资源
+gpui-shell-settings-permission-rules-effect = 效果
+gpui-shell-settings-permission-rules-invalid = 每条规则都需要填写操作和资源。
+gpui-shell-settings-permission-effect-allow = 允许
+gpui-shell-settings-permission-effect-ask = 询问
+gpui-shell-settings-permission-effect-deny = 拒绝
+gpui-shell-settings-quick-actions-section = 快捷动作
+gpui-shell-settings-quick-actions-note = 在聊天中快速运行常用 AI 指令
+gpui-shell-settings-quick-actions-builtin-section = 内置动作
+gpui-shell-settings-quick-actions-builtin-note = 可修改预置动作的名称与指令，不需要的动作可以关闭
+gpui-shell-settings-quick-actions-custom-section = 自定义动作
+gpui-shell-settings-quick-actions-custom-note = 为重复任务保存自己的指令，触发时发送到当前会话
+gpui-shell-settings-quick-actions-custom-empty = 还没有自定义动作
+gpui-shell-settings-quick-actions-add = 添加动作
+gpui-shell-settings-quick-actions-delete = 删除
+gpui-shell-settings-quick-actions-delete-confirm = 再次点击删除
+gpui-shell-settings-quick-actions-label = 动作名称
+gpui-shell-settings-quick-actions-prompt = 触发指令
+gpui-shell-settings-quick-actions-save = 保存
+gpui-shell-settings-quick-actions-cancel = 取消
+gpui-shell-settings-quick-actions-invalid = 动作名称和触发指令都不能为空。
 gpui-shell-settings-terminal = 终端
 gpui-shell-settings-terminal-font-size = 字号
 gpui-shell-settings-terminal-font-size-desc = 内置终端网格的文字大小。
@@ -694,6 +723,10 @@ gpui-shell-settings-usage-loading = 正在加载用量统计…
 gpui-shell-settings-usage-empty = 该范围内暂无用量记录。
 gpui-shell-settings-usage-requests = 请求数
 gpui-shell-settings-usage-cache-hit = 缓存命中
+gpui-shell-settings-usage-groups = 供应商
+gpui-shell-settings-usage-endpoints = 端点
+gpui-shell-settings-usage-filter = 搜索当前明细
+gpui-shell-settings-usage-filter-empty = 没有匹配项
 gpui-shell-usage-trend-title = 详细趋势
 gpui-shell-usage-trend-range = { $start } 至 { $end }
 gpui-shell-usage-trend-partial = 仅显示最近的趋势，总量仍按完整时段统计。
@@ -1041,6 +1074,45 @@ gpui-shell-settings-review-parallelism = 审核并行数
 gpui-shell-settings-review-parallelism-desc = 补充审核任务可逐个执行或同时执行两个。
 gpui-shell-settings-review-queue-wait = 容量等待时间
 gpui-shell-settings-review-queue-wait-desc = 可选审核任务等待供应商空闲容量的时长，不包含已开始运行的检查耗时。
+
+# ==================== G-SE15/G-SE16: session and workspace settings ====================
+
+# 默认智能体执行框架（对齐 web settings/runtime defaultHarness）
+gpui-shell-settings-default-harness-section = 默认智能体执行框架
+gpui-shell-settings-default-harness-section-note = 用于普通新会话；助理、ACP 和已指定模式的会话不受影响
+gpui-shell-settings-default-harness-strategy = 默认方式
+gpui-shell-settings-default-harness-follow-last = 跟随上一次选择
+gpui-shell-settings-default-harness-fixed = 固定默认模式
+gpui-shell-settings-default-harness-follow-last-desc = 新会话沿用你最近在输入框中选择的执行框架：{ $name }
+gpui-shell-settings-default-harness-follow-last-empty-desc = 尚未记录选择；在输入框中选择执行框架前，新会话使用 { $name }
+gpui-shell-settings-default-harness-fixed-desc = 新会话始终使用指定执行框架；当前会话不会改变。
+gpui-shell-settings-default-harness-fixed-mode = 默认执行框架
+gpui-shell-value-compatibility = 兼容配置
+
+# 会话标题自动生成（对齐 web settings/models sessionTitle）
+gpui-shell-settings-session-title-section = 会话标题自动生成
+gpui-shell-settings-session-title-section-note = 新对话时 AI 自动生成简洁标题
+gpui-shell-settings-session-title-enable = 启用
+gpui-shell-settings-session-title-model = 会话标题生成模型
+gpui-shell-settings-session-title-model-inherit = 当前会话模型
+gpui-shell-settings-session-title-model-fast = 快速模型
+gpui-shell-settings-session-title-model-primary = 主力模型
+gpui-shell-settings-session-title-models-empty = 暂无可用模型，请先在「模型」中添加模型
+gpui-shell-settings-session-title-model-unavailable = 已停用或不存在
+
+# 工作树隔离默认值（对齐 web worktrees settings）
+gpui-shell-settings-worktree-section = 会话隔离
+gpui-shell-settings-worktree-section-note = 会话默认在项目目录中执行；分支旁的 worktree 开关可以把会话移到独立的工作目录。
+gpui-shell-settings-worktree-root = Worktree 根目录
+gpui-shell-settings-worktree-root-desc = 路径属于当前执行主机；修改只影响之后新建的 Worktree
+gpui-shell-settings-worktree-branch-prefix = 分支前缀
+gpui-shell-settings-worktree-branch-prefix-desc = 为游离 worktree 创建分支时使用的建议前缀。
+gpui-shell-settings-worktree-copy-changes = 默认复制本地改动
+gpui-shell-settings-worktree-copy-changes-desc = 将项目中未提交的改动复制到新 Worktree，并保留暂存状态
+gpui-shell-settings-worktree-auto-delete = 自动删除旧 Worktree
+gpui-shell-settings-worktree-auto-delete-desc = 新建 Worktree 后，若超过保留数量，自动清理最旧且可安全删除的托管 Worktree
+gpui-shell-settings-worktree-auto-delete-limit = 每个工作区保留数量
+gpui-shell-settings-worktree-auto-delete-limit-desc = 关联会话、存在本地改动、未发布提交或 Git 锁的 Worktree 不会自动删除，实际数量可能超过此值
 
 # ==================== A3 tail batch (G-A6 / G-A3 / G-M2 / G-Y4) ====================
 

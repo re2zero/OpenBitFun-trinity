@@ -414,6 +414,35 @@ gpui-shell-settings-policy-ask = Ask
 gpui-shell-settings-policy-full-access = Full access
 gpui-shell-settings-auto-approve = Auto-approve requests
 gpui-shell-settings-auto-approve-desc = Answer interactive approval requests automatically (Ask policy only).
+gpui-shell-settings-permission-rules-section = Global rules
+gpui-shell-settings-permission-rules-desc = Applies to all workspaces; project and agent rules can override these, while mandatory product restrictions always take precedence
+gpui-shell-settings-permission-rules-manage = Manage rules
+gpui-shell-settings-permission-rules-add = Add rule
+gpui-shell-settings-permission-rules-save = Save rules
+gpui-shell-settings-permission-rules-discard = Discard changes
+gpui-shell-settings-permission-rules-empty = No custom global rules configured. The selected permission mode remains active.
+gpui-shell-settings-permission-rules-action = Action
+gpui-shell-settings-permission-rules-resource = Resource
+gpui-shell-settings-permission-rules-effect = Effect
+gpui-shell-settings-permission-rules-invalid = Every rule needs an action and a resource.
+gpui-shell-settings-permission-effect-allow = Allow
+gpui-shell-settings-permission-effect-ask = Ask
+gpui-shell-settings-permission-effect-deny = Deny
+gpui-shell-settings-quick-actions-section = Quick actions
+gpui-shell-settings-quick-actions-note = Run common AI prompts quickly from chat.
+gpui-shell-settings-quick-actions-builtin-section = Built-in actions
+gpui-shell-settings-quick-actions-builtin-note = Edit the names and prompts of built-in actions, or turn off actions you do not need
+gpui-shell-settings-quick-actions-custom-section = Custom actions
+gpui-shell-settings-quick-actions-custom-note = Save your own prompts for recurring tasks; triggering an action sends its prompt to the current session
+gpui-shell-settings-quick-actions-custom-empty = No custom actions yet.
+gpui-shell-settings-quick-actions-add = Add action
+gpui-shell-settings-quick-actions-delete = Delete
+gpui-shell-settings-quick-actions-delete-confirm = Click again to delete
+gpui-shell-settings-quick-actions-label = Action name
+gpui-shell-settings-quick-actions-prompt = Prompt
+gpui-shell-settings-quick-actions-save = Save
+gpui-shell-settings-quick-actions-cancel = Cancel
+gpui-shell-settings-quick-actions-invalid = A name and a prompt are required.
 gpui-shell-settings-terminal = Terminal
 gpui-shell-settings-terminal-font-size = Font size
 gpui-shell-settings-terminal-font-size-desc = Text size of the built-in terminal grid.
@@ -724,6 +753,10 @@ gpui-shell-settings-usage-loading = Loading usage statistics…
 gpui-shell-settings-usage-empty = No usage recorded in this range.
 gpui-shell-settings-usage-requests = Requests
 gpui-shell-settings-usage-cache-hit = Cache hit
+gpui-shell-settings-usage-groups = Provider
+gpui-shell-settings-usage-endpoints = Endpoint
+gpui-shell-settings-usage-filter = Search these details
+gpui-shell-settings-usage-filter-empty = No matches
 gpui-shell-usage-trend-title = Detailed trend
 gpui-shell-usage-trend-range = { $start } to { $end }
 gpui-shell-usage-trend-partial = Only the most recent trend is shown; totals still cover the full range.
@@ -1071,6 +1104,45 @@ gpui-shell-settings-review-parallelism = Review parallelism
 gpui-shell-settings-review-parallelism-desc = Run supplemental review tasks one at a time or two at once.
 gpui-shell-settings-review-queue-wait = Capacity wait time
 gpui-shell-settings-review-queue-wait-desc = How long optional reviews wait for provider capacity; excludes checks already running.
+
+# ==================== G-SE15/G-SE16: session and workspace settings ====================
+
+# Default Agent Harness (web settings/runtime defaultHarness).
+gpui-shell-settings-default-harness-section = Default Agent Harness
+gpui-shell-settings-default-harness-section-note = Applies to new standard sessions; assistants, ACP, and sessions with an explicit mode are unaffected
+gpui-shell-settings-default-harness-strategy = Default behavior
+gpui-shell-settings-default-harness-follow-last = Follow last selection
+gpui-shell-settings-default-harness-fixed = Use a fixed default
+gpui-shell-settings-default-harness-follow-last-desc = New sessions use the runtime last selected in the message input: { $name }
+gpui-shell-settings-default-harness-follow-last-empty-desc = No selection recorded yet; new sessions use { $name } until you choose a runtime in the message input
+gpui-shell-settings-default-harness-fixed-desc = New sessions always use the selected Harness; existing sessions are unchanged.
+gpui-shell-settings-default-harness-fixed-mode = Default Harness
+gpui-shell-value-compatibility = compatibility setting
+
+# Auto session title (web settings/models sessionTitle).
+gpui-shell-settings-session-title-section = Auto Session Title
+gpui-shell-settings-session-title-section-note = AI automatically generates concise titles for new conversations
+gpui-shell-settings-session-title-enable = Enable
+gpui-shell-settings-session-title-model = Session Title Generation Model
+gpui-shell-settings-session-title-model-inherit = Current session model
+gpui-shell-settings-session-title-model-fast = Fast Model
+gpui-shell-settings-session-title-model-primary = Primary Model
+gpui-shell-settings-session-title-models-empty = No available models. Please add models in "Models" first.
+gpui-shell-settings-session-title-model-unavailable = disabled or missing
+
+# Managed-worktree isolation defaults (web worktrees settings).
+gpui-shell-settings-worktree-section = Session isolation
+gpui-shell-settings-worktree-section-note = Sessions run in the project directory by default. The worktree toggle next to the branch moves a session into its own checkout.
+gpui-shell-settings-worktree-root = Worktree root
+gpui-shell-settings-worktree-root-desc = Path on the current execution host; changes affect only newly created worktrees
+gpui-shell-settings-worktree-branch-prefix = Branch prefix
+gpui-shell-settings-worktree-branch-prefix-desc = Suggested prefix when creating a branch for a detached worktree.
+gpui-shell-settings-worktree-copy-changes = Copy local changes by default
+gpui-shell-settings-worktree-copy-changes-desc = Copy uncommitted project changes into new worktrees, preserving staged changes
+gpui-shell-settings-worktree-auto-delete = Automatically delete old worktrees
+gpui-shell-settings-worktree-auto-delete-desc = After creating a worktree, remove the oldest managed worktrees that are safe to delete if the retention count is exceeded
+gpui-shell-settings-worktree-auto-delete-limit = Worktrees to keep per workspace
+gpui-shell-settings-worktree-auto-delete-limit-desc = Worktrees with sessions, local changes, unpublished commits, or Git locks are kept, so the actual count may exceed this value
 
 # ==================== A3 tail batch (G-A6 / G-A3 / G-M2 / G-Y4) ====================
 

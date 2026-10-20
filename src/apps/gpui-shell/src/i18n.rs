@@ -293,6 +293,37 @@ pub(crate) struct ShellText {
     pub settings_policy_full_access: String,
     pub settings_auto_approve: String,
     pub settings_auto_approve_description: String,
+    // G-SE17: the global permission rules editor.
+    pub settings_permission_rules_section: String,
+    pub settings_permission_rules_description: String,
+    pub settings_permission_rules_manage: String,
+    pub settings_permission_rules_add: String,
+    pub settings_permission_rules_save: String,
+    pub settings_permission_rules_discard: String,
+    pub settings_permission_rules_empty: String,
+    pub settings_permission_rules_action: String,
+    pub settings_permission_rules_resource: String,
+    pub settings_permission_rules_effect: String,
+    pub settings_permission_rules_invalid: String,
+    pub settings_permission_effect_allow: String,
+    pub settings_permission_effect_ask: String,
+    pub settings_permission_effect_deny: String,
+    // G-SE24: quick-actions management.
+    pub settings_quick_actions_section: String,
+    pub settings_quick_actions_note: String,
+    pub settings_quick_actions_builtin_section: String,
+    pub settings_quick_actions_builtin_note: String,
+    pub settings_quick_actions_custom_section: String,
+    pub settings_quick_actions_custom_note: String,
+    pub settings_quick_actions_custom_empty: String,
+    pub settings_quick_actions_add: String,
+    pub settings_quick_actions_delete: String,
+    pub settings_quick_actions_delete_confirm: String,
+    pub settings_quick_actions_label: String,
+    pub settings_quick_actions_prompt: String,
+    pub settings_quick_actions_save: String,
+    pub settings_quick_actions_cancel: String,
+    pub settings_quick_actions_invalid: String,
     pub settings_terminal: String,
     pub settings_terminal_font_size: String,
     pub settings_terminal_font_size_description: String,
@@ -650,6 +681,11 @@ pub(crate) struct ShellText {
     pub settings_usage_empty: String,
     pub settings_usage_requests: String,
     pub settings_usage_cache_hit: String,
+    /// G-SE29: distribution blocks and their page-local filter.
+    pub settings_usage_groups: String,
+    pub settings_usage_endpoints: String,
+    pub settings_usage_filter: String,
+    pub settings_usage_filter_empty: String,
     pub usage_trend_title: String,
     pub usage_trend_partial: String,
     pub usage_trend_input: String,
@@ -927,6 +963,39 @@ pub(crate) struct ShellText {
     pub settings_review_parallelism_description: String,
     pub settings_review_queue_wait: String,
     pub settings_review_queue_wait_description: String,
+    // G-SE15: default Harness preference and session-title generation.
+    pub settings_default_harness_section: String,
+    pub settings_default_harness_section_note: String,
+    pub settings_default_harness_strategy: String,
+    pub settings_default_harness_follow_last: String,
+    pub settings_default_harness_fixed: String,
+    pub settings_default_harness_fixed_description: String,
+    pub settings_default_harness_fixed_mode: String,
+    pub settings_session_title_section: String,
+    pub settings_session_title_section_note: String,
+    pub settings_session_title_enable: String,
+    pub settings_session_title_model: String,
+    pub settings_session_title_model_inherit: String,
+    pub settings_session_title_model_fast: String,
+    pub settings_session_title_model_primary: String,
+    pub settings_session_title_models_empty: String,
+    pub settings_session_title_model_unavailable: String,
+    /// G-SE15: the suffix the fixed-Harness menu puts on a stored id this
+    /// build's Harness list does not own (web `defaultHarness.compatibilityMode`).
+    pub value_compatibility: String,
+    // G-SE16: managed-worktree isolation defaults.
+    pub settings_worktree_section: String,
+    pub settings_worktree_section_note: String,
+    pub settings_worktree_root: String,
+    pub settings_worktree_root_description: String,
+    pub settings_worktree_branch_prefix: String,
+    pub settings_worktree_branch_prefix_description: String,
+    pub settings_worktree_copy_changes: String,
+    pub settings_worktree_copy_changes_description: String,
+    pub settings_worktree_auto_delete: String,
+    pub settings_worktree_auto_delete_description: String,
+    pub settings_worktree_auto_delete_limit: String,
+    pub settings_worktree_auto_delete_limit_description: String,
 }
 
 impl Global for ShellText {}
@@ -1107,6 +1176,32 @@ pub(crate) fn tasks_inactive_title(count: usize, cx: &App) -> String {
 /// shared `shared:agents.*` terms).
 pub(crate) fn shared_agent_name(id: &str, cx: &App) -> String {
     resolve_with(&format!("shared.agents.{id}"), TranslationArgs::new(), cx)
+}
+
+/// Resolves one shared term (`shared.<path>`, e.g. `tools.edit`) so a shell
+/// affordance can reuse the contract copy instead of introducing a duplicate.
+pub(crate) fn shared_term(path: &str, cx: &App) -> String {
+    resolve_with(&format!("shared.{path}"), TranslationArgs::new(), cx)
+}
+
+/// G-SE15: the default-Harness description when a last selection was
+/// recorded (web `defaultHarness.followLastDescription`).
+pub(crate) fn default_harness_follow_description(name: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-settings-default-harness-follow-last-desc",
+        TranslationArgs::new().with_string("name", name),
+        cx,
+    )
+}
+
+/// G-SE15: the default-Harness description before any selection was recorded
+/// (web `defaultHarness.followLastEmptyDescription`).
+pub(crate) fn default_harness_follow_empty_description(name: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-settings-default-harness-follow-last-empty-desc",
+        TranslationArgs::new().with_string("name", name),
+        cx,
+    )
 }
 
 /// G-M2: the per-candidate target-id field label (web `visual.importId`).
@@ -1784,6 +1879,35 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_auto_approve: "Auto-approve requests".to_string(),
         settings_auto_approve_description:
             "Answer interactive approval requests automatically (Ask policy only).".to_string(),
+        settings_permission_rules_section: "Global rules".to_string(),
+        settings_permission_rules_description: "Applies to all workspaces; project and agent rules can override these, while mandatory product restrictions always take precedence".to_string(),
+        settings_permission_rules_manage: "Manage rules".to_string(),
+        settings_permission_rules_add: "Add rule".to_string(),
+        settings_permission_rules_save: "Save rules".to_string(),
+        settings_permission_rules_discard: "Discard changes".to_string(),
+        settings_permission_rules_empty: "No custom global rules configured. The selected permission mode remains active.".to_string(),
+        settings_permission_rules_action: "Action".to_string(),
+        settings_permission_rules_resource: "Resource".to_string(),
+        settings_permission_rules_effect: "Effect".to_string(),
+        settings_permission_rules_invalid: "Every rule needs an action and a resource.".to_string(),
+        settings_permission_effect_allow: "Allow".to_string(),
+        settings_permission_effect_ask: "Ask".to_string(),
+        settings_permission_effect_deny: "Deny".to_string(),
+        settings_quick_actions_section: "Quick actions".to_string(),
+        settings_quick_actions_note: "Run common AI prompts quickly from chat.".to_string(),
+        settings_quick_actions_builtin_section: "Built-in actions".to_string(),
+        settings_quick_actions_builtin_note: "Edit the names and prompts of built-in actions, or turn off actions you do not need".to_string(),
+        settings_quick_actions_custom_section: "Custom actions".to_string(),
+        settings_quick_actions_custom_note: "Save your own prompts for recurring tasks; triggering an action sends its prompt to the current session".to_string(),
+        settings_quick_actions_custom_empty: "No custom actions yet.".to_string(),
+        settings_quick_actions_add: "Add action".to_string(),
+        settings_quick_actions_delete: "Delete".to_string(),
+        settings_quick_actions_delete_confirm: "Click again to delete".to_string(),
+        settings_quick_actions_label: "Action name".to_string(),
+        settings_quick_actions_prompt: "Prompt".to_string(),
+        settings_quick_actions_save: "Save".to_string(),
+        settings_quick_actions_cancel: "Cancel".to_string(),
+        settings_quick_actions_invalid: "A name and a prompt are required.".to_string(),
         settings_terminal: "Terminal".to_string(),
         settings_terminal_font_size: "Font size".to_string(),
         settings_terminal_font_size_description: "Text size of the built-in terminal grid."
@@ -2195,6 +2319,10 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_usage_empty: "No usage recorded in this range.".to_string(),
         settings_usage_requests: "Requests".to_string(),
         settings_usage_cache_hit: "Cache hit".to_string(),
+        settings_usage_groups: "Provider".to_string(),
+        settings_usage_endpoints: "Endpoint".to_string(),
+        settings_usage_filter: "Search these details".to_string(),
+        settings_usage_filter_empty: "No matches".to_string(),
         usage_trend_title: "Detailed trend".to_string(),
         usage_trend_partial: {
             "Only the most recent trend is shown; totals still cover the full \
@@ -2528,6 +2656,35 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_review_parallelism_description: "Run supplemental review tasks one at a time or two at once.".to_string(),
         settings_review_queue_wait: "Capacity wait time".to_string(),
         settings_review_queue_wait_description: "How long optional reviews wait for provider capacity; excludes checks already running.".to_string(),
+        settings_default_harness_section: "Default Agent Harness".to_string(),
+        settings_default_harness_section_note: "Applies to new standard sessions; assistants, ACP, and sessions with an explicit mode are unaffected".to_string(),
+        settings_default_harness_strategy: "Default behavior".to_string(),
+        settings_default_harness_follow_last: "Follow last selection".to_string(),
+        settings_default_harness_fixed: "Use a fixed default".to_string(),
+        settings_default_harness_fixed_description: "New sessions always use the selected Harness; existing sessions are unchanged.".to_string(),
+        settings_default_harness_fixed_mode: "Default Harness".to_string(),
+        settings_session_title_section: "Auto Session Title".to_string(),
+        settings_session_title_section_note: "AI automatically generates concise titles for new conversations".to_string(),
+        settings_session_title_enable: "Enable".to_string(),
+        settings_session_title_model: "Session Title Generation Model".to_string(),
+        settings_session_title_model_inherit: "Current session model".to_string(),
+        settings_session_title_model_fast: "Fast Model".to_string(),
+        settings_session_title_model_primary: "Primary Model".to_string(),
+        settings_session_title_models_empty: "No available models. Please add models in \"Models\" first.".to_string(),
+        settings_session_title_model_unavailable: "disabled or missing".to_string(),
+        value_compatibility: "compatibility setting".to_string(),
+        settings_worktree_section: "Session isolation".to_string(),
+        settings_worktree_section_note: "Sessions run in the project directory by default. The worktree toggle next to the branch moves a session into its own checkout.".to_string(),
+        settings_worktree_root: "Worktree root".to_string(),
+        settings_worktree_root_description: "Path on the current execution host; changes affect only newly created worktrees".to_string(),
+        settings_worktree_branch_prefix: "Branch prefix".to_string(),
+        settings_worktree_branch_prefix_description: "Suggested prefix when creating a branch for a detached worktree.".to_string(),
+        settings_worktree_copy_changes: "Copy local changes by default".to_string(),
+        settings_worktree_copy_changes_description: "Copy uncommitted project changes into new worktrees, preserving staged changes".to_string(),
+        settings_worktree_auto_delete: "Automatically delete old worktrees".to_string(),
+        settings_worktree_auto_delete_description: "After creating a worktree, remove the oldest managed worktrees that are safe to delete if the retention count is exceeded".to_string(),
+        settings_worktree_auto_delete_limit: "Worktrees to keep per workspace".to_string(),
+        settings_worktree_auto_delete_limit_description: "Worktrees with sessions, local changes, unpublished commits, or Git locks are kept, so the actual count may exceed this value".to_string(),
     }
 }
 
@@ -2805,6 +2962,77 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         settings_policy_full_access: service.t("gpui-shell-settings-policy-full-access").await,
         settings_auto_approve: service.t("gpui-shell-settings-auto-approve").await,
         settings_auto_approve_description: service.t("gpui-shell-settings-auto-approve-desc").await,
+        settings_permission_rules_section: service
+            .t("gpui-shell-settings-permission-rules-section")
+            .await,
+        settings_permission_rules_description: service
+            .t("gpui-shell-settings-permission-rules-desc")
+            .await,
+        settings_permission_rules_manage: service
+            .t("gpui-shell-settings-permission-rules-manage")
+            .await,
+        settings_permission_rules_add: service.t("gpui-shell-settings-permission-rules-add").await,
+        settings_permission_rules_save: service
+            .t("gpui-shell-settings-permission-rules-save")
+            .await,
+        settings_permission_rules_discard: service
+            .t("gpui-shell-settings-permission-rules-discard")
+            .await,
+        settings_permission_rules_empty: service
+            .t("gpui-shell-settings-permission-rules-empty")
+            .await,
+        settings_permission_rules_action: service
+            .t("gpui-shell-settings-permission-rules-action")
+            .await,
+        settings_permission_rules_resource: service
+            .t("gpui-shell-settings-permission-rules-resource")
+            .await,
+        settings_permission_rules_effect: service
+            .t("gpui-shell-settings-permission-rules-effect")
+            .await,
+        settings_permission_rules_invalid: service
+            .t("gpui-shell-settings-permission-rules-invalid")
+            .await,
+        settings_permission_effect_allow: service
+            .t("gpui-shell-settings-permission-effect-allow")
+            .await,
+        settings_permission_effect_ask: service
+            .t("gpui-shell-settings-permission-effect-ask")
+            .await,
+        settings_permission_effect_deny: service
+            .t("gpui-shell-settings-permission-effect-deny")
+            .await,
+        settings_quick_actions_section: service
+            .t("gpui-shell-settings-quick-actions-section")
+            .await,
+        settings_quick_actions_note: service.t("gpui-shell-settings-quick-actions-note").await,
+        settings_quick_actions_builtin_section: service
+            .t("gpui-shell-settings-quick-actions-builtin-section")
+            .await,
+        settings_quick_actions_builtin_note: service
+            .t("gpui-shell-settings-quick-actions-builtin-note")
+            .await,
+        settings_quick_actions_custom_section: service
+            .t("gpui-shell-settings-quick-actions-custom-section")
+            .await,
+        settings_quick_actions_custom_note: service
+            .t("gpui-shell-settings-quick-actions-custom-note")
+            .await,
+        settings_quick_actions_custom_empty: service
+            .t("gpui-shell-settings-quick-actions-custom-empty")
+            .await,
+        settings_quick_actions_add: service.t("gpui-shell-settings-quick-actions-add").await,
+        settings_quick_actions_delete: service.t("gpui-shell-settings-quick-actions-delete").await,
+        settings_quick_actions_delete_confirm: service
+            .t("gpui-shell-settings-quick-actions-delete-confirm")
+            .await,
+        settings_quick_actions_label: service.t("gpui-shell-settings-quick-actions-label").await,
+        settings_quick_actions_prompt: service.t("gpui-shell-settings-quick-actions-prompt").await,
+        settings_quick_actions_save: service.t("gpui-shell-settings-quick-actions-save").await,
+        settings_quick_actions_cancel: service.t("gpui-shell-settings-quick-actions-cancel").await,
+        settings_quick_actions_invalid: service
+            .t("gpui-shell-settings-quick-actions-invalid")
+            .await,
         settings_terminal: service.t("gpui-shell-settings-terminal").await,
         settings_terminal_font_size: service.t("gpui-shell-settings-terminal-font-size").await,
         settings_terminal_font_size_description: service
@@ -3239,6 +3467,10 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         settings_usage_empty: service.t("gpui-shell-settings-usage-empty").await,
         settings_usage_requests: service.t("gpui-shell-settings-usage-requests").await,
         settings_usage_cache_hit: service.t("gpui-shell-settings-usage-cache-hit").await,
+        settings_usage_groups: service.t("gpui-shell-settings-usage-groups").await,
+        settings_usage_endpoints: service.t("gpui-shell-settings-usage-endpoints").await,
+        settings_usage_filter: service.t("gpui-shell-settings-usage-filter").await,
+        settings_usage_filter_empty: service.t("gpui-shell-settings-usage-filter-empty").await,
         usage_trend_title: service.t("gpui-shell-usage-trend-title").await,
         usage_trend_partial: service.t("gpui-shell-usage-trend-partial").await,
         usage_trend_input: service.t("gpui-shell-usage-trend-input").await,
@@ -3616,6 +3848,81 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         settings_review_queue_wait: service.t("gpui-shell-settings-review-queue-wait").await,
         settings_review_queue_wait_description: service
             .t("gpui-shell-settings-review-queue-wait-desc")
+            .await,
+        settings_default_harness_section: service
+            .t("gpui-shell-settings-default-harness-section")
+            .await,
+        settings_default_harness_section_note: service
+            .t("gpui-shell-settings-default-harness-section-note")
+            .await,
+        settings_default_harness_strategy: service
+            .t("gpui-shell-settings-default-harness-strategy")
+            .await,
+        settings_default_harness_follow_last: service
+            .t("gpui-shell-settings-default-harness-follow-last")
+            .await,
+        settings_default_harness_fixed: service
+            .t("gpui-shell-settings-default-harness-fixed")
+            .await,
+        settings_default_harness_fixed_description: service
+            .t("gpui-shell-settings-default-harness-fixed-desc")
+            .await,
+        settings_default_harness_fixed_mode: service
+            .t("gpui-shell-settings-default-harness-fixed-mode")
+            .await,
+        settings_session_title_section: service
+            .t("gpui-shell-settings-session-title-section")
+            .await,
+        settings_session_title_section_note: service
+            .t("gpui-shell-settings-session-title-section-note")
+            .await,
+        settings_session_title_enable: service.t("gpui-shell-settings-session-title-enable").await,
+        settings_session_title_model: service.t("gpui-shell-settings-session-title-model").await,
+        settings_session_title_model_inherit: service
+            .t("gpui-shell-settings-session-title-model-inherit")
+            .await,
+        settings_session_title_model_fast: service
+            .t("gpui-shell-settings-session-title-model-fast")
+            .await,
+        settings_session_title_model_primary: service
+            .t("gpui-shell-settings-session-title-model-primary")
+            .await,
+        settings_session_title_models_empty: service
+            .t("gpui-shell-settings-session-title-models-empty")
+            .await,
+        settings_session_title_model_unavailable: service
+            .t("gpui-shell-settings-session-title-model-unavailable")
+            .await,
+        value_compatibility: service.t("gpui-shell-value-compatibility").await,
+        settings_worktree_section: service.t("gpui-shell-settings-worktree-section").await,
+        settings_worktree_section_note: service
+            .t("gpui-shell-settings-worktree-section-note")
+            .await,
+        settings_worktree_root: service.t("gpui-shell-settings-worktree-root").await,
+        settings_worktree_root_description: service
+            .t("gpui-shell-settings-worktree-root-desc")
+            .await,
+        settings_worktree_branch_prefix: service
+            .t("gpui-shell-settings-worktree-branch-prefix")
+            .await,
+        settings_worktree_branch_prefix_description: service
+            .t("gpui-shell-settings-worktree-branch-prefix-desc")
+            .await,
+        settings_worktree_copy_changes: service
+            .t("gpui-shell-settings-worktree-copy-changes")
+            .await,
+        settings_worktree_copy_changes_description: service
+            .t("gpui-shell-settings-worktree-copy-changes-desc")
+            .await,
+        settings_worktree_auto_delete: service.t("gpui-shell-settings-worktree-auto-delete").await,
+        settings_worktree_auto_delete_description: service
+            .t("gpui-shell-settings-worktree-auto-delete-desc")
+            .await,
+        settings_worktree_auto_delete_limit: service
+            .t("gpui-shell-settings-worktree-auto-delete-limit")
+            .await,
+        settings_worktree_auto_delete_limit_description: service
+            .t("gpui-shell-settings-worktree-auto-delete-limit-desc")
             .await,
     }
 }

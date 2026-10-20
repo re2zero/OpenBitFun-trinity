@@ -37,6 +37,9 @@ use crate::update::UpdateUiState;
 pub(crate) const LANGUAGE_PATH: &str = "app.language";
 pub(crate) const APPEARANCE_PATH: &str = "appearance.selection";
 pub(crate) const PERMISSION_PRESET_PATH: &str = "tool_permissions.policy.preset";
+/// G-SE17: the ordered user-level rules; the page rewrites the array in one
+/// merged `policy` write so the preset and any newer keys survive.
+pub(crate) const PERMISSION_POLICY_PATH: &str = "tool_permissions.policy";
 pub(crate) const AUTO_APPROVE_ASK_PATH: &str = "tool_permissions.interaction.auto_approve_ask";
 pub(crate) const TERMINAL_FONT_SIZE_PATH: &str = "terminal.font_size";
 pub(crate) const TERMINAL_FONT_FAMILY_PATH: &str = "terminal.font_family";
@@ -72,6 +75,8 @@ pub(crate) const HOOKS_PROJECT_PATH: &str = "app.hooks.project_hooks_enabled";
 /// OpenBitFun co-author line in built-in commit workflows
 /// (`app.ai_experience.enable_git_commit_coauthor`).
 pub(crate) const GIT_COAUTHOR_PATH: &str = "app.ai_experience.enable_git_commit_coauthor";
+/// G-SE24: the quick-actions array (`app.ai_experience.quick_actions`).
+pub(crate) const QUICK_ACTIONS_PATH: &str = "app.ai_experience.quick_actions";
 /// Active web-search provider (`ai.web_search.provider`).
 pub(crate) const WEB_SEARCH_PROVIDER_PATH: &str = "ai.web_search.provider";
 /// Custom HTTP search service endpoint
@@ -112,6 +117,15 @@ pub(crate) const TOOL_JSON_REPAIR_PATH: &str = "ai.allow_tool_json_repair";
 /// A2: the default review team (`ai.review_teams.default`); the page edits two
 /// of its keys and round-trips the rest verbatim.
 pub(crate) const REVIEW_TEAM_PATH: &str = "ai.review_teams.default";
+/// G-SE15: the ChatInput preference document (`app.flow_chat`). The page edits
+/// `default_mode_strategy` and `default_mode_id`, preserving every sibling key.
+pub(crate) const FLOW_CHAT_PATH: &str = "app.flow_chat";
+/// G-SE15: session-title generation (same keys the desktop page writes).
+pub(crate) const SESSION_TITLE_ENABLED_PATH: &str =
+    "app.ai_experience.enable_session_title_generation";
+pub(crate) const SESSION_TITLE_MODEL_PATH: &str = "ai.task_models.session_title";
+/// G-SE16: the managed-worktree defaults (`app.worktrees`).
+pub(crate) const WORKTREES_PATH: &str = "app.worktrees";
 
 /// The measure a settings row's control column carries before the row's own
 /// label column would be squeezed; status sentences wrap inside it instead of
@@ -340,6 +354,18 @@ pub(crate) struct ShellConfig {
     /// G-SE13: the `memories` section as the typed shared document. Writes go
     /// key by key through [`persist_object_key`]; the mirror updates in place.
     pub(crate) memories: openbitfun_core::service::config::types::MemoriesConfig,
+    /// G-SE15: `app.flow_chat` as the stored document. The page reads the
+    /// strategy/fixed-mode keys with the web's compatibility rules and writes
+    /// single keys, so sibling preferences survive.
+    pub(crate) flow_chat: serde_json::Value,
+    /// G-SE15: `app.ai_experience.enable_session_title_generation`.
+    pub(crate) session_title_enabled: bool,
+    /// G-SE15: `ai.task_models.session_title`: `inherit` or a model id.
+    pub(crate) session_title_model: String,
+    /// G-SE16: `app.worktrees` as the stored document, edited key by key.
+    pub(crate) worktrees: serde_json::Value,
+    /// G-SE17: `tool_permissions.policy.rules` — the ordered user-level rules.
+    pub(crate) permission_rules: Vec<openbitfun_runtime_ports::PermissionRule>,
 }
 
 impl Global for ShellConfig {}
@@ -421,6 +447,13 @@ impl ShellConfig {
             )
             .unwrap_or(serde_json::Value::Null),
             memories: config.memories.clone(),
+            flow_chat: serde_json::to_value(&config.app.flow_chat)
+                .unwrap_or(serde_json::Value::Null),
+            session_title_enabled: config.app.ai_experience.enable_session_title_generation,
+            session_title_model: task_model_selection_value(&config.ai.task_models.session_title),
+            worktrees: serde_json::to_value(&config.app.worktrees)
+                .unwrap_or(serde_json::Value::Null),
+            permission_rules: config.tool_permissions.policy.rules.clone(),
         }
     }
 
@@ -475,6 +508,11 @@ impl ShellConfig {
             allow_tool_json_repair: true,
             review_team: serde_json::Value::Null,
             memories: openbitfun_core::service::config::types::MemoriesConfig::default(),
+            flow_chat: serde_json::Value::Null,
+            session_title_enabled: true,
+            session_title_model: "fast".to_string(),
+            worktrees: default_worktree_settings_document(),
+            permission_rules: Vec::new(),
         }
     }
 }
@@ -690,6 +728,106 @@ pub(crate) fn object_u64(document: &serde_json::Value, key: &str, fallback: u64)
         .unwrap_or(fallback)
 }
 
+/// One boolean key of an object document (missing or mistyped = `fallback`).
+pub(crate) fn object_bool(document: &serde_json::Value, key: &str, fallback: bool) -> bool {
+    document
+        .get(key)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(fallback)
+}
+
+/// One string key of an object document (missing or mistyped = `fallback`).
+pub(crate) fn object_str<'a>(
+    document: &'a serde_json::Value,
+    key: &str,
+    fallback: &'a str,
+) -> &'a str {
+    document
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(fallback)
+}
+
+/// G-SE15: the default-Harness strategy, applying the web's compatibility
+/// rule — an explicit `default_mode_strategy` wins; otherwise a stored
+/// `default_mode_id` keeps its historical fixed meaning and an untouched
+/// document follows the last selection.
+pub(crate) fn flow_chat_strategy(document: &serde_json::Value) -> &'static str {
+    match document
+        .get("default_mode_strategy")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("fixed") => "fixed",
+        Some("follow_last") => "follow_last",
+        _ => {
+            let fixed = document
+                .get("default_mode_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .unwrap_or("");
+            if fixed.is_empty() {
+                "follow_last"
+            } else {
+                "fixed"
+            }
+        }
+    }
+}
+
+/// G-SE15: the stored fixed default (falling back to the Standard Harness the
+/// web uses when switching an unset preference to fixed).
+pub(crate) fn flow_chat_fixed_mode(document: &serde_json::Value) -> String {
+    document
+        .get("default_mode_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .unwrap_or("Standard")
+        .to_string()
+}
+
+/// G-SE15: the most recent mode explicitly selected in the composer, when one
+/// was recorded.
+pub(crate) fn flow_chat_last_mode(document: &serde_json::Value) -> Option<String> {
+    document
+        .get("last_mode_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+}
+
+/// G-SE15: one `TaskModelSelection` as the shell's select value (`inherit` or
+/// the fixed model id).
+pub(crate) fn task_model_selection_value(
+    selection: &openbitfun_core::service::config::types::TaskModelSelection,
+) -> String {
+    selection
+        .fixed_model_id()
+        .map(str::to_string)
+        .unwrap_or_else(|| "inherit".to_string())
+}
+
+/// G-SE15: the persisted document for a select value.
+pub(crate) fn task_model_selection_document(value: &str) -> serde_json::Value {
+    if value == "inherit" {
+        serde_json::json!({ "kind": "inherit" })
+    } else {
+        serde_json::json!({ "kind": "fixed", "model_id": value })
+    }
+}
+
+/// G-SE16: the shared worktree defaults (used before the first config read
+/// and for a document that lost a key).
+pub(crate) fn default_worktree_settings_document() -> serde_json::Value {
+    serde_json::to_value(
+        openbitfun_core::service::config::types::GlobalConfig::default()
+            .app
+            .worktrees,
+    )
+    .unwrap_or(serde_json::Value::Null)
+}
+
 /// One theme choice: the product appearance id (the value stored in
 /// `appearance.selection`) and the shell preset that renders it.
 struct AppearanceChoice {
@@ -827,36 +965,38 @@ pub(crate) fn persist(path: &'static str, value: serde_json::Value) {
 /// — written by a newer desktop or web build — survive the write instead of
 /// being dropped by an older shell.
 fn persist_object_key(path: &'static str, key: &str, value: serde_json::Value) {
+    persist_object_keys(path, vec![(key.to_string(), value)]);
+}
+
+/// Persists several keys of one object document in a single read-modify-write,
+/// so two related keys (a strategy plus its value) cannot land out of order.
+fn persist_object_keys(path: &'static str, updates: Vec<(String, serde_json::Value)>) {
     let Some(handle) = crate::runtime::runtime_handle() else {
-        tracing::error!(
-            "Cannot persist {}.{} before the runtime is ready",
-            path,
-            key
-        );
+        tracing::error!("Cannot persist {} before the runtime is ready", path);
         return;
     };
-    let key = key.to_string();
     handle.tokio_handle().spawn(async move {
         let service = match get_global_config_service().await {
             Ok(service) => service,
             Err(error) => {
                 tracing::error!(
-                    "Config service unavailable while persisting {}.{}: {}",
+                    "Config service unavailable while persisting {}: {}",
                     path,
-                    key,
                     error
                 );
                 return;
             }
         };
-        let current = service
+        let mut merged = service
             .get_config::<serde_json::Value>(Some(path))
             .await
             .unwrap_or(serde_json::Value::Null);
-        let merged = merged_object_value(&current, &key, value);
+        for (key, value) in updates {
+            merged = merged_object_value(&merged, &key, value);
+        }
         match service.set_config(path, merged).await {
-            Ok(()) => tracing::info!("Setting persisted: {}.{}", path, key),
-            Err(error) => tracing::error!("Failed to persist {}.{}: {}", path, key, error),
+            Ok(()) => tracing::info!("Setting persisted: {}", path),
+            Err(error) => tracing::error!("Failed to persist {}: {}", path, error),
         }
     });
 }
@@ -1203,10 +1343,10 @@ pub(crate) fn entry_group(
         SettingsEntry::TrinityEngine => trinity_engine_group(text, view, cx),
         SettingsEntry::Memory => memory_group(text, view, cx),
         SettingsEntry::Shortcuts => shortcuts_group(text, cx),
-        SettingsEntry::SessionSearch => session_search_group(text, view),
-        SettingsEntry::WorktreesGit => worktrees_git_group(text, view),
+        SettingsEntry::SessionSearch => session_search_group(text, view, cx),
+        SettingsEntry::WorktreesGit => worktrees_git_group(text, view, cx),
         SettingsEntry::Permissions => permissions_group(text, cx),
-        SettingsEntry::Automation => automation_group(text),
+        SettingsEntry::Automation => automation_group(text, cx),
         SettingsEntry::WebSearch => websearch_group(text, view, cx),
         SettingsEntry::Skills => crate::manage::skills_group(text),
         SettingsEntry::Agents => crate::manage::agents_group(text, view, cx),
@@ -1622,6 +1762,7 @@ fn nav_item_row(id: SharedString, active: bool, cx: &App) -> gpui_kit::Stateful<
 fn session_search_group(
     text: &ShellText,
     view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    cx: &App,
 ) -> SettingGroup {
     let owned_text = text.clone();
     let open_field = SettingField::render(move |_options, _window, _cx| {
@@ -1638,19 +1779,261 @@ fn session_search_group(
             })
             .into_any_element()
     });
-    SettingGroup::new().items(vec![SettingItem::new(
+
+    let mut items = vec![section_heading_item(
+        "default-harness",
+        text.settings_default_harness_section.clone(),
+        text.settings_default_harness_section_note.clone(),
+    )];
+    items.extend(default_harness_rows(text, cx));
+    items.push(section_heading_item(
+        "session-title",
+        text.settings_session_title_section.clone(),
+        text.settings_session_title_section_note.clone(),
+    ));
+    items.extend(session_title_rows(text, cx));
+    items.push(SettingItem::new(
         text.settings_jump_session_description.clone(),
         open_field,
-    )])
+    ));
+    SettingGroup::new().items(items)
 }
 
-/// The `workspace.worktrees` entry (parity §2.1): worktree management is
-/// the Git panel's job in this shell. The card opens the panel straight onto
-/// its Worktrees view (the resource opening policy, never closes) instead of
-/// faking the web page's controls.
+/// G-SE15: the default-Harness preference (web `DefaultHarnessConfig`): the
+/// strategy plus, while fixed, the fixed Harness. Both writes are one merged
+/// document write so an interleaved older shell cannot drop the sibling key.
+fn default_harness_rows(text: &ShellText, cx: &App) -> Vec<SettingItem> {
+    let flow_chat = ShellConfig::current(cx).flow_chat;
+    let strategy = flow_chat_strategy(&flow_chat);
+    let fixed_mode = flow_chat_fixed_mode(&flow_chat);
+    let last_mode = flow_chat_last_mode(&flow_chat);
+
+    let harness_label = |id: &str| {
+        if crate::manage::HARNESS_IDS.contains(&id) {
+            crate::i18n::shared_agent_name(id, cx)
+        } else {
+            id.to_string()
+        }
+    };
+    let strategy_description = if strategy == "fixed" {
+        text.settings_default_harness_fixed_description.clone()
+    } else if let Some(last) = last_mode.as_deref() {
+        crate::i18n::default_harness_follow_description(&harness_label(last), cx)
+    } else {
+        crate::i18n::default_harness_follow_empty_description(
+            &crate::i18n::shared_agent_name("Standard", cx),
+            cx,
+        )
+    };
+
+    let strategy_field = SettingField::dropdown(
+        vec![
+            (
+                SharedString::from("follow_last"),
+                SharedString::from(text.settings_default_harness_follow_last.clone()),
+            ),
+            (
+                SharedString::from("fixed"),
+                SharedString::from(text.settings_default_harness_fixed.clone()),
+            ),
+        ],
+        |cx: &App| SharedString::from(flow_chat_strategy(&ShellConfig::current(cx).flow_chat)),
+        |value: SharedString, cx: &mut App| {
+            let strategy = if value.as_ref() == "fixed" {
+                "fixed"
+            } else {
+                "follow_last"
+            };
+            let mut document = ShellConfig::current(cx).flow_chat.clone();
+            let mut updates = vec![(
+                "default_mode_strategy".to_string(),
+                serde_json::json!(strategy),
+            )];
+            document = merged_object_value(
+                &document,
+                "default_mode_strategy",
+                serde_json::json!(strategy),
+            );
+            let missing_fixed = document
+                .get("default_mode_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .map(str::is_empty)
+                .unwrap_or(true);
+            if strategy == "fixed" && missing_fixed {
+                let fallback =
+                    flow_chat_last_mode(&document).unwrap_or_else(|| "Standard".to_string());
+                document =
+                    merged_object_value(&document, "default_mode_id", serde_json::json!(fallback));
+                updates.push(("default_mode_id".to_string(), serde_json::json!(fallback)));
+            }
+            cx.global_mut::<ShellConfig>().flow_chat = document;
+            persist_object_keys(FLOW_CHAT_PATH, updates);
+            cx.refresh_windows();
+        },
+    );
+
+    let mut fixed_options: Vec<(SharedString, SharedString)> = crate::manage::HARNESS_IDS
+        .iter()
+        .map(|id| {
+            (
+                SharedString::from(*id),
+                SharedString::from(crate::i18n::shared_agent_name(id, cx)),
+            )
+        })
+        .collect();
+    if !crate::manage::HARNESS_IDS.contains(&fixed_mode.as_str()) {
+        fixed_options.insert(
+            0,
+            (
+                SharedString::from(fixed_mode.clone()),
+                SharedString::from(format!("{fixed_mode} ({})", text.value_compatibility)),
+            ),
+        );
+    }
+    let fixed_field = SettingField::dropdown(
+        fixed_options,
+        |cx: &App| SharedString::from(flow_chat_fixed_mode(&ShellConfig::current(cx).flow_chat)),
+        |value: SharedString, cx: &mut App| {
+            let mode = value.to_string();
+            if mode.trim().is_empty() {
+                return;
+            }
+            let mut document = ShellConfig::current(cx).flow_chat.clone();
+            document = merged_object_value(
+                &document,
+                "default_mode_strategy",
+                serde_json::json!("fixed"),
+            );
+            document = merged_object_value(&document, "default_mode_id", serde_json::json!(mode));
+            cx.global_mut::<ShellConfig>().flow_chat = document;
+            persist_object_keys(
+                FLOW_CHAT_PATH,
+                vec![
+                    (
+                        "default_mode_strategy".to_string(),
+                        serde_json::json!("fixed"),
+                    ),
+                    (
+                        "default_mode_id".to_string(),
+                        serde_json::json!(mode.clone()),
+                    ),
+                ],
+            );
+            cx.refresh_windows();
+        },
+    );
+
+    let mut rows = vec![SettingItem::new(
+        text.settings_default_harness_strategy.clone(),
+        strategy_field,
+    )
+    .description(strategy_description)];
+    if strategy == "fixed" {
+        rows.push(SettingItem::new(
+            text.settings_default_harness_fixed_mode.clone(),
+            fixed_field,
+        ));
+    }
+    rows
+}
+
+/// G-SE15: the session-title switch and its model selector (web
+/// `SessionTitleConfig`). The selector is disabled while generation is off.
+fn session_title_rows(text: &ShellText, cx: &App) -> Vec<SettingItem> {
+    let enabled_field = SettingField::switch(
+        |cx: &App| ShellConfig::current(cx).session_title_enabled,
+        |value: bool, cx: &mut App| {
+            cx.global_mut::<ShellConfig>().session_title_enabled = value;
+            persist(SESSION_TITLE_ENABLED_PATH, serde_json::json!(value));
+            cx.refresh_windows();
+        },
+    );
+
+    let catalog = cx
+        .try_global::<crate::runtime::ModelCatalog>()
+        .cloned()
+        .unwrap_or_default();
+    let current = ShellConfig::current(cx).session_title_model;
+    let model_options = session_title_model_options(&catalog.models, &current, text);
+    let model_field = SettingField::dropdown(
+        model_options,
+        |cx: &App| SharedString::from(ShellConfig::current(cx).session_title_model),
+        |value: SharedString, cx: &mut App| {
+            let value = value.to_string();
+            if value.trim().is_empty() {
+                return;
+            }
+            cx.global_mut::<ShellConfig>().session_title_model = value.clone();
+            persist(
+                SESSION_TITLE_MODEL_PATH,
+                task_model_selection_document(&value),
+            );
+            cx.refresh_windows();
+        },
+    );
+
+    let enabled = ShellConfig::current(cx).session_title_enabled;
+    let model_description = if catalog.models.is_empty() {
+        text.settings_session_title_models_empty.clone()
+    } else {
+        String::new()
+    };
+    let mut model_item =
+        SettingItem::new(text.settings_session_title_model.clone(), model_field).disabled(!enabled);
+    if !model_description.is_empty() {
+        model_item = model_item.description(model_description);
+    }
+
+    vec![
+        SettingItem::new(text.settings_session_title_enable.clone(), enabled_field),
+        model_item,
+    ]
+}
+
+/// G-SE15: the session-title model menu — inherit/fast/primary aliases, every
+/// enabled configured model, and a stored id this build cannot resolve.
+fn session_title_model_options(
+    catalog: &[crate::runtime::ModelChoice],
+    current: &str,
+    text: &ShellText,
+) -> Vec<(SharedString, SharedString)> {
+    let mut options: Vec<(SharedString, SharedString)> = vec![
+        (
+            SharedString::from("inherit"),
+            SharedString::from(text.settings_session_title_model_inherit.clone()),
+        ),
+        (
+            SharedString::from("fast"),
+            SharedString::from(text.settings_session_title_model_fast.clone()),
+        ),
+        (
+            SharedString::from("primary"),
+            SharedString::from(text.settings_session_title_model_primary.clone()),
+        ),
+    ];
+    for model in catalog.iter().filter(|model| model.enabled) {
+        options.push((model.id.clone().into(), model.label().into()));
+    }
+    if !options.iter().any(|(id, _)| id.as_ref() == current) {
+        options.push((
+            SharedString::from(current.to_string()),
+            SharedString::from(format!(
+                "{current} ({})",
+                text.settings_session_title_model_unavailable
+            )),
+        ));
+    }
+    options
+}
+
+/// The `workspace.worktrees` entry (parity §2.1): the web isolation defaults
+/// (G-SE16) plus the jump card that opens worktree management in the Git
+/// panel, which remains this shell's worktree owner.
 fn worktrees_git_group(
     text: &ShellText,
     view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    cx: &App,
 ) -> SettingGroup {
     let owned_text = text.clone();
     let open_field = SettingField::render(move |_options, _window, _cx| {
@@ -1670,10 +2053,113 @@ fn worktrees_git_group(
             })
             .into_any_element()
     });
-    SettingGroup::new().items(vec![SettingItem::new(
-        text.settings_jump_worktrees_description.clone(),
-        open_field,
-    )])
+
+    let document = ShellConfig::current(cx).worktrees.clone();
+    let defaults = default_worktree_settings_document();
+    let root_default = object_str(&defaults, "rootPath", "").to_string();
+    let prefix_default = object_str(&defaults, "branchPrefix", "").to_string();
+    let auto_delete_default = object_bool(&defaults, "autoDeleteEnabled", true);
+    let limit_default = object_u64(&defaults, "autoDeleteLimit", 15);
+
+    let root_field = worktree_text_field("rootPath", root_default);
+    let prefix_field = worktree_text_field("branchPrefix", prefix_default);
+    let copy_changes_field = worktree_switch_field("copyLocalChanges", false);
+    let auto_delete_field = worktree_switch_field("autoDeleteEnabled", auto_delete_default);
+    let limit_field = SettingField::number_input(
+        NumberFieldOptions {
+            min: f64::from(WORKTREE_AUTO_DELETE_MIN),
+            max: f64::from(WORKTREE_AUTO_DELETE_MAX),
+            step: 1.,
+        },
+        move |cx: &App| {
+            object_u64(
+                &ShellConfig::current(cx).worktrees,
+                "autoDeleteLimit",
+                limit_default,
+            ) as f64
+        },
+        |value: f64, cx: &mut App| {
+            if !value.is_finite() {
+                return;
+            }
+            let limit = (value.round() as u64).clamp(
+                u64::from(WORKTREE_AUTO_DELETE_MIN),
+                u64::from(WORKTREE_AUTO_DELETE_MAX),
+            );
+            set_worktree_key("autoDeleteLimit", serde_json::json!(limit), cx);
+        },
+    );
+
+    let auto_delete_enabled = object_bool(&document, "autoDeleteEnabled", auto_delete_default);
+    SettingGroup::new().items(vec![
+        section_heading_item(
+            "worktree-isolation",
+            text.settings_worktree_section.clone(),
+            text.settings_worktree_section_note.clone(),
+        ),
+        SettingItem::new(text.settings_worktree_root.clone(), root_field)
+            .description(text.settings_worktree_root_description.clone()),
+        SettingItem::new(text.settings_worktree_branch_prefix.clone(), prefix_field)
+            .description(text.settings_worktree_branch_prefix_description.clone()),
+        SettingItem::new(
+            text.settings_worktree_copy_changes.clone(),
+            copy_changes_field,
+        )
+        .description(text.settings_worktree_copy_changes_description.clone()),
+        SettingItem::new(
+            text.settings_worktree_auto_delete.clone(),
+            auto_delete_field,
+        )
+        .description(text.settings_worktree_auto_delete_description.clone()),
+        SettingItem::new(
+            text.settings_worktree_auto_delete_limit.clone(),
+            limit_field,
+        )
+        .description(text.settings_worktree_auto_delete_limit_description.clone())
+        .disabled(!auto_delete_enabled),
+        SettingItem::new(text.settings_jump_worktrees_description.clone(), open_field),
+    ])
+}
+
+/// G-SE16: the web root-path/branch-prefix bounds — an empty value is
+/// required at save time on the web page, so the shell keeps the previous
+/// value instead of persisting an unusable worktree root.
+const WORKTREE_AUTO_DELETE_MIN: u32 = 1;
+const WORKTREE_AUTO_DELETE_MAX: u32 = 100;
+
+fn set_worktree_key(key: &str, value: serde_json::Value, cx: &mut App) {
+    let merged = merged_object_value(&ShellConfig::current(cx).worktrees, key, value.clone());
+    cx.global_mut::<ShellConfig>().worktrees = merged;
+    persist_object_key(WORKTREES_PATH, key, value);
+    cx.refresh_windows();
+}
+
+/// G-SE16: one string key of `app.worktrees`. Empty input is ignored (the web
+/// page rejects it; keeping the stored value is the honest shell behavior).
+fn worktree_text_field(key: &'static str, fallback: String) -> SettingField<SharedString> {
+    SettingField::input(
+        move |cx: &App| {
+            SharedString::from(
+                object_str(&ShellConfig::current(cx).worktrees, key, &fallback).to_string(),
+            )
+        },
+        move |value: SharedString, cx: &mut App| {
+            let value = value.to_string();
+            if value.trim().is_empty() {
+                tracing::warn!("Ignoring empty worktree setting: {key}");
+                return;
+            }
+            set_worktree_key(key, serde_json::json!(value), cx);
+        },
+    )
+}
+
+/// G-SE16: one boolean key of `app.worktrees`.
+fn worktree_switch_field(key: &'static str, fallback: bool) -> SettingField<bool> {
+    SettingField::switch(
+        move |cx: &App| object_bool(&ShellConfig::current(cx).worktrees, key, fallback),
+        move |value: bool, cx: &mut App| set_worktree_key(key, serde_json::json!(value), cx),
+    )
 }
 
 fn appearance_group(text: &ShellText, cx: &App) -> SettingGroup {
@@ -3923,6 +4409,400 @@ fn trinity_engine_group(
     ])
 }
 
+/// G-SE17: one editable row of the global permission rules. The id keys the
+/// row's input states, so reordering or deleting never recycles a text field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PermissionRuleDraft {
+    pub(crate) id: u64,
+    pub(crate) action: String,
+    pub(crate) resource: String,
+    /// `allow` | `ask` | `deny` (the shared snake_case contract).
+    pub(crate) effect: String,
+}
+
+/// G-SE17: the in-page editor state. `active = false` shows the stored rules
+/// read-only; entering edit mode snapshots them into the draft and nothing is
+/// persisted until Save.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct PermissionRulesDraft {
+    pub(crate) active: bool,
+    pub(crate) rules: Vec<PermissionRuleDraft>,
+    pub(crate) next_id: u64,
+}
+
+impl Global for PermissionRulesDraft {}
+
+impl PermissionRulesDraft {
+    pub(crate) fn current(cx: &App) -> Self {
+        cx.try_global::<Self>().cloned().unwrap_or_default()
+    }
+
+    pub(crate) fn mutate<R>(cx: &mut App, change: impl FnOnce(&mut Self) -> R) -> R {
+        if cx.try_global::<Self>().is_none() {
+            cx.set_global(Self::default());
+        }
+        change(cx.global_mut::<Self>())
+    }
+}
+
+/// The shared serialized effect id.
+pub(crate) fn permission_effect_value(
+    effect: openbitfun_runtime_ports::PermissionEffect,
+) -> &'static str {
+    use openbitfun_runtime_ports::PermissionEffect;
+    match effect {
+        PermissionEffect::Allow => "allow",
+        PermissionEffect::Ask => "ask",
+        PermissionEffect::Deny => "deny",
+    }
+}
+
+/// Parses a stored/selected effect id; an unknown value falls back to `ask`
+/// (the conservative interactive default) instead of dropping the rule.
+pub(crate) fn permission_effect_from_value(
+    value: &str,
+) -> openbitfun_runtime_ports::PermissionEffect {
+    use openbitfun_runtime_ports::PermissionEffect;
+    match value {
+        "allow" => PermissionEffect::Allow,
+        "deny" => PermissionEffect::Deny,
+        _ => PermissionEffect::Ask,
+    }
+}
+
+fn permission_effect_label(value: &str, text: &ShellText) -> String {
+    match value {
+        "allow" => text.settings_permission_effect_allow.clone(),
+        "deny" => text.settings_permission_effect_deny.clone(),
+        _ => text.settings_permission_effect_ask.clone(),
+    }
+}
+
+/// Snapshots the stored rules into the editor.
+fn start_permission_rules_draft(cx: &mut App) {
+    let stored = ShellConfig::current(cx).permission_rules;
+    PermissionRulesDraft::mutate(cx, |draft| {
+        draft.rules = stored
+            .iter()
+            .enumerate()
+            .map(|(index, rule)| PermissionRuleDraft {
+                id: index as u64,
+                action: rule.action.clone(),
+                resource: rule.resource.clone(),
+                effect: permission_effect_value(rule.effect).to_string(),
+            })
+            .collect();
+        draft.next_id = stored.len() as u64;
+        draft.active = true;
+    });
+    cx.refresh_windows();
+}
+
+/// Writes the draft back as the ordered rule array. Incomplete rows are
+/// refused (the Save control is disabled for them too).
+fn save_permission_rules(cx: &mut App) {
+    let draft = PermissionRulesDraft::current(cx);
+    if draft
+        .rules
+        .iter()
+        .any(|rule| rule.action.trim().is_empty() || rule.resource.trim().is_empty())
+    {
+        return;
+    }
+    let rules: Vec<openbitfun_runtime_ports::PermissionRule> = draft
+        .rules
+        .iter()
+        .map(|rule| {
+            openbitfun_runtime_ports::PermissionRule::new(
+                rule.action.trim(),
+                rule.resource.trim(),
+                permission_effect_from_value(&rule.effect),
+            )
+        })
+        .collect();
+    cx.global_mut::<ShellConfig>().permission_rules = rules.clone();
+    persist_object_key(
+        PERMISSION_POLICY_PATH,
+        "rules",
+        serde_json::to_value(&rules).unwrap_or(serde_json::json!([])),
+    );
+    PermissionRulesDraft::mutate(cx, |draft| draft.active = false);
+    cx.refresh_windows();
+}
+
+fn permission_rules_readonly_item(text: &ShellText, _cx: &App) -> SettingItem {
+    let text = text.clone();
+    SettingItem::render(move |_options, _window, cx| {
+        let stored = ShellConfig::current(cx).permission_rules.clone();
+        let mut column = div().v_flex().gap_1().w_full();
+        if stored.is_empty() {
+            column = column.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(text.settings_permission_rules_empty.clone()),
+            );
+        } else {
+            for rule in &stored {
+                column = column.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_sm()
+                                .text_color(cx.theme().foreground)
+                                .child(format!("{} · {}", rule.action, rule.resource)),
+                        )
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(permission_effect_label(
+                                    permission_effect_value(rule.effect),
+                                    &text,
+                                )),
+                        ),
+                );
+            }
+        }
+        column = column.child(
+            Button::new("permission-rules-manage")
+                .label(text.settings_permission_rules_manage.clone())
+                .small()
+                .outline()
+                .on_click(move |_, _window, cx| start_permission_rules_draft(cx)),
+        );
+        column.into_any_element()
+    })
+}
+
+/// One editor row: action input, resource input and the effect menu.
+fn permission_rule_item(rule_id: u64, index: usize, count: usize, text: &ShellText) -> SettingItem {
+    let row_text = text.clone();
+    SettingItem::render(move |_options, window, cx| {
+        let draft = PermissionRulesDraft::current(cx);
+        let Some(rule) = draft.rules.iter().find(|rule| rule.id == rule_id).cloned() else {
+            return div().into_any_element();
+        };
+        let action = permission_rule_input(
+            rule_id,
+            "action",
+            &rule.action,
+            &row_text.settings_permission_rules_action,
+            window,
+            cx,
+        );
+        let resource = permission_rule_input(
+            rule_id,
+            "resource",
+            &rule.resource,
+            &row_text.settings_permission_rules_resource,
+            window,
+            cx,
+        );
+
+        let effect_value = rule.effect.clone();
+        let effect_text = row_text.clone();
+        let effect_button = Button::new(SharedString::from(format!(
+            "permission-rule-{rule_id}-effect"
+        )))
+        .label(permission_effect_label(&rule.effect, &row_text))
+        .tooltip(row_text.settings_permission_rules_effect.clone())
+        .small()
+        .outline()
+        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _window, _cx| {
+            let mut menu = menu;
+            for effect in ["allow", "ask", "deny"] {
+                let selected = effect == effect_value;
+                let label = permission_effect_label(effect, &effect_text);
+                let value = effect.to_string();
+                menu = menu.item(PopupMenuItem::new(label).checked(selected).on_click(
+                    move |_, _window, cx| {
+                        let value = value.clone();
+                        PermissionRulesDraft::mutate(cx, |draft| {
+                            if let Some(rule) =
+                                draft.rules.iter_mut().find(|rule| rule.id == rule_id)
+                            {
+                                rule.effect = value;
+                            }
+                        });
+                        cx.refresh_windows();
+                    },
+                ));
+            }
+            menu
+        });
+
+        let up = Button::new(SharedString::from(format!("permission-rule-{rule_id}-up")))
+            .label("↑")
+            .small()
+            .with_variant(ButtonVariant::Ghost)
+            .disabled(index == 0)
+            .on_click(move |_, _window, cx| {
+                PermissionRulesDraft::mutate(cx, |draft| {
+                    if index > 0 {
+                        draft.rules.swap(index - 1, index);
+                    }
+                });
+                cx.refresh_windows();
+            });
+        let down = Button::new(SharedString::from(format!(
+            "permission-rule-{rule_id}-down"
+        )))
+        .label("↓")
+        .small()
+        .with_variant(ButtonVariant::Ghost)
+        .disabled(index + 1 >= count)
+        .on_click(move |_, _window, cx| {
+            PermissionRulesDraft::mutate(cx, |draft| {
+                if index + 1 < draft.rules.len() {
+                    draft.rules.swap(index, index + 1);
+                }
+            });
+            cx.refresh_windows();
+        });
+        let remove = Button::new(SharedString::from(format!(
+            "permission-rule-{rule_id}-remove"
+        )))
+        .label("×")
+        .small()
+        .with_variant(ButtonVariant::Ghost)
+        .on_click(move |_, _window, cx| {
+            PermissionRulesDraft::mutate(cx, |draft| {
+                draft.rules.retain(|rule| rule.id != rule_id);
+            });
+            cx.refresh_windows();
+        });
+
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .w_full()
+            .child(div().w(px(120.)).child(action))
+            .child(div().flex_1().min_w_0().child(resource))
+            .child(effect_button)
+            .child(up)
+            .child(down)
+            .child(remove)
+            .into_any_element()
+    })
+}
+
+/// One text input of an editor row, keyed by the stable row id so the text
+/// follows the row through reorders.
+fn permission_rule_input(
+    rule_id: u64,
+    field: &'static str,
+    value: &str,
+    placeholder: &str,
+    window: &mut Window,
+    cx: &mut App,
+) -> gpui_kit::AnyElement {
+    let key = SharedString::from(format!("permission-rule-{rule_id}-{field}"));
+    let initial = value.to_string();
+    let placeholder = placeholder.to_string();
+    let state = window.use_keyed_state(key, cx, move |window, cx| {
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(initial.clone())
+                .placeholder(placeholder.clone())
+        });
+        let subscription = cx.subscribe(
+            &input,
+            move |_, input, event: &gpui_kit::component::input::InputEvent, cx| {
+                if matches!(event, gpui_kit::component::input::InputEvent::Change) {
+                    let value = input.read(cx).value().to_string();
+                    PermissionRulesDraft::mutate(cx, |draft| {
+                        if let Some(rule) = draft.rules.iter_mut().find(|rule| rule.id == rule_id) {
+                            if field == "action" {
+                                rule.action = value.clone();
+                            } else {
+                                rule.resource = value.clone();
+                            }
+                        }
+                    });
+                    cx.refresh_windows();
+                }
+            },
+        );
+        (input, subscription)
+    });
+    let value = SharedString::from(value.to_string());
+    state.update(cx, |(input, _subscription), cx| {
+        if input.read(cx).value() != value {
+            input.update(cx, |input, cx| input.set_value(value.clone(), window, cx));
+        }
+    });
+    Input::new(&state.read(cx).0).small().into_any_element()
+}
+
+/// Add / Save / Discard under the editor rows.
+fn permission_rules_actions_item(text: &ShellText) -> SettingItem {
+    let text = text.clone();
+    SettingItem::render(move |_options, _window, cx| {
+        let draft = PermissionRulesDraft::current(cx);
+        let valid = draft
+            .rules
+            .iter()
+            .all(|rule| !rule.action.trim().is_empty() && !rule.resource.trim().is_empty());
+        let mut row = div().flex().items_center().gap_2().w_full();
+        if !valid {
+            row = row.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().danger)
+                    .child(text.settings_permission_rules_invalid.clone()),
+            );
+        }
+        row = row
+            .child(
+                Button::new("permission-rules-add")
+                    .label(text.settings_permission_rules_add.clone())
+                    .small()
+                    .outline()
+                    .on_click(move |_, _window, cx| {
+                        PermissionRulesDraft::mutate(cx, |draft| {
+                            let id = draft.next_id;
+                            draft.next_id += 1;
+                            draft.rules.push(PermissionRuleDraft {
+                                id,
+                                action: "*".to_string(),
+                                resource: String::new(),
+                                effect: "ask".to_string(),
+                            });
+                        });
+                        cx.refresh_windows();
+                    }),
+            )
+            .child(
+                Button::new("permission-rules-save")
+                    .label(text.settings_permission_rules_save.clone())
+                    .small()
+                    .with_variant(ButtonVariant::Primary)
+                    .disabled(!valid)
+                    .on_click(move |_, _window, cx| save_permission_rules(cx)),
+            )
+            .child(
+                Button::new("permission-rules-discard")
+                    .label(text.settings_permission_rules_discard.clone())
+                    .small()
+                    .with_variant(ButtonVariant::Ghost)
+                    .on_click(move |_, _window, cx| {
+                        PermissionRulesDraft::mutate(cx, |draft| draft.active = false);
+                        cx.refresh_windows();
+                    }),
+            );
+        row.into_any_element()
+    })
+}
+
 fn permissions_group(text: &ShellText, cx: &App) -> SettingGroup {
     let preset_options = vec![
         (
@@ -4037,6 +4917,15 @@ fn permissions_group(text: &ShellText, cx: &App) -> SettingGroup {
         SWARM_MAX_CONCURRENCY_PATH,
     );
 
+    // The row description follows the stored policy, matching the web page's
+    // per-option helper text.
+    let batch_description =
+        if ShellConfig::current(cx).subagent_batch_policy == SUBAGENT_BATCH_POLICIES[1] {
+            text.settings_subagent_batch_parallel_description.clone()
+        } else {
+            text.settings_subagent_batch_safe_description.clone()
+        };
+
     // G-SE20/G-SE21: the two tool-runtime switches.
     let deferred_field = SettingField::switch(
         |cx: &App| ShellConfig::current(cx).deferred_tool_loading,
@@ -4079,12 +4968,31 @@ fn permissions_group(text: &ShellText, cx: &App) -> SettingGroup {
         deferred_item = deferred_item.description(warning);
     }
 
-    SettingGroup::new().items(vec![
+    // G-SE17: the global rule list / editor sits between the two policy rows
+    // and the execution section, matching the web page's placement.
+    let mut items = vec![
         SettingItem::new(text.settings_policy.clone(), preset_field)
             .description(text.settings_policy_description.clone()),
         SettingItem::new(text.settings_auto_approve.clone(), auto_approve_field)
             .description(text.settings_auto_approve_description.clone())
             .disabled(auto_approve_disabled),
+        section_heading_item(
+            "permission-rules",
+            text.settings_permission_rules_section.clone(),
+            text.settings_permission_rules_description.clone(),
+        ),
+    ];
+    let draft = PermissionRulesDraft::current(cx);
+    if draft.active {
+        let count = draft.rules.len();
+        for (index, rule) in draft.rules.iter().enumerate() {
+            items.push(permission_rule_item(rule.id, index, count, text));
+        }
+        items.push(permission_rules_actions_item(text));
+    } else {
+        items.push(permission_rules_readonly_item(text, cx));
+    }
+    items.extend(vec![
         section_heading_item(
             "execution",
             text.settings_execution_section.clone(),
@@ -4104,7 +5012,8 @@ fn permissions_group(text: &ShellText, cx: &App) -> SettingGroup {
         ),
         SettingItem::new(text.settings_subagent_model.clone(), subagent_model_field)
             .description(text.settings_subagent_model_description.clone()),
-        SettingItem::new(text.settings_subagent_batch.clone(), batch_field),
+        SettingItem::new(text.settings_subagent_batch.clone(), batch_field)
+            .description(batch_description),
         SettingItem::new(
             text.settings_subagent_concurrency.clone(),
             subagent_concurrency_field,
@@ -4140,13 +5049,364 @@ fn permissions_group(text: &ShellText, cx: &App) -> SettingGroup {
         .description(text.settings_review_parallelism_description.clone()),
         SettingItem::new(text.settings_review_queue_wait.clone(), review_queue_field)
             .description(text.settings_review_queue_wait_description.clone()),
-    ])
+    ]);
+    SettingGroup::new().items(items)
+}
+
+/// G-SE24: the quick-actions editor state. The draft is page-local: nothing
+/// is written until Save, matching the web modal.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct QuickActionsEditorState {
+    /// Position in the stored array being edited.
+    pub(crate) index: Option<usize>,
+    pub(crate) label: String,
+    pub(crate) prompt: String,
+    /// Two-stage confirmation for a custom action's delete.
+    pub(crate) confirm_delete: Option<usize>,
+}
+
+impl Global for QuickActionsEditorState {}
+
+impl QuickActionsEditorState {
+    fn current(cx: &App) -> Self {
+        cx.try_global::<Self>().cloned().unwrap_or_default()
+    }
+
+    fn mutate<R>(cx: &mut App, change: impl FnOnce(&mut Self) -> R) -> R {
+        if cx.try_global::<Self>().is_none() {
+            cx.set_global(Self::default());
+        }
+        change(cx.global_mut::<Self>())
+    }
+}
+
+/// The canonical English text of a built-in action, when this is one.
+fn quick_action_builtin_default(id: &str) -> Option<(&'static str, &'static str)> {
+    match id {
+        "commit" => Some(crate::shell::QUICK_ACTION_COMMIT_DEFAULTS),
+        "create_pr" => Some(crate::shell::QUICK_ACTION_CREATE_PR_DEFAULTS),
+        _ => None,
+    }
+}
+
+/// Writes the whole array (the shared key is a list, not an object) and
+/// updates the composer menu's mirror.
+fn persist_quick_actions(
+    actions: Vec<openbitfun_core::service::config::types::AiExperienceQuickAction>,
+    cx: &mut App,
+) {
+    cx.global_mut::<ShellConfig>().quick_actions = actions.clone();
+    persist(
+        QUICK_ACTIONS_PATH,
+        serde_json::to_value(&actions).unwrap_or_else(|_| serde_json::json!([])),
+    );
+    cx.refresh_windows();
+}
+
+fn start_quick_action_edit(index: usize, cx: &mut App) {
+    let Some(action) = ShellConfig::current(cx).quick_actions.get(index).cloned() else {
+        return;
+    };
+    let text = crate::i18n::current(cx);
+    let (label, prompt) = crate::shell::resolve_quick_action_text(&action, &text);
+    QuickActionsEditorState::mutate(cx, |state| {
+        state.index = Some(index);
+        state.label = label;
+        state.prompt = prompt;
+    });
+    cx.refresh_windows();
+}
+
+/// The stored-vs-localized normalization of one quick action (web
+/// `normalizeQuickActionTextForStorage`): a built-in row that still carries
+/// its canonical English default and was not edited away from the localized
+/// text stores the default again; everything else keeps the typed text.
+pub(crate) fn normalized_quick_action_text(
+    id: &str,
+    stored_label: &str,
+    stored_prompt: &str,
+    typed_label: &str,
+    typed_prompt: &str,
+    localized_label: &str,
+    localized_prompt: &str,
+) -> (String, String) {
+    let Some((default_label, default_prompt)) = quick_action_builtin_default(id) else {
+        return (typed_label.to_string(), typed_prompt.to_string());
+    };
+    let label = if stored_label == default_label && typed_label == localized_label {
+        default_label.to_string()
+    } else {
+        typed_label.to_string()
+    };
+    let prompt = if stored_prompt == default_prompt && typed_prompt == localized_prompt {
+        default_prompt.to_string()
+    } else {
+        typed_prompt.to_string()
+    };
+    (label, prompt)
+}
+
+fn save_quick_action_edit(cx: &mut App) {
+    let state = QuickActionsEditorState::current(cx);
+    let Some(index) = state.index else {
+        return;
+    };
+    let typed_label = state.label.trim().to_string();
+    let typed_prompt = state.prompt.trim().to_string();
+    if typed_label.is_empty() || typed_prompt.is_empty() {
+        return;
+    }
+    let mut actions = ShellConfig::current(cx).quick_actions;
+    let Some(action) = actions.get_mut(index) else {
+        return;
+    };
+    let text = crate::i18n::current(cx);
+    let (localized_label, localized_prompt) =
+        crate::shell::resolve_quick_action_text(action, &text);
+    let (label, prompt) = normalized_quick_action_text(
+        &action.id,
+        &action.label,
+        &action.prompt,
+        &typed_label,
+        &typed_prompt,
+        &localized_label,
+        &localized_prompt,
+    );
+    action.label = label;
+    action.prompt = prompt;
+    persist_quick_actions(actions, cx);
+    QuickActionsEditorState::mutate(cx, |state| state.index = None);
+    cx.refresh_windows();
+}
+
+fn add_quick_action(cx: &mut App) {
+    let mut actions = ShellConfig::current(cx).quick_actions;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    actions.push(
+        openbitfun_core::service::config::types::AiExperienceQuickAction {
+            id: format!("custom_{now}"),
+            label: String::new(),
+            prompt: String::new(),
+            enabled: true,
+        },
+    );
+    let index = actions.len() - 1;
+    persist_quick_actions(actions, cx);
+    QuickActionsEditorState::mutate(cx, |state| {
+        state.index = Some(index);
+        state.label.clear();
+        state.prompt.clear();
+    });
+    cx.refresh_windows();
+}
+
+fn delete_quick_action(index: usize, cx: &mut App) {
+    let mut actions = ShellConfig::current(cx).quick_actions;
+    let Some(action) = actions.get(index) else {
+        return;
+    };
+    if quick_action_builtin_default(&action.id).is_some() {
+        return;
+    }
+    actions.remove(index);
+    persist_quick_actions(actions, cx);
+    QuickActionsEditorState::mutate(cx, |state| {
+        state.confirm_delete = None;
+        if state.index == Some(index) {
+            state.index = None;
+        }
+    });
+}
+
+fn toggle_quick_action(index: usize, enabled: bool, cx: &mut App) {
+    let mut actions = ShellConfig::current(cx).quick_actions;
+    if let Some(action) = actions.get_mut(index) {
+        action.enabled = enabled;
+    }
+    persist_quick_actions(actions, cx);
+}
+
+/// G-SE24: the automation page's quick-actions section — built-in rows
+/// (editable, not deletable), custom rows (editable and deletable) and the
+/// inline editor.
+fn quick_actions_items(text: &ShellText, cx: &App) -> Vec<SettingItem> {
+    let actions = ShellConfig::current(cx).quick_actions;
+    let state = QuickActionsEditorState::current(cx);
+    let mut items = vec![section_heading_item(
+        "quick-actions-builtin",
+        text.settings_quick_actions_builtin_section.clone(),
+        text.settings_quick_actions_builtin_note.clone(),
+    )];
+
+    let mut custom_indices = Vec::new();
+    for (index, action) in actions.iter().enumerate() {
+        let builtin = quick_action_builtin_default(&action.id).is_some();
+        if !builtin {
+            custom_indices.push(index);
+        }
+        let (label, prompt) = crate::shell::resolve_quick_action_text(action, text);
+        let toggle = SettingField::switch(
+            move |cx: &App| {
+                ShellConfig::current(cx)
+                    .quick_actions
+                    .get(index)
+                    .map(|action| action.enabled)
+                    .unwrap_or(false)
+            },
+            move |value: bool, cx: &mut App| toggle_quick_action(index, value, cx),
+        );
+        items.push(SettingItem::new(label, toggle).description(prompt));
+    }
+
+    items.push(section_heading_item(
+        "quick-actions-custom",
+        text.settings_quick_actions_custom_section.clone(),
+        text.settings_quick_actions_custom_note.clone(),
+    ));
+    if custom_indices.is_empty() {
+        items.push(SettingItem::render({
+            let empty = text.settings_quick_actions_custom_empty.clone();
+            move |_options, _window, cx| {
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(empty.clone())
+                    .into_any_element()
+            }
+        }));
+    }
+    for &index in &custom_indices {
+        let Some(action) = actions.get(index) else {
+            continue;
+        };
+        let (label, _prompt) = crate::shell::resolve_quick_action_text(action, text);
+        let row_text = text.clone();
+        let confirming = state.confirm_delete == Some(index);
+        items.push(SettingItem::render(move |_options, _window, cx| {
+            let edit = Button::new(SharedString::from(format!("quick-action-{index}-edit")))
+                .label(crate::i18n::shared_term("tools.edit", cx))
+                .small()
+                .outline()
+                .on_click(move |_, _window, cx| start_quick_action_edit(index, cx));
+            let delete_text = if confirming {
+                row_text.settings_quick_actions_delete_confirm.clone()
+            } else {
+                row_text.settings_quick_actions_delete.clone()
+            };
+            let delete = Button::new(SharedString::from(format!("quick-action-{index}-delete")))
+                .label(delete_text)
+                .small()
+                .with_variant(ButtonVariant::Danger)
+                .on_click(move |_, _window, cx| {
+                    let already =
+                        QuickActionsEditorState::current(cx).confirm_delete == Some(index);
+                    if already {
+                        delete_quick_action(index, cx);
+                    } else {
+                        QuickActionsEditorState::mutate(cx, |state| {
+                            state.confirm_delete = Some(index);
+                        });
+                        cx.refresh_windows();
+                    }
+                });
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .w_full()
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .truncate()
+                        .text_sm()
+                        .text_color(cx.theme().foreground)
+                        .child(label.clone()),
+                )
+                .child(edit)
+                .child(delete)
+                .into_any_element()
+        }));
+    }
+    items.push(SettingItem::render({
+        let add_text = text.settings_quick_actions_add.clone();
+        move |_options, _window, _cx| {
+            Button::new("quick-action-add")
+                .label(add_text.clone())
+                .small()
+                .outline()
+                .on_click(move |_, _window, cx| add_quick_action(cx))
+                .into_any_element()
+        }
+    }));
+
+    if state.index.is_some() {
+        let label_text = text.settings_quick_actions_label.clone();
+        let prompt_text = text.settings_quick_actions_prompt.clone();
+        let invalid_text = text.settings_quick_actions_invalid.clone();
+        let label_field = SettingField::input(
+            |cx: &App| SharedString::from(QuickActionsEditorState::current(cx).label),
+            |value: SharedString, cx: &mut App| {
+                QuickActionsEditorState::mutate(cx, |state| state.label = value.to_string());
+                cx.refresh_windows();
+            },
+        );
+        let prompt_field = SettingField::input(
+            |cx: &App| SharedString::from(QuickActionsEditorState::current(cx).prompt),
+            |value: SharedString, cx: &mut App| {
+                QuickActionsEditorState::mutate(cx, |state| state.prompt = value.to_string());
+                cx.refresh_windows();
+            },
+        );
+        items.push(SettingItem::new(label_text, label_field).layout(Axis::Vertical));
+        items.push(SettingItem::new(prompt_text, prompt_field).layout(Axis::Vertical));
+        let save_text = text.settings_quick_actions_save.clone();
+        let cancel_text = text.settings_quick_actions_cancel.clone();
+        items.push(SettingItem::render(move |_options, _window, cx| {
+            let state = QuickActionsEditorState::current(cx);
+            let valid = !state.label.trim().is_empty() && !state.prompt.trim().is_empty();
+            let mut row = div().flex().items_center().gap_2().w_full();
+            if !valid {
+                row = row.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().danger)
+                        .child(invalid_text.clone()),
+                );
+            }
+            row = row
+                .child(
+                    Button::new("quick-action-save")
+                        .label(save_text.clone())
+                        .small()
+                        .with_variant(ButtonVariant::Primary)
+                        .disabled(!valid)
+                        .on_click(move |_, _window, cx| save_quick_action_edit(cx)),
+                )
+                .child(
+                    Button::new("quick-action-cancel")
+                        .label(cancel_text.clone())
+                        .small()
+                        .with_variant(ButtonVariant::Ghost)
+                        .on_click(move |_, _window, cx| {
+                            QuickActionsEditorState::mutate(cx, |state| state.index = None);
+                            cx.refresh_windows();
+                        }),
+                );
+            row.into_any_element()
+        }));
+    }
+
+    items
 }
 
 /// Automation group (M22): the native-hooks master switches and the commit
 /// co-author preference. The toggles are the same shared values the desktop
 /// automation page writes; hook declarations themselves stay in hooks.json.
-fn automation_group(text: &ShellText) -> SettingGroup {
+fn automation_group(text: &ShellText, cx: &App) -> SettingGroup {
     let hooks_field = SettingField::switch(
         |cx: &App| ShellConfig::current(cx).hooks_enabled,
         |value: bool, cx: &mut App| {
@@ -4172,14 +5432,21 @@ fn automation_group(text: &ShellText) -> SettingGroup {
         },
     );
 
-    SettingGroup::new().items(vec![
+    let mut items = vec![
         SettingItem::new(text.settings_hooks.clone(), hooks_field)
             .description(text.settings_hooks_description.clone()),
         SettingItem::new(text.settings_hooks_project.clone(), project_hooks_field)
             .description(text.settings_hooks_project_description.clone()),
         SettingItem::new(text.settings_git_coauthor.clone(), coauthor_field)
             .description(text.settings_git_coauthor_description.clone()),
-    ])
+        section_heading_item(
+            "quick-actions",
+            text.settings_quick_actions_section.clone(),
+            text.settings_quick_actions_note.clone(),
+        ),
+    ];
+    items.extend(quick_actions_items(text, cx));
+    SettingGroup::new().items(items)
 }
 
 /// Whether the custom HTTP search service auth mode needs a device
@@ -4470,8 +5737,8 @@ fn usage_group(
 ) -> SettingGroup {
     let owned_text = text.clone();
     let stats_view = view.clone();
-    let range_field = SettingField::render(move |_options, _window, cx| {
-        usage_stats_field(stats_view.clone(), &owned_text, cx)
+    let range_field = SettingField::render(move |_options, window, cx| {
+        usage_stats_field(stats_view.clone(), &owned_text, window, cx)
     });
     let activity_view = view;
     let activity_text = text.clone();
@@ -4976,6 +6243,7 @@ fn render_usage_activity(
 fn usage_stats_field(
     view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
     text: &ShellText,
+    window: &mut Window,
     cx: &mut App,
 ) -> gpui_kit::AnyElement {
     let Some(shell) = view.upgrade() else {
@@ -5118,45 +6386,153 @@ fn usage_stats_field(
     column = column.child(totals);
     column = column.child(render_usage_trend(&stats, text, cx));
 
-    if !stats.by_model.is_empty() {
-        column = column.child(
-            div()
-                .text_xs()
-                .text_color(cx.theme().muted_foreground)
-                .child(text.usage_models.clone()),
-        );
-        let mut rows = div().v_flex().gap_1().w_full();
-        for model in stats.by_model.iter().take(20) {
-            let mut facts = format!("{} · {}", model.requests, model.tokens);
-            if let Some(rate) = model.cache_hit_rate {
-                facts.push_str(&format!(" · {:.0}%", rate * 100.));
-            }
-            rows = rows.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_sm()
-                            .text_color(cx.theme().foreground)
-                            .child(model.name.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(facts),
-                    ),
+    // G-SE29: the distribution filter is page state, not a persisted
+    // preference — the web resets it when the page mounts.
+    let placeholder = text.settings_usage_filter.clone();
+    let filter_state = window.use_keyed_state(
+        SharedString::from("usage-distribution-filter"),
+        cx,
+        move |window, cx| {
+            let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder.clone()));
+            let subscription = cx.subscribe(
+                &input,
+                |_, input, event: &gpui_kit::component::input::InputEvent, cx| {
+                    if matches!(event, gpui_kit::component::input::InputEvent::Change) {
+                        let value = input.read(cx).value().to_string();
+                        if cx.try_global::<UsageFilter>().is_none() {
+                            cx.set_global(UsageFilter::default());
+                        }
+                        cx.global_mut::<UsageFilter>().0 = value;
+                        cx.refresh_windows();
+                    }
+                },
             );
-        }
-        column = column.child(rows);
-    }
+            (input, subscription)
+        },
+    );
+    let filter_entity = filter_state.read(cx).0.clone();
+    let filter = cx
+        .try_global::<UsageFilter>()
+        .map(|filter| filter.0.trim().to_lowercase())
+        .unwrap_or_default();
+    column = column.child(div().w(px(260.)).child(Input::new(&filter_entity).small()));
+
+    column = column.child(usage_distribution(
+        &text.usage_models,
+        &stats.by_model,
+        &filter,
+        text,
+        cx,
+    ));
+    column = column.child(usage_distribution(
+        &text.settings_usage_groups,
+        &stats.by_group,
+        &filter,
+        text,
+        cx,
+    ));
+    column = column.child(usage_distribution(
+        &text.settings_usage_endpoints,
+        &stats.by_endpoint,
+        &filter,
+        text,
+        cx,
+    ));
     column.into_any_element()
+}
+
+/// G-SE29: the distribution filter; the value lives only for the open
+/// settings window (the web's page-local search state).
+#[derive(Debug, Default, Clone)]
+pub(crate) struct UsageFilter(pub(crate) String);
+
+impl Global for UsageFilter {}
+
+/// Whether one distribution row matches the filter: its display name or its
+/// provider label, case-insensitively.
+pub(crate) fn usage_entry_matches(
+    entry: &openbitfun_services_core::token_usage::UsageStatisticsEntry,
+    query: &str,
+) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    entry.name.to_lowercase().contains(query)
+        || entry
+            .provider_name
+            .as_deref()
+            .map(|provider| provider.to_lowercase().contains(query))
+            .unwrap_or(false)
+}
+
+/// One distribution block (model / group / endpoint) over the same totals the
+/// summary uses. Every row carries requests, tokens and, when telemetry
+/// exists, its cache hit rate; the filter applies across all three blocks, as
+/// in the web panel.
+fn usage_distribution(
+    title: &str,
+    entries: &[openbitfun_services_core::token_usage::UsageStatisticsEntry],
+    filter: &str,
+    text: &ShellText,
+    cx: &App,
+) -> gpui_kit::AnyElement {
+    if entries.is_empty() {
+        return div().into_any_element();
+    }
+    let visible: Vec<_> = entries
+        .iter()
+        .filter(|entry| usage_entry_matches(entry, filter))
+        .take(20)
+        .collect();
+    let mut block = div().v_flex().gap_1().w_full().child(
+        div()
+            .text_xs()
+            .text_color(cx.theme().muted_foreground)
+            .child(title.to_string()),
+    );
+    if visible.is_empty() {
+        block = block.child(
+            div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(text.settings_usage_filter_empty.clone()),
+        );
+        return block.into_any_element();
+    }
+    for entry in visible {
+        let mut facts = format!("{} · {}", entry.requests, entry.tokens);
+        if let Some(rate) = entry.cache_hit_rate {
+            facts.push_str(&format!(" · {:.0}%", rate * 100.));
+        }
+        let secondary = entry.provider_name.clone().unwrap_or_default();
+        block = block.child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_sm()
+                        .text_color(cx.theme().foreground)
+                        .child(if secondary.is_empty() {
+                            entry.name.clone()
+                        } else {
+                            format!("{} · {secondary}", entry.name)
+                        }),
+                )
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(facts),
+                ),
+        );
+    }
+    block.into_any_element()
 }
 
 /// Archived sessions page (M22): the active workspace's archived sessions
@@ -6895,5 +8271,217 @@ mod tests {
         assert_eq!(grid.total_tokens, 125);
         assert_eq!(grid.cells.len(), grid.week_count * 7);
         assert_eq!(grid.week_count, 27);
+    }
+
+    /// G-SE15: the strategy follows the web's compatibility rule — an explicit
+    /// key wins, a legacy stored fixed id keeps its fixed meaning, and an
+    /// untouched document follows the last selection.
+    #[test]
+    fn flow_chat_strategy_keeps_the_legacy_meaning() {
+        assert_eq!(
+            flow_chat_strategy(&serde_json::json!({ "default_mode_strategy": "follow_last" })),
+            "follow_last"
+        );
+        assert_eq!(
+            flow_chat_strategy(&serde_json::json!({ "default_mode_strategy": "fixed" })),
+            "fixed"
+        );
+        assert_eq!(
+            flow_chat_strategy(&serde_json::json!({ "default_mode_id": "Creative" })),
+            "fixed"
+        );
+        assert_eq!(
+            flow_chat_strategy(&serde_json::json!({ "default_mode_id": "   " })),
+            "follow_last"
+        );
+        assert_eq!(flow_chat_strategy(&serde_json::json!({})), "follow_last");
+        assert_eq!(flow_chat_strategy(&serde_json::Value::Null), "follow_last");
+    }
+
+    /// G-SE15: an unset fixed mode reads as Standard (the web's switch-to-fixed
+    /// fallback), and the composer's last selection is optional.
+    #[test]
+    fn flow_chat_fixed_and_last_mode_values() {
+        assert_eq!(flow_chat_fixed_mode(&serde_json::json!({})), "Standard");
+        assert_eq!(
+            flow_chat_fixed_mode(&serde_json::json!({ "default_mode_id": "Ultimate" })),
+            "Ultimate"
+        );
+        assert_eq!(
+            flow_chat_last_mode(&serde_json::json!({ "last_mode_id": "Minimal" })),
+            Some("Minimal".to_string())
+        );
+        assert_eq!(
+            flow_chat_last_mode(&serde_json::json!({ "last_mode_id": " " })),
+            None
+        );
+        assert_eq!(flow_chat_last_mode(&serde_json::json!({})), None);
+    }
+
+    /// G-SE15: the session-title selection round-trips through the shared
+    /// `TaskModelSelection` document shape.
+    #[test]
+    fn task_model_selection_round_trips_the_shared_shape() {
+        use openbitfun_core::service::config::types::TaskModelSelection;
+        assert_eq!(
+            task_model_selection_document("inherit"),
+            serde_json::json!({ "kind": "inherit" })
+        );
+        assert_eq!(
+            task_model_selection_document("fast"),
+            serde_json::json!({ "kind": "fixed", "model_id": "fast" })
+        );
+        let fixed: TaskModelSelection =
+            serde_json::from_value(task_model_selection_document("model-b")).unwrap();
+        assert_eq!(task_model_selection_value(&fixed), "model-b");
+        let inherit: TaskModelSelection =
+            serde_json::from_value(task_model_selection_document("inherit")).unwrap();
+        assert_eq!(task_model_selection_value(&inherit), "inherit");
+    }
+
+    /// G-SE15: the session-title model menu carries the three aliases, the
+    /// enabled catalog, and a stored id it cannot resolve.
+    #[test]
+    fn session_title_model_options_keep_an_unavailable_choice() {
+        let text = sample_text();
+        let catalog = vec![
+            crate::runtime::ModelChoice {
+                id: "model-a".to_string(),
+                name: "Model A".to_string(),
+                provider: "p".to_string(),
+                enabled: true,
+            },
+            crate::runtime::ModelChoice {
+                id: "model-off".to_string(),
+                name: "Model Off".to_string(),
+                provider: "p".to_string(),
+                enabled: false,
+            },
+        ];
+        let options = session_title_model_options(&catalog, "gone", &text);
+        assert_eq!(options[0].0.as_ref(), "inherit");
+        assert_eq!(options[1].0.as_ref(), "fast");
+        assert_eq!(options[2].0.as_ref(), "primary");
+        assert!(options.iter().any(|(id, _)| id.as_ref() == "model-a"));
+        assert!(!options.iter().any(|(id, _)| id.as_ref() == "model-off"));
+        let missing = &options.last().unwrap().1;
+        assert!(missing.contains("gone"));
+        assert!(missing.contains(&text.settings_session_title_model_unavailable));
+    }
+
+    /// G-SE16: the worktree fallbacks are the shared config defaults, so a
+    /// first-run shell shows the same values the desktop page does.
+    #[test]
+    fn worktree_defaults_match_the_shared_config() {
+        let defaults = default_worktree_settings_document();
+        let shared = openbitfun_core::service::config::types::GlobalConfig::default()
+            .app
+            .worktrees;
+        assert_eq!(object_str(&defaults, "rootPath", ""), shared.root_path);
+        assert_eq!(
+            object_str(&defaults, "branchPrefix", ""),
+            shared.branch_prefix
+        );
+        assert_eq!(
+            object_bool(&defaults, "copyLocalChanges", true),
+            shared.copy_local_changes
+        );
+        assert_eq!(
+            object_bool(&defaults, "autoDeleteEnabled", false),
+            shared.auto_delete_enabled
+        );
+        assert_eq!(
+            object_u64(&defaults, "autoDeleteLimit", 0),
+            shared.auto_delete_limit as u64
+        );
+    }
+
+    /// G-SE17: stored/selected effects round-trip the shared ids and an
+    /// unknown id degrades to the interactive default instead of vanishing.
+    #[test]
+    fn permission_effects_round_trip_the_shared_ids() {
+        use openbitfun_runtime_ports::PermissionEffect;
+        for (value, effect) in [
+            ("allow", PermissionEffect::Allow),
+            ("ask", PermissionEffect::Ask),
+            ("deny", PermissionEffect::Deny),
+        ] {
+            assert_eq!(permission_effect_from_value(value), effect);
+            assert_eq!(permission_effect_value(effect), value);
+        }
+        assert_eq!(
+            permission_effect_from_value("future-effect"),
+            PermissionEffect::Ask
+        );
+    }
+
+    /// G-SE29: the distribution filter matches the row name or its provider,
+    /// case-insensitively, and an empty filter keeps everything.
+    #[test]
+    fn usage_entry_filter_matches_name_and_provider() {
+        use openbitfun_services_core::token_usage::{UsageAttributionStatus, UsageStatisticsEntry};
+        let entry = UsageStatisticsEntry {
+            key: "model-a".to_string(),
+            name: "Model A".to_string(),
+            provider_name: Some("DeepSeek".to_string()),
+            attribution_status: UsageAttributionStatus::Resolved,
+            requests: 3,
+            tokens: 120,
+            cache_hit_rate: Some(0.5),
+            cached_tokens: 60,
+            reported_input_tokens: 120,
+        };
+        assert!(usage_entry_matches(&entry, ""));
+        assert!(usage_entry_matches(&entry, "model a"));
+        assert!(usage_entry_matches(&entry, "deepseek"));
+        assert!(!usage_entry_matches(&entry, "openai"));
+        let unattributed = UsageStatisticsEntry {
+            provider_name: None,
+            name: "Unknown".to_string(),
+            ..entry
+        };
+        assert!(usage_entry_matches(&unattributed, "unknown"));
+        assert!(!usage_entry_matches(&unattributed, "deepseek"));
+    }
+
+    /// G-SE24: the canonical English default is written back only while the
+    /// stored text is still that default; customized text stays verbatim.
+    #[test]
+    fn quick_action_text_normalizes_only_unmodified_builtins() {
+        let (label, prompt) = normalized_quick_action_text(
+            "commit",
+            "Commit",
+            "Commit all current code changes",
+            "提交",
+            "提交当前所有代码变更",
+            "提交",
+            "提交当前所有代码变更",
+        );
+        assert_eq!(label, "Commit");
+        assert_eq!(prompt, "Commit all current code changes");
+
+        let (label, prompt) = normalized_quick_action_text(
+            "commit",
+            "My commit",
+            "My prompt",
+            "My commit",
+            "My prompt",
+            "My commit",
+            "My prompt",
+        );
+        assert_eq!(label, "My commit");
+        assert_eq!(prompt, "My prompt");
+
+        let (label, prompt) = normalized_quick_action_text(
+            "custom_1",
+            "Anything",
+            "Anything",
+            "Typed",
+            "Typed prompt",
+            "Typed",
+            "Typed prompt",
+        );
+        assert_eq!(label, "Typed");
+        assert_eq!(prompt, "Typed prompt");
     }
 }
