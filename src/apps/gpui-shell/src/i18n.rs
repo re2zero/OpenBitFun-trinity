@@ -521,6 +521,25 @@ pub(crate) struct ShellText {
     pub manage_skill_user: String,
     pub manage_skill_project: String,
     pub manage_skill_shadowed: String,
+    /// G-K2/G-K3: the skill detail, add, and delete dialogs.
+    pub manage_skill_add: String,
+    pub manage_skill_detail: String,
+    pub manage_skill_dialog_add_title: String,
+    pub manage_skill_dialog_detail_title: String,
+    pub manage_skill_dialog_delete_title: String,
+    pub manage_skill_source: String,
+    pub manage_skill_source_native: String,
+    pub manage_skill_path: String,
+    pub manage_skill_path_hint: String,
+    pub manage_skill_validate: String,
+    pub manage_skill_valid: String,
+    pub manage_skill_invalid: String,
+    pub manage_skill_runtime_unavailable: String,
+    pub manage_skill_add_action: String,
+    pub manage_skill_delete_action: String,
+    pub manage_skill_close: String,
+    pub manage_skill_not_found: String,
+    pub manage_skill_no_description: String,
     /// R4 facet sidebar: group titles and the market degrade card.
     pub skills_facet_library: String,
     pub skills_facet_all: String,
@@ -1300,6 +1319,62 @@ pub(crate) fn shared_agent_name(id: &str, cx: &App) -> String {
 /// affordance can reuse the contract copy instead of introducing a duplicate.
 pub(crate) fn shared_term(path: &str, cx: &App) -> String {
     resolve_with(&format!("shared.{path}"), TranslationArgs::new(), cx)
+}
+
+/// G-K3: the localized reason an add-skill path check failed.
+pub(crate) fn skill_validation_error(
+    error: &crate::manage::SkillValidationError,
+    cx: &App,
+) -> String {
+    use crate::manage::SkillValidationError;
+    match error {
+        SkillValidationError::Empty => resolve_with(
+            "gpui-shell-manage-skill-validation-empty",
+            TranslationArgs::new(),
+            cx,
+        ),
+        SkillValidationError::NotFound => resolve_with(
+            "gpui-shell-manage-skill-validation-not-found",
+            TranslationArgs::new(),
+            cx,
+        ),
+        SkillValidationError::NotDirectory => resolve_with(
+            "gpui-shell-manage-skill-validation-not-dir",
+            TranslationArgs::new(),
+            cx,
+        ),
+        SkillValidationError::MissingSkillFile => resolve_with(
+            "gpui-shell-manage-skill-validation-missing-file",
+            TranslationArgs::new(),
+            cx,
+        ),
+        SkillValidationError::Unreadable => resolve_with(
+            "gpui-shell-manage-skill-validation-unreadable",
+            TranslationArgs::new(),
+            cx,
+        ),
+        SkillValidationError::Parse(detail) => resolve_with(
+            "gpui-shell-manage-skill-validation-parse",
+            TranslationArgs::new().with_string("detail", detail.clone()),
+            cx,
+        ),
+    }
+}
+
+pub(crate) fn skill_validation_failed(detail: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-manage-skill-validation-failed",
+        TranslationArgs::new().with_string("detail", detail.to_string()),
+        cx,
+    )
+}
+
+pub(crate) fn skill_delete_warning(name: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-manage-skill-delete-warning",
+        TranslationArgs::new().with_string("name", name.to_string()),
+        cx,
+    )
 }
 
 /// G-SE12: the verdict line of a finished connection test, with the wall
@@ -2314,6 +2389,24 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         manage_skill_user: "User".to_string(),
         manage_skill_project: "Project".to_string(),
         manage_skill_shadowed: "Shadowed".to_string(),
+        manage_skill_add: "Add skill".to_string(),
+        manage_skill_detail: "Details".to_string(),
+        manage_skill_dialog_add_title: "Add skill".to_string(),
+        manage_skill_dialog_detail_title: "Skill details".to_string(),
+        manage_skill_dialog_delete_title: "Delete skill".to_string(),
+        manage_skill_source: "Source".to_string(),
+        manage_skill_source_native: "OpenBitFun".to_string(),
+        manage_skill_path: "Folder path".to_string(),
+        manage_skill_path_hint: "Point to a folder containing SKILL.md.".to_string(),
+        manage_skill_validate: "Check".to_string(),
+        manage_skill_valid: "Valid skill".to_string(),
+        manage_skill_invalid: "Not a valid skill".to_string(),
+        manage_skill_runtime_unavailable: "The runtime is not ready yet. Try again.".to_string(),
+        manage_skill_add_action: "Add".to_string(),
+        manage_skill_delete_action: "Delete".to_string(),
+        manage_skill_close: "Close".to_string(),
+        manage_skill_not_found: "This skill is no longer in the catalog.".to_string(),
+        manage_skill_no_description: "No description.".to_string(),
         skills_facet_library: "Library".to_string(),
         skills_facet_all: "All".to_string(),
         skills_facet_groups: "Skill groups".to_string(),
@@ -3601,6 +3694,30 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         manage_skill_user: service.t("gpui-shell-manage-skill-user").await,
         manage_skill_project: service.t("gpui-shell-manage-skill-project").await,
         manage_skill_shadowed: service.t("gpui-shell-manage-skill-shadowed").await,
+        manage_skill_add: service.t("gpui-shell-manage-skill-add").await,
+        manage_skill_detail: service.t("gpui-shell-manage-skill-detail").await,
+        manage_skill_dialog_add_title: service.t("gpui-shell-manage-skill-dialog-add-title").await,
+        manage_skill_dialog_detail_title: service
+            .t("gpui-shell-manage-skill-dialog-detail-title")
+            .await,
+        manage_skill_dialog_delete_title: service
+            .t("gpui-shell-manage-skill-dialog-delete-title")
+            .await,
+        manage_skill_source: service.t("gpui-shell-manage-skill-source").await,
+        manage_skill_source_native: service.t("shared.product.name").await,
+        manage_skill_path: service.t("gpui-shell-manage-skill-path").await,
+        manage_skill_path_hint: service.t("gpui-shell-manage-skill-path-hint").await,
+        manage_skill_validate: service.t("gpui-shell-manage-skill-validate").await,
+        manage_skill_valid: service.t("gpui-shell-manage-skill-valid").await,
+        manage_skill_invalid: service.t("gpui-shell-manage-skill-invalid").await,
+        manage_skill_runtime_unavailable: service
+            .t("gpui-shell-manage-skill-runtime-unavailable")
+            .await,
+        manage_skill_add_action: service.t("gpui-shell-manage-skill-add-action").await,
+        manage_skill_delete_action: service.t("gpui-shell-manage-skill-delete-action").await,
+        manage_skill_close: service.t("gpui-shell-manage-skill-close").await,
+        manage_skill_not_found: service.t("gpui-shell-manage-skill-not-found").await,
+        manage_skill_no_description: service.t("gpui-shell-manage-skill-no-description").await,
         skills_facet_library: service.t("gpui-shell-skills-facet-library").await,
         skills_facet_all: service.t("gpui-shell-skills-facet-all").await,
         skills_facet_groups: service.t("gpui-shell-skills-facet-groups").await,

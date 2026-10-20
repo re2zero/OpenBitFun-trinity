@@ -20,8 +20,8 @@ use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, StyledExt, WindowExt};
 use gpui_kit::{
     canvas, div, point, prelude::*, px, size, Anchor, App, Background, BorderStyle, Bounds,
-    Context, Corners, Edges, FontWeight, Global, Hsla, PathBuilder, SharedString, WeakEntity,
-    Window,
+    ClipboardItem, Context, Corners, Edges, FontWeight, Global, Hsla, PathBuilder, SharedString,
+    WeakEntity, Window,
 };
 
 use crate::i18n::{self, ShellText};
@@ -220,6 +220,11 @@ pub(crate) struct SkillRow {
     pub(crate) source_id: String,
     /// Display name of the discovery source (facet label).
     pub(crate) source_label: String,
+    /// G-K2: the scanned skill directory (detail path, copy, reveal).
+    pub(crate) path: String,
+    /// G-K3: the storage is OpenBitFun-owned and not a built-in copy, so the
+    /// detail dialog may remove it (desktop `can_delete_owned_skill`).
+    pub(crate) deletable: bool,
 }
 
 impl SkillRow {
@@ -251,6 +256,68 @@ impl Global for SkillCatalog {}
 impl SkillCatalog {
     pub(crate) fn try_current(cx: &App) -> Option<Self> {
         cx.try_global::<Self>().cloned()
+    }
+}
+
+/// G-K3: the result of checking an add-skill source directory. Expected
+/// problems are values (the dialog localizes them), not runtime errors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SkillValidationRow {
+    pub(crate) valid: bool,
+    pub(crate) name: Option<String>,
+    pub(crate) description: Option<String>,
+    pub(crate) error: Option<SkillValidationError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SkillValidationError {
+    Empty,
+    NotFound,
+    NotDirectory,
+    MissingSkillFile,
+    Unreadable,
+    /// The markdown itself failed the shared parser; the detail is the
+    /// parser's message.
+    Parse(String),
+}
+
+/// G-K2/G-K3: which skill dialog is open. The data behind each dialog lives in
+/// [`SkillDialogsState`]; the focusable inputs live on the shell window (a
+/// dialog builder runs every frame).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SkillDialog {
+    Detail(String),
+    Add,
+    Delete(String),
+}
+
+/// G-K2/G-K3 dialog scratch. Global because the settings page renders inside
+/// the window's own render, where reading the window entity would panic.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct SkillDialogsState {
+    pub(crate) dialog: Option<SkillDialog>,
+    /// Project-level install target (default: user).
+    pub(crate) add_project: bool,
+    pub(crate) busy: bool,
+    /// The latest add-path validation; `None` before the first check.
+    pub(crate) validation: Option<Result<SkillValidationRow, String>>,
+    /// Add/delete failure, shown inside the open dialog.
+    pub(crate) mutation_error: Option<String>,
+}
+
+impl Global for SkillDialogsState {}
+
+impl SkillDialogsState {
+    pub(crate) fn current(cx: &App) -> Self {
+        cx.try_global::<Self>().cloned().unwrap_or_default()
+    }
+
+    pub(crate) fn mutate<R>(cx: &mut App, update: impl FnOnce(&mut Self) -> R) -> R {
+        let mut state = Self::current(cx);
+        let result = update(&mut state);
+        cx.set_global(state);
+        cx.refresh_windows();
+        result
     }
 }
 
@@ -1270,6 +1337,7 @@ pub(crate) fn install_page_filters(window: &mut Window, cx: &mut Context<ShellWi
         kind: AgentKindFilter::All,
         input: Some(agents_placeholder),
     });
+    cx.set_global(SkillDialogsState::default());
     cx.subscribe(
         &skills_input,
         |_: &mut ShellWindow, input, event: &InputEvent, cx| {
@@ -1296,7 +1364,11 @@ pub(crate) fn install_page_filters(window: &mut Window, cx: &mut Context<ShellWi
 
 /// The skills page's filter row (G-K5): the search box and the shadowed-row
 /// toggle, above the list the way the web toolbar sits.
-fn skills_filter_row(text: &ShellText, cx: &App) -> gpui_kit::AnyElement {
+fn skills_filter_row(
+    text: &ShellText,
+    view: WeakEntity<ShellWindow>,
+    cx: &App,
+) -> gpui_kit::AnyElement {
     let state = cx.try_global::<SkillsFilterState>();
     let input = state.and_then(|state| state.input.clone());
     let hide_shadowed = state.map(|state| state.hide_shadowed).unwrap_or(false);
@@ -1319,6 +1391,16 @@ fn skills_filter_row(text: &ShellText, cx: &App) -> gpui_kit::AnyElement {
                 let checked = *checked;
                 cx.update_global::<SkillsFilterState, _>(|state, _| state.hide_shadowed = checked);
                 cx.refresh_windows();
+            }),
+    );
+    let add_view = view;
+    row = row.child(div().flex_1()).child(
+        Button::new("skills-add")
+            .label(text.manage_skill_add.clone())
+            .small()
+            .with_variant(ButtonVariant::Secondary)
+            .on_click(move |_, window, cx| {
+                open_skill_dialog(add_view.clone(), SkillDialog::Add, window, cx);
             }),
     );
     row.into_any_element()
@@ -1450,10 +1532,10 @@ fn agents_kind_menu(text: &ShellText, selected: AgentKindFilter) -> gpui_kit::An
 /// The skills page: a facet sidebar (library / groups / sources / explore)
 /// beside the filtered skill list. The market entry renders an explicit
 /// degrade card (T3-17) instead of a dead-end.
-pub(crate) fn skills_group(text: &ShellText) -> SettingGroup {
+pub(crate) fn skills_group(text: &ShellText, view: WeakEntity<ShellWindow>) -> SettingGroup {
     let page_text = text.clone();
     let page_field = SettingItem::render(move |_options, _window, cx| {
-        skills_page(&page_text, cx).into_any_element()
+        skills_page(&page_text, view.clone(), cx).into_any_element()
     });
 
     SettingGroup::new().items(vec![page_field])
@@ -1524,7 +1606,7 @@ fn facet_group_title(label: String, cx: &App) -> gpui_kit::Div {
         .child(label)
 }
 
-fn skills_page(text: &ShellText, cx: &mut App) -> gpui_kit::Div {
+fn skills_page(text: &ShellText, view: WeakEntity<ShellWindow>, cx: &mut App) -> gpui_kit::Div {
     if let Some(message) = ManageNotice::current(cx) {
         let mut column = div().w_full();
         column = column.child(notice_banner(text, &message, cx));
@@ -1642,7 +1724,7 @@ fn skills_page(text: &ShellText, cx: &mut App) -> gpui_kit::Div {
 
     // G-K5: the local filter row sits above the list, so the facet rail and
     // the search box narrow the same rows.
-    content = content.child(skills_filter_row(text, cx));
+    content = content.child(skills_filter_row(text, view.clone(), cx));
     let filter = cx
         .try_global::<SkillsFilterState>()
         .map(|state| (state.query.clone(), state.hide_shadowed))
@@ -1674,7 +1756,7 @@ fn skills_page(text: &ShellText, cx: &mut App) -> gpui_kit::Div {
     }
 
     for skill in rows {
-        content = content.child(render_skill_card(skill, text, cx));
+        content = content.child(render_skill_card(skill, view.clone(), text, cx));
     }
     div()
         .flex()
@@ -1700,7 +1782,12 @@ fn facet_key(facet: &SkillFacet) -> String {
 
 /// One skill card on the right side: name, level/source/shadowed badges,
 /// description, and the global enablement switch (built-ins stay on).
-fn render_skill_card(row: &SkillRow, text: &ShellText, cx: &App) -> gpui_kit::Div {
+fn render_skill_card(
+    row: &SkillRow,
+    view: WeakEntity<ShellWindow>,
+    text: &ShellText,
+    cx: &App,
+) -> gpui_kit::Div {
     let level_label = if row.builtin {
         text.manage_skill_builtin.clone()
     } else if row.project_level {
@@ -1768,21 +1855,513 @@ fn render_skill_card(row: &SkillRow, text: &ShellText, cx: &App) -> gpui_kit::Di
                     .child(row.description.clone()),
             )
         });
-    if row.builtin {
-        card
-    } else {
+    let mut footer = div().flex().flex_row().items_center().justify_end().gap_2();
+    let detail_view = view;
+    let detail_key = row.key.clone();
+    footer = footer.child(
+        Button::new(SharedString::from(format!("skill-detail-{}", row.key)))
+            .label(text.manage_skill_detail.clone())
+            .small()
+            .with_variant(ButtonVariant::Ghost)
+            .on_click(move |_, window, cx| {
+                open_skill_dialog(
+                    detail_view.clone(),
+                    SkillDialog::Detail(detail_key.clone()),
+                    window,
+                    cx,
+                );
+            }),
+    );
+    if !row.builtin {
         let key = row.key.clone();
         let user_level = !row.project_level;
-        card.child(
-            div().flex().justify_end().child(
-                Switch::new(SharedString::from(format!("skill-toggle-{}", row.key)))
-                    .checked(!row.disabled)
-                    .on_click(move |checked: &bool, _window, _cx| {
-                        set_skill_disabled(key.clone(), user_level, !*checked);
-                    })
-                    .flex_shrink_0(),
-            ),
-        )
+        footer = footer.child(
+            Switch::new(SharedString::from(format!("skill-toggle-{}", row.key)))
+                .checked(!row.disabled)
+                .on_click(move |checked: &bool, _window, _cx| {
+                    set_skill_disabled(key.clone(), user_level, !*checked);
+                })
+                .flex_shrink_0(),
+        );
+    }
+    card.child(footer)
+}
+
+/// G-K2/G-K3: opens (or retargets) the one skill dialog. Detail and delete
+/// share the same modal so the Delete button flips the surface instead of
+/// stacking a second dialog.
+pub(crate) fn open_skill_dialog(
+    view: WeakEntity<ShellWindow>,
+    dialog: SkillDialog,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(shell) = view.upgrade() else {
+        return;
+    };
+    let path_input = shell.read(cx).skill_path_input.clone();
+    if matches!(dialog, SkillDialog::Add) {
+        path_input.update(cx, |input, cx| input.set_value(String::new(), window, cx));
+    }
+    let already_open =
+        window.has_active_dialog(cx) && SkillDialogsState::current(cx).dialog.is_some();
+    let opening_add = matches!(dialog, SkillDialog::Add);
+    SkillDialogsState::mutate(cx, |state| {
+        state.dialog = Some(dialog);
+        state.mutation_error = None;
+        if opening_add {
+            state.add_project = false;
+            state.validation = None;
+            state.busy = false;
+        }
+    });
+    if already_open {
+        return;
+    }
+
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let text = i18n::current(cx);
+        let state = SkillDialogsState::current(cx);
+        let Some(kind) = state.dialog.clone() else {
+            return dialog;
+        };
+        let catalog = SkillCatalog::try_current(cx).unwrap_or_default();
+        let row = match &kind {
+            SkillDialog::Detail(key) | SkillDialog::Delete(key) => {
+                catalog.skills.iter().find(|row| &row.key == key)
+            }
+            SkillDialog::Add => None,
+        };
+        let muted = cx.theme().muted_foreground;
+        let danger = cx.theme().danger;
+
+        let (title, content, footer) = match &kind {
+            SkillDialog::Add => {
+                let mut content = div()
+                    .w(px(520.))
+                    .v_flex()
+                    .gap_3()
+                    .child(skill_level_row(state.add_project, &text));
+                let validate_input = path_input.clone();
+                let add_input = path_input.clone();
+                let add_project = state.add_project;
+                content = content
+                    .child(dialog_field(
+                        &text.manage_skill_path,
+                        muted,
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .w_full()
+                            .child(div().flex_1().child(Input::new(&path_input)))
+                            .child(
+                                Button::new("skill-validate")
+                                    .label(text.manage_skill_validate.clone())
+                                    .small()
+                                    .with_variant(ButtonVariant::Secondary)
+                                    .disabled(state.busy)
+                                    .on_click(move |_, _window, cx| {
+                                        let path =
+                                            validate_input.read(cx).value().trim().to_string();
+                                        SkillDialogsState::mutate(cx, |state| {
+                                            state.busy = true;
+                                            state.validation = None;
+                                            state.mutation_error = None;
+                                        });
+                                        match crate::runtime::runtime_handle() {
+                                            Some(handle) => handle.validate_skill_path(path),
+                                            None => {
+                                                let message = i18n::current(cx)
+                                                    .manage_skill_runtime_unavailable
+                                                    .clone();
+                                                SkillDialogsState::mutate(cx, |state| {
+                                                    state.busy = false;
+                                                    state.mutation_error = Some(message);
+                                                });
+                                            }
+                                        }
+                                    }),
+                            ),
+                    ))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(text.manage_skill_path_hint.clone()),
+                    );
+                if let Some(validation) = &state.validation {
+                    content = content.child(skill_validation_line(validation, &text, cx));
+                }
+                if let Some(error) = &state.mutation_error {
+                    content =
+                        content.child(div().text_xs().text_color(danger).child(error.clone()));
+                }
+                let can_add =
+                    !state.busy && matches!(&state.validation, Some(Ok(row)) if row.valid);
+                let footer = div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("skill-add-cancel")
+                            .label(text.session_action_cancel.clone())
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(move |_, window, cx| {
+                                SkillDialogsState::mutate(cx, |state| state.dialog = None);
+                                window.close_dialog(cx);
+                            }),
+                    )
+                    .child(
+                        Button::new("skill-add-confirm")
+                            .label(text.manage_skill_add_action.clone())
+                            .with_variant(ButtonVariant::Primary)
+                            .disabled(!can_add)
+                            .on_click(move |_, _window, cx| {
+                                let path = add_input.read(cx).value().trim().to_string();
+                                SkillDialogsState::mutate(cx, |state| {
+                                    state.busy = true;
+                                    state.mutation_error = None;
+                                });
+                                match crate::runtime::runtime_handle() {
+                                    Some(handle) => handle.add_skill(path, add_project),
+                                    None => {
+                                        let message = i18n::current(cx)
+                                            .manage_skill_runtime_unavailable
+                                            .clone();
+                                        SkillDialogsState::mutate(cx, |state| {
+                                            state.busy = false;
+                                            state.mutation_error = Some(message);
+                                        });
+                                    }
+                                }
+                            }),
+                    );
+                (text.manage_skill_dialog_add_title.clone(), content, footer)
+            }
+            SkillDialog::Detail(key) => {
+                let mut content = div().w(px(520.)).v_flex().gap_3();
+                let mut footer = div().flex().flex_row().justify_end().gap_2();
+                if let Some(row) = row {
+                    let level = if row.builtin {
+                        text.manage_skill_builtin.clone()
+                    } else if row.project_level {
+                        text.manage_skill_project.clone()
+                    } else {
+                        text.manage_skill_user.clone()
+                    };
+                    let mut badges = div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .child(badge(level, cx));
+                    if !is_native_source(&row.source_id) {
+                        badges = badges.child(badge(
+                            if row.source_label.trim().is_empty() {
+                                row.source_id.clone()
+                            } else {
+                                row.source_label.clone()
+                            },
+                            cx,
+                        ));
+                    }
+                    if row.shadowed {
+                        badges = badges.child(
+                            div()
+                                .text_xs()
+                                .text_color(danger)
+                                .child(text.manage_skill_shadowed.clone()),
+                        );
+                    }
+                    content = content
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().foreground)
+                                .child(row.name.clone()),
+                        )
+                        .child(badges)
+                        .child(div().text_xs().text_color(muted).whitespace_normal().child(
+                            if row.description.is_empty() {
+                                text.manage_skill_no_description.clone()
+                            } else {
+                                row.description.clone()
+                            },
+                        ))
+                        .child(dialog_field(
+                            &text.manage_skill_source,
+                            muted,
+                            div().text_sm().text_color(cx.theme().foreground).child(
+                                if row.source_label.trim().is_empty() {
+                                    if row.source_id.trim().is_empty() {
+                                        text.manage_skill_source_native.clone()
+                                    } else {
+                                        row.source_id.clone()
+                                    }
+                                } else {
+                                    row.source_label.clone()
+                                },
+                            ),
+                        ));
+                    let copy_path = row.path.clone();
+                    let open_path = row.path.clone();
+                    content = content.child(dialog_field(
+                        &text.manage_skill_path,
+                        muted,
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .w_full()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .child(row.path.clone()),
+                            )
+                            .child(
+                                Button::new("skill-path-copy")
+                                    .label(text.sessions_copy_path.clone())
+                                    .small()
+                                    .with_variant(ButtonVariant::Ghost)
+                                    .on_click(move |_, _window, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            copy_path.clone(),
+                                        ));
+                                    }),
+                            )
+                            .child(
+                                Button::new("skill-path-open")
+                                    .label(text.sessions_reveal.clone())
+                                    .small()
+                                    .with_variant(ButtonVariant::Ghost)
+                                    .on_click(move |_, _window, _cx| {
+                                        crate::markdown::open_external(&open_path);
+                                    }),
+                            ),
+                    ));
+                    if row.deletable {
+                        let delete_key = row.key.clone();
+                        footer = footer.child(
+                            Button::new("skill-detail-delete")
+                                .label(text.manage_skill_delete_action.clone())
+                                .with_variant(ButtonVariant::Danger)
+                                .on_click(move |_, _window, cx| {
+                                    let key = delete_key.clone();
+                                    SkillDialogsState::mutate(cx, |state| {
+                                        state.dialog = Some(SkillDialog::Delete(key));
+                                        state.mutation_error = None;
+                                    });
+                                }),
+                        );
+                    }
+                } else {
+                    content = content.child(
+                        div()
+                            .text_sm()
+                            .text_color(danger)
+                            .child(text.manage_skill_not_found.clone()),
+                    );
+                }
+                footer = footer.child(
+                    Button::new("skill-detail-close")
+                        .label(text.manage_skill_close.clone())
+                        .with_variant(ButtonVariant::Ghost)
+                        .on_click(move |_, window, cx| {
+                            SkillDialogsState::mutate(cx, |state| state.dialog = None);
+                            window.close_dialog(cx);
+                        }),
+                );
+                let _ = key;
+                (
+                    text.manage_skill_dialog_detail_title.clone(),
+                    content,
+                    footer,
+                )
+            }
+            SkillDialog::Delete(key) => {
+                let mut content = div().w(px(420.)).v_flex().gap_2();
+                let mut footer = div().flex().flex_row().justify_end().gap_2();
+                if let Some(row) = row {
+                    content = content.child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().foreground)
+                            .whitespace_normal()
+                            .child(i18n::skill_delete_warning(&row.name, cx)),
+                    );
+                } else {
+                    content = content.child(
+                        div()
+                            .text_sm()
+                            .text_color(danger)
+                            .child(text.manage_skill_not_found.clone()),
+                    );
+                }
+                if let Some(error) = &state.mutation_error {
+                    content =
+                        content.child(div().text_xs().text_color(danger).child(error.clone()));
+                }
+                let cancel_key = key.clone();
+                footer = footer.child(
+                    Button::new("skill-delete-cancel")
+                        .label(text.session_action_cancel.clone())
+                        .with_variant(ButtonVariant::Ghost)
+                        .on_click(move |_, _window, cx| {
+                            let key = cancel_key.clone();
+                            SkillDialogsState::mutate(cx, |state| {
+                                state.dialog = Some(SkillDialog::Detail(key));
+                                state.mutation_error = None;
+                            });
+                        }),
+                );
+                let delete_key = key.clone();
+                if row.is_some() {
+                    footer = footer.child(
+                        Button::new("skill-delete-confirm")
+                            .label(text.manage_skill_delete_action.clone())
+                            .with_variant(ButtonVariant::Danger)
+                            .disabled(state.busy)
+                            .on_click(move |_, _window, cx| {
+                                let key = delete_key.clone();
+                                SkillDialogsState::mutate(cx, |state| {
+                                    state.busy = true;
+                                    state.mutation_error = None;
+                                });
+                                match crate::runtime::runtime_handle() {
+                                    Some(handle) => handle.delete_skill(key),
+                                    None => {
+                                        let message = i18n::current(cx)
+                                            .manage_skill_runtime_unavailable
+                                            .clone();
+                                        SkillDialogsState::mutate(cx, |state| {
+                                            state.busy = false;
+                                            state.mutation_error = Some(message);
+                                        });
+                                    }
+                                }
+                            }),
+                    );
+                }
+                (
+                    text.manage_skill_dialog_delete_title.clone(),
+                    content,
+                    footer,
+                )
+            }
+        };
+        dialog
+            .title(div().child(title))
+            .child(content.debug_selector(|| "skill-dialog".to_string()))
+            .footer(footer)
+    });
+}
+
+fn skill_level_row(active_project: bool, text: &ShellText) -> gpui_kit::AnyElement {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .child(skill_level_button(
+            "skill-level-user",
+            text.manage_skill_user.clone(),
+            !active_project,
+            false,
+        ))
+        .child(skill_level_button(
+            "skill-level-project",
+            text.manage_skill_project.clone(),
+            active_project,
+            true,
+        ))
+        .into_any_element()
+}
+
+fn skill_level_button(
+    id: &'static str,
+    label: String,
+    active: bool,
+    project: bool,
+) -> gpui_kit::AnyElement {
+    Button::new(id)
+        .label(label)
+        .small()
+        .with_variant(if active {
+            ButtonVariant::Primary
+        } else {
+            ButtonVariant::Ghost
+        })
+        .on_click(move |_, _window, cx| {
+            SkillDialogsState::mutate(cx, |state| {
+                state.add_project = project;
+                state.validation = None;
+                state.mutation_error = None;
+            });
+        })
+        .into_any_element()
+}
+
+fn skill_validation_line(
+    result: &Result<SkillValidationRow, String>,
+    text: &ShellText,
+    cx: &App,
+) -> gpui_kit::AnyElement {
+    match result {
+        Ok(row) if row.valid => {
+            let mut column = div()
+                .v_flex()
+                .gap_1()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().success)
+                        .child(text.manage_skill_valid.clone()),
+                )
+                .when_some(row.name.clone(), |column, name| {
+                    column.child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().foreground)
+                            .child(name),
+                    )
+                });
+            if let Some(description) = row.description.clone() {
+                column = column.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .whitespace_normal()
+                        .child(description),
+                );
+            }
+            column.into_any_element()
+        }
+        Ok(row) => div()
+            .text_xs()
+            .text_color(cx.theme().danger)
+            .whitespace_normal()
+            .child(
+                row.error
+                    .as_ref()
+                    .map(|error| i18n::skill_validation_error(error, cx))
+                    .unwrap_or_else(|| text.manage_skill_invalid.clone()),
+            )
+            .into_any_element(),
+        Err(detail) => div()
+            .text_xs()
+            .text_color(cx.theme().danger)
+            .whitespace_normal()
+            .child(i18n::skill_validation_failed(detail, cx))
+            .into_any_element(),
     }
 }
 
@@ -5099,6 +5678,8 @@ mod tests {
             group_key: group.map(str::to_string),
             source_id: source.0.to_string(),
             source_label: source.1.to_string(),
+            path: String::new(),
+            deletable: false,
         }
     }
 
@@ -5216,6 +5797,8 @@ mod tests {
                     group_key: None,
                     source_id: String::new(),
                     source_label: String::new(),
+                    path: String::new(),
+                    deletable: false,
                 }],
             });
             cx.set_global(crate::i18n::fallback_text(
@@ -5237,7 +5820,8 @@ mod tests {
                 // facet page; that environment is where the wrap broke.
                 Settings::new("skills-wrap-probe")
                     .sidebar_width(gpui_kit::px(180.))
-                    .pages(vec![SettingPage::new("Tools").group(skills_group(&text))])
+                    .pages(vec![SettingPage::new("Tools")
+                        .group(skills_group(&text, WeakEntity::new_invalid()))])
                     .into_any_element()
             }
         }
@@ -5288,6 +5872,8 @@ mod tests {
             group_key: None,
             source_id: "openbitfun".to_string(),
             source_label: "OpenBitFun".to_string(),
+            path: String::new(),
+            deletable: false,
         }
     }
 

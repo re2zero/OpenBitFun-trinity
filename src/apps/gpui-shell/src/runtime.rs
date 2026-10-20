@@ -423,6 +423,12 @@ pub(crate) enum RuntimeEvent {
     /// M21 management catalogs for the settings pages (skills, agents, MCP
     /// servers). Each replaces the corresponding gpui global wholesale.
     SkillCatalog(crate::manage::SkillCatalog),
+    /// G-K3: the add-skill source path passed the filesystem/SKILL.md check.
+    SkillValidationFinished(Result<crate::manage::SkillValidationRow, String>),
+    /// G-K3: an add/delete write settled; the success arm also refreshes the
+    /// catalog.
+    SkillAdded(Result<String, String>),
+    SkillDeleted(Result<String, String>),
     AgentCatalog(crate::manage::AgentCatalog),
     McpCatalog(crate::manage::McpCatalog),
     /// T2-11: the skill selection projection for one agent (mode profile
@@ -2019,6 +2025,43 @@ impl RuntimeHandle {
         });
     }
 
+    /// G-K3: checks an add-skill source directory without writing anything.
+    pub(crate) fn validate_skill_path(&self, path: String) {
+        self.tokio.spawn(async move {
+            publish(RuntimeEvent::SkillValidationFinished(
+                validate_skill_source(path).await,
+            ));
+        });
+    }
+
+    /// G-K3: copies one validated skill directory into the user or project
+    /// skills root, then re-reads the catalog.
+    pub(crate) fn add_skill(&self, source_path: String, project_level: bool) {
+        let workspace = self.workspace();
+        self.tokio.spawn(async move {
+            let result = add_skill_folder(&workspace, source_path, project_level).await;
+            if result.is_ok() {
+                let catalog = fetch_skill_catalog(&workspace.root_path, &workspace.id).await;
+                publish(RuntimeEvent::SkillCatalog(catalog));
+            }
+            publish(RuntimeEvent::SkillAdded(result));
+        });
+    }
+
+    /// G-K3: removes one OpenBitFun-owned, non-built-in skill directory after
+    /// checking it really sits under the managed skills root.
+    pub(crate) fn delete_skill(&self, skill_key: String) {
+        let workspace = self.workspace();
+        self.tokio.spawn(async move {
+            let result = delete_skill_folder(&workspace, &skill_key).await;
+            if result.is_ok() {
+                let catalog = fetch_skill_catalog(&workspace.root_path, &workspace.id).await;
+                publish(RuntimeEvent::SkillCatalog(catalog));
+            }
+            publish(RuntimeEvent::SkillDeleted(result));
+        });
+    }
+
     /// M21: mode and subagent cards for the agents management page.
     pub(crate) fn reload_agent_catalog(&self) {
         let workspace = self.workspace();
@@ -3048,6 +3091,7 @@ async fn fetch_skill_catalog(root: &Path, workspace_id: &str) -> crate::manage::
         .into_iter()
         .map(|skill| {
             let project_level = matches!(skill.level, SkillLocation::Project);
+            let deletable = !skill.is_builtin && skill.is_native();
             crate::manage::SkillRow {
                 disabled: crate::manage::SkillRow::disabled_for(
                     &skill.key,
@@ -3065,6 +3109,8 @@ async fn fetch_skill_catalog(root: &Path, workspace_id: &str) -> crate::manage::
                 group_key: skill.group_key.filter(|key| !key.trim().is_empty()),
                 source_id: skill.source_id,
                 source_label: skill.source_label,
+                path: skill.path,
+                deletable,
             }
         })
         .collect();
@@ -3072,6 +3118,175 @@ async fn fetch_skill_catalog(root: &Path, workspace_id: &str) -> crate::manage::
         loaded: true,
         skills: rows,
     }
+}
+
+/// G-K3: checks a folder the user typed into the add-skill dialog. The
+/// directory must exist, be a directory, and contain a parseable `SKILL.md`;
+/// only unexpected IO failures surface as `Err`.
+async fn validate_skill_source(path: String) -> Result<crate::manage::SkillValidationRow, String> {
+    use openbitfun_core::agentic::tools::implementations::skills::{SkillData, SkillLocation};
+
+    use crate::manage::{SkillValidationError, SkillValidationRow};
+
+    let invalid = |error| {
+        Ok(SkillValidationRow {
+            valid: false,
+            name: None,
+            description: None,
+            error: Some(error),
+        })
+    };
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return invalid(SkillValidationError::Empty);
+    }
+    let skill_path = Path::new(trimmed);
+    let metadata = match tokio::fs::metadata(skill_path).await {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return invalid(SkillValidationError::NotFound)
+        }
+        Err(error) => {
+            tracing::warn!("Failed to inspect skill path {trimmed}: {error}");
+            return invalid(SkillValidationError::Unreadable);
+        }
+    };
+    if !metadata.is_dir() {
+        return invalid(SkillValidationError::NotDirectory);
+    }
+    let content = match tokio::fs::read_to_string(skill_path.join("SKILL.md")).await {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return invalid(SkillValidationError::MissingSkillFile)
+        }
+        Err(error) => {
+            tracing::warn!("Failed to read SKILL.md under {trimmed}: {error}");
+            return invalid(SkillValidationError::Unreadable);
+        }
+    };
+    match SkillData::from_markdown(trimmed.to_string(), &content, SkillLocation::User, false) {
+        Ok(data) => Ok(SkillValidationRow {
+            valid: true,
+            name: Some(data.name),
+            description: Some(data.description),
+            error: None,
+        }),
+        Err(error) => invalid(SkillValidationError::Parse(error.to_string())),
+    }
+}
+
+/// G-K3: copies one validated skill folder into the managed skills root. The
+/// source is canonicalized first so a folder cannot be copied into itself, and
+/// the target must not already exist (desktop `add_skill`).
+async fn add_skill_folder(
+    workspace: &WorkspaceInfo,
+    source_path: String,
+    project_level: bool,
+) -> Result<String, String> {
+    let validation = validate_skill_source(source_path.clone()).await?;
+    if !validation.valid {
+        return Err("The selected folder is not a valid skill".to_string());
+    }
+    let source = PathBuf::from(source_path.trim());
+    let paths = try_get_path_manager_arc().map_err(|error| error.to_string())?;
+    let target_dir = if project_level {
+        paths.project_root(&workspace.root_path).join("skills")
+    } else {
+        paths.user_skills_dir()
+    };
+    tokio::fs::create_dir_all(&target_dir)
+        .await
+        .map_err(|error| format!("Failed to create the skills directory: {error}"))?;
+    let folder_name = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "Unable to read the skill folder name".to_string())?
+        .to_string();
+    let canonical_source = tokio::fs::canonicalize(&source)
+        .await
+        .map_err(|error| format!("Failed to read the skill folder: {error}"))?;
+    let canonical_target_dir = tokio::fs::canonicalize(&target_dir)
+        .await
+        .map_err(|error| format!("Failed to read the skills directory: {error}"))?;
+    let target_path = canonical_target_dir.join(&folder_name);
+    if target_path.exists() {
+        return Err(format!(
+            "Skill '{folder_name}' already exists in the {} skills directory",
+            if project_level { "project" } else { "user" }
+        ));
+    }
+    if canonical_target_dir.starts_with(&canonical_source) {
+        return Err("Cannot copy a skill folder into itself".to_string());
+    }
+    copy_dir_all(&canonical_source, &target_path)
+        .await
+        .map_err(|error| format!("Failed to copy the skill folder: {error}"))?;
+    Ok(format!(
+        "Skill '{}' added successfully",
+        validation.name.unwrap_or(folder_name)
+    ))
+}
+
+/// G-K3: removes one skill bundle after proving the registry path sits under
+/// the managed user/project skills root, so stale or hostile records cannot
+/// delete anything outside it.
+async fn delete_skill_folder(workspace: &WorkspaceInfo, skill_key: &str) -> Result<String, String> {
+    use openbitfun_agent_runtime::skills::SkillLocation;
+    use openbitfun_core::agentic::tools::implementations::skills::SkillRegistry;
+
+    let registry = SkillRegistry::global();
+    let skill = registry
+        .find_skill_by_key_for_workspace(skill_key, Some(&workspace.root_path))
+        .await
+        .ok_or_else(|| format!("Skill '{skill_key}' not found"))?;
+    if skill.is_builtin || !skill.is_native() {
+        return Err(
+            "Only OpenBitFun-owned, non-built-in Skills can be deleted from OpenBitFun".to_string(),
+        );
+    }
+    let paths = try_get_path_manager_arc().map_err(|error| error.to_string())?;
+    let managed_root = match skill.level {
+        SkillLocation::User => paths.user_skills_dir(),
+        SkillLocation::Project => paths.project_root(&workspace.root_path).join("skills"),
+    };
+    let canonical_root = tokio::fs::canonicalize(&managed_root)
+        .await
+        .map_err(|error| format!("Failed to read the skills directory: {error}"))?;
+    let skill_path = PathBuf::from(&skill.path);
+    let metadata = tokio::fs::metadata(&skill_path)
+        .await
+        .map_err(|error| format!("Failed to read the skill folder: {error}"))?;
+    if !metadata.is_dir() {
+        return Err("The skill is not stored as a directory bundle".to_string());
+    }
+    let canonical_skill = tokio::fs::canonicalize(&skill_path)
+        .await
+        .map_err(|error| format!("Failed to read the skill folder: {error}"))?;
+    if !canonical_skill.starts_with(&canonical_root) {
+        return Err("Refusing to delete a skill outside the managed skills directory".to_string());
+    }
+    tokio::fs::remove_dir_all(&canonical_skill)
+        .await
+        .map_err(|error| format!("Failed to delete the skill folder: {error}"))?;
+    Ok(format!("Skill '{}' deleted", skill.name))
+}
+
+/// Recursive directory copy for skill bundles (desktop `copy_dir_all`; files
+/// follow symlinks the same way `tokio::fs::copy` does).
+async fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+    tokio::fs::create_dir_all(dst).await?;
+    let mut entries = tokio::fs::read_dir(src).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let metadata = entry.metadata().await?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if metadata.is_dir() {
+            Box::pin(copy_dir_all(&src_path, &dst_path)).await?;
+        } else {
+            tokio::fs::copy(&src_path, &dst_path).await?;
+        }
+    }
+    Ok(())
 }
 
 /// T2-11: the per-agent skill selection projection (web `ModeSkillInfo[]`).

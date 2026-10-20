@@ -2045,6 +2045,8 @@ pub(crate) struct ShellWindow {
     pub(crate) task_editor_session: Option<String>,
     pub(crate) task_editor_enabled: bool,
     pub(crate) task_editor_error: Option<String>,
+    /// G-K2/G-K3: the add-skill path field.
+    pub(crate) skill_path_input: Entity<InputState>,
     /// R7b plugin UI contributions: the projection (fixture provider behind
     /// the env gate) plus the per-scene shell runtime (control entities and
     /// visible diagnostics). Rendering dispatches through `crate::plugin_ui`.
@@ -2132,6 +2134,7 @@ impl ShellWindow {
             cx.new(|cx| InputState::new(window, cx).placeholder("YYYY-MM-DDTHH:MM"));
         let task_cron_input = cx.new(|cx| InputState::new(window, cx).placeholder("0 8 * * *"));
         let task_tz_input = cx.new(|cx| InputState::new(window, cx).placeholder("Asia/Shanghai"));
+        let skill_path_input = cx.new(|cx| InputState::new(window, cx));
         let settings_search_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(text.settings_nav_search_placeholder.clone())
         });
@@ -2306,6 +2309,7 @@ impl ShellWindow {
             task_anchor_input,
             task_cron_input,
             task_tz_input,
+            skill_path_input,
             task_editor_target: None,
             task_editor_kind: crate::tasks::TaskScheduleKind::At,
             task_editor_unit: crate::tasks::TaskIntervalUnit::Hour,
@@ -3151,6 +3155,45 @@ impl ShellWindow {
                 cx.set_global(catalog);
                 cx.refresh_windows();
             }
+            RuntimeEvent::SkillValidationFinished(result) => {
+                crate::manage::SkillDialogsState::mutate(cx, |state| {
+                    state.busy = false;
+                    state.validation = Some(result);
+                });
+            }
+            RuntimeEvent::SkillAdded(result) => match result {
+                Ok(message) => {
+                    tracing::info!("{message}");
+                    crate::manage::SkillDialogsState::mutate(cx, |state| {
+                        state.dialog = None;
+                        state.busy = false;
+                        state.validation = None;
+                        state.mutation_error = None;
+                    });
+                    window.close_dialog(cx);
+                }
+                Err(error) => {
+                    crate::manage::SkillDialogsState::mutate(cx, |state| {
+                        state.busy = false;
+                        state.mutation_error = Some(error);
+                    });
+                }
+            },
+            RuntimeEvent::SkillDeleted(result) => match result {
+                Ok(message) => {
+                    tracing::info!("{message}");
+                    crate::manage::SkillDialogsState::mutate(cx, |state| {
+                        state.dialog = None;
+                        state.mutation_error = None;
+                    });
+                    window.close_dialog(cx);
+                }
+                Err(error) => {
+                    crate::manage::SkillDialogsState::mutate(cx, |state| {
+                        state.mutation_error = Some(error);
+                    });
+                }
+            },
             RuntimeEvent::AgentCatalog(catalog) => {
                 cx.set_global(catalog);
                 if self.agent_create_active {
@@ -11655,6 +11698,8 @@ mod tests {
                             group_key: None,
                             source_id: String::new(),
                             source_label: String::new(),
+                            path: String::new(),
+                            deletable: false,
                         }],
                     }),
                     window,

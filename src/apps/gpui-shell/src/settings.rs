@@ -1355,7 +1355,7 @@ pub(crate) fn entry_group(
         SettingsEntry::Permissions => permissions_group(text, cx),
         SettingsEntry::Automation => automation_group(text, cx),
         SettingsEntry::WebSearch => websearch_group(text, view, cx),
-        SettingsEntry::Skills => crate::manage::skills_group(text),
+        SettingsEntry::Skills => crate::manage::skills_group(text, view),
         SettingsEntry::Agents => crate::manage::agents_group(text, view, cx),
         SettingsEntry::Mcp => crate::manage::mcp_group(text, view),
         SettingsEntry::Usage => usage_group(text, view),
