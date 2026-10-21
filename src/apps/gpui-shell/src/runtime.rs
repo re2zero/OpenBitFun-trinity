@@ -443,6 +443,19 @@ pub(crate) enum RuntimeEvent {
     },
     /// T2-12: the custom-agent definition for the edit dialog prefill.
     AgentDetail(Result<crate::manage::AgentDetailRow, String>),
+    /// G-A1/G-A2/G-A4: the detail dialog's editable tools and SubAgent toggles.
+    /// The profile id travels with the result so a stale load cannot land in a
+    /// dialog that was reopened for another agent.
+    AgentCapabilities {
+        profile_id: String,
+        result: Result<crate::manage::AgentDetailPayload, String>,
+    },
+    /// G-A1/G-A2: a tools/SubAgent write settled; Ok carries the refreshed
+    /// payload.
+    AgentCapabilitiesSaved {
+        profile_id: String,
+        result: Result<crate::manage::AgentDetailPayload, String>,
+    },
     /// Resources/prompts snapshot for one MCP server (browse dialog).
     McpServerCatalog(Box<crate::manage::McpServerCatalogView>),
     /// An MCP server asked for an interactive decision (elicitation or
@@ -2269,6 +2282,93 @@ impl RuntimeHandle {
         });
     }
 
+    /// G-A1/G-A2: loads the detail dialog's tool list (primary agents only)
+    /// and manageable SubAgents for one profile id.
+    pub(crate) fn load_agent_capabilities(&self, profile_id: String, mode_kind: bool) {
+        let workspace = self.workspace();
+        self.tokio.spawn(async move {
+            let result = fetch_agent_detail_payload(&profile_id, mode_kind, &workspace).await;
+            publish(RuntimeEvent::AgentCapabilities { profile_id, result });
+        });
+    }
+
+    /// G-A1: replaces the profile's enabled tool list (web `handleSetTools`).
+    pub(crate) fn save_agent_tools(&self, profile_id: String, tools: Vec<String>, mode_kind: bool) {
+        let workspace = self.workspace();
+        self.tokio.spawn(async move {
+            let write = openbitfun_core::service::config::mode_config_canonicalizer::persist_agent_profile_from_value(
+                &profile_id,
+                serde_json::json!({ "enabled_tools": tools }),
+            )
+            .await;
+            let result = match write {
+                Ok(()) => fetch_agent_detail_payload(&profile_id, mode_kind, &workspace).await,
+                Err(error) => Err(format!("Failed to save agent tools: {error}")),
+            };
+            publish(RuntimeEvent::AgentCapabilitiesSaved { profile_id, result });
+        });
+    }
+
+    /// G-A1: drops the stored profile so the agent falls back to its default
+    /// tool set (web `handleResetTools`).
+    pub(crate) fn reset_agent_tools(&self, profile_id: String, mode_kind: bool) {
+        let workspace = self.workspace();
+        self.tokio.spawn(async move {
+            let reset = openbitfun_core::service::config::mode_config_canonicalizer::reset_agent_profile_to_default(&profile_id).await;
+            let result = match reset {
+                Ok(()) => fetch_agent_detail_payload(&profile_id, mode_kind, &workspace).await,
+                Err(error) => Err(format!("Failed to reset agent tools: {error}")),
+            };
+            publish(RuntimeEvent::AgentCapabilitiesSaved { profile_id, result });
+        });
+    }
+
+    /// G-A2: writes every changed SubAgent toggle for a parent profile (web
+    /// `saveCurrentCapability` loops `updateSubagentConfig`), then refreshes
+    /// the detail payload and the catalog (visibility counts) once.
+    pub(crate) fn save_agent_subagents(
+        &self,
+        profile_id: String,
+        changes: Vec<(String, bool)>,
+        mode_kind: bool,
+    ) {
+        let workspace = self.workspace();
+        self.tokio.spawn(async move {
+            let registry = openbitfun_core::agentic::agents::get_agent_registry();
+            registry.load_custom_subagents(workspace.id.as_str()).await;
+            let mut failure = None;
+            let mut wrote = false;
+            for (subagent_id, enabled) in changes {
+                match registry
+                    .update_subagent_override(
+                        &profile_id,
+                        &subagent_id,
+                        enabled,
+                        Some(workspace.id.as_str()),
+                    )
+                    .await
+                {
+                    Ok(()) => wrote = true,
+                    Err(error) => {
+                        failure = Some(format!(
+                            "Failed to update SubAgent availability for {subagent_id}: {error}"
+                        ));
+                        break;
+                    }
+                }
+            }
+            let result = match failure {
+                Some(error) => Err(error),
+                None => fetch_agent_detail_payload(&profile_id, mode_kind, &workspace).await,
+            };
+            if wrote {
+                let catalog = fetch_agent_catalog(Some(&workspace.id)).await;
+                publish(RuntimeEvent::AgentCatalog(catalog));
+            }
+            publish(RuntimeEvent::AgentCapabilitiesSaved { profile_id, result });
+        });
+    }
+
     /// G-A3: stores one subagent's model override (web
     /// `updateSubagentConfig`). Builtin subagents persist under the shared
     /// `ai.agent_model_defaults.subagents.builtin` map; custom file-backed
@@ -3483,6 +3583,79 @@ async fn clear_mode_skill_selection(
     }
 }
 
+/// G-A1/G-A2: the detail dialog payload. Primary agents get the editable tool
+/// catalog plus the manageable SubAgent list for their profile; SubAgent rows
+/// get neither (their capabilities are read-only in the web as well).
+async fn fetch_agent_detail_payload(
+    profile_id: &str,
+    mode_kind: bool,
+    workspace: &openbitfun_core::service::workspace::WorkspaceInfo,
+) -> Result<crate::manage::AgentDetailPayload, String> {
+    use openbitfun_core::service::config::mode_config_canonicalizer::get_agent_profile_view;
+
+    if !mode_kind {
+        // SubAgent detail shows catalog facts only; the profile view exists
+        // for mode defaults, not for SubAgent ids.
+        return Ok(crate::manage::AgentDetailPayload {
+            tools: Vec::new(),
+            subagents: Vec::new(),
+        });
+    }
+    let view = get_agent_profile_view(profile_id)
+        .await
+        .map_err(|error| format!("Failed to read the agent profile: {error}"))?;
+    let enabled: std::collections::HashSet<&str> =
+        view.enabled_tools.iter().map(String::as_str).collect();
+    let mut tools = Vec::new();
+    for tool in openbitfun_core::agentic::tools::get_all_registered_tools().await {
+        let name = tool.name().to_string();
+        if !crate::manage::agent_tool_configurable(&name) {
+            continue;
+        }
+        let description = tool.description().await.unwrap_or_default();
+        tools.push(crate::manage::AgentToolRow {
+            enabled: enabled.contains(name.as_str()),
+            name,
+            description,
+        });
+    }
+    tools.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
+    let subagents = fetch_manageable_subagents(profile_id, workspace).await;
+    Ok(crate::manage::AgentDetailPayload { tools, subagents })
+}
+
+async fn fetch_manageable_subagents(
+    profile_id: &str,
+    workspace: &openbitfun_core::service::workspace::WorkspaceInfo,
+) -> Vec<crate::manage::AgentSubagentRow> {
+    use openbitfun_core::agentic::agents::{
+        get_agent_registry, AgentSource, SubagentListScope, SubagentQueryContext,
+    };
+
+    get_agent_registry()
+        .get_subagents_for_query(&SubagentQueryContext {
+            parent_agent_type: Some(profile_id),
+            workspace_id: Some(workspace.id.as_str()),
+            list_scope: SubagentListScope::RegistryManagement,
+            include_disabled: true,
+            external_sources_supported: true,
+        })
+        .await
+        .into_iter()
+        .map(|info| {
+            let external = matches!(info.source, AgentSource::External);
+            crate::manage::AgentSubagentRow {
+                id: info.id,
+                name: info.name,
+                description: info.description,
+                enabled: info.effective_enabled,
+                default_enabled: info.default_enabled,
+                external,
+            }
+        })
+        .collect()
+}
+
 async fn fetch_agent_catalog(workspace_id: Option<&str>) -> crate::manage::AgentCatalog {
     use openbitfun_core::agentic::agents::{get_agent_registry, AgentSource};
 
@@ -3527,6 +3700,15 @@ async fn fetch_agent_catalog(workspace_id: Option<&str>) -> crate::manage::Agent
                 .get(&info.id)
                 .cloned()
                 .unwrap_or_else(|| info.id.clone());
+            let profile_member_ids = if info.config_profile_member_mode_ids.is_empty() {
+                vec![info.id.clone()]
+            } else {
+                info.config_profile_member_mode_ids.clone()
+            };
+            let profile_id = info
+                .config_profile_id
+                .clone()
+                .unwrap_or_else(|| info.id.clone());
             crate::manage::AgentCardRow {
                 id: info.id,
                 name: info.name,
@@ -3536,12 +3718,18 @@ async fn fetch_agent_catalog(workspace_id: Option<&str>) -> crate::manage::Agent
                 review: info.is_review,
                 source: map_source(&info.source),
                 enabled: None,
-                // The shell has no mode tool-config editor, so the default
-                // tool set is the shell-visible truth (web hasSkillTool).
+                // G-A1: the default tool set decides the editable tool list
+                // and whether the Task subagent selector applies.
                 skills_manageable: info.default_tools.iter().any(|tool| tool == "Skill"),
                 skills_mode_id,
                 // G-A3: model overrides apply to subagents only.
                 model_override: None,
+                supports_follow_up: info.supports_follow_up,
+                external_provider_label: info.external_provider_label,
+                default_tools: info.default_tools,
+                profile_id,
+                profile_label: info.config_profile_label,
+                profile_member_ids,
             }
         })
         .collect();
@@ -3567,6 +3755,7 @@ async fn fetch_agent_catalog(workspace_id: Option<&str>) -> crate::manage::Agent
             } else {
                 None
             };
+            let agent_id = info.id.clone();
             crate::manage::AgentCardRow {
                 id: info.id.clone(),
                 name: info.name,
@@ -3582,6 +3771,12 @@ async fn fetch_agent_catalog(workspace_id: Option<&str>) -> crate::manage::Agent
                 // the agent id when no mode profile exists).
                 skills_mode_id: info.id,
                 model_override,
+                supports_follow_up: info.supports_follow_up,
+                external_provider_label: info.external_provider_label,
+                default_tools: info.default_tools,
+                profile_id: agent_id.clone(),
+                profile_label: None,
+                profile_member_ids: vec![agent_id],
             }
         })
         .collect();

@@ -560,6 +560,24 @@ pub(crate) struct ShellText {
     pub skill_group_up: String,
     pub skill_group_down: String,
     pub skill_group_delete: String,
+    /// G-A1/G-A2/G-A4: the agent detail dialog.
+    pub agent_detail_open: String,
+    pub agent_detail_missing: String,
+    pub agent_detail_type: String,
+    pub agent_detail_source: String,
+    pub agent_detail_follow_up: String,
+    pub agent_detail_supported: String,
+    pub agent_detail_unsupported: String,
+    pub agent_detail_capabilities: String,
+    pub agent_detail_shared_profile: String,
+    pub agent_detail_shared_default: String,
+    pub agent_detail_tools: String,
+    pub agent_detail_subagents: String,
+    pub agent_detail_loading: String,
+    pub agent_detail_no_subagents: String,
+    pub agent_detail_save: String,
+    pub agent_detail_reset: String,
+    pub agent_detail_close: String,
     /// R4 facet sidebar: group titles and the market degrade card.
     pub skills_facet_library: String,
     pub skills_facet_all: String,
@@ -1455,6 +1473,56 @@ pub(crate) fn group_edit_error(error: crate::manage::GroupEditError, cx: &App) -
         GroupEditError::Conflict => "gpui-shell-skill-groups-conflict",
     };
     resolve_with(key, TranslationArgs::new(), cx)
+}
+
+pub(crate) fn agent_capability_label(
+    category: crate::manage::AgentCapabilityCategory,
+    cx: &App,
+) -> String {
+    use crate::manage::AgentCapabilityCategory;
+    let key = match category {
+        AgentCapabilityCategory::Coding => "gpui-shell-capability-coding",
+        AgentCapabilityCategory::Docs => "gpui-shell-capability-docs",
+        AgentCapabilityCategory::Analysis => "gpui-shell-capability-analysis",
+        AgentCapabilityCategory::Testing => "gpui-shell-capability-testing",
+        AgentCapabilityCategory::Creative => "shared.agents.Creative",
+        AgentCapabilityCategory::Ops => "gpui-shell-capability-ops",
+    };
+    resolve_with(key, TranslationArgs::new(), cx)
+}
+
+pub(crate) fn agent_external_provider(source: &str, provider: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-agent-external-provider",
+        TranslationArgs::new()
+            .with_string("source", source.to_string())
+            .with_string("provider", provider.to_string()),
+        cx,
+    )
+}
+
+pub(crate) fn agent_shared_profile_description(modes: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-agent-shared-profile-description",
+        TranslationArgs::new().with_string("modes", modes.to_string()),
+        cx,
+    )
+}
+
+pub(crate) fn agent_tools_selected(count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-agent-tools-selected",
+        TranslationArgs::new().with_string("count", count.to_string()),
+        cx,
+    )
+}
+
+pub(crate) fn agent_subagents_selected(count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-agent-subagents-selected",
+        TranslationArgs::new().with_string("count", count.to_string()),
+        cx,
+    )
 }
 
 /// G-SE12: the verdict line of a finished connection test, with the wall
@@ -2506,6 +2574,23 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         skill_group_up: "Move up".to_string(),
         skill_group_down: "Move down".to_string(),
         skill_group_delete: "Delete".to_string(),
+        agent_detail_open: "Details".to_string(),
+        agent_detail_missing: "This agent is no longer in the catalog.".to_string(),
+        agent_detail_type: "Type".to_string(),
+        agent_detail_source: "Source".to_string(),
+        agent_detail_follow_up: "Follow-up".to_string(),
+        agent_detail_supported: "Supported".to_string(),
+        agent_detail_unsupported: "Not supported".to_string(),
+        agent_detail_capabilities: "Capabilities".to_string(),
+        agent_detail_shared_profile: "Shared profile".to_string(),
+        agent_detail_shared_default: "Shared coding profile".to_string(),
+        agent_detail_tools: "Tools".to_string(),
+        agent_detail_subagents: "SubAgents".to_string(),
+        agent_detail_loading: "Loading…".to_string(),
+        agent_detail_no_subagents: "No manageable SubAgents available".to_string(),
+        agent_detail_save: "Save".to_string(),
+        agent_detail_reset: "Reset".to_string(),
+        agent_detail_close: "Close".to_string(),
         skills_facet_library: "Library".to_string(),
         skills_facet_all: "All".to_string(),
         skills_facet_groups: "Skill groups".to_string(),
@@ -3838,6 +3923,23 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         skill_group_up: service.t("gpui-shell-skill-group-up").await,
         skill_group_down: service.t("gpui-shell-skill-group-down").await,
         skill_group_delete: service.t("gpui-shell-skill-group-delete").await,
+        agent_detail_open: service.t("gpui-shell-agent-detail-open").await,
+        agent_detail_missing: service.t("gpui-shell-agent-detail-missing").await,
+        agent_detail_type: service.t("gpui-shell-agent-detail-type").await,
+        agent_detail_source: service.t("gpui-shell-agent-detail-source").await,
+        agent_detail_follow_up: service.t("gpui-shell-agent-detail-follow-up").await,
+        agent_detail_supported: service.t("gpui-shell-agent-detail-supported").await,
+        agent_detail_unsupported: service.t("gpui-shell-agent-detail-unsupported").await,
+        agent_detail_capabilities: service.t("gpui-shell-agent-detail-capabilities").await,
+        agent_detail_shared_profile: service.t("gpui-shell-agent-detail-shared-profile").await,
+        agent_detail_shared_default: service.t("gpui-shell-agent-detail-shared-default").await,
+        agent_detail_tools: service.t("gpui-shell-agent-detail-tools").await,
+        agent_detail_subagents: service.t("gpui-shell-agent-detail-subagents").await,
+        agent_detail_loading: service.t("gpui-shell-agent-detail-loading").await,
+        agent_detail_no_subagents: service.t("gpui-shell-agent-detail-no-subagents").await,
+        agent_detail_save: service.t("gpui-shell-agent-detail-save").await,
+        agent_detail_reset: service.t("gpui-shell-agent-detail-reset").await,
+        agent_detail_close: service.t("gpui-shell-agent-detail-close").await,
         skills_facet_library: service.t("gpui-shell-skills-facet-library").await,
         skills_facet_all: service.t("gpui-shell-skills-facet-all").await,
         skills_facet_groups: service.t("gpui-shell-skills-facet-groups").await,

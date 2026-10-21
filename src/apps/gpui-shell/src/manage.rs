@@ -566,6 +566,18 @@ pub(crate) struct AgentCardRow {
     /// SubAgent model). Always `None` for modes and external subagents.
     pub(crate) model_override:
         Option<openbitfun_core::service::config::types::SubagentModelSelection>,
+    /// G-A4: `false` only for external projections that cannot answer a
+    /// follow-up turn (core `AgentInfo.supports_follow_up`).
+    pub(crate) supports_follow_up: bool,
+    /// G-A4: the external provider name shown next to the source.
+    pub(crate) external_provider_label: Option<String>,
+    /// G-A1/G-A2: the default tool set decides whether the tools tab is
+    /// editable and whether the Task subagent selector applies.
+    pub(crate) default_tools: Vec<String>,
+    /// G-A4: modes sharing one stored profile (web `configProfile*`).
+    pub(crate) profile_id: String,
+    pub(crate) profile_label: Option<String>,
+    pub(crate) profile_member_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -580,6 +592,170 @@ impl Global for AgentCatalog {}
 impl AgentCatalog {
     pub(crate) fn try_current(cx: &App) -> Option<Self> {
         cx.try_global::<Self>().cloned()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// G-A1/G-A2/G-A4: the agent detail dialog (tools, SubAgents, facts)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentCapabilityCategory {
+    Coding,
+    Docs,
+    Analysis,
+    /// The web's category set includes Testing, but core does not project
+    /// capability categories yet, so the shell heuristic never emits it.
+    #[allow(dead_code)]
+    Testing,
+    Creative,
+    Ops,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AgentCapabilityRow {
+    pub(crate) category: AgentCapabilityCategory,
+    pub(crate) level: u8,
+}
+
+/// G-A4: the web `enrichCapabilities` heuristic. The levels are a presentation
+/// default keyed by the well-known agent ids, not runtime measurements; the
+/// shell ports the same table so both surfaces show the same bars.
+pub(crate) fn agent_capabilities(card: &AgentCardRow, mode_kind: bool) -> Vec<AgentCapabilityRow> {
+    use AgentCapabilityCategory::{Analysis, Coding, Creative, Docs, Ops};
+    let id = card.id.to_lowercase();
+    let rows: Vec<(AgentCapabilityCategory, u8)> = if mode_kind {
+        match id.as_str() {
+            "standard" => vec![(Coding, 5), (Analysis, 4)],
+            "plan" => vec![(Analysis, 5), (Docs, 3)],
+            "cowork" => vec![(Analysis, 4), (Creative, 3)],
+            "computeruse" => vec![(Ops, 5), (Analysis, 3)],
+            "deepresearch" => vec![(Analysis, 5), (Docs, 4)],
+            _ => Vec::new(),
+        }
+    } else {
+        match id.as_str() {
+            "explore" | "researchspecialist" => vec![(Analysis, 4)],
+            "generalpurpose" | "reviewfixer" => vec![(Coding, 4), (Analysis, 4)],
+            _ => Vec::new(),
+        }
+    };
+    rows.into_iter()
+        .map(|(category, level)| AgentCapabilityRow { category, level })
+        .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AgentToolRow {
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AgentSubagentRow {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) enabled: bool,
+    /// The registry default, used by Reset.
+    pub(crate) default_enabled: bool,
+    /// External subagents are listed for context but cannot be toggled.
+    pub(crate) external: bool,
+}
+
+/// G-A1/G-A2: one load of the detail dialog's editable capabilities.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct AgentDetailPayload {
+    pub(crate) tools: Vec<AgentToolRow>,
+    pub(crate) subagents: Vec<AgentSubagentRow>,
+}
+
+/// G-A1/G-A2/G-A4 dialog scratch. The dialog is keyed by the catalog row id;
+/// tools/subagents are `None` until the runtime answers.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct AgentDetailState {
+    pub(crate) agent_id: Option<String>,
+    pub(crate) mode_kind: bool,
+    pub(crate) profile_id: String,
+    pub(crate) tools: Option<Vec<AgentToolRow>>,
+    pub(crate) subagents: Option<Vec<AgentSubagentRow>>,
+    /// Tool names ticked in the dialog (not yet saved).
+    pub(crate) pending_tools: Vec<String>,
+    /// Subagent ids ticked in the dialog (not yet saved).
+    pub(crate) pending_subagents: Vec<String>,
+    pub(crate) tools_error: Option<String>,
+    pub(crate) subagents_error: Option<String>,
+    pub(crate) busy: bool,
+}
+
+impl Global for AgentDetailState {}
+
+impl AgentDetailState {
+    pub(crate) fn current(cx: &App) -> Self {
+        cx.try_global::<Self>().cloned().unwrap_or_default()
+    }
+
+    pub(crate) fn mutate<R>(cx: &mut App, update: impl FnOnce(&mut Self) -> R) -> R {
+        let mut state = Self::current(cx);
+        let result = update(&mut state);
+        cx.set_global(state);
+        cx.refresh_windows();
+        result
+    }
+}
+
+/// G-A1: the web `isAgentProfileConfigurableToolName` rule — user-selectable
+/// product tools only (no internal gateway, cognitive-framework group, or MCP
+/// tool).
+pub(crate) fn agent_tool_configurable(name: &str) -> bool {
+    const HIDDEN: [&str; 7] = [
+        "GetToolSpec",
+        "CallDeferredTool",
+        "trinity_cognitive_state",
+        "trinity_express",
+        "trinity_recall",
+        "trinity_memorize",
+        "trinity_apply_feedback",
+    ];
+    !HIDDEN.contains(&name) && !name.starts_with("mcp__")
+}
+
+/// G-A1/G-A2: a tooltip-sized capability description. Tool descriptions are
+/// multi-paragraph prompts; the checkbox tooltip shows the first non-empty
+/// line only, capped so a long line cannot paint across the window.
+pub(crate) fn agent_tooltip_text(description: &str) -> Option<String> {
+    const LIMIT: usize = 160;
+    let line = description
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?;
+    if line.chars().count() <= LIMIT {
+        return Some(line.to_string());
+    }
+    let mut text: String = line.chars().take(LIMIT).collect();
+    text.push('…');
+    Some(text)
+}
+
+/// G-A1: applies the dialog's pending ticks. A pure helper so the tool list
+/// stays testable without a runtime.
+pub(crate) fn apply_tool_selection(selected: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for name in selected {
+        let name = name.trim();
+        if !name.is_empty() && !out.iter().any(|existing| existing == name) {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+/// G-A2: applies one pending tick to a subagent toggle list.
+pub(crate) fn toggle_subagent_selection(selected: &mut Vec<String>, id: &str, enabled: bool) {
+    selected.retain(|existing| existing != id);
+    if enabled {
+        selected.push(id.to_string());
     }
 }
 
@@ -3652,6 +3828,24 @@ fn agent_cards(
                     .child(text.manage_agent_review.clone()),
             );
         }
+        let detail_view = view.clone();
+        let detail_id = card.id.clone();
+        let detail_mode_kind = kind == AgentListKind::Modes;
+        badges = badges.child(
+            Button::new(SharedString::from(format!("agent-detail-{}", card.id)))
+                .label(text.agent_detail_open.clone())
+                .small()
+                .with_variant(ButtonVariant::Ghost)
+                .on_click(move |_, window, cx| {
+                    open_agent_detail(
+                        detail_view.clone(),
+                        detail_id.clone(),
+                        detail_mode_kind,
+                        window,
+                        cx,
+                    );
+                }),
+        );
         if card.skills_manageable {
             let mode_id = card.skills_mode_id.clone();
             let mode_name = card.name.clone();
@@ -5076,6 +5270,614 @@ pub(crate) fn open_agent_delete_confirm(
                     ),
             )
     });
+}
+
+/// G-A4: opens the agent detail dialog. The basic/capability facts come from
+/// the catalog row; tools and SubAgents are loaded once per open and edited in
+/// place (G-A1/G-A2).
+pub(crate) fn open_agent_detail(
+    view: WeakEntity<ShellWindow>,
+    agent_id: String,
+    mode_kind: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if view.upgrade().is_none() {
+        return;
+    }
+    let Some(catalog) = AgentCatalog::try_current(cx) else {
+        return;
+    };
+    let rows = if mode_kind {
+        &catalog.modes
+    } else {
+        &catalog.subagents
+    };
+    let Some(card) = rows.iter().find(|row| row.id == agent_id).cloned() else {
+        return;
+    };
+    let already_open =
+        window.has_active_dialog(cx) && AgentDetailState::current(cx).agent_id.is_some();
+    AgentDetailState::mutate(cx, |state| {
+        state.agent_id = Some(agent_id.clone());
+        state.mode_kind = mode_kind;
+        state.profile_id = card.profile_id.clone();
+        state.tools = None;
+        state.subagents = None;
+        state.pending_tools.clear();
+        state.pending_subagents.clear();
+        state.tools_error = None;
+        state.subagents_error = None;
+        state.busy = true;
+    });
+    match crate::runtime::runtime_handle() {
+        Some(handle) => handle.load_agent_capabilities(card.profile_id.clone(), mode_kind),
+        None => {
+            let message = i18n::current(cx).manage_skill_runtime_unavailable.clone();
+            AgentDetailState::mutate(cx, |state| {
+                state.busy = false;
+                state.tools_error = Some(message.clone());
+                state.subagents_error = Some(message);
+            });
+        }
+    }
+    if already_open {
+        return;
+    }
+
+    window.open_dialog(cx, move |dialog_el, _window, cx| {
+        let text = i18n::current(cx);
+        let state = AgentDetailState::current(cx);
+        let catalog = AgentCatalog::try_current(cx);
+        let card = state.agent_id.as_ref().and_then(|id| {
+            let catalog = catalog.as_ref()?;
+            if state.mode_kind {
+                catalog.modes.iter().find(|row| &row.id == id)
+            } else {
+                catalog.subagents.iter().find(|row| &row.id == id)
+            }
+        });
+        let Some(card) = card.cloned() else {
+            return dialog_el
+                .w(px(620.))
+                .title(div().child(text.agent_detail_open.clone()))
+                .child(
+                    div()
+                        .w(px(420.))
+                        .text_sm()
+                        .text_color(cx.theme().danger)
+                        .child(text.agent_detail_missing.clone()),
+                )
+                .footer(agent_detail_close_footer(text.clone()));
+        };
+        let muted = cx.theme().muted_foreground;
+        let danger = cx.theme().danger;
+        let foreground = cx.theme().foreground;
+        // The Dialog already wraps its children in a vertical scroll area; a
+        // second cap here hides everything below the fold (the SubAgents
+        // section) behind a nested scroll that never receives the wheel.
+        let mut content = div().w(px(560.)).v_flex().gap_3();
+
+        content = content.child(
+            div()
+                .v_flex()
+                .gap_1()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(foreground)
+                        .whitespace_normal()
+                        .child(card.name.clone()),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(muted)
+                        .whitespace_normal()
+                        .child(card.description.clone()),
+                ),
+        );
+
+        let type_label = if state.mode_kind {
+            text.manage_agents_modes.clone()
+        } else {
+            text.manage_agents_subagents.clone()
+        };
+        let source_label = agent_source_label(card.source, &text);
+        let source_value = match &card.external_provider_label {
+            Some(provider) => i18n::agent_external_provider(&source_label, provider, cx),
+            None => source_label,
+        };
+        let follow_up = if card.supports_follow_up {
+            text.agent_detail_supported.clone()
+        } else {
+            text.agent_detail_unsupported.clone()
+        };
+        content = content.child(
+            div()
+                .v_flex()
+                .gap_1()
+                .child(agent_fact_row(
+                    text.agent_detail_type.clone(),
+                    type_label,
+                    cx,
+                ))
+                .child(agent_fact_row(
+                    text.agent_detail_source.clone(),
+                    source_value,
+                    cx,
+                ))
+                .child(agent_fact_row(
+                    text.agent_detail_follow_up.clone(),
+                    follow_up,
+                    cx,
+                )),
+        );
+
+        let capabilities = agent_capabilities(&card, state.mode_kind);
+        if !capabilities.is_empty() {
+            let mut grid = div().v_flex().gap_1();
+            for capability in capabilities {
+                let mut pips = div().flex().flex_row().items_center().gap_0p5();
+                let color = agent_capability_color(capability.category, cx);
+                for index in 0..5 {
+                    pips = pips.child(div().w(px(12.)).h(px(5.)).rounded_sm().bg(
+                        if index < capability.level {
+                            color
+                        } else {
+                            cx.theme().border
+                        },
+                    ));
+                }
+                grid = grid.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .w_full()
+                        .child(
+                            div()
+                                .w(px(96.))
+                                .text_xs()
+                                .text_color(muted)
+                                .child(i18n::agent_capability_label(capability.category, cx)),
+                        )
+                        .child(pips)
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(muted)
+                                .child(format!("{}/5", capability.level)),
+                        ),
+                );
+            }
+            content = content.child(
+                div()
+                    .v_flex()
+                    .gap_1()
+                    .child(agent_section_title(
+                        text.agent_detail_capabilities.clone(),
+                        cx,
+                    ))
+                    .child(grid),
+            );
+        }
+
+        if state.mode_kind && card.profile_member_ids.len() > 1 {
+            let members = card
+                .profile_member_ids
+                .iter()
+                .map(|id| {
+                    catalog
+                        .as_ref()
+                        .and_then(|catalog| catalog.modes.iter().find(|row| &row.id == id))
+                        .map(|row| row.name.clone())
+                        .unwrap_or_else(|| id.clone())
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let label = card
+                .profile_label
+                .clone()
+                .unwrap_or_else(|| text.agent_detail_shared_default.clone());
+            content = content.child(
+                div()
+                    .v_flex()
+                    .gap_1()
+                    .child(agent_section_title(
+                        text.agent_detail_shared_profile.clone(),
+                        cx,
+                    ))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .whitespace_normal()
+                            .child(i18n::agent_shared_profile_description(&members, cx)),
+                    )
+                    .child(div().text_xs().text_color(foreground).child(label)),
+            );
+        }
+
+        if state.mode_kind {
+            let mut section = div().v_flex().gap_1().child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(agent_section_title(text.agent_detail_tools.clone(), cx))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(i18n::agent_tools_selected(state.pending_tools.len(), cx)),
+                    ),
+            );
+            if let Some(error) = &state.tools_error {
+                section = section.child(div().text_xs().text_color(danger).child(error.clone()));
+            }
+            match &state.tools {
+                None => {
+                    section = section.child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(text.agent_detail_loading.clone()),
+                    );
+                }
+                Some(tools) => {
+                    // No inner scroll: the Dialog body already scrolls, and a
+                    // nested scroll region would trap the wheel (the tool list
+                    // below its cap became unreachable).
+                    let mut list = div().v_flex().gap_1().w_full();
+                    for tool in tools {
+                        let name = tool.name.clone();
+                        let checked = state.pending_tools.contains(&name);
+                        let mut row =
+                            Checkbox::new(SharedString::from(format!("agent-tool-{}", tool.name)))
+                                .label(tool.name.clone())
+                                .checked(checked)
+                                .on_click(move |checked: &bool, _window, cx| {
+                                    let name = name.clone();
+                                    let checked = *checked;
+                                    AgentDetailState::mutate(cx, |state| {
+                                        state.pending_tools.retain(|existing| existing != &name);
+                                        if checked {
+                                            state.pending_tools.push(name);
+                                        }
+                                    });
+                                });
+                        if let Some(tip) = agent_tooltip_text(&tool.description) {
+                            row = row.tooltip(tip);
+                        }
+                        list = list.child(row);
+                    }
+                    section = section.child(list);
+                }
+            }
+            let reset_pid = state.profile_id.clone();
+            let reset_mode = state.mode_kind;
+            let save_pid = state.profile_id.clone();
+            let save_mode = state.mode_kind;
+            section = section.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("agent-tools-reset")
+                            .label(text.agent_detail_reset.clone())
+                            .small()
+                            .with_variant(ButtonVariant::Ghost)
+                            .disabled(state.busy)
+                            .on_click(move |_, _window, cx| {
+                                AgentDetailState::mutate(cx, |state| {
+                                    state.busy = true;
+                                    state.tools_error = None;
+                                });
+                                match crate::runtime::runtime_handle() {
+                                    Some(handle) => {
+                                        handle.reset_agent_tools(reset_pid.clone(), reset_mode)
+                                    }
+                                    None => {
+                                        let message = i18n::current(cx)
+                                            .manage_skill_runtime_unavailable
+                                            .clone();
+                                        AgentDetailState::mutate(cx, |state| {
+                                            state.busy = false;
+                                            state.tools_error = Some(message);
+                                        });
+                                    }
+                                }
+                            }),
+                    )
+                    .child(
+                        Button::new("agent-tools-save")
+                            .label(text.agent_detail_save.clone())
+                            .small()
+                            .with_variant(ButtonVariant::Primary)
+                            .disabled(state.busy)
+                            .on_click(move |_, _window, cx| {
+                                let selected = apply_tool_selection(
+                                    &AgentDetailState::current(cx).pending_tools,
+                                );
+                                AgentDetailState::mutate(cx, |state| {
+                                    state.busy = true;
+                                    state.tools_error = None;
+                                });
+                                match crate::runtime::runtime_handle() {
+                                    Some(handle) => handle.save_agent_tools(
+                                        save_pid.clone(),
+                                        selected,
+                                        save_mode,
+                                    ),
+                                    None => {
+                                        let message = i18n::current(cx)
+                                            .manage_skill_runtime_unavailable
+                                            .clone();
+                                        AgentDetailState::mutate(cx, |state| {
+                                            state.busy = false;
+                                            state.tools_error = Some(message);
+                                        });
+                                    }
+                                }
+                            }),
+                    ),
+            );
+            content = content.child(section);
+        }
+
+        let has_task_tool = if state.tools.is_some() {
+            state.pending_tools.iter().any(|tool| tool == "Task")
+        } else {
+            card.default_tools.iter().any(|tool| tool == "Task")
+        };
+        if state.mode_kind && has_task_tool {
+            let mut section = div().v_flex().gap_1().child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(agent_section_title(text.agent_detail_subagents.clone(), cx))
+                    .child(div().text_xs().text_color(muted).child(
+                        i18n::agent_subagents_selected(state.pending_subagents.len(), cx),
+                    )),
+            );
+            if let Some(error) = &state.subagents_error {
+                section = section.child(div().text_xs().text_color(danger).child(error.clone()));
+            }
+            match &state.subagents {
+                None => {
+                    section = section.child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(text.agent_detail_loading.clone()),
+                    );
+                }
+                Some(subagents) if subagents.is_empty() => {
+                    section = section.child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(text.agent_detail_no_subagents.clone()),
+                    );
+                }
+                Some(subagents) => {
+                    let mut list = div().v_flex().gap_1().w_full();
+                    for subagent in subagents {
+                        let id = subagent.id.clone();
+                        let checked = state.pending_subagents.contains(&id);
+                        let label = if subagent.external {
+                            format!("{} · {}", subagent.name, text.manage_agent_source_external)
+                        } else {
+                            subagent.name.clone()
+                        };
+                        let disabled = subagent.external || state.busy;
+                        let mut row = Checkbox::new(SharedString::from(format!(
+                            "agent-subagent-{}",
+                            subagent.id
+                        )))
+                        .label(label)
+                        .checked(checked)
+                        .disabled(disabled)
+                        .on_click(move |checked: &bool, _window, cx| {
+                            let id = id.clone();
+                            let checked = *checked;
+                            AgentDetailState::mutate(cx, |state| {
+                                toggle_subagent_selection(
+                                    &mut state.pending_subagents,
+                                    &id,
+                                    checked,
+                                );
+                            });
+                        });
+                        if let Some(tip) = agent_tooltip_text(&subagent.description) {
+                            row = row.tooltip(tip);
+                        }
+                        list = list.child(row);
+                    }
+                    section = section.child(list);
+                }
+            }
+            let reset_pid = state.profile_id.clone();
+            let save_pid = state.profile_id.clone();
+            section = section.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("agent-subagents-reset")
+                            .label(text.agent_detail_reset.clone())
+                            .small()
+                            .with_variant(ButtonVariant::Ghost)
+                            .disabled(state.busy)
+                            .on_click(move |_, _window, cx| {
+                                let rows = AgentDetailState::current(cx)
+                                    .subagents
+                                    .clone()
+                                    .unwrap_or_default();
+                                apply_agent_subagent_writes(cx, reset_pid.clone(), rows, true);
+                            }),
+                    )
+                    .child(
+                        Button::new("agent-subagents-save")
+                            .label(text.agent_detail_save.clone())
+                            .small()
+                            .with_variant(ButtonVariant::Primary)
+                            .disabled(state.busy)
+                            .on_click(move |_, _window, cx| {
+                                let rows = AgentDetailState::current(cx)
+                                    .subagents
+                                    .clone()
+                                    .unwrap_or_default();
+                                apply_agent_subagent_writes(cx, save_pid.clone(), rows, false);
+                            }),
+                    ),
+            );
+            content = content.child(section);
+        }
+
+        dialog_el
+            .w(px(620.))
+            .title(div().child(text.agent_detail_open.clone()))
+            .child(content.debug_selector(|| "agent-detail-dialog".to_string()))
+            .footer(agent_detail_close_footer(text.clone()))
+    });
+}
+
+/// G-A2: the writes needed to move the loaded SubAgent snapshot to the pending
+/// ticks. External and already-matching rows are skipped; `reset` restores the
+/// registry defaults instead of the pending list.
+pub(crate) fn plan_agent_subagent_writes(
+    rows: &[AgentSubagentRow],
+    pending: &[String],
+    reset: bool,
+) -> Vec<(String, bool)> {
+    let pending: std::collections::HashSet<&str> = pending.iter().map(String::as_str).collect();
+    let mut writes = Vec::new();
+    for row in rows {
+        if row.external {
+            continue;
+        }
+        let wanted = if reset {
+            row.default_enabled
+        } else {
+            pending.contains(row.id.as_str())
+        };
+        if wanted != row.enabled {
+            writes.push((row.id.clone(), wanted));
+        }
+    }
+    writes
+}
+
+/// G-A2: writes every SubAgent whose pending tick differs from the loaded
+/// snapshot. `reset` ignores the pending list and restores the registry
+/// defaults instead.
+fn apply_agent_subagent_writes(
+    cx: &mut App,
+    profile_id: String,
+    rows: Vec<AgentSubagentRow>,
+    reset: bool,
+) {
+    let state = AgentDetailState::current(cx);
+    let writes = plan_agent_subagent_writes(&rows, &state.pending_subagents, reset);
+    if writes.is_empty() {
+        return;
+    }
+    AgentDetailState::mutate(cx, |state| {
+        state.busy = true;
+        state.subagents_error = None;
+    });
+    let Some(handle) = crate::runtime::runtime_handle() else {
+        let message = i18n::current(cx).manage_skill_runtime_unavailable.clone();
+        AgentDetailState::mutate(cx, |state| {
+            state.busy = false;
+            state.subagents_error = Some(message);
+        });
+        return;
+    };
+    handle.save_agent_subagents(profile_id, writes, true);
+}
+
+fn agent_detail_close_footer(text: ShellText) -> gpui_kit::AnyElement {
+    div()
+        .flex()
+        .flex_row()
+        .justify_end()
+        .child(
+            Button::new("agent-detail-close")
+                .label(text.agent_detail_close.clone())
+                .with_variant(ButtonVariant::Ghost)
+                .on_click(move |_, window, cx| {
+                    AgentDetailState::mutate(cx, |state| state.agent_id = None);
+                    window.close_dialog(cx);
+                }),
+        )
+        .into_any_element()
+}
+
+fn agent_section_title(label: String, cx: &App) -> gpui_kit::Div {
+    div()
+        .text_xs()
+        .text_color(cx.theme().muted_foreground)
+        .child(label)
+}
+
+fn agent_fact_row(label: String, value: String, cx: &App) -> gpui_kit::AnyElement {
+    div()
+        .flex()
+        .flex_row()
+        .items_start()
+        .gap_2()
+        .child(
+            div()
+                .w(px(96.))
+                .flex_shrink_0()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(label),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_sm()
+                .text_color(cx.theme().foreground)
+                .whitespace_normal()
+                .child(value),
+        )
+        .into_any_element()
+}
+
+fn agent_source_label(source: AgentSourceKind, text: &ShellText) -> String {
+    match source {
+        AgentSourceKind::Builtin => text.manage_agent_source_builtin.clone(),
+        AgentSourceKind::User => text.manage_agent_source_user.clone(),
+        AgentSourceKind::Project => text.manage_agent_source_project.clone(),
+        AgentSourceKind::External => text.manage_agent_source_external.clone(),
+    }
+}
+
+fn agent_capability_color(category: AgentCapabilityCategory, cx: &App) -> gpui_kit::Hsla {
+    use AgentCapabilityCategory::{Analysis, Coding, Creative, Docs, Ops, Testing};
+    match category {
+        Coding => cx.theme().primary,
+        Docs => cx.theme().info,
+        Analysis => cx.theme().success,
+        Testing => cx.theme().warning,
+        Creative => cx.theme().danger,
+        Ops => cx.theme().warning,
+    }
 }
 
 /// Opens the per-mode skill selection dialog (T2-11, the web agents detail
@@ -6609,6 +7411,109 @@ mod tests {
     }
 
     #[test]
+    fn agent_capabilities_follow_the_web_heuristic() {
+        use AgentCapabilityCategory::{Analysis, Coding, Docs};
+        let standard = agent_card("Standard", "", AgentSourceKind::Builtin);
+        let caps = agent_capabilities(&standard, true);
+        assert_eq!(caps[0].category, Coding);
+        assert_eq!(caps[0].level, 5);
+        assert_eq!(caps[1].category, Analysis);
+
+        let plan = agent_card("Plan", "", AgentSourceKind::Builtin);
+        let caps = agent_capabilities(&plan, true);
+        assert_eq!(caps[0].category, Analysis);
+        assert_eq!(caps[1].category, Docs);
+
+        let helper = agent_card("GeneralPurpose", "", AgentSourceKind::Builtin);
+        let caps = agent_capabilities(&helper, false);
+        assert_eq!(caps.len(), 2);
+        assert_eq!(caps[0].category, Coding);
+
+        let unknown = agent_card("custom-helper", "", AgentSourceKind::User);
+        assert!(agent_capabilities(&unknown, false).is_empty());
+    }
+
+    #[test]
+    fn agent_tool_configurability_matches_the_web_guard() {
+        assert!(agent_tool_configurable("Read"));
+        assert!(!agent_tool_configurable("GetToolSpec"));
+        assert!(!agent_tool_configurable("CallDeferredTool"));
+        assert!(!agent_tool_configurable("trinity_cognitive_state"));
+        assert!(!agent_tool_configurable("mcp__github__list_issues"));
+    }
+
+    #[test]
+    fn tool_and_subagent_selections_trim_and_dedupe() {
+        let selected = vec![
+            " Read ".to_string(),
+            "Read".to_string(),
+            String::new(),
+            "Write".to_string(),
+        ];
+        assert_eq!(apply_tool_selection(&selected), vec!["Read", "Write"]);
+
+        let mut pending = vec!["explore".to_string()];
+        toggle_subagent_selection(&mut pending, "explore", false);
+        assert!(pending.is_empty());
+        toggle_subagent_selection(&mut pending, "explore", true);
+        toggle_subagent_selection(&mut pending, "explore", true);
+        assert_eq!(pending, vec!["explore"]);
+    }
+
+    #[test]
+    fn capability_tooltips_keep_one_capped_line() {
+        assert_eq!(
+            agent_tooltip_text("\n\nFirst line\nsecond line"),
+            Some("First line".to_string())
+        );
+        assert_eq!(agent_tooltip_text("   \n  "), None);
+        let long = "x".repeat(200);
+        let tip = agent_tooltip_text(&long).expect("a long line still yields a tip");
+        assert_eq!(tip.chars().count(), 161);
+        assert!(tip.ends_with('…'));
+    }
+
+    #[test]
+    fn subagent_writes_cover_only_changed_local_rows() {
+        let row =
+            |id: &str, enabled: bool, default_enabled: bool, external: bool| AgentSubagentRow {
+                id: id.to_string(),
+                name: id.to_string(),
+                description: String::new(),
+                enabled,
+                default_enabled,
+                external,
+            };
+        let rows = vec![
+            row("explore", true, true, false),
+            row("review", false, false, false),
+            row("external", false, true, true),
+            row("legacy", false, true, false),
+        ];
+
+        // Save: only the rows whose pending tick differs from the snapshot.
+        let pending = vec![
+            "explore".to_string(),
+            "review".to_string(),
+            "external".to_string(),
+        ];
+        assert_eq!(
+            plan_agent_subagent_writes(&rows, &pending, false),
+            vec![("review".to_string(), true)]
+        );
+
+        // Reset: restore the registry defaults, ignoring the pending list.
+        assert_eq!(
+            plan_agent_subagent_writes(&rows, &[], true),
+            vec![("legacy".to_string(), true)]
+        );
+
+        // A snapshot that already matches produces no writes, so Save cannot
+        // leave the dialog stuck in its busy state.
+        assert!(plan_agent_subagent_writes(&rows, &["explore".to_string()], false).is_empty());
+    }
+
+    #[test]
     fn facets_split_levels_groups_and_non_native_sources() {
         let rows = vec![
             facet_row(
@@ -6815,6 +7720,12 @@ mod tests {
             skills_manageable: false,
             skills_mode_id: String::new(),
             model_override: None,
+            supports_follow_up: true,
+            external_provider_label: None,
+            default_tools: Vec::new(),
+            profile_id: name.to_string(),
+            profile_label: None,
+            profile_member_ids: vec![name.to_string()],
         }
     }
 

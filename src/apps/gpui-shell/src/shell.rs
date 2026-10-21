@@ -3300,6 +3300,82 @@ impl ShellWindow {
                 }
                 cx.refresh_windows();
             }
+            RuntimeEvent::AgentCapabilities { profile_id, result } => {
+                let current = crate::manage::AgentDetailState::current(cx);
+                if current.agent_id.is_none() || current.profile_id != profile_id {
+                    return;
+                }
+                match result {
+                    Ok(payload) => {
+                        crate::manage::AgentDetailState::mutate(cx, |state| {
+                            state.pending_tools = payload
+                                .tools
+                                .iter()
+                                .filter(|tool| tool.enabled)
+                                .map(|tool| tool.name.clone())
+                                .collect();
+                            state.pending_subagents = payload
+                                .subagents
+                                .iter()
+                                .filter(|subagent| subagent.enabled)
+                                .map(|subagent| subagent.id.clone())
+                                .collect();
+                            state.tools = Some(payload.tools);
+                            state.subagents = Some(payload.subagents);
+                            state.busy = false;
+                            state.tools_error = None;
+                            state.subagents_error = None;
+                        });
+                    }
+                    Err(error) => {
+                        tracing::warn!("Agent capabilities load failed: {error}");
+                        let message = i18n::failed_status(&error, cx);
+                        crate::manage::AgentDetailState::mutate(cx, |state| {
+                            state.tools_error = Some(message.clone());
+                            state.subagents_error = Some(message);
+                            state.busy = false;
+                        });
+                    }
+                }
+            }
+            RuntimeEvent::AgentCapabilitiesSaved { profile_id, result } => {
+                let current = crate::manage::AgentDetailState::current(cx);
+                if current.agent_id.is_none() || current.profile_id != profile_id {
+                    return;
+                }
+                match result {
+                    Ok(payload) => {
+                        crate::manage::AgentDetailState::mutate(cx, |state| {
+                            state.pending_tools = payload
+                                .tools
+                                .iter()
+                                .filter(|tool| tool.enabled)
+                                .map(|tool| tool.name.clone())
+                                .collect();
+                            state.pending_subagents = payload
+                                .subagents
+                                .iter()
+                                .filter(|subagent| subagent.enabled)
+                                .map(|subagent| subagent.id.clone())
+                                .collect();
+                            state.tools = Some(payload.tools);
+                            state.subagents = Some(payload.subagents);
+                            state.busy = false;
+                            state.tools_error = None;
+                            state.subagents_error = None;
+                        });
+                    }
+                    Err(error) => {
+                        tracing::warn!("Agent capability write failed: {error}");
+                        let message = i18n::failed_status(&error, cx);
+                        crate::manage::AgentDetailState::mutate(cx, |state| {
+                            state.busy = false;
+                            state.tools_error = Some(message.clone());
+                            state.subagents_error = Some(message);
+                        });
+                    }
+                }
+            }
             RuntimeEvent::McpCatalog(catalog) => {
                 cx.set_global(catalog);
                 cx.refresh_windows();
@@ -11831,6 +11907,12 @@ mod tests {
                 skills_manageable: false,
                 skills_mode_id: id.to_string(),
                 model_override: subagent.then_some(SubagentModelSelection::Inherit),
+                supports_follow_up: true,
+                external_provider_label: None,
+                default_tools: Vec::new(),
+                profile_id: id.to_string(),
+                profile_label: None,
+                profile_member_ids: vec![id.to_string()],
             }
         };
         let catalog = crate::manage::AgentCatalog {
