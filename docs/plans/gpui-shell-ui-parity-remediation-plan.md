@@ -482,16 +482,39 @@
 - **G-A1 工具可见性编辑（tools tab，ToolGroupPicker）**：web `AgentsScene.tsx:1129-1158`；壳卡片只显示工具计数
   （`manage.rs` `AgentCardRow.tool_count`），创建/编辑对话框也只收 id/名称/描述/prompt 四字段
   （tools/readonly/review/policy/model 一律传 None 保留现值，`manage.rs:81-82,169-184`）。**B 档**。
+  **✅ 交付**（2026-10-21，`7d7e62ada`）****：智能体卡片尾部统一出「详情」按钮（`agent-detail-{id}`），
+  打开统一详情对话框（基本事实 / 能力条 / 共享配置 / 工具 / 子智能体五段）。工具段（仅主智能体）从 core 工具注册表
+  投影可配置工具，过滤与 web `isAgentProfileConfigurableToolName` 逐条一致（`GetToolSpec`、`CallDeferredTool`、
+  五个 `trinity_*`、`mcp__*` 前缀），逐行勾选 + 单行 tooltip；「保存」写
+  `persist_agent_profile_from_value(profile_id, { enabled_tools })`（added/removed 由 core 归一），
+  「重置」走 `reset_agent_profile_to_default`（只清工具覆盖，技能与子代理覆盖保留）。**刻意分歧**：
+  web 的 ToolGroupPicker 带用户工具分组编辑与折叠，壳为平铺勾选（壳无用户工具分组写面）。
 - **G-A2 子代理勾选编辑（subagents tab）**：web `:1198-1294`（token 网格 + external 行禁用）；
   壳只有每 mode 技能选择（T2-11）。**B 档**。
+  **✅ 交付**（同上）：子智能体段仅当生效工具含 `Task` 时出现（web `selectedAgentHasTaskTool` 同口径），
+  列 `SubagentListScope::RegistryManagement` + `include_disabled` 的可管理子代理；external 行显示「· 外部」并禁用。
+  「保存」只写与快照不同的行（纯函数 `plan_agent_subagent_writes`），经 `RuntimeHandle::save_agent_subagents`
+  一次批量提交并统一刷新目录与载荷；「重置」恢复 registry 默认启用态。写面走 core
+  `update_subagent_override(parent, agent, enabled, workspace)`（builtin/user 落 profile 的 `subagent_overrides`，
+  project 落项目覆盖文件）。**坑**：`load_custom_subagents` 收 workspace **id** 而非路径。
 - **G-A3 子代理模型覆盖**：web `:1113-1127`（默认/inherit/fast/primary/具体模型）；壳无。**A 档**。
   **✅ 交付**（2026-10-16，A 批 3 尾车 `b402be1a9`，文档 `733cb7a4a`）****：非 external 子代理行尾挂「模型: <档位>」菜单
   （`manage.rs::agent_model_menu`，四档 = 使用默认子智能体模型 / 继承父会话 / 快速模型 / 主力模型 + 具体模型 id；
   当前档打勾）。写面：builtin 走 `ai.agent_model_defaults.subagents.builtin` 的读-合并-写（map 里其它子代理的档位不丢，
   选「使用默认」= 删键），custom 走 core `update_and_save_custom_subagent_config(id, model, clear, workspace)`；
   成功即重拉目录（行标签随之更新），失败落 `AgentModelFailed` → 页面 notice。证据帧 `a4-02`（菜单）/`a4-03`（清档回默认，
-  配置键随之消失）。**刻意分歧**：web 菜单在详情对话框的 model 页，壳直接放在行上（壳无详情对话框族，G-A1/A2/A4）。
+  配置键随之消失）。**刻意分歧**：web 菜单在详情对话框的 model 页；壳的 model 页未移植，菜单仍放在行上
+  （G-A1/A2/A4 的详情对话框只覆盖 basic/tools/subagents）。
 - **G-A4 详情卡（能力 5 级条 / follow-up / 共享 profile / external provider）**：web `:1038-1110`；壳卡片简化。**A/B 档**。
+  **✅ 交付**（2026-10-21，`7d7e62ada`）****：详情对话框基本段 = 名称/描述、类型（模式/子代理）、
+  来源（external 追加 provider：「外部 · <provider>」）、连续对话（支持/不支持）、能力 5 级条（与 web
+  `enrichCapabilities` 同表：Standard/Plan/Cowork/ComputerUse/DeepResearch + Explore/ResearchSpecialist/
+  GeneralPurpose/ReviewFixer，未登记 id 不出条）、共享 profile（成员名单 + 标签）。证据帧 `a6-01..05`。
+  **在案分歧**：能力条颜色用壳主题语义色（coding=primary、docs=info、analysis=success、creative=danger、
+  ops/testing=warning），非 web 的 appearance domain token。**坑**：gpui-component `Dialog` 默认 448px 且自带 body
+  滚动；内容容器再套 `max_h` + `overflow_y_scrollbar` 会形成内层滚动，把末尾「子智能体」段藏到折叠线下且滚轮不可达
+  → 对话框显式 `.w(px(620.))`，内容与列表只留自然高度，交给 Dialog 的 body 滚动；工具描述是多段 prompt，
+  tooltip 只取首行并截 160 字（`agent_tooltip_text`）。
 - **G-A5 搜索 / source / kind 过滤**：web `:808-865`；壳无。**A 档**。
   **✅ 交付**（2026-10-15，A 批 3）****：智能体页顶部控制行（`manage.rs::agents_controls`）—— 搜索（名称/描述，trim +
   大小写不敏感）+「来源」菜单（任意/内置/用户/项目/外部）+「类型」菜单（任意/智能体/子代理）。类型过滤按
@@ -715,7 +738,7 @@
 | 2 | 记忆设置页 | G-SE13 **✅ 交付 2026-10-18** | core 记忆能力在，纯 UI | 0.5-1 |
 | 3 | Trinity 引擎配置页 | G-SE14 **✅ 交付 2026-10-18** | trinityd 配置面已有（web 同源） | 0.5 |
 | 4 | 技能管理写面（添加/删除/分组/详情/搜索） | G-K2..K5 **✅ 全部交付（K2/K3/K5 2026-10-20，K4 2026-10-21）** | 分组读写走 `app.user_skill_groups` | 1 |
-| 5 | 智能体编辑面（工具/子代理/模型覆盖/过滤/详情） | G-A1..A6 | profiles 写路径已通（T2-11/12） | 1-1.5 |
+| 5 | 智能体编辑面（工具/子代理/模型覆盖/过滤/详情） | G-A1/A2/A4 **✅ 交付 2026-10-21**；G-A3/A5/A6 ✅ 2026-10-15/16 | profiles 写路径已通（T2-11/12）；model 页未移植 | 1-1.5 |
 | 6 | MCP OAuth + 导入/认证细分 | G-M1,G-M3 | OAuth 流程需 core 支持核对 | 1 |
 | 7 | Git 尾巴（AI commit message、branches/graph） | G-G2,G-G4 | branches/graph 为净新增（§1.6） | 1-1.5 |
 | 8 | 搜索 actions/entities | G-Q1 | action 目录 + 聚合查询 | 1 |
@@ -895,6 +918,7 @@ turn footer 完成时间/耗时 meta（=G-S1）与 copy 成功态图标反馈（
 
 | 日期 | 变更 |
 |---|---|
+| 2026-10-21 | **B 档 G-A1/G-A2 + A/B 档 G-A4 智能体详情与能力编辑**（`7d7e62ada`）。智能体卡片尾部统一出「详情」（`agent-detail-{id}`），打开统一详情对话框：基本事实（类型/来源/external provider/连续对话）、能力 5 级条（web `enrichCapabilities` 同表）、共享 profile（成员名单 + 标签）、工具段（仅主智能体）与子智能体段。工具列表从 core 注册表投影，过滤与 web `isAgentProfileConfigurableToolName` 一致（`GetToolSpec`/`CallDeferredTool` + 五个 `trinity_*` + `mcp__*`），勾选后「保存」写 `persist_agent_profile_from_value(enabled_tools)`、「重置」走 `reset_agent_profile_to_default`（只清工具覆盖）；子代理段仅在生效工具含 Task 时出现，external 行标注并禁用，保存只写与快照不同的行（`plan_agent_subagent_writes` 纯函数 → `save_agent_subagents` 一次批量写 + 一次目录刷新），重置恢复 registry 默认。事件携带 profile id，重开对话框不会被迟到响应污染。**在案分歧**：web 的 ToolGroupPicker 用户分组编辑与 model 页未移植（模型菜单仍在行上）；能力条用壳主题语义色。**坑**：`Dialog` 默认 448px，必须显式 `.w()`（否则右侧计数与保存按钮被裁）；`Dialog` 自带 body 滚动，内容再套 `max_h + overflow_y_scrollbar` 会形成内层滚动、末尾段落不可达且吞滚轮 → 列表不再设内层滚动；工具描述是多段 prompt，tooltip 只取首行并截 160 字。ftl 1258→**1284 ×3**；壳 lib **376 全绿（0 告警）**；i18n:audit / check:core-boundaries / check:repo-hygiene / fmt:rs 绿；Xvfb :271/:272 隔离根冒烟 0 panic，证据帧 `a6-01..05`（`d10796bfabb9d78f` 详情 / `af97b4b50cbf59e3` 工具保存 28→29 且落盘 `added_tools:["AgentDelete"]` / `66914f2f8db209f9` 列表下滚到 Task·Read 可达 / `55793c1b5506a960` 子代理保存 2→3 且落盘 `subagent_overrides` / `3c322742127701a7` 子代理详情紧凑态）。 |
 | 2026-10-21 | **B 档 G-K4 技能分组管理**。技能 facet 新增「管理分组」页：我的分组可编辑/复制/上移/下移/删除，内置 `group_key` 分组只读列出并可复制为我的分组；编辑器 = 组名 + 全目录技能勾选（不可用成员保留 key），删除二次确认。持久化直接复用共享契约 `app.user_skill_groups`（`AppConfig.user_skill_groups` version 1），写回 `update_config("app")` 的 camelCase JSON 并保留兄弟键；校验对齐 web `saveUserSkillGroup`（trim 必填/大小写不敏感重名/快照冲突/成员去重），移动与删除为纯函数并有 3 项单测。**在案分歧**：编辑器无搜索、内置分组标题取 `group_key`、加载失败无重试按钮。**坑**：`gpui_kit::Div` 的滚动需要 `gpui_kit::component::scroll::ScrollableElement` 在作用域内（仅 `overflow_y_scroll` 方法名不可用）；对话框输入仍放窗口实体（`skill_group_name_input`），勾选/错误态放全局。ftl 1230→**1258 ×3**；`i18n:audit` 0 错 0 警；壳 lib **371 全绿（0 告警）**；`fmt:rs` 绿。 |
 | 2026-10-20 | **A/B 档 G-K2 技能详情 + G-K3 添加/删除技能**。技能卡尾部统一出「详情」ghost 按钮，详情模态展示等级/来源/shadowed、名称、描述、来源与文件夹路径，并给「复制路径」「在文件管理器显示」；native 非内置技能可在详情内转入删除确认（警告含技能名）。过滤行右侧新增「添加技能」：user/project 等级 + 路径输入 + 「校验」，校验结果逐类本地化（空/不存在/不是目录/缺 SKILL.md/不可读/解析失败），通过后才可添加；运行时不可用单独提示。新增 runtime 三面：`validate_skill_path` / `add_skill` / `delete_skill` 与对应事件，`SkillRow` 补 `path` / `deletable`。写面守卫：添加拒绝同名文件夹与自拷（canonicalize 后比较），删除只对 native 非内置技能、托管根包含校验后 `remove_dir_all`。**在案分歧**：无目录浏览按钮（改为键入 + 校验）；详情不显示外部链接（投影未携带）。**坑**：`open_dialog` 的 builder 每帧重建，输入状态必须放窗口实体（`skill_path_input`）而对话框草稿放全局（`SkillDialogsState`）；builder 内先取 `i18n::current(cx)` 再调 `mutate(cx, …)`，否则闭包借用冲突（E0502）；重复 locale 字面量会撞 `sharedTermDuplicates`（`OpenBitFun` 改走 `service.t("shared.product.name")`，未抬 baseline）；不再经 `ShellText` 的校验/警告字段已删，统一用 `resolve_with` 参数化助手。ftl 1205→**1230 ×3**；`i18n:audit` 0 错 0 警；壳 lib **368 全绿（0 告警）**；`fmt:rs` 绿。 |
 | 2026-10-20 | **B 档 G-P1 任务编辑器（新建/编辑对话框）**。看板头新增「新建任务」，每行新增「编辑」，共用同一对话框（标题按新建/编辑切换）：名称、prompt（1000 字符上限）、Schedule 三型（单次=本地 `YYYY-MM-DDTHH:MM` 文本 + 本地时区提示；周期=数值 + 分钟/小时/天下拉 + 可选取「起算时间」；Cron=表达式 + 可选时区）、目标（当前工作区启动 / 已有会话下拉，无会话时禁用并提示）、启用开关。保存经新增的 `RuntimeHandle::create_cron_job`/`update_cron_job` 走共享 cron 服务（成功后 `CronJobs` 重拉列表，失败进页头错误条）；编辑保留并预填 `anchor_ms`（按本地分钟回读，与 web 的 `toLocalDateTimeInput` 同口径）。纯数据层 `TaskDraft`（blank/from_job/schedule/validate/create_request/update_request）与本地时间↔RFC3339、毫秒↔最大整单位拆分、DST 不存在时间拒绝均有单测；另加一项真 root-view 窗口测试：把 ShellWindow 包进 `gpui_base::Root`（对话框插件所在根）后打开对话框，断言预填与 `task-editor` 渲染，防「只在真实窗口才 panic」的坑。**在案分歧**：无工作区 Combobox 与 agent 类型选择器（壳只服务当前工作区，`CronLaunchSpec` 固定默认 `Standard`）；锚点、时区不做 web 的高级折叠区，直接随对应 schedule 形态显示。**坑**：`WindowExt`（`open_dialog`/`close_dialog`）必须显式引入 `gpui_kit::component::WindowExt`；`Button::dropdown_menu_with_anchor` 返回 `DropdownMenuPopover<Button>` 而不是 `Button`，条件分支要转 `AnyElement`；`DropdownMenuPopover` 没有 `debug_selector`。ftl 1171→**1205 ×3**；`i18n:audit` 0 告警；壳 lib **368 全绿**（0 告警）；`check:core-boundaries` / `fmt:rs` 绿。 |
