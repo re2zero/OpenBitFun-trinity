@@ -30,6 +30,8 @@ openbitfun-core = { path = "../../crates/assembly/core", features = [
     "tools-computer-use",
     "tools-image-analysis",
     "tools-agent-control",
+    # G-G2: the AI commit-message generator goes through the core GitFunctionAgent.
+    "function-agents",
 ] }
 openbitfun-agent-runtime = { path = "../../crates/execution/agent-runtime", features = ["agent-runtime"] }
 openbitfun-events = { path = "../../crates/contracts/events" }

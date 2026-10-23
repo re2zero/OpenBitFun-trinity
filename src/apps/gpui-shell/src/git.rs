@@ -11,6 +11,7 @@
 //! bare error.
 
 use std::future::Future;
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -20,10 +21,11 @@ use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::resizable::{h_resizable, resizable_panel, ResizableState};
 use gpui_kit::component::{ActiveTheme, Disableable, Icon, Sizable, StyledExt};
 use gpui_kit::{
-    div, list, prelude::*, px, App, Context, Entity, IntoElement, ListAlignment, ListState, Pixels,
-    Render, SharedString, TextRun, WeakEntity, Window,
+    div, list, prelude::*, px, App, ClipboardItem, Context, Entity, IntoElement, ListAlignment,
+    ListState, Pixels, Render, SharedString, TextRun, WeakEntity, Window,
 };
 use openbitfun_core::service::filesystem::FileSystemService;
+use openbitfun_core::service::git::{GitBranch, GitGraph};
 use openbitfun_core::service::snapshot::open_snapshot_manager_for_view;
 use openbitfun_core::service::workspace::WorkspaceKind;
 use openbitfun_core::service::worktree::{
@@ -188,10 +190,17 @@ pub(crate) enum GitView {
     Worktrees,
     /// Snapshot-system session list over the workspace snapshot manager (M19).
     Snapshots,
+    /// Branch list with create/switch/delete over the core `GitService` (G-G4).
+    Branches,
+    /// Commit graph over the core `GitService` graph builder (G-G4).
+    Graph,
 }
 
 /// How many commits the history view loads per request.
 const HISTORY_LIMIT: usize = 50;
+
+/// How many nodes the graph view loads per request (G-G4).
+const GRAPH_LIMIT: usize = 100;
 
 /// One snapshot-session row of the snapshots view: the core `SessionStats`
 /// facts the snapshot manager serves per session.
@@ -313,7 +322,36 @@ pub(crate) struct GitPanel {
     /// Set after a successful commit; render clears the message box (it is
     /// the only place holding the window `set_value` needs).
     clear_commit_input: bool,
+    /// AI commit-message generation is in flight (G-G2); the input row's
+    /// generate button flips to its cancel shape while this is set.
+    generating_commit: bool,
+    /// Bumps on every generate/cancel: a completion for a superseded
+    /// generation (cancelled or restarted) is dropped instead of painted.
+    generation_epoch: u64,
+    /// Generated message waiting for render to move it into the input
+    /// (`set_value` needs the window, which only render holds).
+    pending_commit_message: Option<String>,
     history_list: ListState,
+    /// Branch rows of the branches view (G-G4), enhanced facts included.
+    branches: Vec<GitBranch>,
+    /// Whether the branches view already loaded its rows.
+    branches_loaded: bool,
+    branch_list: ListState,
+    /// Name of the branch awaiting delete confirmation (two-step, G-G4).
+    confirm_branch_delete: Option<String>,
+    /// Hash of the graph node awaiting reset confirmation (two-step, G-G4).
+    confirm_graph_reset: Option<String>,
+    /// Loaded commit graph of the graph view (G-G4).
+    graph: Option<GitGraph>,
+    /// Whether the graph view already loaded its rows.
+    graph_loaded: bool,
+    graph_list: ListState,
+    /// Branch name for the next branch creation (G-G4).
+    new_branch_input: Entity<InputState>,
+    /// Optional start point the next branch is cut from (G-G4).
+    branch_base_input: Entity<InputState>,
+    /// Set after a created branch; render clears both branch inputs.
+    clear_branch_inputs: bool,
     /// Managed worktrees of the project owning the active workspace (M19).
     worktrees: Vec<WorktreeSummary>,
     /// Whether the worktrees view already loaded its rows.
@@ -382,6 +420,10 @@ impl GitPanel {
         let worktree_base_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(text.git_worktree_base_ref_placeholder.clone())
         });
+        let new_branch_input = cx
+            .new(|cx| InputState::new(window, cx).placeholder(text.git_branch_name_label.clone()));
+        let branch_base_input = cx
+            .new(|cx| InputState::new(window, cx).placeholder(text.git_branch_base_label.clone()));
         let remote_workspace = crate::runtime::runtime_handle()
             .map(|handle| matches!(handle.workspace().workspace_kind, WorkspaceKind::Remote))
             .unwrap_or(false);
@@ -404,7 +446,21 @@ impl GitPanel {
             action_error: None,
             trust: None,
             clear_commit_input: false,
+            generating_commit: false,
+            generation_epoch: 0,
+            pending_commit_message: None,
             history_list: ListState::new(0, ListAlignment::Top, px(40.)),
+            branches: Vec::new(),
+            branches_loaded: false,
+            branch_list: ListState::new(0, ListAlignment::Top, px(48.)),
+            confirm_branch_delete: None,
+            confirm_graph_reset: None,
+            graph: None,
+            graph_loaded: false,
+            graph_list: ListState::new(0, ListAlignment::Top, px(48.)),
+            new_branch_input: new_branch_input.clone(),
+            branch_base_input,
+            clear_branch_inputs: false,
             worktrees: Vec::new(),
             worktrees_loaded: false,
             worktree_list: ListState::new(0, ListAlignment::Top, px(64.)),
@@ -797,6 +853,8 @@ impl GitPanel {
             GitView::History if !self.history_loaded => self.load_history(cx),
             GitView::Worktrees if !self.worktrees_loaded => self.load_worktrees(cx),
             GitView::Snapshots if !self.snapshots_loaded => self.load_snapshots(cx),
+            GitView::Branches if !self.branches_loaded => self.load_branches(cx),
+            GitView::Graph if !self.graph_loaded => self.load_graph(cx),
             _ => {}
         }
         cx.notify();
@@ -810,6 +868,8 @@ impl GitPanel {
             GitView::Files | GitView::History => self.refresh(cx),
             GitView::Worktrees => self.load_worktrees(cx),
             GitView::Snapshots => self.load_snapshots(cx),
+            GitView::Branches => self.load_branches(cx),
+            GitView::Graph => self.load_graph(cx),
         }
     }
 
@@ -829,6 +889,400 @@ impl GitPanel {
             workspace.root_path.to_string_lossy().to_string(),
             project_id,
         ))
+    }
+
+    // -----------------------------------------------------------------------
+    // G-G2: AI commit-message generation
+    // -----------------------------------------------------------------------
+
+    /// Requests one quick AI commit message over the same core
+    /// `GitFunctionAgent` the desktop command serves. Local-only: the agent
+    /// reads the repository from the workspace path, which remote workspaces
+    /// do not offer.
+    fn generate_commit_message(&mut self, cx: &mut Context<Self>) {
+        if self.files.is_empty() {
+            self.action_error = Some(i18n::git_generate_no_changes(cx));
+            cx.notify();
+            return;
+        }
+        let Some(handle) = crate::runtime::runtime_handle() else {
+            return;
+        };
+        let repo_path = match Self::service_workspace() {
+            Ok((path, _)) => path,
+            Err(message) => {
+                self.action_error = Some(message);
+                cx.notify();
+                return;
+            }
+        };
+        self.generation_epoch += 1;
+        let epoch = self.generation_epoch;
+        self.generating_commit = true;
+        self.action_error = None;
+        cx.notify();
+        let task = handle.tokio_handle().spawn(async move {
+            let factory =
+                openbitfun_core::infrastructure::ai::client_factory::get_global_ai_client_factory()
+                    .await
+                    .map_err(|error| error.to_string())?;
+            let agent =
+                openbitfun_core::function_agents::git_func_agent::GitFunctionAgent::new(factory);
+            let message = agent
+                .quick_commit_message(Path::new(&repo_path))
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok::<String, String>(message.full_message)
+        });
+        cx.spawn(async move |this, cx| {
+            let outcome = task.await.unwrap_or_else(|error| Err(error.to_string()));
+            this.update(cx, |panel, cx| {
+                // A cancelled or restarted generation keeps its epoch; the
+                // stale completion is dropped instead of painted.
+                if panel.generation_epoch != epoch {
+                    return;
+                }
+                panel.generating_commit = false;
+                match outcome {
+                    Ok(message) => panel.pending_commit_message = Some(message),
+                    Err(error) => {
+                        tracing::warn!("AI commit message failed: {error}");
+                        panel.action_error = Some(i18n::git_failed(&error, cx));
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Drops an in-flight generation: a later completion is recognized by its
+    /// epoch and discarded (the web `cancelledCommitRef` semantics).
+    fn cancel_commit_generation(&mut self, cx: &mut Context<Self>) {
+        self.generation_epoch += 1;
+        self.generating_commit = false;
+        cx.notify();
+    }
+
+    // -----------------------------------------------------------------------
+    // G-G4: branches view + commit graph
+    // -----------------------------------------------------------------------
+
+    fn load_branches(&mut self, cx: &mut Context<Self>) {
+        let repo_path = match Self::service_workspace() {
+            Ok((path, _)) => path,
+            Err(message) => {
+                self.action_error = Some(message);
+                self.branches_loaded = true;
+                cx.notify();
+                return;
+            }
+        };
+        self.confirm_branch_delete = None;
+        cx.notify();
+        let task = crate::runtime::runtime_handle()
+            .map(|handle| handle.tokio_handle())
+            .map(|tokio| {
+                tokio.spawn(async move {
+                    openbitfun_core::service::git::GitService::get_enhanced_branches(
+                        Path::new(&repo_path),
+                        true,
+                    )
+                    .await
+                })
+            });
+        let Some(task) = task else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let outcome = task.await;
+            this.update(cx, |panel, cx| {
+                panel.branches_loaded = true;
+                match outcome {
+                    Ok(Ok(branches)) => {
+                        panel.action_error = None;
+                        panel.branch_list.reset(branches.len());
+                        panel.branches = branches;
+                    }
+                    Ok(Err(error)) => {
+                        tracing::warn!("Git branches failed: {error}");
+                        panel.action_error = Some(error.to_string());
+                    }
+                    Err(join_error) => {
+                        tracing::error!("Git branches task failed: {join_error}");
+                        panel.action_error = Some("git branches task failed".to_string());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn load_graph(&mut self, cx: &mut Context<Self>) {
+        let repo_path = match Self::service_workspace() {
+            Ok((path, _)) => path,
+            Err(message) => {
+                self.action_error = Some(message);
+                self.graph_loaded = true;
+                cx.notify();
+                return;
+            }
+        };
+        self.confirm_graph_reset = None;
+        cx.notify();
+        let task = crate::runtime::runtime_handle()
+            .map(|handle| handle.tokio_handle())
+            .map(|tokio| {
+                tokio.spawn(async move {
+                    openbitfun_core::service::git::GitService::get_git_graph_for_branch(
+                        Path::new(&repo_path),
+                        Some(GRAPH_LIMIT),
+                        None,
+                    )
+                    .await
+                })
+            });
+        let Some(task) = task else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let outcome = task.await;
+            this.update(cx, |panel, cx| {
+                panel.graph_loaded = true;
+                match outcome {
+                    Ok(Ok(graph)) => {
+                        panel.action_error = None;
+                        panel.graph_list.reset(graph.nodes.len());
+                        panel.graph = Some(graph);
+                    }
+                    Ok(Err(error)) => {
+                        tracing::warn!("Git graph failed: {error}");
+                        panel.action_error = Some(error.to_string());
+                    }
+                    Err(join_error) => {
+                        tracing::error!("Git graph task failed: {join_error}");
+                        panel.action_error = Some("git graph task failed".to_string());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Creates the branch named in the inputs (start point optional); the
+    /// inputs clear on success in the next paint.
+    fn create_branch(&mut self, cx: &mut Context<Self>) {
+        let name = self.new_branch_input.read(cx).value().trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        let start_point = self.branch_base_input.read(cx).value().trim().to_string();
+        let Some(handle) = crate::runtime::runtime_handle() else {
+            return;
+        };
+        let repo_path = match Self::service_workspace() {
+            Ok((path, _)) => path,
+            Err(message) => {
+                self.action_error = Some(message);
+                cx.notify();
+                return;
+            }
+        };
+        self.busy = true;
+        cx.notify();
+        let task = handle.tokio_handle().spawn(async move {
+            openbitfun_core::service::git::GitService::create_branch(
+                Path::new(&repo_path),
+                &name,
+                Some(start_point.as_str()),
+            )
+            .await
+        });
+        cx.spawn(async move |this, cx| {
+            let outcome = task.await;
+            this.update(cx, |panel, cx| {
+                panel.busy = false;
+                match outcome {
+                    Ok(Ok(_)) => {
+                        panel.action_error = None;
+                        panel.clear_branch_inputs = true;
+                        panel.load_branches(cx);
+                    }
+                    Ok(Err(error)) => {
+                        tracing::warn!("Git branch create failed: {error}");
+                        panel.action_error = Some(error.to_string());
+                    }
+                    Err(join_error) => {
+                        tracing::error!("Git branch create task failed: {join_error}");
+                        panel.action_error = Some("git branch create task failed".to_string());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Two-step branch delete: the first click arms the row, the second runs.
+    fn delete_branch(&mut self, name: String, cx: &mut Context<Self>) {
+        if self.confirm_branch_delete.as_deref() != Some(name.as_str()) {
+            self.confirm_branch_delete = Some(name);
+            cx.notify();
+            return;
+        }
+        self.confirm_branch_delete = None;
+        let Some(handle) = crate::runtime::runtime_handle() else {
+            return;
+        };
+        let repo_path = match Self::service_workspace() {
+            Ok((path, _)) => path,
+            Err(message) => {
+                self.action_error = Some(message);
+                cx.notify();
+                return;
+            }
+        };
+        self.busy = true;
+        cx.notify();
+        let task = handle.tokio_handle().spawn(async move {
+            openbitfun_core::service::git::GitService::delete_branch(
+                Path::new(&repo_path),
+                &name,
+                false,
+            )
+            .await
+        });
+        cx.spawn(async move |this, cx| {
+            let outcome = task.await;
+            this.update(cx, |panel, cx| {
+                panel.busy = false;
+                match outcome {
+                    Ok(Ok(_)) => {
+                        panel.action_error = None;
+                        panel.load_branches(cx);
+                    }
+                    Ok(Err(error)) => {
+                        tracing::warn!("Git branch delete failed: {error}");
+                        panel.action_error = Some(error.to_string());
+                    }
+                    Err(join_error) => {
+                        tracing::error!("Git branch delete task failed: {join_error}");
+                        panel.action_error = Some("git branch delete task failed".to_string());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Resets the current branch to the confirmed graph node (mixed: the
+    /// working tree keeps its changes, the index aligns with the target).
+    fn reset_to_commit(&mut self, hash: String, cx: &mut Context<Self>) {
+        if self.confirm_graph_reset.as_deref() != Some(hash.as_str()) {
+            self.confirm_graph_reset = Some(hash);
+            cx.notify();
+            return;
+        }
+        self.confirm_graph_reset = None;
+        let Some(handle) = crate::runtime::runtime_handle() else {
+            return;
+        };
+        let repo_path = match Self::service_workspace() {
+            Ok((path, _)) => path,
+            Err(message) => {
+                self.action_error = Some(message);
+                cx.notify();
+                return;
+            }
+        };
+        self.busy = true;
+        cx.notify();
+        let task = handle.tokio_handle().spawn(async move {
+            openbitfun_core::service::git::GitService::reset_to_commit(
+                Path::new(&repo_path),
+                &hash,
+                "mixed",
+            )
+            .await
+        });
+        cx.spawn(async move |this, cx| {
+            let outcome = task.await;
+            this.update(cx, |panel, cx| {
+                panel.busy = false;
+                match outcome {
+                    Ok(Ok(_)) => {
+                        panel.action_error = None;
+                        panel.load_graph(cx);
+                        panel.refresh(cx);
+                    }
+                    Ok(Err(error)) => {
+                        tracing::warn!("Git reset failed: {error}");
+                        panel.action_error = Some(error.to_string());
+                    }
+                    Err(join_error) => {
+                        tracing::error!("Git reset task failed: {join_error}");
+                        panel.action_error = Some("git reset task failed".to_string());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Checks out one local branch; the refresh brings the working tree and
+    /// the ahead/behind counts back in line with the switch.
+    fn switch_branch(&mut self, name: String, cx: &mut Context<Self>) {
+        let Some(handle) = crate::runtime::runtime_handle() else {
+            return;
+        };
+        let repo_path = match Self::service_workspace() {
+            Ok((path, _)) => path,
+            Err(message) => {
+                self.action_error = Some(message);
+                cx.notify();
+                return;
+            }
+        };
+        self.busy = true;
+        cx.notify();
+        let task = handle.tokio_handle().spawn(async move {
+            openbitfun_core::service::git::GitService::checkout_branch(Path::new(&repo_path), &name)
+                .await
+        });
+        cx.spawn(async move |this, cx| {
+            let outcome = task.await;
+            this.update(cx, |panel, cx| {
+                panel.busy = false;
+                match outcome {
+                    Ok(Ok(_)) => {
+                        panel.action_error = None;
+                        panel.load_branches(cx);
+                        panel.refresh(cx);
+                    }
+                    Ok(Err(error)) => {
+                        tracing::warn!("Git branch switch failed: {error}");
+                        panel.action_error = Some(error.to_string());
+                    }
+                    Err(join_error) => {
+                        tracing::error!("Git branch switch task failed: {join_error}");
+                        panel.action_error = Some("git branch switch task failed".to_string());
+                    }
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn load_worktrees(&mut self, cx: &mut Context<Self>) {
@@ -1258,6 +1712,16 @@ fn render_header(panel: &GitPanel, text: &ShellText, cx: &mut Context<GitPanel>)
     let summary = match panel.view {
         GitView::Worktrees => format!("{}: {}", text.git_worktrees_view, panel.worktrees.len()),
         GitView::Snapshots => format!("{}: {}", text.git_snapshots_view, panel.snapshots.len()),
+        GitView::Branches => format!("{}: {}", text.git_branches_view, panel.branches.len()),
+        GitView::Graph => format!(
+            "{}: {}",
+            text.git_graph_view,
+            panel
+                .graph
+                .as_ref()
+                .map(|graph| graph.nodes.len())
+                .unwrap_or(0)
+        ),
         GitView::Files | GitView::History => match (panel.loading, panel.files.is_empty()) {
             (true, _) => text.git_loading.clone(),
             (false, true) => text.git_empty.clone(),
@@ -1420,6 +1884,28 @@ fn render_header(panel: &GitPanel, text: &ShellText, cx: &mut Context<GitPanel>)
                         .disabled(panel.busy)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.set_view(GitView::Snapshots, cx);
+                        })),
+                )
+                .child(
+                    Button::new("git-view-branches")
+                        .label(text.git_branches_view.clone())
+                        .small()
+                        .with_variant(active_variant(GitView::Branches))
+                        .tooltip(text.git_branches_view.clone())
+                        .disabled(panel.busy)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_view(GitView::Branches, cx);
+                        })),
+                )
+                .child(
+                    Button::new("git-view-graph")
+                        .label(text.git_graph_view.clone())
+                        .small()
+                        .with_variant(active_variant(GitView::Graph))
+                        .tooltip(text.git_graph_view.clone())
+                        .disabled(panel.busy)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.set_view(GitView::Graph, cx);
                         })),
                 )
                 // Stage-all, pull and push address the workspace diff; they
@@ -1837,6 +2323,20 @@ impl Render for GitPanel {
                 input.set_value("", window, cx);
             });
         }
+        if self.clear_branch_inputs {
+            self.clear_branch_inputs = false;
+            cx.update_entity(&self.new_branch_input, |input, cx| {
+                input.set_value("", window, cx);
+            });
+            cx.update_entity(&self.branch_base_input, |input, cx| {
+                input.set_value("", window, cx);
+            });
+        }
+        if let Some(message) = self.pending_commit_message.take() {
+            cx.update_entity(&self.commit_input, |input, cx| {
+                input.set_value(message, window, cx);
+            });
+        }
         let text = i18n::current(cx);
         let view = self.view;
         let busy = self.busy;
@@ -2098,6 +2598,8 @@ impl Render for GitPanel {
                 GitView::History => render_history(self, &text, cx),
                 GitView::Worktrees => render_worktrees(self, &text, cx),
                 GitView::Snapshots => render_snapshots(self, &text, cx),
+                GitView::Branches => render_branches(self, &text, cx),
+                GitView::Graph => render_graph(self, &text, cx),
             }
         };
 
@@ -2125,6 +2627,7 @@ fn render_commit_box(
     cx: &mut Context<GitPanel>,
 ) -> gpui_kit::Div {
     let message_empty = panel.commit_input.read(cx).value().trim().is_empty();
+    let generating = panel.generating_commit;
     div()
         .w_full()
         .v_flex()
@@ -2132,13 +2635,44 @@ fn render_commit_box(
         .p_2()
         .border_t_1()
         .border_color(cx.theme().border)
-        .child(Input::new(&panel.commit_input))
+        .child(
+            div()
+                .flex()
+                .items_start()
+                .gap_1p5()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(Input::new(&panel.commit_input)),
+                )
+                .child(if generating {
+                    Button::new("git-generate-cancel")
+                        .label(text.git_generate_cancel.clone())
+                        .small()
+                        .with_variant(ButtonVariant::Ghost)
+                        .tooltip(text.git_generate_cancel.clone())
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.cancel_commit_generation(cx);
+                        }))
+                } else {
+                    Button::new("git-generate-message")
+                        .label(text.git_generate_message.clone())
+                        .small()
+                        .with_variant(ButtonVariant::Ghost)
+                        .tooltip(text.git_generate_message.clone())
+                        .disabled(panel.busy || panel.not_a_repository)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.generate_commit_message(cx);
+                        }))
+                }),
+        )
         .child(
             Button::new("git-commit")
                 .label(text.git_commit.clone())
                 .small()
                 .with_variant(ButtonVariant::Primary)
-                .disabled(panel.busy || message_empty)
+                .disabled(panel.busy || generating || message_empty)
                 .on_click(cx.listener(|this, _, _, cx| this.commit_staged(cx))),
         )
 }
@@ -2482,6 +3016,389 @@ fn render_snapshots(
 
 /// The read-only history body: recent commits of the current branch, newest
 /// first. Empty until the first load; the loading state reuses the busy flag.
+/// The G-G4 branches view: the enhanced branch list with create/switch/
+/// delete/copy-hash over the core `GitService` (local workspaces only — the
+/// service reads the repository from the workspace path).
+fn render_branches(
+    panel: &GitPanel,
+    text: &ShellText,
+    cx: &mut Context<GitPanel>,
+) -> gpui_kit::AnyElement {
+    if panel.remote_workspace {
+        return render_centered_note(&text.git_remote_unsupported, cx);
+    }
+    // flex_1 + min_h_0: the body gives this element the panel's remaining
+    // height, and the row list's own flex_1 needs a bounded parent column.
+    let mut column = div().w_full().v_flex().gap_2().p_2().flex_1().min_h_0();
+    column = column.child(
+        div()
+            .flex()
+            .items_center()
+            .gap_1p5()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(Input::new(&panel.new_branch_input)),
+            )
+            .child(
+                div()
+                    .w(px(160.))
+                    .flex_shrink_0()
+                    .child(Input::new(&panel.branch_base_input)),
+            )
+            .child(
+                Button::new("git-branch-create")
+                    .label(text.git_branch_create.clone())
+                    .small()
+                    .with_variant(ButtonVariant::Secondary)
+                    .disabled(
+                        panel.busy || panel.new_branch_input.read(cx).value().trim().is_empty(),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| this.create_branch(cx))),
+            ),
+    );
+    if panel.branches.is_empty() {
+        let placeholder = if panel.busy {
+            text.git_loading.clone()
+        } else {
+            text.git_branch_empty.clone()
+        };
+        column = column.child(
+            div()
+                .flex_1()
+                .flex()
+                .items_center()
+                .justify_center()
+                .py_4()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(placeholder),
+        );
+        return column.into_any_element();
+    }
+    let branches = panel.branches.clone();
+    let confirm_delete = panel.confirm_branch_delete.clone();
+    let busy = panel.busy;
+    let branch_list = panel.branch_list.clone();
+    let panel_entity = cx.entity();
+    // Labels are cloned up front: referencing `text` inside the `move` item
+    // closure would capture the `&ShellText` itself and demand 'static.
+    let label_current = text.git_branch_current.clone();
+    let label_remote = text.git_branch_remote.clone();
+    let label_copy = text.git_branch_copy_hash.clone();
+    let label_switch = text.git_branch_switch.clone();
+    let label_delete = text.git_branch_delete.clone();
+    let label_delete_confirm = text.git_branch_delete_confirm.clone();
+    let rows = list(branch_list, move |index, _window, cx| {
+        let Some(branch) = branches.get(index) else {
+            return div().into_any_element();
+        };
+        let panel_entity = panel_entity.clone();
+        let mut row = div()
+            .w_full()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .py_1p5()
+            .rounded_sm()
+            .when(branch.current, |this| {
+                this.bg(cx.theme().accent.opacity(0.12))
+            })
+            .child(
+                div()
+                    .min_w_0()
+                    .flex()
+                    .items_center()
+                    .gap_1p5()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .text_color(cx.theme().foreground)
+                            .truncate()
+                            .child(branch.name.clone()),
+                    )
+                    .when(branch.current, |this| {
+                        this.child(
+                            div()
+                                .px_1()
+                                .py_0p5()
+                                .rounded_sm()
+                                .text_xs()
+                                .flex_shrink_0()
+                                .bg(cx.theme().accent.opacity(0.2))
+                                .text_color(cx.theme().accent)
+                                .child(label_current.clone()),
+                        )
+                    })
+                    .when(branch.remote, |this| {
+                        this.child(
+                            div()
+                                .px_1()
+                                .py_0p5()
+                                .rounded_sm()
+                                .text_xs()
+                                .flex_shrink_0()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(label_remote.clone()),
+                        )
+                    }),
+            );
+        if let Some(upstream) = &branch.upstream {
+            let mut fact = format!("↑{upstream}");
+            if branch.ahead > 0 {
+                fact.push_str(&format!(" +{}", branch.ahead));
+            }
+            if branch.behind > 0 {
+                fact.push_str(&format!(" -{}", branch.behind));
+            }
+            row = row.child(
+                div()
+                    .max_w(px(180.))
+                    .flex_shrink_0()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .truncate()
+                    .child(fact),
+            );
+        }
+        let mut actions = div().flex().items_center().gap_1().flex_shrink_0();
+        if branch.last_commit.is_some() {
+            let hash = branch.last_commit.clone();
+            actions = actions.child(
+                Button::new(SharedString::from(format!("git-branch-copy-{index}")))
+                    .label(label_copy.clone())
+                    .small()
+                    .with_variant(ButtonVariant::Ghost)
+                    .on_click(move |_, _, cx| {
+                        if let Some(hash) = hash.clone() {
+                            cx.write_to_clipboard(ClipboardItem::new_string(hash));
+                        }
+                    }),
+            );
+        }
+        if !branch.current && !branch.remote {
+            actions = actions.child(
+                Button::new(SharedString::from(format!("git-branch-switch-{index}")))
+                    .label(label_switch.clone())
+                    .small()
+                    .with_variant(ButtonVariant::Ghost)
+                    .disabled(busy)
+                    .on_click({
+                        let name = branch.name.clone();
+                        let panel_entity = panel_entity.clone();
+                        move |_, _, cx| {
+                            panel_entity
+                                .update(cx, |panel, cx| panel.switch_branch(name.clone(), cx));
+                            cx.stop_propagation();
+                        }
+                    }),
+            );
+            let armed = confirm_delete.as_deref() == Some(branch.name.as_str());
+            actions = actions.child(
+                Button::new(SharedString::from(format!("git-branch-delete-{index}")))
+                    .label(if armed {
+                        label_delete_confirm.clone()
+                    } else {
+                        label_delete.clone()
+                    })
+                    .small()
+                    .with_variant(if armed {
+                        ButtonVariant::Danger
+                    } else {
+                        ButtonVariant::Ghost
+                    })
+                    .disabled(busy)
+                    .on_click({
+                        let name = branch.name.clone();
+                        let panel_entity = panel_entity.clone();
+                        move |_, _, cx| {
+                            cx.stop_propagation();
+                            panel_entity
+                                .update(cx, |panel, cx| panel.delete_branch(name.clone(), cx));
+                        }
+                    }),
+            );
+        }
+        row = row.child(div().flex_1()).child(actions);
+        row.into_any_element()
+    });
+    column.child(rows.flex_1().min_h_0()).into_any_element()
+}
+
+/// The G-G4 graph view: the lane-allocated commit graph rendered as rows of
+/// lane cells plus refs, subject and author, with copy-hash and a two-step
+/// reset of the current branch to the node (local workspaces only).
+fn render_graph(
+    panel: &GitPanel,
+    text: &ShellText,
+    cx: &mut Context<GitPanel>,
+) -> gpui_kit::AnyElement {
+    if panel.remote_workspace {
+        return render_centered_note(&text.git_remote_unsupported, cx);
+    }
+    let Some(graph) = &panel.graph else {
+        let placeholder = if panel.busy {
+            text.git_loading.clone()
+        } else {
+            text.git_no_commits.clone()
+        };
+        return render_centered_note(&placeholder, cx);
+    };
+    if graph.nodes.is_empty() {
+        return render_centered_note(&text.git_no_commits, cx);
+    }
+    let columns = (graph.max_lane + 1).max(1) as usize;
+    let nodes = graph.nodes.clone();
+    let confirm_reset = panel.confirm_graph_reset.clone();
+    let busy = panel.busy;
+    let graph_list = panel.graph_list.clone();
+    let panel_entity = cx.entity();
+    // Same up-front label clones as the branches view: the `move` item
+    // closure must not capture the `&ShellText` itself.
+    let label_copy = text.git_branch_copy_hash.clone();
+    let label_reset = text.git_graph_reset.clone();
+    let label_reset_confirm = text.git_graph_reset_confirm.clone();
+    let rows = list(graph_list, move |index, _window, cx| {
+        let Some(node) = nodes.get(index) else {
+            return div().into_any_element();
+        };
+        let lane_cell = |lane: i32, cx: &App| {
+            let cell = div()
+                .w(px(14.))
+                .h_full()
+                .flex()
+                .items_center()
+                .justify_center();
+            if lane == node.lane {
+                cell.child(div().size_2().rounded_full().bg(cx.theme().info))
+            } else if node.passing_lanes.contains(&lane)
+                || node.forking_lanes.contains(&lane)
+                || node.merging_lanes.contains(&lane)
+            {
+                cell.child(div().w(px(2.)).h(px(20.)).bg(cx.theme().border))
+            } else {
+                cell
+            }
+        };
+        let mut row = div()
+            .w_full()
+            .flex()
+            .items_center()
+            .gap_2()
+            .px_2()
+            .py_1p5()
+            .rounded_sm()
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .h(px(20.))
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .flex()
+                            .gap_0p5()
+                            .children((0..columns as i32).map(|lane| lane_cell(lane, cx))),
+                    ),
+            );
+        if !node.refs.is_empty() {
+            row = row.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .flex_shrink_0()
+                    .children(node.refs.iter().map(|graph_ref| {
+                        div()
+                            .px_1()
+                            .py_0p5()
+                            .rounded_sm()
+                            .text_xs()
+                            .flex_shrink_0()
+                            .when(graph_ref.is_current, |this| {
+                                this.bg(cx.theme().accent.opacity(0.2))
+                                    .text_color(cx.theme().accent)
+                            })
+                            .when(!graph_ref.is_current, |this| {
+                                this.text_color(cx.theme().muted_foreground)
+                            })
+                            .child(graph_ref.name.clone())
+                    })),
+            );
+        }
+        row = row
+            .child(
+                div()
+                    .w(px(72.))
+                    .flex_shrink_0()
+                    .font_family(cx.theme().mono_font_family.clone())
+                    .text_xs()
+                    .text_color(cx.theme().info)
+                    .child(node.hash.chars().take(7).collect::<String>()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_sm()
+                    .text_color(cx.theme().foreground)
+                    .truncate()
+                    .child(node.message.clone()),
+            )
+            .child(
+                div()
+                    .max_w(px(140.))
+                    .flex_shrink_0()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .truncate()
+                    .child(node.author_name.clone()),
+            );
+        let mut actions = div().flex().items_center().gap_1().flex_shrink_0();
+        actions = actions.child(
+            Button::new(SharedString::from(format!("git-graph-copy-{index}")))
+                .label(label_copy.clone())
+                .small()
+                .with_variant(ButtonVariant::Ghost)
+                .on_click({
+                    let hash = node.hash.clone();
+                    move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(hash.clone()))
+                }),
+        );
+        let armed = confirm_reset.as_deref() == Some(node.hash.as_str());
+        actions = actions.child(
+            Button::new(SharedString::from(format!("git-graph-reset-{index}")))
+                .label(if armed {
+                    label_reset_confirm.clone()
+                } else {
+                    label_reset.clone()
+                })
+                .small()
+                .with_variant(if armed {
+                    ButtonVariant::Danger
+                } else {
+                    ButtonVariant::Ghost
+                })
+                .disabled(busy)
+                .on_click({
+                    let hash = node.hash.clone();
+                    let panel_entity = panel_entity.clone();
+                    move |_, _, cx| {
+                        cx.stop_propagation();
+                        panel_entity
+                            .update(cx, |panel, cx| panel.reset_to_commit(hash.clone(), cx));
+                    }
+                }),
+        );
+        row = row.child(actions);
+        row.into_any_element()
+    });
+    rows.flex_1().min_h_0().into_any_element()
+}
+
 fn render_history(
     panel: &GitPanel,
     text: &ShellText,

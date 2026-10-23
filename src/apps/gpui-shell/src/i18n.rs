@@ -451,6 +451,22 @@ pub(crate) struct ShellText {
     pub git_worktrees_view: String,
     pub git_snapshots_view: String,
     pub git_remote_unsupported: String,
+    pub git_branches_view: String,
+    pub git_graph_view: String,
+    pub git_branch_create: String,
+    pub git_branch_name_label: String,
+    pub git_branch_base_label: String,
+    pub git_branch_switch: String,
+    pub git_branch_delete: String,
+    pub git_branch_delete_confirm: String,
+    pub git_branch_copy_hash: String,
+    pub git_branch_current: String,
+    pub git_branch_remote: String,
+    pub git_branch_empty: String,
+    pub git_graph_reset: String,
+    pub git_graph_reset_confirm: String,
+    pub git_generate_message: String,
+    pub git_generate_cancel: String,
     pub git_worktree_empty: String,
     pub git_worktree_create: String,
     pub git_worktree_branch_placeholder: String,
@@ -1807,6 +1823,16 @@ pub(crate) fn git_failed(error: &str, cx: &App) -> String {
     )
 }
 
+/// Resolves the AI-commit-generation guard shown when the workspace has no
+/// changes to describe (G-G2).
+pub(crate) fn git_generate_no_changes(cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-git-generate-no-changes",
+        TranslationArgs::new(),
+        cx,
+    )
+}
+
 /// Resolves the localized trend range line for the usage chart.
 pub(crate) fn usage_trend_range(start: &str, end: &str, cx: &App) -> String {
     resolve_with(
@@ -2535,6 +2561,22 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         git_remote_unsupported:
             "Worktree management and snapshots are not supported for remote workspaces."
                 .to_string(),
+        git_branches_view: "Branches".to_string(),
+        git_graph_view: "Graph".to_string(),
+        git_branch_create: "Create branch".to_string(),
+        git_branch_name_label: "Branch name".to_string(),
+        git_branch_base_label: "Start point (optional)".to_string(),
+        git_branch_switch: "Switch".to_string(),
+        git_branch_delete: "Delete".to_string(),
+        git_branch_delete_confirm: "Confirm delete".to_string(),
+        git_branch_copy_hash: "Copy hash".to_string(),
+        git_branch_current: "current".to_string(),
+        git_branch_remote: "remote".to_string(),
+        git_branch_empty: "No branches yet.".to_string(),
+        git_graph_reset: "Reset here".to_string(),
+        git_graph_reset_confirm: "Confirm reset".to_string(),
+        git_generate_message: "AI message".to_string(),
+        git_generate_cancel: "Stop".to_string(),
         git_worktree_empty: "No managed worktrees yet.".to_string(),
         git_worktree_create: "Create worktree".to_string(),
         git_worktree_branch_placeholder: "Branch name (optional)".to_string(),
@@ -3913,6 +3955,22 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         git_worktrees_view: service.t("gpui-shell-git-worktrees-view").await,
         git_snapshots_view: service.t("gpui-shell-git-snapshots-view").await,
         git_remote_unsupported: service.t("gpui-shell-git-remote-unsupported").await,
+        git_branches_view: service.t("gpui-shell-git-branches-view").await,
+        git_graph_view: service.t("gpui-shell-git-graph-view").await,
+        git_branch_create: service.t("gpui-shell-git-branch-create").await,
+        git_branch_name_label: service.t("gpui-shell-git-branch-name-label").await,
+        git_branch_base_label: service.t("gpui-shell-git-branch-base-label").await,
+        git_branch_switch: service.t("gpui-shell-git-branch-switch").await,
+        git_branch_delete: service.t("gpui-shell-git-branch-delete").await,
+        git_branch_delete_confirm: service.t("gpui-shell-git-branch-delete-confirm").await,
+        git_branch_copy_hash: service.t("gpui-shell-git-branch-copy-hash").await,
+        git_branch_current: service.t("gpui-shell-git-branch-current").await,
+        git_branch_remote: service.t("gpui-shell-git-branch-remote").await,
+        git_branch_empty: service.t("gpui-shell-git-branch-empty").await,
+        git_graph_reset: service.t("gpui-shell-git-graph-reset").await,
+        git_graph_reset_confirm: service.t("gpui-shell-git-graph-reset-confirm").await,
+        git_generate_message: service.t("gpui-shell-git-generate-message").await,
+        git_generate_cancel: service.t("gpui-shell-git-generate-cancel").await,
         git_worktree_empty: service.t("gpui-shell-git-worktree-empty").await,
         git_worktree_create: service.t("gpui-shell-git-worktree-create").await,
         git_worktree_branch_placeholder: service

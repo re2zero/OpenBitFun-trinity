@@ -604,6 +604,25 @@ gpui-shell-git-snapshot-empty = The snapshot system has no recorded sessions yet
 gpui-shell-git-snapshot-restore = Undo file changes
 gpui-shell-git-snapshot-stats = { $files } files · { $turns } turns · { $changes } changes
 
+# G-G2/G-G4: AI commit message + branches/graph views (net-new shells).
+gpui-shell-git-branches-view = Branches
+gpui-shell-git-graph-view = Graph
+gpui-shell-git-branch-create = Create branch
+gpui-shell-git-branch-name-label = Branch name
+gpui-shell-git-branch-base-label = Start point (optional)
+gpui-shell-git-branch-switch = Switch
+gpui-shell-git-branch-delete = Delete
+gpui-shell-git-branch-delete-confirm = Confirm delete
+gpui-shell-git-branch-copy-hash = Copy hash
+gpui-shell-git-branch-current = current
+gpui-shell-git-branch-remote = remote
+gpui-shell-git-branch-empty = No branches yet.
+gpui-shell-git-graph-reset = Reset here
+gpui-shell-git-graph-reset-confirm = Confirm reset
+gpui-shell-git-generate-message = AI message
+gpui-shell-git-generate-cancel = Stop
+gpui-shell-git-generate-no-changes = No changes to describe yet.
+
 
 gpui-shell-question-title = Your answer is needed
 gpui-shell-question-progress = Question { $index } / { $total }

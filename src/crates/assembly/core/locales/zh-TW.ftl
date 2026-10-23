@@ -574,6 +574,25 @@ gpui-shell-git-snapshot-empty = 快照系統還沒有記錄。
 gpui-shell-git-snapshot-restore = 撤銷檔案改動
 gpui-shell-git-snapshot-stats = { $files } 檔案 · { $turns } 輪 · { $changes } 處改動
 
+# G-G2/G-G4：AI 產生提交訊息 + 分支/提交圖視圖（殼側淨新增）。
+gpui-shell-git-branches-view = 分支
+gpui-shell-git-graph-view = 提交圖
+gpui-shell-git-branch-create = 新增分支
+gpui-shell-git-branch-name-label = 分支名稱
+gpui-shell-git-branch-base-label = 起點（可選）
+gpui-shell-git-branch-switch = 切換
+gpui-shell-git-branch-delete = 刪除
+gpui-shell-git-branch-delete-confirm = 確認刪除
+gpui-shell-git-branch-copy-hash = 複製雜湊
+gpui-shell-git-branch-current = 當前
+gpui-shell-git-branch-remote = 遠端
+gpui-shell-git-branch-empty = 還沒有分支。
+gpui-shell-git-graph-reset = 重置到此提交
+gpui-shell-git-graph-reset-confirm = 確認重置
+gpui-shell-git-generate-message = AI 提交訊息
+gpui-shell-git-generate-cancel = 停止產生
+gpui-shell-git-generate-no-changes = 暫無可描述的變更。
+
 
 gpui-shell-question-title = 需要你的回答
 gpui-shell-question-progress = 問題 { $index } / { $total }
