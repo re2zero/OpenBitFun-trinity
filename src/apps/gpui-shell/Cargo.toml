@@ -30,6 +30,8 @@ openbitfun-core = { path = "../../crates/assembly/core", features = [
     "tools-computer-use",
     "tools-image-analysis",
     "tools-agent-control",
+    # G-G2: the AI commit-message generator goes through the core GitFunctionAgent.
+    "function-agents",
 ] }
 openbitfun-agent-runtime = { path = "../../crates/execution/agent-runtime", features = ["agent-runtime"] }
 openbitfun-events = { path = "../../crates/contracts/events" }
@@ -37,6 +39,11 @@ openbitfun-events = { path = "../../crates/contracts/events" }
 # live in the stable core-types crate (the desktop adapter depends on it the
 # same way).
 openbitfun-core-types = { path = "../../crates/contracts/core-types" }
+# G-SE25: the Hook import snapshot/plan/mutation contracts the automation page
+# reads; the core crate owns the lifecycle behind them.
+openbitfun-product-domains = { path = "../../crates/contracts/product-domains", features = [
+    "external-sources",
+] }
 openbitfun-runtime-ports = { path = "../../crates/contracts/runtime-ports", features = [
     "agent-api",
     # M8 changes view: the workspace diff port served by the local runtime

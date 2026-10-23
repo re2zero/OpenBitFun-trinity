@@ -97,6 +97,102 @@ pub(crate) fn runtime_handle() -> Option<&'static RuntimeHandle> {
     RUNTIME_HANDLE.get()
 }
 
+/// G-SE12: builds a disposable client for one stored model and probes it.
+/// Mirrors the desktop command: stream options plus subscription auth/profile
+/// come from the live shared config, so a test never writes the config back.
+/// Multimodal models also run the image-input leg and merge both receipts.
+async fn test_model_connection_once(
+    model_id: &str,
+) -> Result<openbitfun_core::util::types::ConnectionTestResult, String> {
+    let service = get_global_config_service()
+        .await
+        .map_err(|error| format!("config service unavailable: {error}"))?;
+    let config: GlobalConfig = service
+        .get_config(None)
+        .await
+        .map_err(|error| format!("failed to read configuration: {error}"))?;
+    let model_config = config
+        .ai
+        .models
+        .iter()
+        .find(|model| model.id == model_id)
+        .cloned()
+        .ok_or_else(|| format!("model '{model_id}' is not configured"))?;
+
+    let supports_image_input = model_config.capabilities.iter().any(|capability| {
+        matches!(
+            capability,
+            openbitfun_core::service::config::types::ModelCapability::ImageUnderstanding
+        )
+    }) || matches!(
+        model_config.category,
+        openbitfun_core::service::config::types::ModelCategory::Multimodal
+    );
+
+    let auth = model_config.auth.clone();
+    let stream_options = openbitfun_core::infrastructure::ai::build_stream_options_for_model(
+        &config.ai,
+        Some(&model_config),
+    );
+    let mut ai_config: openbitfun_core::util::types::AIConfig = model_config
+        .try_into()
+        .map_err(|error| format!("failed to convert configuration: {error}"))?;
+    let skip_ssl_verify = ai_config.skip_ssl_verify;
+    let proxy_config = config.ai.proxy.enabled.then(|| config.ai.proxy.clone());
+    let subscription_options =
+        openbitfun_core::infrastructure::subscription_auth::SubscriptionHttpOptions::new(
+            proxy_config.clone(),
+            skip_ssl_verify,
+        );
+
+    openbitfun_core::infrastructure::ai::client_factory::apply_subscription_auth_with_options(
+        &auth,
+        &mut ai_config,
+        &subscription_options,
+    )
+    .await
+    .map_err(|error| format!("failed to resolve subscription auth: {error}"))?;
+
+    let client =
+        openbitfun_core::infrastructure::ai::client_factory::apply_subscription_request_profile(
+            &auth,
+            openbitfun_core::infrastructure::ai::AIClient::new_with_runtime_options(
+                ai_config,
+                proxy_config,
+                stream_options,
+            ),
+        );
+
+    let result = client
+        .test_connection()
+        .await
+        .map_err(|error| format!("connection test failed: {error}"))?;
+    if !result.success || !supports_image_input {
+        return Ok(result);
+    }
+
+    let image_result = client
+        .test_image_input_connection()
+        .await
+        .map_err(|error| format!("connection test failed: {error}"))?;
+    let response_time_ms = result.response_time_ms + image_result.response_time_ms;
+    Ok(openbitfun_core::util::types::ConnectionTestResult {
+        success: image_result.success,
+        response_time_ms,
+        model_response: image_result.model_response.or(result.model_response),
+        message_code: if image_result.success {
+            result.message_code
+        } else {
+            image_result.message_code
+        },
+        error_details: if image_result.success {
+            result.error_details
+        } else {
+            image_result.error_details
+        },
+    })
+}
+
 /// One-way notifications from the embedded runtime into the shell UI.
 // Turn ids ride along on turn events for the M5 permission/steering work;
 // the M4 view keys everything on session ids and round ids.
@@ -270,6 +366,27 @@ pub(crate) enum RuntimeEvent {
     /// Configured-model catalog for the pickers (session header + models
     /// settings page); sent once after bootstrap.
     ModelCatalog(Vec<ModelChoice>),
+    /// One model's connection test finished (G-SE12); the models page shows
+    /// the receipt inline. A setup failure is reported as `Err` so the row
+    /// keeps a usable message instead of losing the test.
+    ModelTestFinished {
+        model_id: String,
+        result: Result<openbitfun_core::util::types::ConnectionTestResult, String>,
+    },
+    /// G-SE25: the Hook-import projection for the automation page (imports,
+    /// catalog, corrupt-store diagnostics and the revision mutations expect).
+    HookImports(
+        Box<openbitfun_product_domains::external_hook_import::ExternalHookImportSnapshotV1>,
+    ),
+    /// G-SE25: a review plan for one import source, shown before applying.
+    HookImportPlan(Box<openbitfun_product_domains::external_hook_import::ExternalHookImportPlanV1>),
+    /// G-SE25: the reviewed plan went stale because the source changed; the
+    /// page swaps in the refreshed plan instead of applying the old one.
+    HookImportPlanStale(
+        Box<openbitfun_product_domains::external_hook_import::ExternalHookImportPlanV1>,
+    ),
+    /// G-SE25: a Hook-import action failed; the page shows the reason inline.
+    HookImportFailed(String),
     /// Workspaces the shell can switch to: the shared core catalog (recent
     /// first, then the rest of the opened set) plus workspaces visited by
     /// this process, with the active one always present.
@@ -306,6 +423,16 @@ pub(crate) enum RuntimeEvent {
     /// M21 management catalogs for the settings pages (skills, agents, MCP
     /// servers). Each replaces the corresponding gpui global wholesale.
     SkillCatalog(crate::manage::SkillCatalog),
+    /// G-K3: the add-skill source path passed the filesystem/SKILL.md check.
+    SkillValidationFinished(Result<crate::manage::SkillValidationRow, String>),
+    /// G-K3: an add/delete write settled; the success arm also refreshes the
+    /// catalog.
+    SkillAdded(Result<String, String>),
+    SkillDeleted(Result<String, String>),
+    /// G-K4: the persisted user skill groups (`app.user_skill_groups`).
+    SkillGroups(Result<Vec<openbitfun_core::service::config::UserSkillGroup>, String>),
+    /// G-K4: a group-list write settled; Ok carries the saved list.
+    SkillGroupsSaved(Result<Vec<openbitfun_core::service::config::UserSkillGroup>, String>),
     AgentCatalog(crate::manage::AgentCatalog),
     McpCatalog(crate::manage::McpCatalog),
     /// T2-11: the skill selection projection for one agent (mode profile
@@ -316,6 +443,19 @@ pub(crate) enum RuntimeEvent {
     },
     /// T2-12: the custom-agent definition for the edit dialog prefill.
     AgentDetail(Result<crate::manage::AgentDetailRow, String>),
+    /// G-A1/G-A2/G-A4: the detail dialog's editable tools and SubAgent toggles.
+    /// The profile id travels with the result so a stale load cannot land in a
+    /// dialog that was reopened for another agent.
+    AgentCapabilities {
+        profile_id: String,
+        result: Result<crate::manage::AgentDetailPayload, String>,
+    },
+    /// G-A1/G-A2: a tools/SubAgent write settled; Ok carries the refreshed
+    /// payload.
+    AgentCapabilitiesSaved {
+        profile_id: String,
+        result: Result<crate::manage::AgentDetailPayload, String>,
+    },
     /// Resources/prompts snapshot for one MCP server (browse dialog).
     McpServerCatalog(Box<crate::manage::McpServerCatalogView>),
     /// An MCP server asked for an interactive decision (elicitation or
@@ -330,6 +470,13 @@ pub(crate) enum RuntimeEvent {
     McpJsonSaved(Result<(), String>),
     /// G-M2: one typed import path's file content, for the paste box.
     McpImportFile(Result<String, String>),
+    /// G-M1/G-M3: one remote OAuth session poll. The core manager drives the
+    /// status transitions in the background; the dialog applies a snapshot
+    /// only when its server id matches.
+    McpOAuthSession(Option<openbitfun_core::service::mcp::auth::MCPRemoteOAuthSessionSnapshot>),
+    /// G-M3: a remote auth write or clear settled; either way the catalog
+    /// refreshes so the row's auth summary follows.
+    McpAuthSaved(Result<(), String>),
     /// T2-7: one resources/read call finished for the browse dialog.
     McpResourceRead(Box<crate::manage::McpResourceReadOutcome>),
     /// A management action (agent creation, MCP lifecycle) failed; the
@@ -1531,6 +1678,62 @@ impl RuntimeHandle {
         });
     }
 
+    /// G-P1: creates one scheduled job from the task editor. The editor
+    /// already validated the schedule shape; core remains the authority on
+    /// cron/timezone parsing and rejects with [`RuntimeEvent::CronFailed`].
+    pub(crate) fn create_cron_job(
+        &self,
+        request: openbitfun_core::service::cron::CreateCronJobRequest,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+    ) {
+        self.tokio.spawn(async move {
+            let Some(service) = openbitfun_core::service::cron::get_global_cron_service() else {
+                let _ = tx.send(RuntimeEvent::CronFailed(
+                    "cron: service is not initialized".to_string(),
+                ));
+                return;
+            };
+            match service.create_job(request).await {
+                Ok(job) => {
+                    tracing::info!("Scheduled job {} created", job.id);
+                    let _ = tx.send(RuntimeEvent::CronJobs(service.list_jobs().await));
+                }
+                Err(error) => {
+                    tracing::error!("Failed to create a scheduled job: {error}");
+                    let _ = tx.send(RuntimeEvent::CronFailed(format!("cron: {error}")));
+                }
+            }
+        });
+    }
+
+    /// G-P1: applies one editor save to an existing job. Fields left `None`
+    /// keep their stored value (core's update contract).
+    pub(crate) fn update_cron_job(
+        &self,
+        job_id: String,
+        request: openbitfun_core::service::cron::UpdateCronJobRequest,
+        tx: mpsc::UnboundedSender<RuntimeEvent>,
+    ) {
+        self.tokio.spawn(async move {
+            let Some(service) = openbitfun_core::service::cron::get_global_cron_service() else {
+                let _ = tx.send(RuntimeEvent::CronFailed(
+                    "cron: service is not initialized".to_string(),
+                ));
+                return;
+            };
+            match service.update_job(&job_id, request).await {
+                Ok(job) => {
+                    tracing::info!("Scheduled job {} updated", job.id);
+                    let _ = tx.send(RuntimeEvent::CronJobs(service.list_jobs().await));
+                }
+                Err(error) => {
+                    tracing::error!("Failed to update scheduled job {job_id}: {error}");
+                    let _ = tx.send(RuntimeEvent::CronFailed(format!("cron: {error}")));
+                }
+            }
+        });
+    }
+
     /// Deletes one scheduled job.
     pub(crate) fn delete_cron_job(&self, job_id: String, tx: mpsc::UnboundedSender<RuntimeEvent>) {
         self.tokio.spawn(async move {
@@ -1709,6 +1912,133 @@ impl RuntimeHandle {
         });
     }
 
+    /// G-SE12: probes one configured model through the same transient-client
+    /// path the desktop `test_ai_config_connection` command uses, including
+    /// the image-input leg for multimodal models. Runs off the UI thread; the
+    /// result comes back as [`RuntimeEvent::ModelTestFinished`].
+    pub(crate) fn test_model_connection(&self, model_id: String) {
+        self.tokio.spawn(async move {
+            let result = test_model_connection_once(&model_id).await;
+            match &result {
+                Ok(receipt) => tracing::info!(
+                    "Model connection test finished: model={}, success={}, response_time={}ms",
+                    model_id,
+                    receipt.success,
+                    receipt.response_time_ms
+                ),
+                Err(error) => {
+                    tracing::warn!(
+                        "Model connection test failed to run: model={model_id}, error={error}"
+                    )
+                }
+            }
+            publish(RuntimeEvent::ModelTestFinished { model_id, result });
+        });
+    }
+
+    /// G-SE25: reads the Hook-import projection for the active workspace.
+    /// `refresh_updates` re-probes source updates (the page's Refresh button);
+    /// a plain read uses the catalog cache.
+    pub(crate) fn reload_hook_imports(&self, refresh_updates: bool) {
+        let workspace = self.workspace().id;
+        self.tokio.spawn(async move {
+            match openbitfun_core::external_hook_import::external_hook_import_snapshot(
+                Some(&workspace),
+                refresh_updates,
+            )
+            .await
+            {
+                Ok(snapshot) => publish(RuntimeEvent::HookImports(Box::new(snapshot))),
+                Err(error) => publish(RuntimeEvent::HookImportFailed(error.to_string())),
+            }
+        });
+    }
+
+    /// G-SE25: applies one import mutation (toggle, remove, corrupt-store
+    /// reset) against the revision the page rendered.
+    pub(crate) fn mutate_hook_import(
+        &self,
+        expected_revision: String,
+        action: openbitfun_product_domains::external_hook_import::ExternalHookImportMutationV1,
+    ) {
+        use openbitfun_product_domains::external_hook_import::ExternalHookImportMutationRequestV1;
+        let workspace = self.workspace().id;
+        self.tokio.spawn(async move {
+            let request = ExternalHookImportMutationRequestV1 {
+                schema_version:
+                    openbitfun_product_domains::external_hook_import::EXTERNAL_HOOK_IMPORT_SCHEMA_V1,
+                expected_revision,
+                action,
+            };
+            match openbitfun_core::external_hook_import::mutate_external_hook_import(
+                Some(&workspace),
+                request,
+            )
+            .await
+            {
+                Ok(snapshot) => publish(RuntimeEvent::HookImports(Box::new(snapshot))),
+                Err(error) => publish(RuntimeEvent::HookImportFailed(error.to_string())),
+            }
+        });
+    }
+
+    /// G-SE25: prepares the review plan for one source's Update action.
+    pub(crate) fn plan_hook_import(
+        &self,
+        source: openbitfun_product_domains::external_sources::SourceKey,
+    ) {
+        let workspace = self.workspace().id;
+        self.tokio.spawn(async move {
+            match openbitfun_core::external_hook_import::plan_external_hook_import(
+                Some(&workspace),
+                source,
+            )
+            .await
+            {
+                Ok(plan) => publish(RuntimeEvent::HookImportPlan(Box::new(plan))),
+                Err(error) => publish(RuntimeEvent::HookImportFailed(error.to_string())),
+            }
+        });
+    }
+
+    /// G-SE25: applies a reviewed plan. A stale fingerprint returns the
+    /// refreshed plan instead of writing anything.
+    pub(crate) fn apply_hook_import(
+        &self,
+        source: openbitfun_product_domains::external_sources::SourceKey,
+        plan_fingerprint: String,
+    ) {
+        use openbitfun_product_domains::external_hook_import::{
+            ExternalHookImportApplyOutcomeV1, ExternalHookImportApplyRequestV1,
+        };
+        let workspace = self.workspace().id;
+        self.tokio.spawn(async move {
+            let request = ExternalHookImportApplyRequestV1 {
+                schema_version:
+                    openbitfun_product_domains::external_hook_import::EXTERNAL_HOOK_IMPORT_SCHEMA_V1,
+                source,
+                plan_fingerprint,
+            };
+            match openbitfun_core::external_hook_import::apply_external_hook_import(
+                Some(&workspace),
+                request,
+            )
+            .await
+            {
+                Ok(result) => match result.outcome {
+                    ExternalHookImportApplyOutcomeV1::Applied { snapshot }
+                    | ExternalHookImportApplyOutcomeV1::Unchanged { snapshot } => {
+                        publish(RuntimeEvent::HookImports(Box::new(snapshot)));
+                    }
+                    ExternalHookImportApplyOutcomeV1::Stale { refreshed_plan } => {
+                        publish(RuntimeEvent::HookImportPlanStale(Box::new(refreshed_plan)));
+                    }
+                },
+                Err(error) => publish(RuntimeEvent::HookImportFailed(error.to_string())),
+            }
+        });
+    }
+
     /// M21: the skills catalog plus the global disable sets, for the skills
     /// management page.
     pub(crate) fn reload_skill_catalog(&self) {
@@ -1716,6 +2046,62 @@ impl RuntimeHandle {
         self.tokio.spawn(async move {
             let catalog = fetch_skill_catalog(&workspace.root_path, &workspace.id).await;
             publish(RuntimeEvent::SkillCatalog(catalog));
+        });
+    }
+
+    /// G-K3: checks an add-skill source directory without writing anything.
+    pub(crate) fn validate_skill_path(&self, path: String) {
+        self.tokio.spawn(async move {
+            publish(RuntimeEvent::SkillValidationFinished(
+                validate_skill_source(path).await,
+            ));
+        });
+    }
+
+    /// G-K3: copies one validated skill directory into the user or project
+    /// skills root, then re-reads the catalog.
+    pub(crate) fn add_skill(&self, source_path: String, project_level: bool) {
+        let workspace = self.workspace();
+        self.tokio.spawn(async move {
+            let result = add_skill_folder(&workspace, source_path, project_level).await;
+            if result.is_ok() {
+                let catalog = fetch_skill_catalog(&workspace.root_path, &workspace.id).await;
+                publish(RuntimeEvent::SkillCatalog(catalog));
+            }
+            publish(RuntimeEvent::SkillAdded(result));
+        });
+    }
+
+    /// G-K3: removes one OpenBitFun-owned, non-built-in skill directory after
+    /// checking it really sits under the managed skills root.
+    pub(crate) fn delete_skill(&self, skill_key: String) {
+        let workspace = self.workspace();
+        self.tokio.spawn(async move {
+            let result = delete_skill_folder(&workspace, &skill_key).await;
+            if result.is_ok() {
+                let catalog = fetch_skill_catalog(&workspace.root_path, &workspace.id).await;
+                publish(RuntimeEvent::SkillCatalog(catalog));
+            }
+            publish(RuntimeEvent::SkillDeleted(result));
+        });
+    }
+
+    /// G-K4: reads `app.user_skill_groups` into the group manager.
+    pub(crate) fn reload_skill_groups(&self) {
+        self.tokio.spawn(async move {
+            publish(RuntimeEvent::SkillGroups(read_user_skill_groups().await));
+        });
+    }
+
+    /// G-K4: writes the whole user-group list back through the `app` section,
+    /// preserving every sibling key the shell does not own.
+    pub(crate) fn save_skill_groups(
+        &self,
+        groups: Vec<openbitfun_core::service::config::UserSkillGroup>,
+    ) {
+        self.tokio.spawn(async move {
+            let result = write_user_skill_groups(&groups).await.map(|()| groups);
+            publish(RuntimeEvent::SkillGroupsSaved(result));
         });
     }
 
@@ -1900,6 +2286,93 @@ impl RuntimeHandle {
             tracing::info!("Updated custom agent {}", draft.agent_id);
             let catalog = fetch_agent_catalog(Some(&workspace.id)).await;
             publish(RuntimeEvent::AgentCatalog(catalog));
+        });
+    }
+
+    /// G-A1/G-A2: loads the detail dialog's tool list (primary agents only)
+    /// and manageable SubAgents for one profile id.
+    pub(crate) fn load_agent_capabilities(&self, profile_id: String, mode_kind: bool) {
+        let workspace = self.workspace();
+        self.tokio.spawn(async move {
+            let result = fetch_agent_detail_payload(&profile_id, mode_kind, &workspace).await;
+            publish(RuntimeEvent::AgentCapabilities { profile_id, result });
+        });
+    }
+
+    /// G-A1: replaces the profile's enabled tool list (web `handleSetTools`).
+    pub(crate) fn save_agent_tools(&self, profile_id: String, tools: Vec<String>, mode_kind: bool) {
+        let workspace = self.workspace();
+        self.tokio.spawn(async move {
+            let write = openbitfun_core::service::config::mode_config_canonicalizer::persist_agent_profile_from_value(
+                &profile_id,
+                serde_json::json!({ "enabled_tools": tools }),
+            )
+            .await;
+            let result = match write {
+                Ok(()) => fetch_agent_detail_payload(&profile_id, mode_kind, &workspace).await,
+                Err(error) => Err(format!("Failed to save agent tools: {error}")),
+            };
+            publish(RuntimeEvent::AgentCapabilitiesSaved { profile_id, result });
+        });
+    }
+
+    /// G-A1: drops the stored profile so the agent falls back to its default
+    /// tool set (web `handleResetTools`).
+    pub(crate) fn reset_agent_tools(&self, profile_id: String, mode_kind: bool) {
+        let workspace = self.workspace();
+        self.tokio.spawn(async move {
+            let reset = openbitfun_core::service::config::mode_config_canonicalizer::reset_agent_profile_to_default(&profile_id).await;
+            let result = match reset {
+                Ok(()) => fetch_agent_detail_payload(&profile_id, mode_kind, &workspace).await,
+                Err(error) => Err(format!("Failed to reset agent tools: {error}")),
+            };
+            publish(RuntimeEvent::AgentCapabilitiesSaved { profile_id, result });
+        });
+    }
+
+    /// G-A2: writes every changed SubAgent toggle for a parent profile (web
+    /// `saveCurrentCapability` loops `updateSubagentConfig`), then refreshes
+    /// the detail payload and the catalog (visibility counts) once.
+    pub(crate) fn save_agent_subagents(
+        &self,
+        profile_id: String,
+        changes: Vec<(String, bool)>,
+        mode_kind: bool,
+    ) {
+        let workspace = self.workspace();
+        self.tokio.spawn(async move {
+            let registry = openbitfun_core::agentic::agents::get_agent_registry();
+            registry.load_custom_subagents(workspace.id.as_str()).await;
+            let mut failure = None;
+            let mut wrote = false;
+            for (subagent_id, enabled) in changes {
+                match registry
+                    .update_subagent_override(
+                        &profile_id,
+                        &subagent_id,
+                        enabled,
+                        Some(workspace.id.as_str()),
+                    )
+                    .await
+                {
+                    Ok(()) => wrote = true,
+                    Err(error) => {
+                        failure = Some(format!(
+                            "Failed to update SubAgent availability for {subagent_id}: {error}"
+                        ));
+                        break;
+                    }
+                }
+            }
+            let result = match failure {
+                Some(error) => Err(error),
+                None => fetch_agent_detail_payload(&profile_id, mode_kind, &workspace).await,
+            };
+            if wrote {
+                let catalog = fetch_agent_catalog(Some(&workspace.id)).await;
+                publish(RuntimeEvent::AgentCatalog(catalog));
+            }
+            publish(RuntimeEvent::AgentCapabilitiesSaved { profile_id, result });
         });
     }
 
@@ -2160,6 +2633,111 @@ impl RuntimeHandle {
                 .await
                 .map_err(|error| format!("{error}"));
             publish(RuntimeEvent::McpImportFile(result));
+        });
+    }
+
+    /// G-M1: starts the remote OAuth authorization flow. The core manager
+    /// binds the local callback listener and drives the status transitions on
+    /// background tasks; the authorization URL opens in the system browser and
+    /// a poll loop keeps the dialog's status line fresh until the flow reaches
+    /// a terminal state (or the dialog closes and bumps the epoch).
+    pub(crate) fn start_mcp_remote_oauth(&self, server_id: String) {
+        let epoch = advance_mcp_oauth_epoch();
+        self.tokio.spawn(async move {
+            let Some(service) = openbitfun_core::service::mcp::get_global_mcp_service() else {
+                publish(RuntimeEvent::McpAuthSaved(Err(
+                    "MCP service is not initialized".to_string(),
+                )));
+                return;
+            };
+            match service
+                .server_manager()
+                .start_remote_oauth_authorization(&server_id)
+                .await
+            {
+                Ok(snapshot) => {
+                    if let Some(url) = &snapshot.authorization_url {
+                        crate::markdown::open_external(url);
+                    }
+                    publish(RuntimeEvent::McpOAuthSession(Some(snapshot)));
+                    poll_mcp_remote_oauth_loop(&service, server_id, epoch).await;
+                }
+                Err(error) => {
+                    tracing::warn!("Failed to start MCP remote OAuth for {server_id}: {error}");
+                    publish(RuntimeEvent::McpAuthSaved(Err(error.to_string())));
+                }
+            }
+        });
+    }
+
+    /// G-M1: polls one live OAuth session (the dialog reopen path — the core
+    /// manager keeps the state; this only refreshes the view).
+    pub(crate) fn poll_mcp_remote_oauth(&self, server_id: String) {
+        let epoch = advance_mcp_oauth_epoch();
+        self.tokio.spawn(async move {
+            let Some(service) = openbitfun_core::service::mcp::get_global_mcp_service() else {
+                return;
+            };
+            poll_mcp_remote_oauth_loop(&service, server_id, epoch).await;
+        });
+    }
+
+    /// G-M1: cancels a live OAuth session (the dialog's close-while-active
+    /// path, web `handleCloseAuthDialog`). The cancelled snapshot still
+    /// publishes so a reopening dialog shows why the flow stopped.
+    pub(crate) fn cancel_mcp_remote_oauth(&self, server_id: String) {
+        advance_mcp_oauth_epoch();
+        self.tokio.spawn(async move {
+            let Some(service) = openbitfun_core::service::mcp::get_global_mcp_service() else {
+                return;
+            };
+            let manager = service.server_manager();
+            if let Err(error) = manager.cancel_remote_oauth_authorization(&server_id).await {
+                tracing::warn!("Failed to cancel MCP remote OAuth for {server_id}: {error}");
+            }
+            publish(RuntimeEvent::McpOAuthSession(
+                manager.get_remote_oauth_session(&server_id).await,
+            ));
+        });
+    }
+
+    /// G-M3: saves one remote server's Bearer token (web
+    /// `update_mcp_remote_auth`); core stores it and reconnects the server.
+    pub(crate) fn update_mcp_remote_auth(&self, server_id: String, authorization_value: String) {
+        self.tokio.spawn(async move {
+            let result = match openbitfun_core::service::mcp::get_global_mcp_service() {
+                Some(service) => service
+                    .server_manager()
+                    .reauthenticate_remote_server(&server_id, &authorization_value)
+                    .await
+                    .map_err(|error| error.to_string()),
+                None => Err("MCP service is not initialized".to_string()),
+            };
+            if let Err(message) = &result {
+                tracing::warn!("Failed to update MCP remote auth for {server_id}: {message}");
+            }
+            publish(RuntimeEvent::McpAuthSaved(result));
+            publish(RuntimeEvent::McpCatalog(fetch_mcp_catalog().await));
+        });
+    }
+
+    /// G-M3: clears one remote server's stored auth (token headers and OAuth
+    /// credentials) and stops the connection so stale credentials drop.
+    pub(crate) fn clear_mcp_remote_auth(&self, server_id: String) {
+        self.tokio.spawn(async move {
+            let result = match openbitfun_core::service::mcp::get_global_mcp_service() {
+                Some(service) => service
+                    .server_manager()
+                    .clear_remote_server_auth(&server_id)
+                    .await
+                    .map_err(|error| error.to_string()),
+                None => Err("MCP service is not initialized".to_string()),
+            };
+            if let Err(message) = &result {
+                tracing::warn!("Failed to clear MCP remote auth for {server_id}: {message}");
+            }
+            publish(RuntimeEvent::McpAuthSaved(result));
+            publish(RuntimeEvent::McpCatalog(fetch_mcp_catalog().await));
         });
     }
 
@@ -2724,6 +3302,55 @@ impl RuntimeHandle {
 // shell-owned row types so the UI layer stays free of MCP/registry types)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// G-K4 user skill groups: the shared config contract owns the persisted shape
+// (`{version, groups:[{id,name,skillKeys}]}`); the shell only edits it.
+// ---------------------------------------------------------------------------
+
+async fn read_user_skill_groups(
+) -> Result<Vec<openbitfun_core::service::config::UserSkillGroup>, String> {
+    let service = get_global_config_service()
+        .await
+        .map_err(|error| format!("config service unavailable: {error}"))?;
+    let app: openbitfun_core::service::config::AppConfig = service
+        .get_config(Some("app"))
+        .await
+        .map_err(|error| format!("failed to read app configuration: {error}"))?;
+    let groups = app.user_skill_groups;
+    if groups.version != 1 {
+        return Err(format!(
+            "unsupported user skill groups version {}",
+            groups.version
+        ));
+    }
+    Ok(groups.groups)
+}
+
+async fn write_user_skill_groups(
+    groups: &[openbitfun_core::service::config::UserSkillGroup],
+) -> Result<(), String> {
+    let service = get_global_config_service()
+        .await
+        .map_err(|error| format!("config service unavailable: {error}"))?;
+    let payload = serde_json::json!({
+        "version": 1,
+        "groups": groups,
+    });
+    service
+        .update_config::<serde_json::Value, ()>("app", move |app| {
+            let Some(object) = app.as_object_mut() else {
+                return Err(openbitfun_core::util::errors::OpenBitFunError::config(
+                    "app section is not an object".to_string(),
+                ));
+            };
+            object.insert("user_skill_groups".to_string(), payload);
+            Ok(())
+        })
+        .await
+        .map_err(|error| format!("failed to save user skill groups: {error}"))?;
+    Ok(())
+}
+
 async fn fetch_skill_catalog(root: &Path, workspace_id: &str) -> crate::manage::SkillCatalog {
     use openbitfun_agent_runtime::skills::SkillLocation;
     use openbitfun_core::agentic::tools::implementations::skills::{mode_overrides, SkillRegistry};
@@ -2748,6 +3375,7 @@ async fn fetch_skill_catalog(root: &Path, workspace_id: &str) -> crate::manage::
         .into_iter()
         .map(|skill| {
             let project_level = matches!(skill.level, SkillLocation::Project);
+            let deletable = !skill.is_builtin && skill.is_native();
             crate::manage::SkillRow {
                 disabled: crate::manage::SkillRow::disabled_for(
                     &skill.key,
@@ -2765,6 +3393,8 @@ async fn fetch_skill_catalog(root: &Path, workspace_id: &str) -> crate::manage::
                 group_key: skill.group_key.filter(|key| !key.trim().is_empty()),
                 source_id: skill.source_id,
                 source_label: skill.source_label,
+                path: skill.path,
+                deletable,
             }
         })
         .collect();
@@ -2772,6 +3402,175 @@ async fn fetch_skill_catalog(root: &Path, workspace_id: &str) -> crate::manage::
         loaded: true,
         skills: rows,
     }
+}
+
+/// G-K3: checks a folder the user typed into the add-skill dialog. The
+/// directory must exist, be a directory, and contain a parseable `SKILL.md`;
+/// only unexpected IO failures surface as `Err`.
+async fn validate_skill_source(path: String) -> Result<crate::manage::SkillValidationRow, String> {
+    use openbitfun_core::agentic::tools::implementations::skills::{SkillData, SkillLocation};
+
+    use crate::manage::{SkillValidationError, SkillValidationRow};
+
+    let invalid = |error| {
+        Ok(SkillValidationRow {
+            valid: false,
+            name: None,
+            description: None,
+            error: Some(error),
+        })
+    };
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return invalid(SkillValidationError::Empty);
+    }
+    let skill_path = Path::new(trimmed);
+    let metadata = match tokio::fs::metadata(skill_path).await {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return invalid(SkillValidationError::NotFound)
+        }
+        Err(error) => {
+            tracing::warn!("Failed to inspect skill path {trimmed}: {error}");
+            return invalid(SkillValidationError::Unreadable);
+        }
+    };
+    if !metadata.is_dir() {
+        return invalid(SkillValidationError::NotDirectory);
+    }
+    let content = match tokio::fs::read_to_string(skill_path.join("SKILL.md")).await {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return invalid(SkillValidationError::MissingSkillFile)
+        }
+        Err(error) => {
+            tracing::warn!("Failed to read SKILL.md under {trimmed}: {error}");
+            return invalid(SkillValidationError::Unreadable);
+        }
+    };
+    match SkillData::from_markdown(trimmed.to_string(), &content, SkillLocation::User, false) {
+        Ok(data) => Ok(SkillValidationRow {
+            valid: true,
+            name: Some(data.name),
+            description: Some(data.description),
+            error: None,
+        }),
+        Err(error) => invalid(SkillValidationError::Parse(error.to_string())),
+    }
+}
+
+/// G-K3: copies one validated skill folder into the managed skills root. The
+/// source is canonicalized first so a folder cannot be copied into itself, and
+/// the target must not already exist (desktop `add_skill`).
+async fn add_skill_folder(
+    workspace: &WorkspaceInfo,
+    source_path: String,
+    project_level: bool,
+) -> Result<String, String> {
+    let validation = validate_skill_source(source_path.clone()).await?;
+    if !validation.valid {
+        return Err("The selected folder is not a valid skill".to_string());
+    }
+    let source = PathBuf::from(source_path.trim());
+    let paths = try_get_path_manager_arc().map_err(|error| error.to_string())?;
+    let target_dir = if project_level {
+        paths.project_root(&workspace.root_path).join("skills")
+    } else {
+        paths.user_skills_dir()
+    };
+    tokio::fs::create_dir_all(&target_dir)
+        .await
+        .map_err(|error| format!("Failed to create the skills directory: {error}"))?;
+    let folder_name = source
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "Unable to read the skill folder name".to_string())?
+        .to_string();
+    let canonical_source = tokio::fs::canonicalize(&source)
+        .await
+        .map_err(|error| format!("Failed to read the skill folder: {error}"))?;
+    let canonical_target_dir = tokio::fs::canonicalize(&target_dir)
+        .await
+        .map_err(|error| format!("Failed to read the skills directory: {error}"))?;
+    let target_path = canonical_target_dir.join(&folder_name);
+    if target_path.exists() {
+        return Err(format!(
+            "Skill '{folder_name}' already exists in the {} skills directory",
+            if project_level { "project" } else { "user" }
+        ));
+    }
+    if canonical_target_dir.starts_with(&canonical_source) {
+        return Err("Cannot copy a skill folder into itself".to_string());
+    }
+    copy_dir_all(&canonical_source, &target_path)
+        .await
+        .map_err(|error| format!("Failed to copy the skill folder: {error}"))?;
+    Ok(format!(
+        "Skill '{}' added successfully",
+        validation.name.unwrap_or(folder_name)
+    ))
+}
+
+/// G-K3: removes one skill bundle after proving the registry path sits under
+/// the managed user/project skills root, so stale or hostile records cannot
+/// delete anything outside it.
+async fn delete_skill_folder(workspace: &WorkspaceInfo, skill_key: &str) -> Result<String, String> {
+    use openbitfun_agent_runtime::skills::SkillLocation;
+    use openbitfun_core::agentic::tools::implementations::skills::SkillRegistry;
+
+    let registry = SkillRegistry::global();
+    let skill = registry
+        .find_skill_by_key_for_workspace(skill_key, Some(&workspace.root_path))
+        .await
+        .ok_or_else(|| format!("Skill '{skill_key}' not found"))?;
+    if skill.is_builtin || !skill.is_native() {
+        return Err(
+            "Only OpenBitFun-owned, non-built-in Skills can be deleted from OpenBitFun".to_string(),
+        );
+    }
+    let paths = try_get_path_manager_arc().map_err(|error| error.to_string())?;
+    let managed_root = match skill.level {
+        SkillLocation::User => paths.user_skills_dir(),
+        SkillLocation::Project => paths.project_root(&workspace.root_path).join("skills"),
+    };
+    let canonical_root = tokio::fs::canonicalize(&managed_root)
+        .await
+        .map_err(|error| format!("Failed to read the skills directory: {error}"))?;
+    let skill_path = PathBuf::from(&skill.path);
+    let metadata = tokio::fs::metadata(&skill_path)
+        .await
+        .map_err(|error| format!("Failed to read the skill folder: {error}"))?;
+    if !metadata.is_dir() {
+        return Err("The skill is not stored as a directory bundle".to_string());
+    }
+    let canonical_skill = tokio::fs::canonicalize(&skill_path)
+        .await
+        .map_err(|error| format!("Failed to read the skill folder: {error}"))?;
+    if !canonical_skill.starts_with(&canonical_root) {
+        return Err("Refusing to delete a skill outside the managed skills directory".to_string());
+    }
+    tokio::fs::remove_dir_all(&canonical_skill)
+        .await
+        .map_err(|error| format!("Failed to delete the skill folder: {error}"))?;
+    Ok(format!("Skill '{}' deleted", skill.name))
+}
+
+/// Recursive directory copy for skill bundles (desktop `copy_dir_all`; files
+/// follow symlinks the same way `tokio::fs::copy` does).
+async fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+    tokio::fs::create_dir_all(dst).await?;
+    let mut entries = tokio::fs::read_dir(src).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let metadata = entry.metadata().await?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if metadata.is_dir() {
+            Box::pin(copy_dir_all(&src_path, &dst_path)).await?;
+        } else {
+            tokio::fs::copy(&src_path, &dst_path).await?;
+        }
+    }
+    Ok(())
 }
 
 /// T2-11: the per-agent skill selection projection (web `ModeSkillInfo[]`).
@@ -2896,6 +3695,79 @@ async fn clear_mode_skill_selection(
     }
 }
 
+/// G-A1/G-A2: the detail dialog payload. Primary agents get the editable tool
+/// catalog plus the manageable SubAgent list for their profile; SubAgent rows
+/// get neither (their capabilities are read-only in the web as well).
+async fn fetch_agent_detail_payload(
+    profile_id: &str,
+    mode_kind: bool,
+    workspace: &openbitfun_core::service::workspace::WorkspaceInfo,
+) -> Result<crate::manage::AgentDetailPayload, String> {
+    use openbitfun_core::service::config::mode_config_canonicalizer::get_agent_profile_view;
+
+    if !mode_kind {
+        // SubAgent detail shows catalog facts only; the profile view exists
+        // for mode defaults, not for SubAgent ids.
+        return Ok(crate::manage::AgentDetailPayload {
+            tools: Vec::new(),
+            subagents: Vec::new(),
+        });
+    }
+    let view = get_agent_profile_view(profile_id)
+        .await
+        .map_err(|error| format!("Failed to read the agent profile: {error}"))?;
+    let enabled: std::collections::HashSet<&str> =
+        view.enabled_tools.iter().map(String::as_str).collect();
+    let mut tools = Vec::new();
+    for tool in openbitfun_core::agentic::tools::get_all_registered_tools().await {
+        let name = tool.name().to_string();
+        if !crate::manage::agent_tool_configurable(&name) {
+            continue;
+        }
+        let description = tool.description().await.unwrap_or_default();
+        tools.push(crate::manage::AgentToolRow {
+            enabled: enabled.contains(name.as_str()),
+            name,
+            description,
+        });
+    }
+    tools.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
+    let subagents = fetch_manageable_subagents(profile_id, workspace).await;
+    Ok(crate::manage::AgentDetailPayload { tools, subagents })
+}
+
+async fn fetch_manageable_subagents(
+    profile_id: &str,
+    workspace: &openbitfun_core::service::workspace::WorkspaceInfo,
+) -> Vec<crate::manage::AgentSubagentRow> {
+    use openbitfun_core::agentic::agents::{
+        get_agent_registry, AgentSource, SubagentListScope, SubagentQueryContext,
+    };
+
+    get_agent_registry()
+        .get_subagents_for_query(&SubagentQueryContext {
+            parent_agent_type: Some(profile_id),
+            workspace_id: Some(workspace.id.as_str()),
+            list_scope: SubagentListScope::RegistryManagement,
+            include_disabled: true,
+            external_sources_supported: true,
+        })
+        .await
+        .into_iter()
+        .map(|info| {
+            let external = matches!(info.source, AgentSource::External);
+            crate::manage::AgentSubagentRow {
+                id: info.id,
+                name: info.name,
+                description: info.description,
+                enabled: info.effective_enabled,
+                default_enabled: info.default_enabled,
+                external,
+            }
+        })
+        .collect()
+}
+
 async fn fetch_agent_catalog(workspace_id: Option<&str>) -> crate::manage::AgentCatalog {
     use openbitfun_core::agentic::agents::{get_agent_registry, AgentSource};
 
@@ -2940,6 +3812,15 @@ async fn fetch_agent_catalog(workspace_id: Option<&str>) -> crate::manage::Agent
                 .get(&info.id)
                 .cloned()
                 .unwrap_or_else(|| info.id.clone());
+            let profile_member_ids = if info.config_profile_member_mode_ids.is_empty() {
+                vec![info.id.clone()]
+            } else {
+                info.config_profile_member_mode_ids.clone()
+            };
+            let profile_id = info
+                .config_profile_id
+                .clone()
+                .unwrap_or_else(|| info.id.clone());
             crate::manage::AgentCardRow {
                 id: info.id,
                 name: info.name,
@@ -2949,12 +3830,18 @@ async fn fetch_agent_catalog(workspace_id: Option<&str>) -> crate::manage::Agent
                 review: info.is_review,
                 source: map_source(&info.source),
                 enabled: None,
-                // The shell has no mode tool-config editor, so the default
-                // tool set is the shell-visible truth (web hasSkillTool).
+                // G-A1: the default tool set decides the editable tool list
+                // and whether the Task subagent selector applies.
                 skills_manageable: info.default_tools.iter().any(|tool| tool == "Skill"),
                 skills_mode_id,
                 // G-A3: model overrides apply to subagents only.
                 model_override: None,
+                supports_follow_up: info.supports_follow_up,
+                external_provider_label: info.external_provider_label,
+                default_tools: info.default_tools,
+                profile_id,
+                profile_label: info.config_profile_label,
+                profile_member_ids,
             }
         })
         .collect();
@@ -2980,6 +3867,7 @@ async fn fetch_agent_catalog(workspace_id: Option<&str>) -> crate::manage::Agent
             } else {
                 None
             };
+            let agent_id = info.id.clone();
             crate::manage::AgentCardRow {
                 id: info.id.clone(),
                 name: info.name,
@@ -2995,6 +3883,12 @@ async fn fetch_agent_catalog(workspace_id: Option<&str>) -> crate::manage::Agent
                 // the agent id when no mode profile exists).
                 skills_mode_id: info.id,
                 model_override,
+                supports_follow_up: info.supports_follow_up,
+                external_provider_label: info.external_provider_label,
+                default_tools: info.default_tools,
+                profile_id: agent_id.clone(),
+                profile_label: None,
+                profile_member_ids: vec![agent_id],
             }
         })
         .collect();
@@ -3021,6 +3915,52 @@ fn map_mcp_status(
         MCPServerStatus::Failed => crate::manage::McpServerState::Failed,
         MCPServerStatus::Stopping => crate::manage::McpServerState::Stopping,
         MCPServerStatus::Stopped => crate::manage::McpServerState::Stopped,
+    }
+}
+
+/// G-M1: one bump per OAuth poll loop start / dialog close. A loop exits as
+/// soon as the epoch it captured stops being current, so only the newest
+/// dialog's polls keep publishing.
+static MCP_OAUTH_POLL_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn advance_mcp_oauth_epoch() -> u64 {
+    MCP_OAUTH_POLL_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+}
+
+fn mcp_oauth_poll_epoch_current(epoch: u64) -> bool {
+    MCP_OAUTH_POLL_EPOCH.load(std::sync::atomic::Ordering::SeqCst) == epoch
+}
+
+/// G-M1: one poll per second while an OAuth flow is live; terminal states (or
+/// an epoch bump from a newer dialog) end the loop. Mirrors the web
+/// `pollOAuthSession` cadence.
+async fn poll_mcp_remote_oauth_loop(
+    service: &openbitfun_core::service::mcp::MCPService,
+    server_id: String,
+    epoch: u64,
+) {
+    use openbitfun_core::service::mcp::auth::MCPRemoteOAuthStatus;
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        if !mcp_oauth_poll_epoch_current(epoch) {
+            return;
+        }
+        let snapshot = service
+            .server_manager()
+            .get_remote_oauth_session(&server_id)
+            .await;
+        let terminal = snapshot.as_ref().is_some_and(|session| {
+            matches!(
+                session.status,
+                MCPRemoteOAuthStatus::Authorized
+                    | MCPRemoteOAuthStatus::Failed
+                    | MCPRemoteOAuthStatus::Cancelled
+            )
+        });
+        publish(RuntimeEvent::McpOAuthSession(snapshot));
+        if terminal {
+            return;
+        }
     }
 }
 
@@ -3069,6 +4009,30 @@ async fn fetch_mcp_catalog() -> crate::manage::McpCatalog {
             }
             command
         };
+        // G-M3: the same auth projection the desktop `get_mcp_servers`
+        // command serves — static token/header config, or stored OAuth
+        // credentials when the server opts into OAuth.
+        let static_auth_configured = remote
+            && openbitfun_core::service::mcp::MCPConfigService::has_remote_authorization(&config);
+        let oauth_enabled = remote && config.remote_oauth_enabled();
+        let oauth_auth_configured = if oauth_enabled {
+            manager
+                .has_remote_oauth_credentials(&config.id)
+                .await
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        let auth_source = if static_auth_configured {
+            openbitfun_core::service::mcp::MCPConfigService::get_remote_authorization_source(
+                &config,
+            )
+            .map(str::to_string)
+        } else if oauth_auth_configured {
+            Some("oauth".to_string())
+        } else {
+            None
+        };
         servers.push(crate::manage::McpServerRow {
             id: config.id,
             name: config.name,
@@ -3079,6 +4043,9 @@ async fn fetch_mcp_catalog() -> crate::manage::McpCatalog {
             enabled: config.enabled,
             auto_start: config.auto_start,
             builtin: config.location == ConfigLocation::BuiltIn,
+            auth_configured: remote && (static_auth_configured || oauth_auth_configured),
+            auth_source,
+            oauth_enabled,
         });
     }
     crate::manage::McpCatalog {
@@ -3818,6 +4785,7 @@ impl RuntimeHandle {
                 // The management catalogs are workspace-scoped (project skills
                 // and agents); refresh them together with the sessions.
                 handle.reload_skill_catalog();
+                handle.reload_skill_groups();
                 handle.reload_agent_catalog();
                 handle.reload_mcp_catalog();
             }
@@ -4702,6 +5670,7 @@ async fn bootstrap(tx: mpsc::UnboundedSender<RuntimeEvent>) -> Result<()> {
         handle.reload_model_catalog(tx.clone());
         handle.reload_workspaces(tx.clone());
         handle.reload_skill_catalog();
+        handle.reload_skill_groups();
         handle.reload_agent_catalog();
         handle.reload_mcp_catalog();
         match handle.agent_runtime.pending_permission_requests() {

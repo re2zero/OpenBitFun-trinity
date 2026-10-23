@@ -152,6 +152,41 @@ pub(crate) struct ShellText {
     /// by the page; `tasks_day_title` is the parameterized helper).
     pub tasks_day_clear: String,
     pub tasks_day_empty: String,
+    /// G-P1: the scheduled-job create/edit dialog.
+    pub tasks_new: String,
+    pub tasks_editor_create_title: String,
+    pub tasks_editor_edit_title: String,
+    pub tasks_editor_name: String,
+    pub tasks_editor_prompt: String,
+    pub tasks_editor_schedule: String,
+    pub tasks_editor_kind_at: String,
+    pub tasks_editor_kind_every: String,
+    pub tasks_editor_kind_cron: String,
+    pub tasks_editor_at: String,
+    pub tasks_editor_at_hint: String,
+    pub tasks_editor_every: String,
+    pub tasks_editor_anchor: String,
+    pub tasks_editor_anchor_hint: String,
+    pub tasks_editor_unit_minute: String,
+    pub tasks_editor_unit_hour: String,
+    pub tasks_editor_unit_day: String,
+    pub tasks_editor_cron_expr: String,
+    pub tasks_editor_cron_tz: String,
+    pub tasks_editor_target: String,
+    pub tasks_editor_target_workspace: String,
+    pub tasks_editor_target_session: String,
+    pub tasks_editor_session_placeholder: String,
+    pub tasks_editor_no_sessions: String,
+    pub tasks_editor_enabled: String,
+    pub tasks_editor_error_name: String,
+    pub tasks_editor_error_prompt: String,
+    pub tasks_editor_error_prompt_long: String,
+    pub tasks_editor_error_at: String,
+    pub tasks_editor_error_every: String,
+    pub tasks_editor_error_anchor: String,
+    pub tasks_editor_error_cron: String,
+    pub tasks_editor_error_session: String,
+    pub tasks_editor_error_workspace: String,
     /// R2c docked resource panel chrome.
     pub panel_pop_out: String,
     pub panel_close: String,
@@ -215,6 +250,48 @@ pub(crate) struct ShellText {
     pub models_empty: String,
     pub models_enabled: String,
     pub models_disabled: String,
+    /// G-SE12: the per-model connection probe labels and its result receipt.
+    pub models_test: String,
+    pub models_testing: String,
+    pub models_test_details: String,
+    /// G-SE12: the model row editor (category, limits, reasoning presets).
+    pub models_edit_title: String,
+    pub models_edit_close: String,
+    pub models_category: String,
+    pub models_category_general_chat: String,
+    pub models_category_multimodal: String,
+    pub models_category_image_generation: String,
+    pub models_category_speech_recognition: String,
+    pub models_context_window: String,
+    pub models_context_window_hint: String,
+    pub models_max_tokens: String,
+    pub models_max_tokens_hint: String,
+    pub models_reasoning_default: String,
+    pub models_reasoning_auto: String,
+    pub models_reasoning_presets: String,
+    pub models_reasoning_empty: String,
+    /// G-SE12-3: request shaping in the model editor's advanced block.
+    pub models_advanced: String,
+    pub models_advanced_note: String,
+    pub models_request_format: String,
+    pub models_inline_think: String,
+    pub models_inline_think_hint: String,
+    pub models_skip_ssl: String,
+    pub models_skip_ssl_warning: String,
+    pub models_headers: String,
+    pub models_headers_hint: String,
+    pub models_headers_mode: String,
+    pub models_headers_replace: String,
+    pub models_headers_merge: String,
+    pub models_headers_replace_hint: String,
+    pub models_headers_merge_hint: String,
+    pub models_body: String,
+    pub models_body_hint: String,
+    pub models_body_mode: String,
+    pub models_body_merge: String,
+    pub models_body_trim: String,
+    pub models_body_trim_hint: String,
+    pub models_json_invalid: String,
     pub chat_empty: String,
     pub chat_empty_title: String,
     /// Tabless landing face (R2b): the brand line and the pinned slogan. Web
@@ -293,6 +370,37 @@ pub(crate) struct ShellText {
     pub settings_policy_full_access: String,
     pub settings_auto_approve: String,
     pub settings_auto_approve_description: String,
+    // G-SE17: the global permission rules editor.
+    pub settings_permission_rules_section: String,
+    pub settings_permission_rules_description: String,
+    pub settings_permission_rules_manage: String,
+    pub settings_permission_rules_add: String,
+    pub settings_permission_rules_save: String,
+    pub settings_permission_rules_discard: String,
+    pub settings_permission_rules_empty: String,
+    pub settings_permission_rules_action: String,
+    pub settings_permission_rules_resource: String,
+    pub settings_permission_rules_effect: String,
+    pub settings_permission_rules_invalid: String,
+    pub settings_permission_effect_allow: String,
+    pub settings_permission_effect_ask: String,
+    pub settings_permission_effect_deny: String,
+    // G-SE24: quick-actions management.
+    pub settings_quick_actions_section: String,
+    pub settings_quick_actions_note: String,
+    pub settings_quick_actions_builtin_section: String,
+    pub settings_quick_actions_builtin_note: String,
+    pub settings_quick_actions_custom_section: String,
+    pub settings_quick_actions_custom_note: String,
+    pub settings_quick_actions_custom_empty: String,
+    pub settings_quick_actions_add: String,
+    pub settings_quick_actions_delete: String,
+    pub settings_quick_actions_delete_confirm: String,
+    pub settings_quick_actions_label: String,
+    pub settings_quick_actions_prompt: String,
+    pub settings_quick_actions_save: String,
+    pub settings_quick_actions_cancel: String,
+    pub settings_quick_actions_invalid: String,
     pub settings_terminal: String,
     pub settings_terminal_font_size: String,
     pub settings_terminal_font_size_description: String,
@@ -343,6 +451,22 @@ pub(crate) struct ShellText {
     pub git_worktrees_view: String,
     pub git_snapshots_view: String,
     pub git_remote_unsupported: String,
+    pub git_branches_view: String,
+    pub git_graph_view: String,
+    pub git_branch_create: String,
+    pub git_branch_name_label: String,
+    pub git_branch_base_label: String,
+    pub git_branch_switch: String,
+    pub git_branch_delete: String,
+    pub git_branch_delete_confirm: String,
+    pub git_branch_copy_hash: String,
+    pub git_branch_current: String,
+    pub git_branch_remote: String,
+    pub git_branch_empty: String,
+    pub git_graph_reset: String,
+    pub git_graph_reset_confirm: String,
+    pub git_generate_message: String,
+    pub git_generate_cancel: String,
     pub git_worktree_empty: String,
     pub git_worktree_create: String,
     pub git_worktree_branch_placeholder: String,
@@ -413,6 +537,63 @@ pub(crate) struct ShellText {
     pub manage_skill_user: String,
     pub manage_skill_project: String,
     pub manage_skill_shadowed: String,
+    /// G-K2/G-K3: the skill detail, add, and delete dialogs.
+    pub manage_skill_add: String,
+    pub manage_skill_detail: String,
+    pub manage_skill_dialog_add_title: String,
+    pub manage_skill_dialog_detail_title: String,
+    pub manage_skill_dialog_delete_title: String,
+    pub manage_skill_source: String,
+    pub manage_skill_source_native: String,
+    pub manage_skill_path: String,
+    pub manage_skill_path_hint: String,
+    pub manage_skill_validate: String,
+    pub manage_skill_valid: String,
+    pub manage_skill_invalid: String,
+    pub manage_skill_runtime_unavailable: String,
+    pub manage_skill_add_action: String,
+    pub manage_skill_delete_action: String,
+    pub manage_skill_close: String,
+    pub manage_skill_not_found: String,
+    pub manage_skill_no_description: String,
+    /// G-K4: the user skill group manager and its editor/delete dialogs.
+    pub skill_groups_title: String,
+    pub skill_groups_subtitle: String,
+    pub skill_groups_manage: String,
+    pub skill_groups_mine: String,
+    pub skill_groups_builtin: String,
+    pub skill_groups_loading: String,
+    pub skill_groups_empty: String,
+    pub skill_groups_empty_group: String,
+    pub skill_groups_unresolved: String,
+    pub skill_group_new: String,
+    pub skill_group_name_label: String,
+    pub skill_group_name_placeholder: String,
+    pub skill_group_dialog_edit_title: String,
+    pub skill_group_dialog_delete_title: String,
+    pub skill_group_save: String,
+    pub skill_group_copy: String,
+    pub skill_group_up: String,
+    pub skill_group_down: String,
+    pub skill_group_delete: String,
+    /// G-A1/G-A2/G-A4: the agent detail dialog.
+    pub agent_detail_open: String,
+    pub agent_detail_missing: String,
+    pub agent_detail_type: String,
+    pub agent_detail_source: String,
+    pub agent_detail_follow_up: String,
+    pub agent_detail_supported: String,
+    pub agent_detail_unsupported: String,
+    pub agent_detail_capabilities: String,
+    pub agent_detail_shared_profile: String,
+    pub agent_detail_shared_default: String,
+    pub agent_detail_tools: String,
+    pub agent_detail_subagents: String,
+    pub agent_detail_loading: String,
+    pub agent_detail_no_subagents: String,
+    pub agent_detail_save: String,
+    pub agent_detail_reset: String,
+    pub agent_detail_close: String,
     /// R4 facet sidebar: group titles and the market degrade card.
     pub skills_facet_library: String,
     pub skills_facet_all: String,
@@ -551,6 +732,34 @@ pub(crate) struct ShellText {
     pub manage_mcp_resource_binary: String,
     pub manage_mcp_resource_empty: String,
     pub manage_mcp_resource_failed: String,
+    /// G-M1/G-M3: the remote auth dialog and the row auth summary (web
+    /// `McpToolsConfig` auth dialog + `getRemoteAuthSummary`).
+    pub manage_mcp_auth: String,
+    pub manage_mcp_auth_oauth_hint: String,
+    pub manage_mcp_oauth_idle: String,
+    pub manage_mcp_oauth_awaiting_browser: String,
+    pub manage_mcp_oauth_awaiting_callback: String,
+    pub manage_mcp_oauth_exchanging_token: String,
+    pub manage_mcp_oauth_authorized: String,
+    pub manage_mcp_oauth_failed: String,
+    pub manage_mcp_oauth_cancelled: String,
+    pub manage_mcp_oauth_start: String,
+    pub manage_mcp_oauth_restart: String,
+    pub manage_mcp_oauth_reconnect: String,
+    pub manage_mcp_auth_token_hint: String,
+    pub manage_mcp_auth_secret_hint: String,
+    pub manage_mcp_auth_token_label: String,
+    pub manage_mcp_auth_clear: String,
+    pub manage_mcp_auth_cancel_flow: String,
+    pub manage_mcp_auth_save: String,
+    pub manage_mcp_auth_required: String,
+    pub manage_mcp_auth_saved: String,
+    pub manage_mcp_auth_configured: String,
+    pub manage_mcp_auth_oauth_ready: String,
+    pub manage_mcp_auth_missing: String,
+    pub manage_mcp_auth_source_headers: String,
+    pub manage_mcp_auth_source_env: String,
+    pub manage_mcp_auth_source_oauth: String,
     pub manage_error_dismiss: String,
     // M22 general page (tray/autostart/updates) and the new settings pages.
     pub value_unsupported: String,
@@ -583,6 +792,47 @@ pub(crate) struct ShellText {
     pub settings_hooks_project_description: String,
     pub settings_git_coauthor: String,
     pub settings_git_coauthor_description: String,
+    /// G-SE25: Hook declaration locations, the imported-source manager and the
+    /// Codex contract reference on the automation page.
+    pub settings_hooks_locations_section: String,
+    pub settings_hooks_locations_note: String,
+    pub settings_hooks_user_file: String,
+    pub settings_hooks_user_file_desc: String,
+    pub settings_hooks_project_file: String,
+    pub settings_hooks_project_file_desc: String,
+    pub settings_hooks_imports_section: String,
+    pub settings_hooks_imports_note: String,
+    pub settings_hooks_imports_master_disabled: String,
+    pub settings_hooks_imports_refresh: String,
+    pub settings_hooks_imports_loading: String,
+    pub settings_hooks_imports_empty: String,
+    pub settings_hooks_imports_update: String,
+    pub settings_hooks_imports_remove: String,
+    pub settings_hook_import_state_current: String,
+    pub settings_hook_import_state_update_available: String,
+    pub settings_hook_import_state_source_missing: String,
+    pub settings_hook_import_state_update_check_failed: String,
+    pub settings_hook_import_state_bundle_missing: String,
+    pub settings_hooks_import_review_title: String,
+    pub settings_hooks_import_review_warning: String,
+    pub settings_hooks_import_timeout: String,
+    pub settings_hooks_import_skipped: String,
+    pub settings_hooks_import_toggle: String,
+    pub settings_hooks_import_confirm: String,
+    pub settings_hooks_import_confirm_update: String,
+    pub settings_hooks_import_stale: String,
+    pub settings_hooks_import_remove_title: String,
+    pub settings_hooks_import_remove_confirm_note: String,
+    pub settings_hooks_import_remove_confirm: String,
+    pub settings_hooks_import_store_invalid: String,
+    pub settings_hooks_import_reset: String,
+    pub settings_hooks_import_reset_title: String,
+    pub settings_hooks_import_reset_note: String,
+    pub settings_hooks_import_reset_confirm: String,
+    pub settings_hooks_compat_section: String,
+    pub settings_hooks_compat_note: String,
+    pub settings_hooks_compat_reference: String,
+    pub settings_hooks_compat_open: String,
     pub settings_websearch: String,
     pub settings_websearch_provider: String,
     pub settings_websearch_provider_description: String,
@@ -650,6 +900,11 @@ pub(crate) struct ShellText {
     pub settings_usage_empty: String,
     pub settings_usage_requests: String,
     pub settings_usage_cache_hit: String,
+    /// G-SE29: distribution blocks and their page-local filter.
+    pub settings_usage_groups: String,
+    pub settings_usage_endpoints: String,
+    pub settings_usage_filter: String,
+    pub settings_usage_filter_empty: String,
     pub usage_trend_title: String,
     pub usage_trend_partial: String,
     pub usage_trend_input: String,
@@ -927,6 +1182,39 @@ pub(crate) struct ShellText {
     pub settings_review_parallelism_description: String,
     pub settings_review_queue_wait: String,
     pub settings_review_queue_wait_description: String,
+    // G-SE15: default Harness preference and session-title generation.
+    pub settings_default_harness_section: String,
+    pub settings_default_harness_section_note: String,
+    pub settings_default_harness_strategy: String,
+    pub settings_default_harness_follow_last: String,
+    pub settings_default_harness_fixed: String,
+    pub settings_default_harness_fixed_description: String,
+    pub settings_default_harness_fixed_mode: String,
+    pub settings_session_title_section: String,
+    pub settings_session_title_section_note: String,
+    pub settings_session_title_enable: String,
+    pub settings_session_title_model: String,
+    pub settings_session_title_model_inherit: String,
+    pub settings_session_title_model_fast: String,
+    pub settings_session_title_model_primary: String,
+    pub settings_session_title_models_empty: String,
+    pub settings_session_title_model_unavailable: String,
+    /// G-SE15: the suffix the fixed-Harness menu puts on a stored id this
+    /// build's Harness list does not own (web `defaultHarness.compatibilityMode`).
+    pub value_compatibility: String,
+    // G-SE16: managed-worktree isolation defaults.
+    pub settings_worktree_section: String,
+    pub settings_worktree_section_note: String,
+    pub settings_worktree_root: String,
+    pub settings_worktree_root_description: String,
+    pub settings_worktree_branch_prefix: String,
+    pub settings_worktree_branch_prefix_description: String,
+    pub settings_worktree_copy_changes: String,
+    pub settings_worktree_copy_changes_description: String,
+    pub settings_worktree_auto_delete: String,
+    pub settings_worktree_auto_delete_description: String,
+    pub settings_worktree_auto_delete_limit: String,
+    pub settings_worktree_auto_delete_limit_description: String,
 }
 
 impl Global for ShellText {}
@@ -1109,6 +1397,314 @@ pub(crate) fn shared_agent_name(id: &str, cx: &App) -> String {
     resolve_with(&format!("shared.agents.{id}"), TranslationArgs::new(), cx)
 }
 
+/// Resolves one shared term (`shared.<path>`, e.g. `tools.edit`) so a shell
+/// affordance can reuse the contract copy instead of introducing a duplicate.
+pub(crate) fn shared_term(path: &str, cx: &App) -> String {
+    resolve_with(&format!("shared.{path}"), TranslationArgs::new(), cx)
+}
+
+/// G-K3: the localized reason an add-skill path check failed.
+pub(crate) fn skill_validation_error(
+    error: &crate::manage::SkillValidationError,
+    cx: &App,
+) -> String {
+    use crate::manage::SkillValidationError;
+    match error {
+        SkillValidationError::Empty => resolve_with(
+            "gpui-shell-manage-skill-validation-empty",
+            TranslationArgs::new(),
+            cx,
+        ),
+        SkillValidationError::NotFound => resolve_with(
+            "gpui-shell-manage-skill-validation-not-found",
+            TranslationArgs::new(),
+            cx,
+        ),
+        SkillValidationError::NotDirectory => resolve_with(
+            "gpui-shell-manage-skill-validation-not-dir",
+            TranslationArgs::new(),
+            cx,
+        ),
+        SkillValidationError::MissingSkillFile => resolve_with(
+            "gpui-shell-manage-skill-validation-missing-file",
+            TranslationArgs::new(),
+            cx,
+        ),
+        SkillValidationError::Unreadable => resolve_with(
+            "gpui-shell-manage-skill-validation-unreadable",
+            TranslationArgs::new(),
+            cx,
+        ),
+        SkillValidationError::Parse(detail) => resolve_with(
+            "gpui-shell-manage-skill-validation-parse",
+            TranslationArgs::new().with_string("detail", detail.clone()),
+            cx,
+        ),
+    }
+}
+
+pub(crate) fn skill_validation_failed(detail: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-manage-skill-validation-failed",
+        TranslationArgs::new().with_string("detail", detail.to_string()),
+        cx,
+    )
+}
+
+pub(crate) fn skill_delete_warning(name: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-manage-skill-delete-warning",
+        TranslationArgs::new().with_string("name", name.to_string()),
+        cx,
+    )
+}
+
+pub(crate) fn group_member_count(count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-skill-groups-member-count",
+        TranslationArgs::new().with_string("count", count.to_string()),
+        cx,
+    )
+}
+
+pub(crate) fn group_unavailable_count(count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-skill-groups-unavailable-count",
+        TranslationArgs::new().with_string("count", count.to_string()),
+        cx,
+    )
+}
+
+pub(crate) fn group_copy_name(name: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-skill-groups-copy-name",
+        TranslationArgs::new().with_string("name", name.to_string()),
+        cx,
+    )
+}
+
+pub(crate) fn group_copy_name_numbered(name: &str, count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-skill-groups-copy-name-numbered",
+        TranslationArgs::new()
+            .with_string("name", name.to_string())
+            .with_string("count", count.to_string()),
+        cx,
+    )
+}
+
+pub(crate) fn group_delete_warning(name: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-skill-groups-delete-warning",
+        TranslationArgs::new().with_string("name", name.to_string()),
+        cx,
+    )
+}
+
+/// G-M1/G-M3: the remote auth dialog's parametrized lines (web
+/// `modal.remoteAuthTitle` / `remoteOAuthCurrentStatus` /
+/// `remoteOAuthRedirectUri` / `remoteAuthServerUrl`).
+pub(crate) fn mcp_auth_dialog_title(name: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-manage-mcp-auth-title",
+        TranslationArgs::new().with_string("name", name.to_string()),
+        cx,
+    )
+}
+
+pub(crate) fn mcp_auth_status_line(status: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-manage-mcp-auth-status-line",
+        TranslationArgs::new().with_string("status", status.to_string()),
+        cx,
+    )
+}
+
+pub(crate) fn mcp_auth_redirect_line(uri: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-manage-mcp-auth-redirect-line",
+        TranslationArgs::new().with_string("uri", uri.to_string()),
+        cx,
+    )
+}
+
+pub(crate) fn mcp_auth_server_url_line(url: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-manage-mcp-auth-server-url-line",
+        TranslationArgs::new().with_string("url", url.to_string()),
+        cx,
+    )
+}
+
+pub(crate) fn group_operation_failed(detail: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-skill-groups-operation-failed",
+        TranslationArgs::new().with_string("detail", detail.to_string()),
+        cx,
+    )
+}
+
+pub(crate) fn group_edit_error(error: crate::manage::GroupEditError, cx: &App) -> String {
+    use crate::manage::GroupEditError;
+    let key = match error {
+        GroupEditError::NameRequired => "gpui-shell-skill-groups-name-required",
+        GroupEditError::NameDuplicate => "gpui-shell-skill-groups-name-duplicate",
+        GroupEditError::Conflict => "gpui-shell-skill-groups-conflict",
+    };
+    resolve_with(key, TranslationArgs::new(), cx)
+}
+
+pub(crate) fn agent_capability_label(
+    category: crate::manage::AgentCapabilityCategory,
+    cx: &App,
+) -> String {
+    use crate::manage::AgentCapabilityCategory;
+    let key = match category {
+        AgentCapabilityCategory::Coding => "gpui-shell-capability-coding",
+        AgentCapabilityCategory::Docs => "gpui-shell-capability-docs",
+        AgentCapabilityCategory::Analysis => "gpui-shell-capability-analysis",
+        AgentCapabilityCategory::Testing => "gpui-shell-capability-testing",
+        AgentCapabilityCategory::Creative => "shared.agents.Creative",
+        AgentCapabilityCategory::Ops => "gpui-shell-capability-ops",
+    };
+    resolve_with(key, TranslationArgs::new(), cx)
+}
+
+pub(crate) fn agent_external_provider(source: &str, provider: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-agent-external-provider",
+        TranslationArgs::new()
+            .with_string("source", source.to_string())
+            .with_string("provider", provider.to_string()),
+        cx,
+    )
+}
+
+pub(crate) fn agent_shared_profile_description(modes: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-agent-shared-profile-description",
+        TranslationArgs::new().with_string("modes", modes.to_string()),
+        cx,
+    )
+}
+
+pub(crate) fn agent_tools_selected(count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-agent-tools-selected",
+        TranslationArgs::new().with_string("count", count.to_string()),
+        cx,
+    )
+}
+
+pub(crate) fn agent_subagents_selected(count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-agent-subagents-selected",
+        TranslationArgs::new().with_string("count", count.to_string()),
+        cx,
+    )
+}
+
+/// G-SE12: the verdict line of a finished connection test, with the wall
+/// clock the runtime measured. A real network probe always measures one, so
+/// the shell always shows it (the web omits a zero).
+pub(crate) fn model_test_result_label(success: bool, response_time_ms: u64, cx: &App) -> String {
+    resolve_with(
+        if success {
+            "gpui-shell-models-test-success"
+        } else {
+            "gpui-shell-models-test-failed"
+        },
+        TranslationArgs::new().with_string("ms", &response_time_ms.to_string()),
+        cx,
+    )
+}
+
+/// G-SE12: the setup failure line — no probe ran, so there is no wall clock
+/// to show.
+pub(crate) fn model_test_error_label(cx: &App) -> String {
+    resolve_with("gpui-shell-models-test-error", TranslationArgs::new(), cx)
+}
+
+/// G-SE12: the localized hint for the runtime's diagnosis code (web
+/// `translateConnectionTestMessage`).
+pub(crate) fn model_test_message_code(
+    code: &openbitfun_core::util::types::ConnectionTestMessageCode,
+    cx: &App,
+) -> String {
+    use openbitfun_core::util::types::ConnectionTestMessageCode as Code;
+    let key = match code {
+        Code::ToolCallsNotDetected => "gpui-shell-models-test-tool-calls",
+        Code::ImageInputCheckFailed => "gpui-shell-models-test-image-input",
+        Code::TlsOrCertificateIssue => "gpui-shell-models-test-tls",
+        Code::ProxyIssue => "gpui-shell-models-test-proxy",
+        Code::NetworkIssue => "gpui-shell-models-test-network",
+    };
+    resolve_with(key, TranslationArgs::new(), cx)
+}
+
+/// G-SE12: one reasoning preset action described the way the web preset
+/// summary does.
+pub(crate) fn reasoning_action_summary(
+    action: &openbitfun_core::service::config::types::ReasoningPresetAction,
+    cx: &App,
+) -> String {
+    use openbitfun_core::service::config::types::ReasoningPresetAction as Action;
+    match action {
+        Action::Effort { value } => resolve_with(
+            "gpui-shell-models-reasoning-effort",
+            TranslationArgs::new().with_string("value", value),
+            cx,
+        ),
+        Action::Toggle { enabled: true } => {
+            resolve_with("gpui-shell-models-reasoning-on", TranslationArgs::new(), cx)
+        }
+        Action::Toggle { enabled: false } => resolve_with(
+            "gpui-shell-models-reasoning-off",
+            TranslationArgs::new(),
+            cx,
+        ),
+        Action::BudgetTokens { value } => resolve_with(
+            "gpui-shell-models-reasoning-budget",
+            TranslationArgs::new().with_number("value", f64::from(*value)),
+            cx,
+        ),
+        Action::RequestPatch { .. } => resolve_with(
+            "gpui-shell-models-reasoning-patch",
+            TranslationArgs::new().with_number("count", 1_f64),
+            cx,
+        ),
+    }
+}
+
+/// G-SE12: the summary line for a preset that carries no actions.
+pub(crate) fn reasoning_no_actions(cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-models-reasoning-no-actions",
+        TranslationArgs::new(),
+        cx,
+    )
+}
+
+/// G-SE15: the default-Harness description when a last selection was
+/// recorded (web `defaultHarness.followLastDescription`).
+pub(crate) fn default_harness_follow_description(name: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-settings-default-harness-follow-last-desc",
+        TranslationArgs::new().with_string("name", name),
+        cx,
+    )
+}
+
+/// G-SE15: the default-Harness description before any selection was recorded
+/// (web `defaultHarness.followLastEmptyDescription`).
+pub(crate) fn default_harness_follow_empty_description(name: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-settings-default-harness-follow-last-empty-desc",
+        TranslationArgs::new().with_string("name", name),
+        cx,
+    )
+}
+
 /// G-M2: the per-candidate target-id field label (web `visual.importId`).
 pub(crate) fn manage_mcp_import_id(name: &str, cx: &App) -> String {
     resolve_with(
@@ -1223,6 +1819,16 @@ pub(crate) fn git_failed(error: &str, cx: &App) -> String {
     resolve_with(
         "gpui-shell-git-failed",
         TranslationArgs::new().with_string("error", error),
+        cx,
+    )
+}
+
+/// Resolves the AI-commit-generation guard shown when the workspace has no
+/// changes to describe (G-G2).
+pub(crate) fn git_generate_no_changes(cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-git-generate-no-changes",
+        TranslationArgs::new(),
         cx,
     )
 }
@@ -1647,6 +2253,40 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         tasks_inactive_invalid: "Invalid schedule".to_string(),
         tasks_day_clear: "Clear".to_string(),
         tasks_day_empty: "Nothing scheduled on this day.".to_string(),
+        tasks_new: "New task".to_string(),
+        tasks_editor_create_title: "New scheduled task".to_string(),
+        tasks_editor_edit_title: "Edit scheduled task".to_string(),
+        tasks_editor_name: "Name".to_string(),
+        tasks_editor_prompt: "Prompt".to_string(),
+        tasks_editor_schedule: "Schedule".to_string(),
+        tasks_editor_kind_at: "One time".to_string(),
+        tasks_editor_kind_every: "Recurring".to_string(),
+        tasks_editor_kind_cron: "Cron".to_string(),
+        tasks_editor_at: "Local date and time".to_string(),
+        tasks_editor_at_hint: "Local time, YYYY-MM-DDTHH:MM.".to_string(),
+        tasks_editor_every: "Interval".to_string(),
+        tasks_editor_anchor: "Anchor time (optional)".to_string(),
+        tasks_editor_anchor_hint: "Leave blank to use the creation time.".to_string(),
+        tasks_editor_unit_minute: "Minutes".to_string(),
+        tasks_editor_unit_hour: "Hours".to_string(),
+        tasks_editor_unit_day: "Days".to_string(),
+        tasks_editor_cron_expr: "Cron expression".to_string(),
+        tasks_editor_cron_tz: "Time zone (optional)".to_string(),
+        tasks_editor_target: "Run target".to_string(),
+        tasks_editor_target_workspace: "Current workspace".to_string(),
+        tasks_editor_target_session: "Existing session".to_string(),
+        tasks_editor_session_placeholder: "Choose a session".to_string(),
+        tasks_editor_no_sessions: "No sessions in this workspace yet.".to_string(),
+        tasks_editor_enabled: "Enabled".to_string(),
+        tasks_editor_error_name: "Enter a task name.".to_string(),
+        tasks_editor_error_prompt: "Enter the prompt to send.".to_string(),
+        tasks_editor_error_prompt_long: "The prompt is limited to 1000 characters.".to_string(),
+        tasks_editor_error_at: "Enter a valid local date and time.".to_string(),
+        tasks_editor_error_every: "Enter a positive interval.".to_string(),
+        tasks_editor_error_anchor: "Enter a valid local anchor time, or leave it blank.".to_string(),
+        tasks_editor_error_cron: "Enter a cron expression.".to_string(),
+        tasks_editor_error_session: "Choose the session to bind.".to_string(),
+        tasks_editor_error_workspace: "The active workspace is unavailable.".to_string(),
         panel_pop_out: "Pop out to a tab".to_string(),
         panel_close: "Hide panel".to_string(),
         panel_maximize: "Maximize panel".to_string(),
@@ -1711,6 +2351,61 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
             .to_string(),
         models_enabled: "enabled".to_string(),
         models_disabled: "disabled".to_string(),
+        models_test: "Test Connection".to_string(),
+        models_testing: "Testing…".to_string(),
+        models_test_details: "Error details".to_string(),
+        models_edit_title: "Model settings".to_string(),
+        models_edit_close: "Close".to_string(),
+        models_category: "Model Category".to_string(),
+        models_category_general_chat: "Text Generation".to_string(),
+        models_category_multimodal: "Image Understanding".to_string(),
+        models_category_image_generation: "Image Generation".to_string(),
+        models_category_speech_recognition: "Speech Recognition".to_string(),
+        models_context_window: "Context Window Size".to_string(),
+        models_context_window_hint:
+            "Determines when context is compacted; may be lower than the model's supported limit."
+                .to_string(),
+        models_max_tokens: "Max Output Tokens".to_string(),
+        models_max_tokens_hint:
+            "Limits tokens in a single response; 0 keeps the automatic cap.".to_string(),
+        models_reasoning_default: "Default preset".to_string(),
+        models_reasoning_auto: "Auto (model default)".to_string(),
+        models_reasoning_presets: "Reasoning presets".to_string(),
+        models_reasoning_empty: "No custom presets.".to_string(),
+        models_advanced: "Advanced Settings".to_string(),
+        models_advanced_note:
+            "Adapt requests and responses to service-specific requirements; keep the defaults if unsure."
+                .to_string(),
+        models_request_format: "Request format".to_string(),
+        models_inline_think: "Parse <think> Tags In Text".to_string(),
+        models_inline_think_hint:
+            "Display content inside <think>...</think> tags as reasoning.".to_string(),
+        models_skip_ssl: "Skip SSL Certificate Verification".to_string(),
+        models_skip_ssl_warning:
+            "Skipping SSL verification is a security risk, use only in test or internal network environments!"
+                .to_string(),
+        models_headers: "Custom Headers".to_string(),
+        models_headers_hint: "Add or modify HTTP request headers.".to_string(),
+        models_headers_mode: "Apply Mode".to_string(),
+        models_headers_replace: "Replace".to_string(),
+        models_headers_merge: "Merge".to_string(),
+        models_headers_replace_hint:
+            "Replace all default headers; provide required fields such as Content-Type and Authorization yourself."
+                .to_string(),
+        models_headers_merge_hint:
+            "Keep default headers and override matching fields with custom values.".to_string(),
+        models_body: "Custom Request Body".to_string(),
+        models_body_hint:
+            "Enter request body fields in JSON format to override default request parameters."
+                .to_string(),
+        models_body_mode: "Apply Mode".to_string(),
+        models_body_merge: "Merge".to_string(),
+        models_body_trim: "Trim".to_string(),
+        models_body_trim_hint:
+            "Keep only the essential runtime fields before applying the custom request body."
+                .to_string(),
+        models_json_invalid: "Invalid JSON; the shared configuration was not changed."
+            .to_string(),
         chat_empty: "Pick a session on the left, or create a new one.".to_string(),
         chat_empty_title: "Start a conversation".to_string(),
         welcome_title: "OpenBitFun,".to_string(),
@@ -1784,6 +2479,35 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_auto_approve: "Auto-approve requests".to_string(),
         settings_auto_approve_description:
             "Answer interactive approval requests automatically (Ask policy only).".to_string(),
+        settings_permission_rules_section: "Global rules".to_string(),
+        settings_permission_rules_description: "Applies to all workspaces; project and agent rules can override these, while mandatory product restrictions always take precedence".to_string(),
+        settings_permission_rules_manage: "Manage rules".to_string(),
+        settings_permission_rules_add: "Add rule".to_string(),
+        settings_permission_rules_save: "Save rules".to_string(),
+        settings_permission_rules_discard: "Discard changes".to_string(),
+        settings_permission_rules_empty: "No custom global rules configured. The selected permission mode remains active.".to_string(),
+        settings_permission_rules_action: "Action".to_string(),
+        settings_permission_rules_resource: "Resource".to_string(),
+        settings_permission_rules_effect: "Effect".to_string(),
+        settings_permission_rules_invalid: "Every rule needs an action and a resource.".to_string(),
+        settings_permission_effect_allow: "Allow".to_string(),
+        settings_permission_effect_ask: "Ask".to_string(),
+        settings_permission_effect_deny: "Deny".to_string(),
+        settings_quick_actions_section: "Quick actions".to_string(),
+        settings_quick_actions_note: "Run common AI prompts quickly from chat.".to_string(),
+        settings_quick_actions_builtin_section: "Built-in actions".to_string(),
+        settings_quick_actions_builtin_note: "Edit the names and prompts of built-in actions, or turn off actions you do not need".to_string(),
+        settings_quick_actions_custom_section: "Custom actions".to_string(),
+        settings_quick_actions_custom_note: "Save your own prompts for recurring tasks; triggering an action sends its prompt to the current session".to_string(),
+        settings_quick_actions_custom_empty: "No custom actions yet.".to_string(),
+        settings_quick_actions_add: "Add action".to_string(),
+        settings_quick_actions_delete: "Delete".to_string(),
+        settings_quick_actions_delete_confirm: "Click again to delete".to_string(),
+        settings_quick_actions_label: "Action name".to_string(),
+        settings_quick_actions_prompt: "Prompt".to_string(),
+        settings_quick_actions_save: "Save".to_string(),
+        settings_quick_actions_cancel: "Cancel".to_string(),
+        settings_quick_actions_invalid: "A name and a prompt are required.".to_string(),
         settings_terminal: "Terminal".to_string(),
         settings_terminal_font_size: "Font size".to_string(),
         settings_terminal_font_size_description: "Text size of the built-in terminal grid."
@@ -1837,6 +2561,22 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         git_remote_unsupported:
             "Worktree management and snapshots are not supported for remote workspaces."
                 .to_string(),
+        git_branches_view: "Branches".to_string(),
+        git_graph_view: "Graph".to_string(),
+        git_branch_create: "Create branch".to_string(),
+        git_branch_name_label: "Branch name".to_string(),
+        git_branch_base_label: "Start point (optional)".to_string(),
+        git_branch_switch: "Switch".to_string(),
+        git_branch_delete: "Delete".to_string(),
+        git_branch_delete_confirm: "Confirm delete".to_string(),
+        git_branch_copy_hash: "Copy hash".to_string(),
+        git_branch_current: "current".to_string(),
+        git_branch_remote: "remote".to_string(),
+        git_branch_empty: "No branches yet.".to_string(),
+        git_graph_reset: "Reset here".to_string(),
+        git_graph_reset_confirm: "Confirm reset".to_string(),
+        git_generate_message: "AI message".to_string(),
+        git_generate_cancel: "Stop".to_string(),
         git_worktree_empty: "No managed worktrees yet.".to_string(),
         git_worktree_create: "Create worktree".to_string(),
         git_worktree_branch_placeholder: "Branch name (optional)".to_string(),
@@ -1902,6 +2642,60 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         manage_skill_user: "User".to_string(),
         manage_skill_project: "Project".to_string(),
         manage_skill_shadowed: "Shadowed".to_string(),
+        manage_skill_add: "Add skill".to_string(),
+        manage_skill_detail: "Details".to_string(),
+        manage_skill_dialog_add_title: "Add skill".to_string(),
+        manage_skill_dialog_detail_title: "Skill details".to_string(),
+        manage_skill_dialog_delete_title: "Delete skill".to_string(),
+        manage_skill_source: "Source".to_string(),
+        manage_skill_source_native: "OpenBitFun".to_string(),
+        manage_skill_path: "Folder path".to_string(),
+        manage_skill_path_hint: "Point to a folder containing SKILL.md.".to_string(),
+        manage_skill_validate: "Check".to_string(),
+        manage_skill_valid: "Valid skill".to_string(),
+        manage_skill_invalid: "Not a valid skill".to_string(),
+        manage_skill_runtime_unavailable: "The runtime is not ready yet. Try again.".to_string(),
+        manage_skill_add_action: "Add".to_string(),
+        manage_skill_delete_action: "Delete".to_string(),
+        manage_skill_close: "Close".to_string(),
+        manage_skill_not_found: "This skill is no longer in the catalog.".to_string(),
+        manage_skill_no_description: "No description.".to_string(),
+        skill_groups_title: "Skill groups".to_string(),
+        skill_groups_subtitle: "Create and organize reusable groups of skills.".to_string(),
+        skill_groups_manage: "Manage groups".to_string(),
+        skill_groups_mine: "My groups".to_string(),
+        skill_groups_builtin: "Built-in groups".to_string(),
+        skill_groups_loading: "Loading skill groups…".to_string(),
+        skill_groups_empty: "No skill groups yet.".to_string(),
+        skill_groups_empty_group: "No skills added".to_string(),
+        skill_groups_unresolved: "Members are unavailable in the current catalog".to_string(),
+        skill_group_new: "New group".to_string(),
+        skill_group_name_label: "Group name".to_string(),
+        skill_group_name_placeholder: "For example: Everyday development".to_string(),
+        skill_group_dialog_edit_title: "Skill group".to_string(),
+        skill_group_dialog_delete_title: "Delete skill group".to_string(),
+        skill_group_save: "Save".to_string(),
+        skill_group_copy: "Copy".to_string(),
+        skill_group_up: "Move up".to_string(),
+        skill_group_down: "Move down".to_string(),
+        skill_group_delete: "Delete".to_string(),
+        agent_detail_open: "Details".to_string(),
+        agent_detail_missing: "This agent is no longer in the catalog.".to_string(),
+        agent_detail_type: "Type".to_string(),
+        agent_detail_source: "Source".to_string(),
+        agent_detail_follow_up: "Follow-up".to_string(),
+        agent_detail_supported: "Supported".to_string(),
+        agent_detail_unsupported: "Not supported".to_string(),
+        agent_detail_capabilities: "Capabilities".to_string(),
+        agent_detail_shared_profile: "Shared profile".to_string(),
+        agent_detail_shared_default: "Shared coding profile".to_string(),
+        agent_detail_tools: "Tools".to_string(),
+        agent_detail_subagents: "SubAgents".to_string(),
+        agent_detail_loading: "Loading…".to_string(),
+        agent_detail_no_subagents: "No manageable SubAgents available".to_string(),
+        agent_detail_save: "Save".to_string(),
+        agent_detail_reset: "Reset".to_string(),
+        agent_detail_close: "Close".to_string(),
         skills_facet_library: "Library".to_string(),
         skills_facet_all: "All".to_string(),
         skills_facet_groups: "Skill groups".to_string(),
@@ -2059,6 +2853,46 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         manage_mcp_resource_binary: "(Binary content not shown)".to_string(),
         manage_mcp_resource_empty: "The resource returned no content.".to_string(),
         manage_mcp_resource_failed: "Failed to read the resource content.".to_string(),
+        manage_mcp_auth: "Remote Auth".to_string(),
+        manage_mcp_auth_oauth_hint: {
+            "Use OAuth to connect this remote MCP server. OpenBitFun will listen on a local \
+             callback URL and reconnect the server after authorization."
+                .to_string()
+        },
+        manage_mcp_oauth_idle: "Not started yet".to_string(),
+        manage_mcp_oauth_awaiting_browser: "Waiting to open browser".to_string(),
+        manage_mcp_oauth_awaiting_callback: "Waiting for provider callback".to_string(),
+        manage_mcp_oauth_exchanging_token: "Exchanging authorization code".to_string(),
+        manage_mcp_oauth_authorized: "Authorized".to_string(),
+        manage_mcp_oauth_failed: "Failed".to_string(),
+        manage_mcp_oauth_cancelled: "Cancelled".to_string(),
+        manage_mcp_oauth_start: "Connect with OAuth".to_string(),
+        manage_mcp_oauth_restart: "Restart OAuth".to_string(),
+        manage_mcp_oauth_reconnect: "Reconnect with OAuth".to_string(),
+        manage_mcp_auth_token_hint: {
+            "Paste a Bearer token or a full Authorization header value. Saving will restart the \
+             remote MCP server."
+                .to_string()
+        },
+        manage_mcp_auth_secret_hint: {
+            "Authorization is masked by default and saved only on the current execution host. Do \
+             not paste it into chats, tickets, or online troubleshooting tools."
+                .to_string()
+        },
+        manage_mcp_auth_token_label: "Access token (Bearer)".to_string(),
+        manage_mcp_auth_clear: "Clear auth".to_string(),
+        manage_mcp_auth_cancel_flow: "Cancel OAuth".to_string(),
+        manage_mcp_auth_save: "Save and Reconnect".to_string(),
+        manage_mcp_auth_required: {
+            "Please provide a Bearer token or full Authorization header value.".to_string()
+        },
+        manage_mcp_auth_saved: "Remote auth updated.".to_string(),
+        manage_mcp_auth_configured: "configured".to_string(),
+        manage_mcp_auth_oauth_ready: "OAuth configured, authorization required".to_string(),
+        manage_mcp_auth_missing: "not configured".to_string(),
+        manage_mcp_auth_source_headers: "configured via headers".to_string(),
+        manage_mcp_auth_source_env: "configured via env".to_string(),
+        manage_mcp_auth_source_oauth: "configured via OAuth".to_string(),
         manage_error_dismiss: "Dismiss".to_string(),
         value_unsupported: "unsupported".to_string(),
         settings_general: "General".to_string(),
@@ -2110,6 +2944,83 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_git_coauthor_description: {
             "Add OpenBitFun as a co-author in built-in commit workflows.".to_string()
         },
+        settings_hooks_locations_section: "Where hooks are declared".to_string(),
+        settings_hooks_locations_note: {
+            "Changes to hooks.json take effect without restarting OpenBitFun.".to_string()
+        },
+        settings_hooks_user_file: "User hook file".to_string(),
+        settings_hooks_user_file_desc: {
+            "config/hooks.json in the OpenBitFun user config directory.".to_string()
+        },
+        settings_hooks_project_file: "Project hook file".to_string(),
+        settings_hooks_project_file_desc: {
+            ".openbitfun/config/hooks.json in the current workspace. Requires \"Enable project hook file\"."
+                .to_string()
+        },
+        settings_hooks_imports_section: "Imported hooks".to_string(),
+        settings_hooks_imports_note: {
+            "Review and manage hooks imported from Claude Code or Codex.".to_string()
+        },
+        settings_hooks_imports_master_disabled: {
+            "Imported hooks are preserved, but the master switch prevents them from running."
+                .to_string()
+        },
+        settings_hooks_imports_refresh: "Refresh".to_string(),
+        settings_hooks_imports_loading: "Loading imported hooks…".to_string(),
+        settings_hooks_imports_empty: {
+            "No imported hooks. Refresh to check Claude Code and Codex.".to_string()
+        },
+        settings_hooks_imports_update: "Review update".to_string(),
+        settings_hooks_imports_remove: "Remove".to_string(),
+        settings_hook_import_state_current: "Current snapshot".to_string(),
+        settings_hook_import_state_update_available: "An update is available".to_string(),
+        settings_hook_import_state_source_missing: {
+            "The source is missing; the reviewed snapshot remains available".to_string()
+        },
+        settings_hook_import_state_update_check_failed: {
+            "The update check failed; the reviewed snapshot remains available".to_string()
+        },
+        settings_hook_import_state_bundle_missing: {
+            "Managed files are missing; review the source again to repair them".to_string()
+        },
+        settings_hooks_import_review_title: "Review hooks from".to_string(),
+        settings_hooks_import_review_warning: {
+            "These commands run with your account privileges. Confirm only after reviewing every command below."
+                .to_string()
+        },
+        settings_hooks_import_timeout: "Effective timeout (seconds):".to_string(),
+        settings_hooks_import_skipped: "Skipped".to_string(),
+        settings_hooks_import_toggle: "Enable imported hooks from this source".to_string(),
+        settings_hooks_import_confirm: "Import reviewed hooks".to_string(),
+        settings_hooks_import_confirm_update: "Apply reviewed update".to_string(),
+        settings_hooks_import_stale: {
+            "The source changed. Nothing was written; review this refreshed plan.".to_string()
+        },
+        settings_hooks_import_remove_title: "Remove imported hooks?".to_string(),
+        settings_hooks_import_remove_confirm_note: {
+            "Only OpenBitFun's managed copy is removed. The Claude Code or Codex source is not changed."
+                .to_string()
+        },
+        settings_hooks_import_remove_confirm: "Remove managed copy".to_string(),
+        settings_hooks_import_store_invalid: {
+            "Imported hook state needs repair".to_string()
+        },
+        settings_hooks_import_reset: "Reset managed state".to_string(),
+        settings_hooks_import_reset_title: {
+            "Reset invalid imported hook state?".to_string()
+        },
+        settings_hooks_import_reset_note: {
+            "This removes the invalid OpenBitFun-managed index for this scope. Source application files are not changed."
+                .to_string()
+        },
+        settings_hooks_import_reset_confirm: "Reset managed state".to_string(),
+        settings_hooks_compat_section: "Codex compatibility".to_string(),
+        settings_hooks_compat_note: {
+            "OpenBitFun uses the Codex Hooks contract and can run compatible hook scripts directly."
+                .to_string()
+        },
+        settings_hooks_compat_reference: "Event and payload reference".to_string(),
+        settings_hooks_compat_open: "Open docs".to_string(),
         settings_websearch: "Web search".to_string(),
         settings_websearch_provider: "Provider".to_string(),
         settings_websearch_provider_description: {
@@ -2195,6 +3106,10 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_usage_empty: "No usage recorded in this range.".to_string(),
         settings_usage_requests: "Requests".to_string(),
         settings_usage_cache_hit: "Cache hit".to_string(),
+        settings_usage_groups: "Provider".to_string(),
+        settings_usage_endpoints: "Endpoint".to_string(),
+        settings_usage_filter: "Search these details".to_string(),
+        settings_usage_filter_empty: "No matches".to_string(),
         usage_trend_title: "Detailed trend".to_string(),
         usage_trend_partial: {
             "Only the most recent trend is shown; totals still cover the full \
@@ -2528,6 +3443,35 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_review_parallelism_description: "Run supplemental review tasks one at a time or two at once.".to_string(),
         settings_review_queue_wait: "Capacity wait time".to_string(),
         settings_review_queue_wait_description: "How long optional reviews wait for provider capacity; excludes checks already running.".to_string(),
+        settings_default_harness_section: "Default Agent Harness".to_string(),
+        settings_default_harness_section_note: "Applies to new standard sessions; assistants, ACP, and sessions with an explicit mode are unaffected".to_string(),
+        settings_default_harness_strategy: "Default behavior".to_string(),
+        settings_default_harness_follow_last: "Follow last selection".to_string(),
+        settings_default_harness_fixed: "Use a fixed default".to_string(),
+        settings_default_harness_fixed_description: "New sessions always use the selected Harness; existing sessions are unchanged.".to_string(),
+        settings_default_harness_fixed_mode: "Default Harness".to_string(),
+        settings_session_title_section: "Auto Session Title".to_string(),
+        settings_session_title_section_note: "AI automatically generates concise titles for new conversations".to_string(),
+        settings_session_title_enable: "Enable".to_string(),
+        settings_session_title_model: "Session Title Generation Model".to_string(),
+        settings_session_title_model_inherit: "Current session model".to_string(),
+        settings_session_title_model_fast: "Fast Model".to_string(),
+        settings_session_title_model_primary: "Primary Model".to_string(),
+        settings_session_title_models_empty: "No available models. Please add models in \"Models\" first.".to_string(),
+        settings_session_title_model_unavailable: "disabled or missing".to_string(),
+        value_compatibility: "compatibility setting".to_string(),
+        settings_worktree_section: "Session isolation".to_string(),
+        settings_worktree_section_note: "Sessions run in the project directory by default. The worktree toggle next to the branch moves a session into its own checkout.".to_string(),
+        settings_worktree_root: "Worktree root".to_string(),
+        settings_worktree_root_description: "Path on the current execution host; changes affect only newly created worktrees".to_string(),
+        settings_worktree_branch_prefix: "Branch prefix".to_string(),
+        settings_worktree_branch_prefix_description: "Suggested prefix when creating a branch for a detached worktree.".to_string(),
+        settings_worktree_copy_changes: "Copy local changes by default".to_string(),
+        settings_worktree_copy_changes_description: "Copy uncommitted project changes into new worktrees, preserving staged changes".to_string(),
+        settings_worktree_auto_delete: "Automatically delete old worktrees".to_string(),
+        settings_worktree_auto_delete_description: "After creating a worktree, remove the oldest managed worktrees that are safe to delete if the retention count is exceeded".to_string(),
+        settings_worktree_auto_delete_limit: "Worktrees to keep per workspace".to_string(),
+        settings_worktree_auto_delete_limit_description: "Worktrees with sessions, local changes, unpublished commits, or Git locks are kept, so the actual count may exceed this value".to_string(),
     }
 }
 
@@ -2677,6 +3621,44 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         tasks_inactive_invalid: service.t("gpui-shell-tasks-inactive-invalid").await,
         tasks_day_clear: service.t("gpui-shell-tasks-day-clear").await,
         tasks_day_empty: service.t("gpui-shell-tasks-day-empty").await,
+        tasks_new: service.t("gpui-shell-tasks-new").await,
+        tasks_editor_create_title: service.t("gpui-shell-tasks-editor-create-title").await,
+        tasks_editor_edit_title: service.t("gpui-shell-tasks-editor-edit-title").await,
+        tasks_editor_name: service.t("gpui-shell-tasks-editor-name").await,
+        tasks_editor_prompt: service.t("gpui-shell-tasks-editor-prompt").await,
+        tasks_editor_schedule: service.t("gpui-shell-tasks-editor-schedule").await,
+        tasks_editor_kind_at: service.t("gpui-shell-tasks-editor-kind-at").await,
+        tasks_editor_kind_every: service.t("gpui-shell-tasks-editor-kind-every").await,
+        tasks_editor_kind_cron: service.t("gpui-shell-tasks-editor-kind-cron").await,
+        tasks_editor_at: service.t("gpui-shell-tasks-editor-at").await,
+        tasks_editor_at_hint: service.t("gpui-shell-tasks-editor-at-hint").await,
+        tasks_editor_every: service.t("gpui-shell-tasks-editor-every").await,
+        tasks_editor_anchor: service.t("gpui-shell-tasks-editor-anchor").await,
+        tasks_editor_anchor_hint: service.t("gpui-shell-tasks-editor-anchor-hint").await,
+        tasks_editor_unit_minute: service.t("gpui-shell-tasks-editor-unit-minute").await,
+        tasks_editor_unit_hour: service.t("gpui-shell-tasks-editor-unit-hour").await,
+        tasks_editor_unit_day: service.t("gpui-shell-tasks-editor-unit-day").await,
+        tasks_editor_cron_expr: service.t("gpui-shell-tasks-editor-cron-expr").await,
+        tasks_editor_cron_tz: service.t("gpui-shell-tasks-editor-cron-tz").await,
+        tasks_editor_target: service.t("gpui-shell-tasks-editor-target").await,
+        tasks_editor_target_workspace: service.t("gpui-shell-tasks-editor-target-workspace").await,
+        tasks_editor_target_session: service.t("gpui-shell-tasks-editor-target-session").await,
+        tasks_editor_session_placeholder: service
+            .t("gpui-shell-tasks-editor-session-placeholder")
+            .await,
+        tasks_editor_no_sessions: service.t("gpui-shell-tasks-editor-no-sessions").await,
+        tasks_editor_enabled: service.t("gpui-shell-tasks-editor-enabled").await,
+        tasks_editor_error_name: service.t("gpui-shell-tasks-editor-error-name").await,
+        tasks_editor_error_prompt: service.t("gpui-shell-tasks-editor-error-prompt").await,
+        tasks_editor_error_prompt_long: service
+            .t("gpui-shell-tasks-editor-error-prompt-long")
+            .await,
+        tasks_editor_error_at: service.t("gpui-shell-tasks-editor-error-at").await,
+        tasks_editor_error_every: service.t("gpui-shell-tasks-editor-error-every").await,
+        tasks_editor_error_anchor: service.t("gpui-shell-tasks-editor-error-anchor").await,
+        tasks_editor_error_cron: service.t("gpui-shell-tasks-editor-error-cron").await,
+        tasks_editor_error_session: service.t("gpui-shell-tasks-editor-error-session").await,
+        tasks_editor_error_workspace: service.t("gpui-shell-tasks-editor-error-workspace").await,
         panel_pop_out: service.t("gpui-shell-panel-pop-out").await,
         panel_close: service.t("gpui-shell-panel-close").await,
         panel_maximize: service.t("gpui-shell-panel-maximize").await,
@@ -2734,6 +3716,49 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         models_empty: service.t("gpui-shell-models-empty").await,
         models_enabled: service.t("gpui-shell-models-enabled").await,
         models_disabled: service.t("gpui-shell-models-disabled").await,
+        models_test: service.t("gpui-shell-models-test").await,
+        models_testing: service.t("gpui-shell-models-testing").await,
+        models_test_details: service.t("gpui-shell-models-test-details").await,
+        models_edit_title: service.t("gpui-shell-models-edit-title").await,
+        models_edit_close: service.t("action-close").await,
+        models_category: service.t("gpui-shell-models-category").await,
+        models_category_general_chat: service.t("gpui-shell-models-category-general-chat").await,
+        models_category_multimodal: service.t("gpui-shell-models-category-multimodal").await,
+        models_category_image_generation: service
+            .t("gpui-shell-models-category-image-generation")
+            .await,
+        models_category_speech_recognition: service
+            .t("gpui-shell-models-category-speech-recognition")
+            .await,
+        models_context_window: service.t("gpui-shell-models-context-window").await,
+        models_context_window_hint: service.t("gpui-shell-models-context-window-hint").await,
+        models_max_tokens: service.t("gpui-shell-models-max-tokens").await,
+        models_max_tokens_hint: service.t("gpui-shell-models-max-tokens-hint").await,
+        models_reasoning_default: service.t("gpui-shell-models-reasoning-default").await,
+        models_reasoning_auto: service.t("gpui-shell-models-reasoning-auto").await,
+        models_reasoning_presets: service.t("gpui-shell-models-reasoning-presets").await,
+        models_reasoning_empty: service.t("gpui-shell-models-reasoning-empty").await,
+        models_advanced: service.t("gpui-shell-models-advanced").await,
+        models_advanced_note: service.t("gpui-shell-models-advanced-note").await,
+        models_request_format: service.t("gpui-shell-models-request-format").await,
+        models_inline_think: service.t("gpui-shell-models-inline-think").await,
+        models_inline_think_hint: service.t("gpui-shell-models-inline-think-hint").await,
+        models_skip_ssl: service.t("gpui-shell-models-skip-ssl").await,
+        models_skip_ssl_warning: service.t("gpui-shell-models-skip-ssl-warning").await,
+        models_headers: service.t("gpui-shell-models-headers").await,
+        models_headers_hint: service.t("gpui-shell-models-headers-hint").await,
+        models_headers_mode: service.t("gpui-shell-models-headers-mode").await,
+        models_headers_replace: service.t("gpui-shell-models-headers-replace").await,
+        models_headers_merge: service.t("gpui-shell-models-headers-merge").await,
+        models_headers_replace_hint: service.t("gpui-shell-models-headers-replace-hint").await,
+        models_headers_merge_hint: service.t("gpui-shell-models-headers-merge-hint").await,
+        models_body: service.t("gpui-shell-models-body").await,
+        models_body_hint: service.t("gpui-shell-models-body-hint").await,
+        models_body_mode: service.t("gpui-shell-models-body-mode").await,
+        models_body_merge: service.t("gpui-shell-models-body-merge").await,
+        models_body_trim: service.t("gpui-shell-models-body-trim").await,
+        models_body_trim_hint: service.t("gpui-shell-models-body-trim-hint").await,
+        models_json_invalid: service.t("gpui-shell-models-json-invalid").await,
         chat_empty: service.t("gpui-shell-chat-empty").await,
         chat_empty_title: service.t("gpui-shell-chat-empty-title").await,
         welcome_title: service.t("gpui-shell-welcome-title").await,
@@ -2805,6 +3830,77 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         settings_policy_full_access: service.t("gpui-shell-settings-policy-full-access").await,
         settings_auto_approve: service.t("gpui-shell-settings-auto-approve").await,
         settings_auto_approve_description: service.t("gpui-shell-settings-auto-approve-desc").await,
+        settings_permission_rules_section: service
+            .t("gpui-shell-settings-permission-rules-section")
+            .await,
+        settings_permission_rules_description: service
+            .t("gpui-shell-settings-permission-rules-desc")
+            .await,
+        settings_permission_rules_manage: service
+            .t("gpui-shell-settings-permission-rules-manage")
+            .await,
+        settings_permission_rules_add: service.t("gpui-shell-settings-permission-rules-add").await,
+        settings_permission_rules_save: service
+            .t("gpui-shell-settings-permission-rules-save")
+            .await,
+        settings_permission_rules_discard: service
+            .t("gpui-shell-settings-permission-rules-discard")
+            .await,
+        settings_permission_rules_empty: service
+            .t("gpui-shell-settings-permission-rules-empty")
+            .await,
+        settings_permission_rules_action: service
+            .t("gpui-shell-settings-permission-rules-action")
+            .await,
+        settings_permission_rules_resource: service
+            .t("gpui-shell-settings-permission-rules-resource")
+            .await,
+        settings_permission_rules_effect: service
+            .t("gpui-shell-settings-permission-rules-effect")
+            .await,
+        settings_permission_rules_invalid: service
+            .t("gpui-shell-settings-permission-rules-invalid")
+            .await,
+        settings_permission_effect_allow: service
+            .t("gpui-shell-settings-permission-effect-allow")
+            .await,
+        settings_permission_effect_ask: service
+            .t("gpui-shell-settings-permission-effect-ask")
+            .await,
+        settings_permission_effect_deny: service
+            .t("gpui-shell-settings-permission-effect-deny")
+            .await,
+        settings_quick_actions_section: service
+            .t("gpui-shell-settings-quick-actions-section")
+            .await,
+        settings_quick_actions_note: service.t("gpui-shell-settings-quick-actions-note").await,
+        settings_quick_actions_builtin_section: service
+            .t("gpui-shell-settings-quick-actions-builtin-section")
+            .await,
+        settings_quick_actions_builtin_note: service
+            .t("gpui-shell-settings-quick-actions-builtin-note")
+            .await,
+        settings_quick_actions_custom_section: service
+            .t("gpui-shell-settings-quick-actions-custom-section")
+            .await,
+        settings_quick_actions_custom_note: service
+            .t("gpui-shell-settings-quick-actions-custom-note")
+            .await,
+        settings_quick_actions_custom_empty: service
+            .t("gpui-shell-settings-quick-actions-custom-empty")
+            .await,
+        settings_quick_actions_add: service.t("gpui-shell-settings-quick-actions-add").await,
+        settings_quick_actions_delete: service.t("gpui-shell-settings-quick-actions-delete").await,
+        settings_quick_actions_delete_confirm: service
+            .t("gpui-shell-settings-quick-actions-delete-confirm")
+            .await,
+        settings_quick_actions_label: service.t("gpui-shell-settings-quick-actions-label").await,
+        settings_quick_actions_prompt: service.t("gpui-shell-settings-quick-actions-prompt").await,
+        settings_quick_actions_save: service.t("gpui-shell-settings-quick-actions-save").await,
+        settings_quick_actions_cancel: service.t("gpui-shell-settings-quick-actions-cancel").await,
+        settings_quick_actions_invalid: service
+            .t("gpui-shell-settings-quick-actions-invalid")
+            .await,
         settings_terminal: service.t("gpui-shell-settings-terminal").await,
         settings_terminal_font_size: service.t("gpui-shell-settings-terminal-font-size").await,
         settings_terminal_font_size_description: service
@@ -2859,6 +3955,22 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         git_worktrees_view: service.t("gpui-shell-git-worktrees-view").await,
         git_snapshots_view: service.t("gpui-shell-git-snapshots-view").await,
         git_remote_unsupported: service.t("gpui-shell-git-remote-unsupported").await,
+        git_branches_view: service.t("gpui-shell-git-branches-view").await,
+        git_graph_view: service.t("gpui-shell-git-graph-view").await,
+        git_branch_create: service.t("gpui-shell-git-branch-create").await,
+        git_branch_name_label: service.t("gpui-shell-git-branch-name-label").await,
+        git_branch_base_label: service.t("gpui-shell-git-branch-base-label").await,
+        git_branch_switch: service.t("gpui-shell-git-branch-switch").await,
+        git_branch_delete: service.t("gpui-shell-git-branch-delete").await,
+        git_branch_delete_confirm: service.t("gpui-shell-git-branch-delete-confirm").await,
+        git_branch_copy_hash: service.t("gpui-shell-git-branch-copy-hash").await,
+        git_branch_current: service.t("gpui-shell-git-branch-current").await,
+        git_branch_remote: service.t("gpui-shell-git-branch-remote").await,
+        git_branch_empty: service.t("gpui-shell-git-branch-empty").await,
+        git_graph_reset: service.t("gpui-shell-git-graph-reset").await,
+        git_graph_reset_confirm: service.t("gpui-shell-git-graph-reset-confirm").await,
+        git_generate_message: service.t("gpui-shell-git-generate-message").await,
+        git_generate_cancel: service.t("gpui-shell-git-generate-cancel").await,
         git_worktree_empty: service.t("gpui-shell-git-worktree-empty").await,
         git_worktree_create: service.t("gpui-shell-git-worktree-create").await,
         git_worktree_branch_placeholder: service
@@ -2927,6 +4039,68 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         manage_skill_user: service.t("gpui-shell-manage-skill-user").await,
         manage_skill_project: service.t("gpui-shell-manage-skill-project").await,
         manage_skill_shadowed: service.t("gpui-shell-manage-skill-shadowed").await,
+        manage_skill_add: service.t("gpui-shell-manage-skill-add").await,
+        manage_skill_detail: service.t("gpui-shell-manage-skill-detail").await,
+        manage_skill_dialog_add_title: service.t("gpui-shell-manage-skill-dialog-add-title").await,
+        manage_skill_dialog_detail_title: service
+            .t("gpui-shell-manage-skill-dialog-detail-title")
+            .await,
+        manage_skill_dialog_delete_title: service
+            .t("gpui-shell-manage-skill-dialog-delete-title")
+            .await,
+        manage_skill_source: service.t("gpui-shell-manage-skill-source").await,
+        manage_skill_source_native: service.t("shared.product.name").await,
+        manage_skill_path: service.t("gpui-shell-manage-skill-path").await,
+        manage_skill_path_hint: service.t("gpui-shell-manage-skill-path-hint").await,
+        manage_skill_validate: service.t("gpui-shell-manage-skill-validate").await,
+        manage_skill_valid: service.t("gpui-shell-manage-skill-valid").await,
+        manage_skill_invalid: service.t("gpui-shell-manage-skill-invalid").await,
+        manage_skill_runtime_unavailable: service
+            .t("gpui-shell-manage-skill-runtime-unavailable")
+            .await,
+        manage_skill_add_action: service.t("gpui-shell-manage-skill-add-action").await,
+        manage_skill_delete_action: service.t("gpui-shell-manage-skill-delete-action").await,
+        manage_skill_close: service.t("gpui-shell-manage-skill-close").await,
+        manage_skill_not_found: service.t("gpui-shell-manage-skill-not-found").await,
+        manage_skill_no_description: service.t("gpui-shell-manage-skill-no-description").await,
+        skill_groups_title: service.t("gpui-shell-skill-groups-title").await,
+        skill_groups_subtitle: service.t("gpui-shell-skill-groups-subtitle").await,
+        skill_groups_manage: service.t("gpui-shell-skill-groups-manage").await,
+        skill_groups_mine: service.t("gpui-shell-skill-groups-mine").await,
+        skill_groups_builtin: service.t("gpui-shell-skill-groups-builtin").await,
+        skill_groups_loading: service.t("gpui-shell-skill-groups-loading").await,
+        skill_groups_empty: service.t("gpui-shell-skill-groups-empty").await,
+        skill_groups_empty_group: service.t("gpui-shell-skill-groups-empty-group").await,
+        skill_groups_unresolved: service.t("gpui-shell-skill-groups-unresolved").await,
+        skill_group_new: service.t("gpui-shell-skill-group-new").await,
+        skill_group_name_label: service.t("gpui-shell-skill-group-name-label").await,
+        skill_group_name_placeholder: service.t("gpui-shell-skill-group-name-placeholder").await,
+        skill_group_dialog_edit_title: service.t("gpui-shell-skill-group-dialog-edit-title").await,
+        skill_group_dialog_delete_title: service
+            .t("gpui-shell-skill-group-dialog-delete-title")
+            .await,
+        skill_group_save: service.t("gpui-shell-skill-group-save").await,
+        skill_group_copy: service.t("gpui-shell-skill-group-copy").await,
+        skill_group_up: service.t("gpui-shell-skill-group-up").await,
+        skill_group_down: service.t("gpui-shell-skill-group-down").await,
+        skill_group_delete: service.t("gpui-shell-skill-group-delete").await,
+        agent_detail_open: service.t("gpui-shell-agent-detail-open").await,
+        agent_detail_missing: service.t("gpui-shell-agent-detail-missing").await,
+        agent_detail_type: service.t("gpui-shell-agent-detail-type").await,
+        agent_detail_source: service.t("gpui-shell-agent-detail-source").await,
+        agent_detail_follow_up: service.t("gpui-shell-agent-detail-follow-up").await,
+        agent_detail_supported: service.t("gpui-shell-agent-detail-supported").await,
+        agent_detail_unsupported: service.t("gpui-shell-agent-detail-unsupported").await,
+        agent_detail_capabilities: service.t("gpui-shell-agent-detail-capabilities").await,
+        agent_detail_shared_profile: service.t("gpui-shell-agent-detail-shared-profile").await,
+        agent_detail_shared_default: service.t("gpui-shell-agent-detail-shared-default").await,
+        agent_detail_tools: service.t("gpui-shell-agent-detail-tools").await,
+        agent_detail_subagents: service.t("gpui-shell-agent-detail-subagents").await,
+        agent_detail_loading: service.t("gpui-shell-agent-detail-loading").await,
+        agent_detail_no_subagents: service.t("gpui-shell-agent-detail-no-subagents").await,
+        agent_detail_save: service.t("gpui-shell-agent-detail-save").await,
+        agent_detail_reset: service.t("gpui-shell-agent-detail-reset").await,
+        agent_detail_close: service.t("gpui-shell-agent-detail-close").await,
         skills_facet_library: service.t("gpui-shell-skills-facet-library").await,
         skills_facet_all: service.t("gpui-shell-skills-facet-all").await,
         skills_facet_groups: service.t("gpui-shell-skills-facet-groups").await,
@@ -3087,6 +4261,40 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         manage_mcp_resource_binary: service.t("gpui-shell-manage-mcp-resource-binary").await,
         manage_mcp_resource_empty: service.t("gpui-shell-manage-mcp-resource-empty").await,
         manage_mcp_resource_failed: service.t("gpui-shell-manage-mcp-resource-failed").await,
+        manage_mcp_auth: service.t("gpui-shell-manage-mcp-auth").await,
+        manage_mcp_auth_oauth_hint: service.t("gpui-shell-manage-mcp-auth-oauth-hint").await,
+        manage_mcp_oauth_idle: service.t("gpui-shell-manage-mcp-oauth-idle").await,
+        manage_mcp_oauth_awaiting_browser: service
+            .t("gpui-shell-manage-mcp-oauth-awaiting-browser")
+            .await,
+        manage_mcp_oauth_awaiting_callback: service
+            .t("gpui-shell-manage-mcp-oauth-awaiting-callback")
+            .await,
+        manage_mcp_oauth_exchanging_token: service
+            .t("gpui-shell-manage-mcp-oauth-exchanging-token")
+            .await,
+        manage_mcp_oauth_authorized: service.t("gpui-shell-manage-mcp-oauth-authorized").await,
+        manage_mcp_oauth_failed: service.t("shared.statuses.failed").await,
+        manage_mcp_oauth_cancelled: service.t("shared.statuses.cancelled").await,
+        manage_mcp_oauth_start: service.t("gpui-shell-manage-mcp-oauth-start").await,
+        manage_mcp_oauth_restart: service.t("gpui-shell-manage-mcp-oauth-restart").await,
+        manage_mcp_oauth_reconnect: service.t("gpui-shell-manage-mcp-oauth-reconnect").await,
+        manage_mcp_auth_token_hint: service.t("gpui-shell-manage-mcp-auth-token-hint").await,
+        manage_mcp_auth_secret_hint: service.t("gpui-shell-manage-mcp-auth-secret-hint").await,
+        manage_mcp_auth_token_label: service.t("gpui-shell-manage-mcp-auth-token-label").await,
+        manage_mcp_auth_clear: service.t("gpui-shell-manage-mcp-auth-clear").await,
+        manage_mcp_auth_cancel_flow: service.t("gpui-shell-manage-mcp-auth-cancel-flow").await,
+        manage_mcp_auth_save: service.t("gpui-shell-manage-mcp-auth-save").await,
+        manage_mcp_auth_required: service.t("gpui-shell-manage-mcp-auth-required").await,
+        manage_mcp_auth_saved: service.t("gpui-shell-manage-mcp-auth-saved").await,
+        manage_mcp_auth_configured: service.t("gpui-shell-manage-mcp-auth-configured").await,
+        manage_mcp_auth_oauth_ready: service.t("gpui-shell-manage-mcp-auth-oauth-ready").await,
+        manage_mcp_auth_missing: service.t("gpui-shell-manage-mcp-auth-missing").await,
+        manage_mcp_auth_source_headers: service
+            .t("gpui-shell-manage-mcp-auth-source-headers")
+            .await,
+        manage_mcp_auth_source_env: service.t("gpui-shell-manage-mcp-auth-source-env").await,
+        manage_mcp_auth_source_oauth: service.t("gpui-shell-manage-mcp-auth-source-oauth").await,
         manage_error_dismiss: service.t("gpui-shell-manage-error-dismiss").await,
         value_unsupported: service.t("gpui-shell-value-unsupported").await,
         settings_general: service.t("gpui-shell-settings-general").await,
@@ -3130,6 +4338,89 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         settings_git_coauthor_description: service
             .t("gpui-shell-settings-git-coauthor-description")
             .await,
+        settings_hooks_locations_section: service
+            .t("gpui-shell-settings-hooks-locations-section")
+            .await,
+        settings_hooks_locations_note: service.t("gpui-shell-settings-hooks-locations-note").await,
+        settings_hooks_user_file: service.t("gpui-shell-settings-hooks-user-file").await,
+        settings_hooks_user_file_desc: service.t("gpui-shell-settings-hooks-user-file-desc").await,
+        settings_hooks_project_file: service.t("gpui-shell-settings-hooks-project-file").await,
+        settings_hooks_project_file_desc: service
+            .t("gpui-shell-settings-hooks-project-file-desc")
+            .await,
+        settings_hooks_imports_section: service
+            .t("gpui-shell-settings-hooks-imports-section")
+            .await,
+        settings_hooks_imports_note: service.t("gpui-shell-settings-hooks-imports-note").await,
+        settings_hooks_imports_master_disabled: service
+            .t("gpui-shell-settings-hooks-imports-master-disabled")
+            .await,
+        settings_hooks_imports_refresh: service
+            .t("gpui-shell-settings-hooks-imports-refresh")
+            .await,
+        settings_hooks_imports_loading: service
+            .t("gpui-shell-settings-hooks-imports-loading")
+            .await,
+        settings_hooks_imports_empty: service.t("gpui-shell-settings-hooks-imports-empty").await,
+        settings_hooks_imports_update: service.t("gpui-shell-settings-hooks-imports-update").await,
+        settings_hooks_imports_remove: service.t("gpui-shell-settings-hooks-imports-remove").await,
+        settings_hook_import_state_current: service
+            .t("gpui-shell-settings-hook-import-state-current")
+            .await,
+        settings_hook_import_state_update_available: service
+            .t("gpui-shell-settings-hook-import-state-update-available")
+            .await,
+        settings_hook_import_state_source_missing: service
+            .t("gpui-shell-settings-hook-import-state-source-missing")
+            .await,
+        settings_hook_import_state_update_check_failed: service
+            .t("gpui-shell-settings-hook-import-state-update-check-failed")
+            .await,
+        settings_hook_import_state_bundle_missing: service
+            .t("gpui-shell-settings-hook-import-state-bundle-missing")
+            .await,
+        settings_hooks_import_review_title: service
+            .t("gpui-shell-settings-hooks-import-review-title")
+            .await,
+        settings_hooks_import_review_warning: service
+            .t("gpui-shell-settings-hooks-import-review-warning")
+            .await,
+        settings_hooks_import_timeout: service.t("gpui-shell-settings-hooks-import-timeout").await,
+        settings_hooks_import_skipped: service.t("gpui-shell-settings-hooks-import-skipped").await,
+        settings_hooks_import_toggle: service.t("gpui-shell-settings-hooks-import-toggle").await,
+        settings_hooks_import_confirm: service.t("gpui-shell-settings-hooks-import-confirm").await,
+        settings_hooks_import_confirm_update: service
+            .t("gpui-shell-settings-hooks-import-confirm-update")
+            .await,
+        settings_hooks_import_stale: service.t("gpui-shell-settings-hooks-import-stale").await,
+        settings_hooks_import_remove_title: service
+            .t("gpui-shell-settings-hooks-import-remove-title")
+            .await,
+        settings_hooks_import_remove_confirm_note: service
+            .t("gpui-shell-settings-hooks-import-remove-confirm-note")
+            .await,
+        settings_hooks_import_remove_confirm: service
+            .t("gpui-shell-settings-hooks-import-remove-confirm")
+            .await,
+        settings_hooks_import_store_invalid: service
+            .t("gpui-shell-settings-hooks-import-store-invalid")
+            .await,
+        settings_hooks_import_reset: service.t("gpui-shell-settings-hooks-import-reset").await,
+        settings_hooks_import_reset_title: service
+            .t("gpui-shell-settings-hooks-import-reset-title")
+            .await,
+        settings_hooks_import_reset_note: service
+            .t("gpui-shell-settings-hooks-import-reset-note")
+            .await,
+        settings_hooks_import_reset_confirm: service
+            .t("gpui-shell-settings-hooks-import-reset-confirm")
+            .await,
+        settings_hooks_compat_section: service.t("gpui-shell-settings-hooks-compat-section").await,
+        settings_hooks_compat_note: service.t("gpui-shell-settings-hooks-compat-note").await,
+        settings_hooks_compat_reference: service
+            .t("gpui-shell-settings-hooks-compat-reference")
+            .await,
+        settings_hooks_compat_open: service.t("gpui-shell-settings-hooks-compat-open").await,
         settings_websearch: service.t("gpui-shell-settings-websearch").await,
         settings_websearch_provider: service.t("gpui-shell-settings-websearch-provider").await,
         settings_websearch_provider_description: service
@@ -3239,6 +4530,10 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         settings_usage_empty: service.t("gpui-shell-settings-usage-empty").await,
         settings_usage_requests: service.t("gpui-shell-settings-usage-requests").await,
         settings_usage_cache_hit: service.t("gpui-shell-settings-usage-cache-hit").await,
+        settings_usage_groups: service.t("gpui-shell-settings-usage-groups").await,
+        settings_usage_endpoints: service.t("gpui-shell-settings-usage-endpoints").await,
+        settings_usage_filter: service.t("gpui-shell-settings-usage-filter").await,
+        settings_usage_filter_empty: service.t("gpui-shell-settings-usage-filter-empty").await,
         usage_trend_title: service.t("gpui-shell-usage-trend-title").await,
         usage_trend_partial: service.t("gpui-shell-usage-trend-partial").await,
         usage_trend_input: service.t("gpui-shell-usage-trend-input").await,
@@ -3616,6 +4911,81 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         settings_review_queue_wait: service.t("gpui-shell-settings-review-queue-wait").await,
         settings_review_queue_wait_description: service
             .t("gpui-shell-settings-review-queue-wait-desc")
+            .await,
+        settings_default_harness_section: service
+            .t("gpui-shell-settings-default-harness-section")
+            .await,
+        settings_default_harness_section_note: service
+            .t("gpui-shell-settings-default-harness-section-note")
+            .await,
+        settings_default_harness_strategy: service
+            .t("gpui-shell-settings-default-harness-strategy")
+            .await,
+        settings_default_harness_follow_last: service
+            .t("gpui-shell-settings-default-harness-follow-last")
+            .await,
+        settings_default_harness_fixed: service
+            .t("gpui-shell-settings-default-harness-fixed")
+            .await,
+        settings_default_harness_fixed_description: service
+            .t("gpui-shell-settings-default-harness-fixed-desc")
+            .await,
+        settings_default_harness_fixed_mode: service
+            .t("gpui-shell-settings-default-harness-fixed-mode")
+            .await,
+        settings_session_title_section: service
+            .t("gpui-shell-settings-session-title-section")
+            .await,
+        settings_session_title_section_note: service
+            .t("gpui-shell-settings-session-title-section-note")
+            .await,
+        settings_session_title_enable: service.t("gpui-shell-settings-session-title-enable").await,
+        settings_session_title_model: service.t("gpui-shell-settings-session-title-model").await,
+        settings_session_title_model_inherit: service
+            .t("gpui-shell-settings-session-title-model-inherit")
+            .await,
+        settings_session_title_model_fast: service
+            .t("gpui-shell-settings-session-title-model-fast")
+            .await,
+        settings_session_title_model_primary: service
+            .t("gpui-shell-settings-session-title-model-primary")
+            .await,
+        settings_session_title_models_empty: service
+            .t("gpui-shell-settings-session-title-models-empty")
+            .await,
+        settings_session_title_model_unavailable: service
+            .t("gpui-shell-settings-session-title-model-unavailable")
+            .await,
+        value_compatibility: service.t("gpui-shell-value-compatibility").await,
+        settings_worktree_section: service.t("gpui-shell-settings-worktree-section").await,
+        settings_worktree_section_note: service
+            .t("gpui-shell-settings-worktree-section-note")
+            .await,
+        settings_worktree_root: service.t("gpui-shell-settings-worktree-root").await,
+        settings_worktree_root_description: service
+            .t("gpui-shell-settings-worktree-root-desc")
+            .await,
+        settings_worktree_branch_prefix: service
+            .t("gpui-shell-settings-worktree-branch-prefix")
+            .await,
+        settings_worktree_branch_prefix_description: service
+            .t("gpui-shell-settings-worktree-branch-prefix-desc")
+            .await,
+        settings_worktree_copy_changes: service
+            .t("gpui-shell-settings-worktree-copy-changes")
+            .await,
+        settings_worktree_copy_changes_description: service
+            .t("gpui-shell-settings-worktree-copy-changes-desc")
+            .await,
+        settings_worktree_auto_delete: service.t("gpui-shell-settings-worktree-auto-delete").await,
+        settings_worktree_auto_delete_description: service
+            .t("gpui-shell-settings-worktree-auto-delete-desc")
+            .await,
+        settings_worktree_auto_delete_limit: service
+            .t("gpui-shell-settings-worktree-auto-delete-limit")
+            .await,
+        settings_worktree_auto_delete_limit_description: service
+            .t("gpui-shell-settings-worktree-auto-delete-limit-desc")
             .await,
     }
 }

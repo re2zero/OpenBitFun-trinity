@@ -81,14 +81,14 @@
 | application.shortcuts 快捷键 | ✅ 只读键位表（全局/浮层/终端/文本编辑四组 + keycap） | 子集（不做运行时改键） | **G-SE7 ✅ 交付** |
 | application.terminal 终端 | ✅ 字号/字体/回滚/Shell 命令/终端 Profile | 同构（壳超集） | 无（web 只有默认终端 Combobox，壳不降级） |
 | application.editor 编辑器 | — | 不补 | 不补（前置缺失：壳无编辑器宿主） |
-| ai.models 模型 | ✅ 默认模型/已配置清单 | 子集 | G-SE8..G-SE12 |
+| ai.models 模型 | ✅ 默认模型/清单/行编辑/测试连接/高级请求面 | 同构（思考预设编写保留在 web） | **G-SE12 ✅ 交付** |
 | ai.memory 记忆 | ✅ 全量（总开关/BTW/外部上下文策略/双模型/7 项高级/管理菜单含两类确认） | 同构（写径 = 共享 `memories` 文档） | **G-SE13 ✅ 交付** |
 | ai.trinity 引擎 | ✅ 全量（provider 预设/URL/模型/Key 掩码/测试连接/保存） | 同构（写径 = trinityd `llm.set_config`） | **G-SE14 ✅ 交付** |
 | workspace.session 会话与工作区 | ✅ 跳转卡（开全局搜索） | 同构 | G-SE15（默认 Harness/会话标题 UI） |
 | workspace.worktrees 工作树 | ✅ 跳转卡（开 Git 面板 Worktrees） | 同构 | G-SE16（隔离设置字段 UI） |
 | tools.execution 执行与权限 | ✅ 权限预设/自动批准 | 子集 | G-SE17..G-SE23 |
 | tools.desktop-control 桌面控制 | — | 不补 | 不补（平台硬约束：browser/computer-use） |
-| tools.automation 自动化 | ✅ hooks 三开关 | 子集 | G-SE24（quick actions 管理面）、G-SE25（hooks 导入/位置/兼容性） |
+| tools.automation 自动化 | ✅ hooks 三开关 + 声明位置 + 导入管理（启停/更新审阅/移除/损坏重置）+ Codex 兼容参考 | 同构 | **G-SE24 ✅ / G-SE25 ✅ 交付** |
 | tools.webSearch 网页搜索 | ✅ provider/HTTP 表单/凭证状态 | 同构 | 无（协议说明文档区留 web，在案） |
 | tools.mcp MCP | ✅ 列表/增删改/启停/重启/JSON/资源/交互 | 子集 | G-M1..G-M3 |
 | tools.acp ACP | — | 不补 | 不补（前置缺失：壳不接 ACP clients） |
@@ -208,6 +208,12 @@
 - **G-G2 AI 生成 commit message / quick commit**：web `WorkingCopyView.tsx:157-201,428-470`；
   壳 commit 输入 + 提交已有（`git.rs:536`），无 AI 生成。
   动作：接 core 的 commit-message 生成能力（需确认 SDK 通路）或点名后做。**B 档**。
+  **✅ 交付（2026-10-23，`26781d301`）**：commit 输入行右侧「AI 提交信息」ghost 钮 → core
+  `GitFunctionAgent::quick_commit_message`（壳为此启用 core `function-agents` feature，与 CLI
+  closure 注释并排注明）；生成中按钮翻「停止生成」、提交禁用，`generation_epoch` 丢弃取消/
+  重启后的迟到回执（web `cancelledCommitRef` 同语义）；无变更时守卫提示（按钮本就只在有变更时
+  渲染，属竞态盾）。真错误路径冒烟已验（隔离根 0 模型 → `gpui-shell-git-failed` 横幅 + 日志
+  warn），真生成需配置模型未验（在案）。
 - **G-G3 按文件 discard / delete**：web `WorkingCopyView.tsx:477-673` 逐文件 stage/unstage/discard/delete；
   壳已 `stage_file`/`unstage_file`/`stage_all`（`git.rs:505-535`），无 discard/delete。
   动作：补两动作 + 危险确认（远程工作区门控）。**B 档**。
@@ -218,6 +224,15 @@
 - **G-G4 branches / graph**：T3-22。web 侧不可达（§1.6），壳侧补 = 净新增；core API 已有。
   动作：壳内补 Branches（创建/切换/删除/复制 hash/重置到提交）与 Graph 视图；如需 1:1 语义，可随后在 web 侧接线同享。
   **B 档（原 T3 大项，因 web 亦不可达降级为 B）**。
+  **✅ 交付（2026-10-23，`26781d301`）**：两视图走 core `service::git::GitService`（桌面
+  `git_api.rs` 同源先例），远程工作区沿用 worktrees 视图的 `git_remote_unsupported` 门。
+  Branches = 增强行（当前/远程徽标、ahead/behind 事实、复制哈希、切换、两段式删除）+ 创建表单
+  （名称 + 可选起点，成功后下一次 paint 清空）；Graph = 共享 lane 分配器输出渲染（dot / passing /
+  forking / merging 四种 lane 格 + ref 徽标 + 7 位哈希 + 复制哈希 + 两段式 mixed 重置）。
+  冒烟执行态全核验：创建即检出、切换（`git branch --show-current` 双向核对）、两段式删除真删
+  feature/edge、剪贴板逐字比对全哈希、lane 视觉（divergent 拓扑下 dot/竖线/ref 徽标齐活）。
+  **在案**：graph 的 lane 模型 = core 分配器口径（merge 双亲同列、单子直接继承子列），与桌面
+  同源；冒烟曾见「全列同点」系仓库拓扑所致非渲染缺陷。
 - **G-G5 文件列表 ↔ diff 分隔条拖拽 + 快捷键**：web `WorkingCopyView.tsx:283-380`；
   壳 diff 与列表为固定布局（`git.rs` 无 resizable）。
   动作：主 tab 形态加 `h_resizable`；紧凑面板维持定宽。**A 档**。
@@ -303,6 +318,17 @@
 - **G-SE12 高级模型配置**：自定义 Headers/请求体/跳过 SSL/请求格式/模型行编辑（分类、上下文窗口、reasoning presets）/
   测试连接（`ModelSettingsPage.tsx:2516-3323`）；壳只有默认模型下拉 + 清单。
   动作：分批补（测试连接 → 行编辑器 → headers/body 高级面）。**B 档（分两批）**。
+  **✅ 交付**（2026-10-20，B 档设置字段族第三批）：`ai.models` 出隐藏名单。① 每行「测试连接」——
+  运行时用与桌面 `test_ai_config_connection` 同一条临时客户端管线（stream options + subscription auth/profile +
+  proxy/skip-SSL），多模态模型并跑图片输入腿并按桌面规则合并；回执行内显示判定/耗时/诊断码提示/原始错误；
+  ② 行编辑器——分类（web 四档，未知存量值原样保留）、上下文窗口（<32K 拒绝写入）、最大输出（0=自动，
+  >40% 上下文不落盘）、思考默认预设（仅存量预设中选择 + 只读动作摘要）；③ 高级面——请求格式只读展示、
+  `<think>` 解析开关、跳过 SSL（含风险说明）、自定义 Headers（JSON 对象，空=清除，非字符串值拒绝）、
+  Headers 应用模式（replace/merge）、自定义请求体（JSON 对象，空=清除）、请求体模式（merge/trim）。
+  写入全部走 `update_config("ai.models")` 单锁读改写，未知键与新版本字段原样保留。
+  **在案分歧**：思考预设的**编写**面板（catalog 绑定/自定义预设增删与补丁 JSON）仍在 web/桌面端，壳只做选择与只读摘要；
+  请求体 trim 的供应商专属说明合并为一条通用提示。证据：壳 lib 361 测全绿（新增 2 项纯函数测试）、
+  ftl 1131×3、i18n 审计 0 告警。
 - **G-SE13 记忆设置页**：web `MemorySettingsPage.tsx`（总开关/BTW/外部上下文策略/抽取与巩固模型/7 项高级/
   管理菜单：打开目录/重置/清空）。壳无（core 记忆能力在，仅缺 UI）。
   动作：新页（字段全量 + 危险确认）。**B 档（未立项，建议优先）**。
@@ -326,10 +352,35 @@
   重读失败会把已加载态打回离线（`ConfigFailed` 清 `loaded`）——web 此态只留空字段，壳取「说清状况」的降级。
 - **G-SE15 默认 Harness / 会话标题生成**：web `DefaultHarnessConfig.tsx:166-208`、`SessionTitleConfig.tsx:184-222`；
   壳无 UI（core 配置在）。**B 档**。
+  **✅ 交付**（2026-10-20，B 档设置字段族）：`workspace.session` 页新增两节 —— **默认智能体执行框架**
+  （默认方式 = 跟随上一次选择 / 固定默认模式；固定档出四档 Harness 菜单，标签取自共享 `shared.agents.*`，
+  存储里本构建不认识的 id 原样列出并带「兼容配置」后缀；跟随档描述显示 `last_mode_id` 的真实名称，
+  未记录时回退 Standard）与**会话标题自动生成**（开关 + 模型菜单：当前会话模型 / 快速 / 主力 / 已启用模型 +
+  已停用或不存在项）。写入：`app.flow_chat` 的 `default_mode_strategy`+`default_mode_id` **一次合并写**
+  （新增 `persist_object_keys`，避免两键乱序覆盖兄弟键；切 fixed 且无 id 时按 web 取 `last_mode_id ?? Standard`）、
+  `app.ai_experience.enable_session_title_generation`、`ai.task_models.session_title`（共享 `{kind,model_id}` 文档）。
+  升级兼容：`default_mode_strategy` 缺失而 `default_mode_id` 存在时按历史语义视为 fixed（web `normalizeChatInputModePreference` 同规则）。
 - **G-SE16 工作树隔离设置**：web `WorktreeSettingsPage.tsx:472-543`（根路径/分支前缀/复制改动/自动删除+上限）；
   壳跳转卡直达 Git 面板 Worktrees，无设置字段。**B 档**。
+  **✅ 交付**（2026-10-20，B 档设置字段族）：`workspace.worktrees` 页跳转卡之上新增「会话隔离」节 ——
+  Worktree 根目录 / 分支前缀（空输入被忽略，绝不落空值）、默认复制本地改动、自动删除旧 Worktree（关时上限行禁用）、
+  每个工作区保留数量（1–100，写入即夹紧）。全部单键合并写 `app.worktrees`，默认值直接取共享
+  `GlobalConfig::default().app.worktrees`（首次运行与桌面页一致）。Worktree 管理本体仍归 Git 面板（在案形态）。
 - **G-SE17 全局权限规则对话框**：web `GlobalPermissionRulesDialog.tsx:395-552`（规则表格/新增/排序/保存）；
   壳只有预设 + 自动批准。**B 档**。
+  **✅ 交付**（2026-10-20，B 档设置字段族）：执行与权限页预设行下方新增「全局规则」节。只读态列出
+  `操作 · 资源 → 效果` 与「管理规则」入口；编辑态为行内表格 —— 操作/资源输入、效果菜单（允许/询问/拒绝）、
+  上移/下移/删除、添加规则、保存/放弃，任一行缺操作或资源即红字提示且保存禁用。草稿在全局
+  `PermissionRulesDraft`（行 id 稳定，重排/删除不串输入），**未保存不落盘**；保存把整数组一次合并写
+  `tool_permissions.policy.rules`（走 `persist_object_key`，预设与未来键不被旧壳抹掉）。内置动作不可删。
+- **G-SE24 快捷操作管理面**：web `QuickActionsConfig.tsx:409-520`（内置启停/编辑/删除 + 自定义新增）；
+  壳 T2-10 只读消费（聊天头部菜单），无管理面。**B 档**。
+  **✅ 交付**（2026-10-20，B 档设置字段族）：自动化页新增「快捷动作」节 —— 内置动作（开关 + 编辑）与
+  自定义动作（开关 + 编辑/两段式删除 + 添加动作）；行内编辑器两个输入（动作名称 / 触发指令）+ 保存/取消，
+  空值即红字且保存禁用。内置项的文案规则与 web `normalizeQuickActionTextForStorage` 同义：仅当存储值仍是
+  规范英文默认且提交值等于当前本地化文案时写回规范默认，自定义/改过的值逐字保留（「编辑」按钮直接用共享词
+  `shared.tools.edit`，不新增重复文案）。写入 = 整数组 `app.ai_experience.quick_actions`（聊天头部菜单同帧生效）。
+  **刻意分歧**：壳用行内编辑器而非 web 模态框（壳对话框族按需建；字段与校验同源）。
 - **G-SE18 工具执行超时 / 用户提问超时**：web `RuntimeSettingsPages.tsx:1299-1340`；壳无。**A 档**。
   **✅ 交付**（2026-10-15，A 批 2）：执行与权限页「工具运行」分节两行数字（0–3600 秒，0 = 不限时）。
   工具超时 0 落 `null`（核心「None = 不限时」）；提问超时 0 落 `0`（核心「null 或 0 均不限时」，与 web 写入值一致）。
@@ -356,8 +407,25 @@
   壳 T2-10 只读消费（聊天头部菜单），无管理面。**B 档**。
 - **G-SE25 hooks 导入 / 位置说明 / 兼容性**：web `HooksConfig.tsx:366-503`；壳只有总开关/项目开关/co-author。
   **B 档**。
+  **✅ 交付**（2026-10-20，B 档设置字段族第四批）：自动化页补齐三段。① 声明位置：用户
+  `config/hooks.json` 与项目 `.openbitfun/config/hooks.json` 两行说明（含「需开启项目 Hook 文件」提示）；
+  ② 已导入的 Hooks：进页按需拉快照（刷新按钮强制重探来源更新），逐源行 = 名称 + 启用 Switch（总开关关闭时禁用）
+  + 状态文案（当前快照/有可用更新/来源丢失/检查失败/托管文件缺失）+「审阅更新」「移除」；移除与损坏索引重置
+  都是**行内两段式确认**；损坏诊断按 `.user_global` 后缀选 scope 重置；③ 审阅计划：行内审查块列出每条
+  handler 的 event · command · matcher · 超时、跳过项计数，标明命令以账户权限运行；来源变化时核心返回
+  `stale`，壳显示「本次未写入」并换上新计划。写入全走核心 `plan → apply`（先审后写），`Remove` 只删
+  OpenBitFun 托管副本。④ Codex 兼容段：合约说明 + 「打开文档」走系统 opener。
+  **在案分歧**：审阅块以行内块代替 web 的模态框；依赖明细不逐条展开（只保留命令/超时/跳过计数）；
+  远程工作区导入面在壳不适用（壳运行时始终是本地 Embedded，web 的 remoteUnsupported 提示未复刻）。
+  证据：壳 lib 361 测全绿（断言面沿用既有设置页布局测试）、ftl 1131→1171×3、i18n 审计 0 告警、
+  `update_config` 之外新增 `external_hook_import_*` 运行时事件四型（快照/计划/过期计划/失败）。
 - **G-SE29 用量分布与缓存/endpoint**：web `UsageStatisticsConfig.tsx:453-501`（模型/分组分布、筛选、缓存命中率、
   endpoint 分布）；壳 = 范围 + 汇总 + 趋势图 + 热力图（T2-8 已做）。**B 档**。
+  **✅ 交付**（2026-10-20，B 档设置字段族）：用量页趋势图下方补齐 **模型 / 供应商 / 端点** 三个分布块
+  （行 = 名称 · 供应商 + 请求数 · Token · 缓存命中率），三块共用页顶一个搜索框（按名称/供应商大小写不敏感过滤，
+  无命中出「没有匹配项」；筛选是页内状态 `UsageFilter`，同 web 的 page-local search）。数据直接取
+  `UsageStatistics.by_model/by_group/by_endpoint`（服务端已聚合），每块最多 20 行（web 的 5 行 +「查看全部」折叠
+  在壳改为直接列出前 20，页内无折叠态）。汇总行的缓存命中率与逐行命中率同一口径（有遥测才显示）。
 - **G-SE30 归档页按工作区分组**：web `ArchivedSessionsConfig.tsx:515-536`（可折叠 + 计数）；壳平铺列表。**A 档**。
   **⏳ 暂缓（2026-10-15，A 批 2 判）**：该页在 web 侧是**跨全部已打开工作区**拉归档会话再分组，而壳的归档列表只持当前工作区的行
   （`ShellWindow::sessions`；其它工作区的请求明确 `include_archived: false`）。1:1 需要先加一条「按工作区列归档会话」的运行时投影
@@ -389,10 +457,34 @@
   壳 = 品牌空态降级卡。动作：desktop 私有 HTTP 需自实现（D44）→ 独立立项。**B/C 档（原 T3 大项）**。
 - **G-K2 技能详情对话框**：web `SkillsScene.tsx:930-1122`（描述/来源/路径复制/在文件管理器打开/外部链接）；
   壳列表行无详情面。**A 档**。
+  **✅ 交付**（2026-10-20，会话 88）：每张技能卡新增「详情」ghost 按钮（`skill-detail-{key}`）→
+  `SkillDialog::Detail`；对话框展示等级/来源徽标（shadowed 红字）、名称、描述（空则「无描述」）、来源
+  与文件夹路径；路径行提供「复制路径」（`cx.write_to_clipboard`）与「在文件管理器显示」
+  （`markdown::open_external`，同会话标签的既有语义）。数据由 `SkillRow` 新增的 `path` / `source_*`
+  投影提供（runtime 从 `SkillInfo` 直填，native 来源显示共享词 `shared.product.name`）。
 - **G-K3 添加技能 / 删除技能**：web `:1124-1255`（level user/project + 路径输入/浏览 + 校验）；壳无写面。
   **B 档**。
+  **✅ 交付**（2026-10-20，会话 88）：页头过滤行右侧「添加技能」→ `SkillDialog::Add`——等级
+  user/project 二选一（默认 user）、路径输入 + 「校验」按钮（`RuntimeHandle::validate_skill_path` →
+  `SkillValidationFinished`），校验通过才启用「添加」（`RuntimeHandle::add_skill`）；结果行出错时按
+  Empty/NotFound/NotDirectory/MissingSkillFile/Unreadable/Parse 本地化，runtime 不可用单独提示。
+  详情对话框对 native 且非内置的技能给「删除」（`Danger`）→ 同模态切 `SkillDialog::Delete`，警告文案
+  含技能名，确认后 `RuntimeHandle::delete_skill`；三事件成功都会关闭对话框并清 busy/校验态，失败留在
+  模态内显示。写面安全：校验要求目录含 `SKILL.md`；添加按文件夹名冲突拒绝、拒绝把托管目录自身拷入
+  自身；删除只允许 native 非内置技能，托管根与技能路径都 `canonicalize` 后做 `starts_with` 包含校验，
+  再 `remove_dir_all`。**在案分歧**：不做 web 的目录浏览按钮（壳无桌面 picker 桥，改为键入路径 + 校验）；
+  外部链接字段（web 详情里的 homepage）本投影未携带，详情面不显示。
 - **G-K4 技能分组管理**：web `components/SkillGroupsView.tsx` + `SkillGroupEditor.tsx`（创建/编辑/复制/排序/删除）；
   壳 facet 有「分组」投影但无编辑（R4 判「用户分组 web 侧配置未接→不伪造」）。**B 档**。
+  **✅ 交付**（2026-10-21，会话 88）：facet 栏「技能分组」段新增「管理分组」页（`SkillFacet::GroupManager`）——
+  「我的分组」逐行显示成员预览/总数/不可用成员，行动作 = 编辑/上移/下移/删除/复制（复制同时开编辑草稿，
+  命名按 web「X 副本 / X 2」避重）；「内置分组」按 `group_key` 分桶只读列出，仅可复制。编辑器 = 组名 +
+  全目录技能勾选（不可用成员保留原 key，保存不丢）；删除二次确认含组名。持久化直接使用共享契约
+  `app.user_skill_groups`（`AppConfig.user_skill_groups`，version 1），写回走 `update_config("app")`
+  的 camelCase JSON，保留所有兄弟键；校验对齐 web `saveUserSkillGroup`：名称 trim 必填、大小写不敏感重名、
+  快照冲突、成员去重，移动/删除为纯函数并有单测。**在案分歧**：编辑器无搜索框（壳目录规模可滚动）；
+  内置分组标题显示 `group_key`（web 本地化，壳 facet 既有行为一致）；加载失败只显错误、未加重试按钮
+  （启动/切工作区会重拉）。
 - **G-K5 技能页搜索 / shadowed 过滤**：web `SkillsScene.tsx:321-331,298-303`；壳 facet + 列表，无搜索框。**A 档**。
   **✅ 交付**（2026-10-15，A 批 3）****：技能页顶过滤行（`manage.rs::skills_filter_row`）—— 搜索框（名称/描述/技能 key，
   trim + 大小写不敏感；key 是行内保留的路径派生身份，web 的 path 字段壳未保留）+「隐藏重复项」勾选
@@ -405,16 +497,39 @@
 - **G-A1 工具可见性编辑（tools tab，ToolGroupPicker）**：web `AgentsScene.tsx:1129-1158`；壳卡片只显示工具计数
   （`manage.rs` `AgentCardRow.tool_count`），创建/编辑对话框也只收 id/名称/描述/prompt 四字段
   （tools/readonly/review/policy/model 一律传 None 保留现值，`manage.rs:81-82,169-184`）。**B 档**。
+  **✅ 交付**（2026-10-21，`7d7e62ada`）****：智能体卡片尾部统一出「详情」按钮（`agent-detail-{id}`），
+  打开统一详情对话框（基本事实 / 能力条 / 共享配置 / 工具 / 子智能体五段）。工具段（仅主智能体）从 core 工具注册表
+  投影可配置工具，过滤与 web `isAgentProfileConfigurableToolName` 逐条一致（`GetToolSpec`、`CallDeferredTool`、
+  五个 `trinity_*`、`mcp__*` 前缀），逐行勾选 + 单行 tooltip；「保存」写
+  `persist_agent_profile_from_value(profile_id, { enabled_tools })`（added/removed 由 core 归一），
+  「重置」走 `reset_agent_profile_to_default`（只清工具覆盖，技能与子代理覆盖保留）。**刻意分歧**：
+  web 的 ToolGroupPicker 带用户工具分组编辑与折叠，壳为平铺勾选（壳无用户工具分组写面）。
 - **G-A2 子代理勾选编辑（subagents tab）**：web `:1198-1294`（token 网格 + external 行禁用）；
   壳只有每 mode 技能选择（T2-11）。**B 档**。
+  **✅ 交付**（同上）：子智能体段仅当生效工具含 `Task` 时出现（web `selectedAgentHasTaskTool` 同口径），
+  列 `SubagentListScope::RegistryManagement` + `include_disabled` 的可管理子代理；external 行显示「· 外部」并禁用。
+  「保存」只写与快照不同的行（纯函数 `plan_agent_subagent_writes`），经 `RuntimeHandle::save_agent_subagents`
+  一次批量提交并统一刷新目录与载荷；「重置」恢复 registry 默认启用态。写面走 core
+  `update_subagent_override(parent, agent, enabled, workspace)`（builtin/user 落 profile 的 `subagent_overrides`，
+  project 落项目覆盖文件）。**坑**：`load_custom_subagents` 收 workspace **id** 而非路径。
 - **G-A3 子代理模型覆盖**：web `:1113-1127`（默认/inherit/fast/primary/具体模型）；壳无。**A 档**。
   **✅ 交付**（2026-10-16，A 批 3 尾车 `b402be1a9`，文档 `733cb7a4a`）****：非 external 子代理行尾挂「模型: <档位>」菜单
   （`manage.rs::agent_model_menu`，四档 = 使用默认子智能体模型 / 继承父会话 / 快速模型 / 主力模型 + 具体模型 id；
   当前档打勾）。写面：builtin 走 `ai.agent_model_defaults.subagents.builtin` 的读-合并-写（map 里其它子代理的档位不丢，
   选「使用默认」= 删键），custom 走 core `update_and_save_custom_subagent_config(id, model, clear, workspace)`；
   成功即重拉目录（行标签随之更新），失败落 `AgentModelFailed` → 页面 notice。证据帧 `a4-02`（菜单）/`a4-03`（清档回默认，
-  配置键随之消失）。**刻意分歧**：web 菜单在详情对话框的 model 页，壳直接放在行上（壳无详情对话框族，G-A1/A2/A4）。
+  配置键随之消失）。**刻意分歧**：web 菜单在详情对话框的 model 页；壳的 model 页未移植，菜单仍放在行上
+  （G-A1/A2/A4 的详情对话框只覆盖 basic/tools/subagents）。
 - **G-A4 详情卡（能力 5 级条 / follow-up / 共享 profile / external provider）**：web `:1038-1110`；壳卡片简化。**A/B 档**。
+  **✅ 交付**（2026-10-21，`7d7e62ada`）****：详情对话框基本段 = 名称/描述、类型（模式/子代理）、
+  来源（external 追加 provider：「外部 · <provider>」）、连续对话（支持/不支持）、能力 5 级条（与 web
+  `enrichCapabilities` 同表：Standard/Plan/Cowork/ComputerUse/DeepResearch + Explore/ResearchSpecialist/
+  GeneralPurpose/ReviewFixer，未登记 id 不出条）、共享 profile（成员名单 + 标签）。证据帧 `a6-01..05`。
+  **在案分歧**：能力条颜色用壳主题语义色（coding=primary、docs=info、analysis=success、creative=danger、
+  ops/testing=warning），非 web 的 appearance domain token。**坑**：gpui-component `Dialog` 默认 448px 且自带 body
+  滚动；内容容器再套 `max_h` + `overflow_y_scrollbar` 会形成内层滚动，把末尾「子智能体」段藏到折叠线下且滚轮不可达
+  → 对话框显式 `.w(px(620.))`，内容与列表只留自然高度，交给 Dialog 的 body 滚动；工具描述是多段 prompt，
+  tooltip 只取首行并截 160 字（`agent_tooltip_text`）。
 - **G-A5 搜索 / source / kind 过滤**：web `:808-865`；壳无。**A 档**。
   **✅ 交付**（2026-10-15，A 批 3）****：智能体页顶部控制行（`manage.rs::agents_controls`）—— 搜索（名称/描述，trim +
   大小写不敏感）+「来源」菜单（任意/内置/用户/项目/外部）+「类型」菜单（任意/智能体/子代理）。类型过滤按
@@ -436,6 +551,11 @@
 
 - **G-M1 OAuth 授权流 UI**（T3-18）：web `McpToolsConfig.tsx:1677-1775`（OAuth 状态/开始授权/redirectUri/token）；
   壳有登录式 token 编辑但无 OAuth 流程。**B 档**。
+  **✅ 交付**（2026-10-23，与 G-M3 同批）：MCP 行「远程认证」打开认证对话框，OAuth 段 = 提示、状态六态行、
+  回调地址/消息行、「通过 OAuth 连接 / 重新发起 / 重新连接」三态按钮（web `getOAuthActionLabel` 同判）。
+  流程经 core `start_remote_oauth_authorization`（本地回调监听 + 后台状态机，授权 URL 开系统浏览器），壳侧
+  1s 轮询带 epoch 守卫（新循环顶掉旧循环，迟到快照按 server_id 拒收）；经对话框 chrome 离开（Esc/背板/X，
+  `Dialog::on_close`）取消活跃流（web `handleCloseAuthDialog` 同语义），core 300s 回调超时兜底终态。
 - **G-M2 粘贴/文件导入 + 预览导入**：web `MCPServerConfigDialog.tsx:217-342`；壳编辑器无粘贴导入预览。**A 档**。
   **✅ 交付**（2026-10-16，A 批 3 尾车 `b402be1a9`，文档 `733cb7a4a`）****：MCP 页「导入配置」对话框（`manage.rs::open_mcp_import_dialog`）——
   粘贴框 + **键入 JSON 文件路径**（壳无原生选择器，与「打开项目」同范式，读文件后内容进粘贴框）+ 「预览导入」出候选表
@@ -448,12 +568,28 @@
   这是 core 既有语义，非本批引入。
 - **G-M3 auth 模式细分（auto/oauth/token/headers）+ 远程认证对话框**：web 同文件；壳简化为 URL/凭据。
   **B 档（与 G-M1 同批）**。
+  **✅ 交付**（2026-10-23）：remote 行补认证事实摘要（web `getRemoteAuthSummary` 同表：configured+来源
+  headers/env/oauth、OAuth 就绪未授权、未配置）与「远程认证」入口；对话框 Bearer token 段 = 粘贴提示 +
+  遮蔽警示 + 服务器地址行，「保存并重连」走 `reauthenticate_remote_server`（存头后重启，连接失败错误内联、
+  凭据已落盘），「清除认证」走 `clear_remote_server_auth`（清头与 OAuth 凭据并停连接，成功回执 +
+  行摘要即时翻转）。目录投影补 `auth_configured`/`auth_source`/`oauth_enabled`。
+  **在案分歧**：web 的 auth 模式四档细分（auto/oauth/token/headers 单选）壳未做模式选择器——壳与 core 写面
+  一致按「headers 存值 + OAuth 就绪/已授权」二面呈现；摘要文案为壳自拟 gpui-shell 键（web 为单条插值串）。
 
 ### 2.10 任务看板（G-P）
 
 - **G-P1 新建/编辑任务对话框**：web `components/TodoEditor.tsx:211-503`（名称/工作区 Combobox/agent 类型/
   schedule kind at|every|cron/时区/锚点/绑定 session/启用/prompt 1000 字）；壳只有列表操作（启停/立即运行/删除，`tasks.rs`）。
   动作：完整编辑器（core cron 写面已有）。**B 档（本组最大项）**。
+  **✅ 交付**（2026-10-20，G-P1 批次）****：看板头「新建任务」+ 每行「编辑」打开同一对话框
+  （标题按新建/编辑切换）：名称、prompt（1000 字上限校验）、schedule 三型（单次=本地 `YYYY-MM-DDTHH:MM`
+  文本 + 本地时间提示；周期=数值 + 分钟/小时/天菜单 + 可选取「起算时间」；Cron=表达式 + 可选取时区）、
+  目标（当前工作区启动 / 已有会话下拉，无会话时禁用并提示）、启用开关；保存经
+  `RuntimeHandle::create_cron_job`/`update_cron_job` 走共享 cron 服务，成功事件重拉列表，失败进页头错误条。
+  纯数据层 `TaskDraft`（blank/from_job/schedule/validate/create_request/update_request）+ 本地时间↔RFC3339、
+  间隔毫秒↔最大整单位拆分均有单测；编辑保留原 `anchor_ms`（锚点输入框预填）。
+  **口径差异（记录）**：web 的工作区 Combobox 与 agent 类型选择器不搬——壳的看板只服务当前工作区、
+  `CronLaunchSpec` 固定默认 `Standard`（与 web 在单工作区/默认模式的路径一致）；日详情不做「点日新建」。
 - **G-P2 日详情面板**：web `TodosScene.tsx:615-673`（点日期看当日 occurrence + clear day）；壳月历无点击详情。**A 档**。
   **✅ 交付**（2026-10-15，A 批 3）****：日历格可点（唯一 id + 选中底色；再点同格=取消，同 web `onSelectDay` 的 toggle），
   卡片出日详情：标题「选中日期 · YYYY-MM-DD」（参数化键）+「清除」+ 当日条目（时间 + 任务名 + 
@@ -625,21 +761,21 @@
 
 | 序 | 项 | 编号 | 依赖/说明 | 预估 |
 |---|---|---|---|---|
-| 1 | 任务编辑器（at/every/cron/时区/绑定 session） | G-P1 | core cron 写面已有 | 1 会话 |
+| 1 | 任务编辑器（at/every/cron/时区/绑定 session） | G-P1 **✅ 交付 2026-10-20** | core cron 写面已有 | 1 会话 |
 | 2 | 记忆设置页 | G-SE13 **✅ 交付 2026-10-18** | core 记忆能力在，纯 UI | 0.5-1 |
 | 3 | Trinity 引擎配置页 | G-SE14 **✅ 交付 2026-10-18** | trinityd 配置面已有（web 同源） | 0.5 |
-| 4 | 技能管理写面（添加/删除/分组/详情/搜索） | G-K2..K5 | 部分需 core 写面核对 | 1 |
-| 5 | 智能体编辑面（工具/子代理/模型覆盖/过滤/详情） | G-A1..A6 | profiles 写路径已通（T2-11/12） | 1-1.5 |
-| 6 | MCP OAuth + 导入/认证细分 | G-M1,G-M3 | OAuth 流程需 core 支持核对 | 1 |
-| 7 | Git 尾巴（AI commit message、branches/graph） | G-G2,G-G4 | branches/graph 为净新增（§1.6） | 1-1.5 |
+| 4 | 技能管理写面（添加/删除/分组/详情/搜索） | G-K2..K5 **✅ 全部交付（K2/K3/K5 2026-10-20，K4 2026-10-21）** | 分组读写走 `app.user_skill_groups` | 1 |
+| 5 | 智能体编辑面（工具/子代理/模型覆盖/过滤/详情） | G-A1/A2/A4 **✅ 交付 2026-10-21**；G-A3/A5/A6 ✅ 2026-10-15/16 | profiles 写路径已通（T2-11/12）；model 页未移植 | 1-1.5 |
+| 6 | MCP OAuth + 导入/认证细分 | G-M1,G-M3 **✅ 交付 2026-10-23**（G-M2 已于 2026-10-16 交付） | core OAuth/凭据写面已有 | 1 |
+| 7 | Git 尾巴（AI commit message、branches/graph） | G-G2,G-G4 **✅ 交付 2026-10-23** | branches/graph 为净新增（§1.6） | 1-1.5 |
 | 8 | 搜索 actions/entities | G-Q1 | action 目录 + 聚合查询 | 1 |
 | 9 | 洞察补齐（模型/五阶段/图表/TOC） | G-I2..I4 | 复用报告结构，图表自绘 | 1-1.5 |
-| 10 | 设置字段族（执行/自动化/模型高级） | G-SE12,17,24,25,29 | 多数为配置项 UI | 1.5-2 |
+| 10 | 设置字段族（执行/自动化/模型高级） | G-SE17/24/25/29 **✅ 交付 2026-10-20**；G-SE12 **✅ 交付 2026-10-20** | 多数为配置项 UI | 1.5-2 |
 | 11 | 快捷键只读页 | G-SE7 **✅ 交付 2026-10-18** | 键位表投影 | 0.5 |
 | 12 | 公告面 | G-X1 | 载体选型（横幅/中心） | 0.5-1 |
 | 13 | 防休眠 | G-SE1 | 选型先行（portal inhibit） | 0.5-1 |
 | 14 | 技能市场 | G-K1 | desktop 私有 HTTP 自实现（D44） | 1-1.5 |
-| 15 | 子代理设置/工作树设置/默认 Harness/会话标题 | G-SE15,G-SE16,G-SE19 | 配置字段族，可并入序 10 | 0.5-1 |
+| 15 | 子代理设置/工作树设置/默认 Harness/会话标题 | G-SE15/G-SE16 **✅ 交付 2026-10-20**；G-SE19 ✅ 2026-10-15 | 配置字段族，可并入序 10 | 0.5-1 |
 
 ### 3.3 C 档（大项 / 独立里程碑，均需点名立项）
 
@@ -809,6 +945,15 @@ turn footer 完成时间/耗时 meta（=G-S1）与 copy 成功态图标反馈（
 
 | 日期 | 变更 |
 |---|---|
+| 2026-10-23 | **B 档 G-G2/G-G4 Git 尾巴（AI 提交信息 + 分支/提交图两视图）**（`26781d301`）。① G-G2：commit 输入行右「AI 提交信息」→ core `GitFunctionAgent::quick_commit_message`（壳启用 core `function-agents`，Cargo 注释与 CLI closure 并排）；生成中翻「停止生成」+ 提交禁用 + `generation_epoch` 守卫（取消/重启后迟到回执按 epoch 丢弃）；无变更守卫走 `resolve_with` 空参数本地化键。② G-G4：Branches 视图（增强行 + 当前/远程徽标 + ahead/behind + 复制哈希 + 切换 + 两段式删除 + 创建表单可选起点、成功后 render 期 `set_value("")` 清空）与 Graph 视图（core lane 分配器输出 → 14px lane 格四态 dot/线 + ref 徽标（当前=accent 底）+ 7 位哈希 + 复制哈希 + 两段式 mixed 重置）；两视图共用 worktrees 的远程门。**冒烟执行态核验**（Xvfb :371 隔离根 + /tmp 一次性 git 仓库，帧 `gg-07..17`）：创建即检出、双向切换、两段式删除真删、剪贴板全哈希、divergent 拓扑下 lane 视觉齐活、AI 真错误路径（隔离根 0 模型 → 失败横幅 + warn 日志，按钮复位）；`git branch` 双向核对。**顺带修1**（冒烟发现）：branches 包裹列无高度约束 → 行列表 `flex_1` 塌缩为 0 不可见，补 `flex_1().min_h_0()`（history 视图直返列表故无此坑）。**在案分歧**：AI 真生成需配置模型（隔离根 0 模型只验到错误路径）；graph lane 模型 = core 分配器口径（merge 双亲同列），与桌面同源非壳自裁。**坑**：冒烟杀旧实例扫 `/proc/*/exe` 时 `readlink` 返回 `...gpui-shell (deleted)`（旧二进制已换），`case` 模式 `*openbitfun-gpui-shell`（无尾星）匹配不上 → 旧实例杀不掉、双窗口叠影；模式要带尾 `*`；列表行外再包一层列容器时该容器自身要 `flex_1().min_h_0()`，否则内层 list 的 `flex_1` 塌缩。ftl 1312→**1329 ×3**；壳 lib **378 全绿（0 告警）**；i18n:audit / check:core-boundaries / check:repo-hygiene / fmt:rs 绿；0 panic。 |
+| 2026-10-23 | **B 档 G-M1/G-M3 远程 MCP 认证（OAuth 流 + Bearer token + 行内认证摘要）**。MCP 列表 remote 行补认证事实（web `getRemoteAuthSummary` 同表：configured+来源 headers/env/oauth / OAuth 就绪未授权 / 未配置）与「远程认证」入口；认证对话框 = OAuth 段（提示、状态六态、回调地址、消息行、开始/重新发起/重新连接三态按钮，web `getOAuthActionLabel` 同判）+ Bearer token 段（「保存并重连」= `reauthenticate_remote_server` 存头后重启，连接失败错误内联且凭据已落盘；「清除认证」= `clear_remote_server_auth` 清头与 OAuth 凭据并停连接，成功回执、行摘要即时翻转）。OAuth 流经 core `start_remote_oauth_authorization`（本地回调监听 + 后台状态机，授权 URL 开系统浏览器），壳侧 1s 轮询带 epoch 守卫（新对话框顶掉旧循环、迟到快照按 server_id 拒收）；经对话框 chrome 离开（Esc/背板/X）由 `Dialog::on_close` 取消活跃流（web `handleCloseAuthDialog` 同语义），core 300s 回调超时兜底。目录投影补 `auth_configured`/`auth_source`/`oauth_enabled`。纯函数 `mcp_oauth_flow_active`/`mcp_oauth_action_kind`/`mcp_auth_summary_text` + 2 项单测。**顺带修 3**（冒烟发现）：① MCP 服务器列表整块塞在横排设置项控件槽、行尾动作（含新入口）被卡片右缘裁掉 → 列表项改 `SettingItem::layout(Axis::Vertical)`（归档页同款药方）；② 认证对话框沿用 kit 默认 448px 宽 → 显式 `.w(px(620.))`（G-A4 同款）；③ 成功回执复用错误横幅（红色 danger）→ `ManageNotice` 加 `success` 位，成功走前景色（技能组保存同享）。**在案分歧**：web 的 auth 模式四档细分选择器未做（壳按 headers 存值 + OAuth 就绪/已授权二面呈现，与 core 写面一致）；摘要文案为壳自拟键。**坑**：`open_dialog` 的 builder 是 `Fn`，输入 Entity 要在 builder 体内现场 clone 再 move 进 `on_click`（E0507）；`Dialog::on_close` 不覆盖按钮自身的 `window.close_dialog` 直关路径（恰好避免双取消）；kit 依赖名为 `gpui-kit`，`gpui::Axis` 不可达，要用 `gpui_kit::Axis`。ftl 1284→**1312 ×3**（28 键）；壳 lib **378 全绿（0 告警）**；i18n:audit / check:core-boundaries / check:repo-hygiene / fmt:rs 绿；Xvfb :371 隔离根冒烟 0 panic，证据帧 `m1-03..11`（页面行摘要与入口 / 对话框 620px / OAuth 启动失败内联 / token 键入 / 保存后握手失败内联且头已落盘 / docs 清除认证成功回执前景色 / 清除后行摘要翻回 OAuth 就绪；清除前后 `app.json` 的 headers 落盘双向核对）。 |
+| 2026-10-21 | **B 档 G-A1/G-A2 + A/B 档 G-A4 智能体详情与能力编辑**（`7d7e62ada`）。智能体卡片尾部统一出「详情」（`agent-detail-{id}`），打开统一详情对话框：基本事实（类型/来源/external provider/连续对话）、能力 5 级条（web `enrichCapabilities` 同表）、共享 profile（成员名单 + 标签）、工具段（仅主智能体）与子智能体段。工具列表从 core 注册表投影，过滤与 web `isAgentProfileConfigurableToolName` 一致（`GetToolSpec`/`CallDeferredTool` + 五个 `trinity_*` + `mcp__*`），勾选后「保存」写 `persist_agent_profile_from_value(enabled_tools)`、「重置」走 `reset_agent_profile_to_default`（只清工具覆盖）；子代理段仅在生效工具含 Task 时出现，external 行标注并禁用，保存只写与快照不同的行（`plan_agent_subagent_writes` 纯函数 → `save_agent_subagents` 一次批量写 + 一次目录刷新），重置恢复 registry 默认。事件携带 profile id，重开对话框不会被迟到响应污染。**在案分歧**：web 的 ToolGroupPicker 用户分组编辑与 model 页未移植（模型菜单仍在行上）；能力条用壳主题语义色。**坑**：`Dialog` 默认 448px，必须显式 `.w()`（否则右侧计数与保存按钮被裁）；`Dialog` 自带 body 滚动，内容再套 `max_h + overflow_y_scrollbar` 会形成内层滚动、末尾段落不可达且吞滚轮 → 列表不再设内层滚动；工具描述是多段 prompt，tooltip 只取首行并截 160 字。ftl 1258→**1284 ×3**；壳 lib **376 全绿（0 告警）**；i18n:audit / check:core-boundaries / check:repo-hygiene / fmt:rs 绿；Xvfb :271/:272 隔离根冒烟 0 panic，证据帧 `a6-01..05`（`d10796bfabb9d78f` 详情 / `af97b4b50cbf59e3` 工具保存 28→29 且落盘 `added_tools:["AgentDelete"]` / `66914f2f8db209f9` 列表下滚到 Task·Read 可达 / `55793c1b5506a960` 子代理保存 2→3 且落盘 `subagent_overrides` / `3c322742127701a7` 子代理详情紧凑态）。 |
+| 2026-10-21 | **B 档 G-K4 技能分组管理**。技能 facet 新增「管理分组」页：我的分组可编辑/复制/上移/下移/删除，内置 `group_key` 分组只读列出并可复制为我的分组；编辑器 = 组名 + 全目录技能勾选（不可用成员保留 key），删除二次确认。持久化直接复用共享契约 `app.user_skill_groups`（`AppConfig.user_skill_groups` version 1），写回 `update_config("app")` 的 camelCase JSON 并保留兄弟键；校验对齐 web `saveUserSkillGroup`（trim 必填/大小写不敏感重名/快照冲突/成员去重），移动与删除为纯函数并有 3 项单测。**在案分歧**：编辑器无搜索、内置分组标题取 `group_key`、加载失败无重试按钮。**坑**：`gpui_kit::Div` 的滚动需要 `gpui_kit::component::scroll::ScrollableElement` 在作用域内（仅 `overflow_y_scroll` 方法名不可用）；对话框输入仍放窗口实体（`skill_group_name_input`），勾选/错误态放全局。ftl 1230→**1258 ×3**；`i18n:audit` 0 错 0 警；壳 lib **371 全绿（0 告警）**；`fmt:rs` 绿。 |
+| 2026-10-20 | **A/B 档 G-K2 技能详情 + G-K3 添加/删除技能**。技能卡尾部统一出「详情」ghost 按钮，详情模态展示等级/来源/shadowed、名称、描述、来源与文件夹路径，并给「复制路径」「在文件管理器显示」；native 非内置技能可在详情内转入删除确认（警告含技能名）。过滤行右侧新增「添加技能」：user/project 等级 + 路径输入 + 「校验」，校验结果逐类本地化（空/不存在/不是目录/缺 SKILL.md/不可读/解析失败），通过后才可添加；运行时不可用单独提示。新增 runtime 三面：`validate_skill_path` / `add_skill` / `delete_skill` 与对应事件，`SkillRow` 补 `path` / `deletable`。写面守卫：添加拒绝同名文件夹与自拷（canonicalize 后比较），删除只对 native 非内置技能、托管根包含校验后 `remove_dir_all`。**在案分歧**：无目录浏览按钮（改为键入 + 校验）；详情不显示外部链接（投影未携带）。**坑**：`open_dialog` 的 builder 每帧重建，输入状态必须放窗口实体（`skill_path_input`）而对话框草稿放全局（`SkillDialogsState`）；builder 内先取 `i18n::current(cx)` 再调 `mutate(cx, …)`，否则闭包借用冲突（E0502）；重复 locale 字面量会撞 `sharedTermDuplicates`（`OpenBitFun` 改走 `service.t("shared.product.name")`，未抬 baseline）；不再经 `ShellText` 的校验/警告字段已删，统一用 `resolve_with` 参数化助手。ftl 1205→**1230 ×3**；`i18n:audit` 0 错 0 警；壳 lib **368 全绿（0 告警）**；`fmt:rs` 绿。 |
+| 2026-10-20 | **B 档 G-P1 任务编辑器（新建/编辑对话框）**。看板头新增「新建任务」，每行新增「编辑」，共用同一对话框（标题按新建/编辑切换）：名称、prompt（1000 字符上限）、Schedule 三型（单次=本地 `YYYY-MM-DDTHH:MM` 文本 + 本地时区提示；周期=数值 + 分钟/小时/天下拉 + 可选取「起算时间」；Cron=表达式 + 可选时区）、目标（当前工作区启动 / 已有会话下拉，无会话时禁用并提示）、启用开关。保存经新增的 `RuntimeHandle::create_cron_job`/`update_cron_job` 走共享 cron 服务（成功后 `CronJobs` 重拉列表，失败进页头错误条）；编辑保留并预填 `anchor_ms`（按本地分钟回读，与 web 的 `toLocalDateTimeInput` 同口径）。纯数据层 `TaskDraft`（blank/from_job/schedule/validate/create_request/update_request）与本地时间↔RFC3339、毫秒↔最大整单位拆分、DST 不存在时间拒绝均有单测；另加一项真 root-view 窗口测试：把 ShellWindow 包进 `gpui_base::Root`（对话框插件所在根）后打开对话框，断言预填与 `task-editor` 渲染，防「只在真实窗口才 panic」的坑。**在案分歧**：无工作区 Combobox 与 agent 类型选择器（壳只服务当前工作区，`CronLaunchSpec` 固定默认 `Standard`）；锚点、时区不做 web 的高级折叠区，直接随对应 schedule 形态显示。**坑**：`WindowExt`（`open_dialog`/`close_dialog`）必须显式引入 `gpui_kit::component::WindowExt`；`Button::dropdown_menu_with_anchor` 返回 `DropdownMenuPopover<Button>` 而不是 `Button`，条件分支要转 `AnyElement`；`DropdownMenuPopover` 没有 `debug_selector`。ftl 1171→**1205 ×3**；`i18n:audit` 0 告警；壳 lib **368 全绿**（0 告警）；`check:core-boundaries` / `fmt:rs` 绿。 |
+| 2026-10-20 | **B 档设置字段族第四批（G-SE25 Hooks 导入 / 位置 / 兼容性）**。自动化页新增三段：① 声明位置（用户 `config/hooks.json`、项目 `.openbitfun/config/hooks.json` 两行说明）；② 已导入的 Hooks——进页按需拉快照、刷新按钮强制重探来源更新，逐源行含名称、启用 Switch（总开关关闭时禁用）、五种状态文案（当前/有更新/来源丢失/检查失败/托管文件缺失）、审阅更新与移除；移除与损坏索引重置均行内两段式确认，损坏诊断按 `.user_global` 后缀选出 scope；③ 审阅计划行内块——逐条 handler（event · command · matcher · 超时）、跳过计数、权限警告，`stale` 时显示「本次未写入」并换新计划；Apply 才写入，Remove 只删托管副本；④ Codex 兼容段（合约说明 + 系统 opener 打开文档）。新增运行时事件四型与四个 `RuntimeHandle` 方法（快照/变更/计划/应用）接 core `external_hook_import_*`。**在案分歧**：行内审阅块替代模态框；依赖明细不逐条展开；壳运行时始终本地，未复刻 remoteUnsupported 提示。ftl 1131→**1171 ×3**；`i18n:audit` 0 告警；壳 lib **361 全绿**；`fmt:rs` 绿。 |
+| 2026-10-20 | **B 档设置字段族第三批（G-SE12 高级模型配置，测试连接 / 行编辑 / 高级请求面一次交付）**。① 测试连接：模型清单每行一个「测试连接」按钮，运行时走与桌面 `test_ai_config_connection` 同一条临时客户端管线（`build_stream_options_for_model` + subscription auth/profile + 全局 proxy / 行内 skip-SSL），多模态模型并跑图片输入腿并按桌面规则合并回执；判定/耗时/诊断码本地化提示/原始错误显示在行下，不落盘。② 行编辑器：点「Edit」在清单下展开——分类（web 四档 + 未知存量值原样保留）、上下文窗口（≥32K）、最大输出（0=自动，>40% 上下文拒绝写入，缩窗口时失效的显式上限自动回退自动档）、思考默认预设（存量预设中选择 + 动作摘要只读，禁用/无动作预设不提供选择）。③ 高级面：请求格式只读（改格式属于 web 的 provider 选择器）、`<think>` 解析开关、跳过 SSL（带风险说明）、自定义 Headers JSON 对象（空=清除，非字符串值拒绝）、Headers 应用模式 replace/merge、自定义请求体 JSON 对象（空=清除）、请求体模式 merge/trim；半写的 JSON 只留在页内草稿，解析成功才落盘。全部写入走 `update_config("ai.models")` 单锁读改写，行内与同列表的未知键原样保留。**在案分歧**：思考预设的编写面板（models.dev 绑定 / 自定义预设增删 / 补丁 JSON）仍在 web/桌面；请求体 trim 的四条供应商专属说明合并为一条通用提示。ftl 1080→**1131 ×3**；`i18n:audit` 0 告警（未抬 baseline）；壳 lib **361 全绿**（新增 2 项纯函数测试：未知分类保留、JSON 草稿形状）。 |
+| 2026-10-20 | **B 档设置字段族第二批（G-SE15 / G-SE16 / G-SE17 / G-SE24 / G-SE29 一次交付）**。① G-SE15：`workspace.session` 页新增默认 Harness（跟随上次 / 固定默认 + 四档 Harness 菜单 + 兼容值后缀，描述显示上次选择）与会话标题生成（开关 + 模型菜单），写 `app.flow_chat` 两键一次合并写（新增 `persist_object_keys`）、`app.ai_experience.enable_session_title_generation`、`ai.task_models.session_title`；legacy `default_mode_id` 按 fixed 读。② G-SE16：`workspace.worktrees` 页新增会话隔离五项（根路径 / 分支前缀 / 复制改动 / 自动删除 + 1–100 上限，关时上限禁用），**按共享文档的 camelCase 键**（`rootPath` 等）单键合并写 `app.worktrees`，默认值取共享 `WorktreeSettings::default`。③ G-SE17：执行与权限页新增全局规则只读列表 + 行内编辑器（操作/资源/效果三列，上移/下移/删除/新增/保存/放弃，缺字段红字 + 保存禁用；草稿全局、未保存不落盘），保存整数组合并写 `tool_permissions.policy.rules`。④ G-SE24：自动化页新增快捷动作管理（内置开关 + 编辑；自定义开关 + 编辑/两段式删除/新增；行内名称/指令编辑器），整数组写 `app.ai_experience.quick_actions`，内置文案按 web 归一规则写回规范英文默认。⑤ G-SE29：用量页补齐模型/供应商/端点三块分布 + 页内搜索过滤 + 逐行缓存命中率（数据取 `UsageStatistics.by_*`，每块前 20 行）。⑥ 顺带清零上轮遗留 **25 条 lib-test 告警**（`cargo fix` 21 条 + 4 条 dead code：删 `ArchivedFieldHarness`/`E2E_PRODUCT_HOME_ENV`/`HISTORY_LIMIT`，batch 描述文案改到行内使用）。ftl 1016→**1080 ×3**；`i18n:audit` 0 错 0 警（首轮「Edit」撞共享词 `tools.edit` → 改用 `i18n::shared_term`，未抬 baseline）；**壳 lib 359 全绿（0 告警）**；`check:repo-hygiene` / `check:core-boundaries` / `fmt:rs` 绿。 |
 | 2026-10-18 | **B 档首车：三页设置交付（G-SE14 认知引擎 / G-SE13 记忆 / G-SE7 快捷键只读）**（`071fd90d1`）。三页共享一条实现纪律：**设置页在窗口自身的 render 里构建**（`shell.rs::render` → `settings::render_page` → 组构建函数），那里窗口实体正被可变借用 —— 任何组构建函数直接 `view.upgrade().read(cx)` 都会 panic（`cannot read ShellWindow while it is already being updated`，本轮由 `settings_scene_nav_selects_pages_and_searches` 抓到）。修法 = 引擎页与记忆页的页内状态从窗口字段改成全局（`TrinityEngineState` / `MemoryPageState`，配 `current()`/`mutate()` 惰性物化），组构建函数与页内渲染闭包只读 `cx`；**断言/接口留给「延迟渲染闭包读窗口实体」这条既有安全路径**（`archived_sessions_field` 同款）。顺带修两条遗留红：导航元数据/树投影测试的硬编码页数 15（Trinity/Memory 登记后未跑过测试）→ 18（16 实页 + 2 跳转卡、隐藏 8→5），以及引擎页离线态回不去（`ConfigFailed` 现在清 `loaded`）。证据：壳 lib **352 全绿**（该计数含重复注册的同一测试；唯一测试 351，见 HANDOFF-090）；ftl 925→943（G-SE14 18 键）→1002（G-SE13 58 键 + 1 参数键）→**1016 ×3**（G-SE7 14 键）；`i18n:audit` / `check:core-boundaries` / `check:repo-hygiene` / `pnpm run fmt:rs` 四绿；Xvfb :83 隔离根冒烟 0 panic（唯一 ERROR = Xvfb xinput 既有噪声），证据帧 `b1-01..12`：启动态（搜索框 Ctrl K 提示）/设置导航三行新页/引擎页真 daemon 值（端点+模型已填、key 掩码）/记忆页基础（范围提示 + 关总开关时下游禁用）/管理菜单三项/高级块收起/展开点击态/七行数字（真存值 6·10·2·2000·1·64·30）/快捷键表四组/键位实测（Ctrl+B 折侧栏、Ctrl+K 开全局搜索）。**新坑登记**：`SettingItem` 不能在自定义元素里嵌套渲染（`render_item` 是 `pub(super)`），披露态探针改用独立标记项；`AsKeystroke` 不在 gpui prelude，测试要显式 `use gpui_kit::AsKeystroke as _`。 |
 | 2026-10-17 | **「停止」tooltip 滞留收口（W-8 ⑤，第三场）**：上轮登记的「composer 停止 tooltip 在按钮卸载后滞留」定机制并对壳侧收口。滞留者是 gpui-component 的 **managed tooltip**（窗口级 overlay，隐藏路径只有触发元素的 `on_hover(false)` → `request_hide`）：回合结算让发送/停止两个同 id 不同的按钮互换，指针静止压在按钮上时停止按钮被卸载，hover-end 永不到 → 弹层留在屏上（移开指针也无效，接班的发送按钮不会替它发 `request_hide`）。gpui 原生 tooltip 由拥有者每帧 prepaint 重新注册、拥有者消失即释放（gpui 自带 `tooltip_is_released_when_its_owner_disappears`），结构性不滞留——修法即把 composer 停止按钮的 tooltip 从 `Button::tooltip` 摘到**只与按钮同生共死**的 anchor 包装上（`div().flex().id("chat-stop-tooltip-anchor").tooltip(原生).child(按钮)`，`Tooltip::element` 保外观 + 供测试看见）。新回归测试 `stop_tooltip_releases_with_the_button_when_the_turn_settles`（真窗口 root view + 真帧，新 helper `draw_window_for_test`）：anchor 盒 32×32 → 悬停 600ms 弹层在帧内 → 结算帧（指针未动）anchor 与弹层同时消失；回退成 `Button::tooltip` 第一步即红（已验）；壳 lib **345 全绿**。真 turn 对照帧 `w9-01`(+`z`) 悬停有提示 / `w9-02`(+`z`) 结算后无滞留 / `w9-03` 移开仍无残留（与 `w9-02` 逐像素同），修前同现象 = `w8-06` |
 | 2026-10-17 | **G-X6 有内容态复验 + 转写重载语义修复（W-8）**：本地桩模型（OpenAI 兼容假服务 + 隔离根 `app.json` 单模型指向 127.0.0.1，零外网零 key）让壳跑通真 turn，「窗口非前台完成 → 未读圆点 / 面板带行 / 点行清除 / 清除所有」全链复验（帧 `w7-01..04`），「隔离冒烟 0 models 造不出真 turn」的缺口关闭。顺带修「转写刷新被当作打开」：`OpenedSession` 增 `reload` 事件事实（`reload_transcript` 置真、`emit_opened` 置假），消费侧只在 `!reload` 时清未读 / 覆盖 tab 标题与模型选择——此前**每回合结算后**该会话未读被立即清掉（T2-16 定案是「打开会话清」）、tab 标题被清空、模型选择回落「默认模型」（对照帧 `w7-05`/`w7-06`、`w7-07`/`w7-08`；新测试 `transcript_reloads_keep_unread_turns_until_the_session_is_opened` 三断言，去保护必红已验；壳 lib **343 全绿**）。另登记（未立项）：reload 的 `tabs.open` 会激活其 tab，可能把结算会话抢到前台 |

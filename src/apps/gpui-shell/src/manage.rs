@@ -15,13 +15,14 @@ use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
+use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, StyledExt, WindowExt};
 use gpui_kit::{
     canvas, div, point, prelude::*, px, size, Anchor, App, Background, BorderStyle, Bounds,
-    Context, Corners, Edges, FontWeight, Global, Hsla, PathBuilder, SharedString, WeakEntity,
-    Window,
+    ClipboardItem, Context, Corners, Edges, FontWeight, Global, Hsla, PathBuilder, SharedString,
+    WeakEntity, Window,
 };
 
 use crate::i18n::{self, ShellText};
@@ -220,6 +221,11 @@ pub(crate) struct SkillRow {
     pub(crate) source_id: String,
     /// Display name of the discovery source (facet label).
     pub(crate) source_label: String,
+    /// G-K2: the scanned skill directory (detail path, copy, reveal).
+    pub(crate) path: String,
+    /// G-K3: the storage is OpenBitFun-owned and not a built-in copy, so the
+    /// detail dialog may remove it (desktop `can_delete_owned_skill`).
+    pub(crate) deletable: bool,
 }
 
 impl SkillRow {
@@ -254,6 +260,280 @@ impl SkillCatalog {
     }
 }
 
+/// G-K3: the result of checking an add-skill source directory. Expected
+/// problems are values (the dialog localizes them), not runtime errors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SkillValidationRow {
+    pub(crate) valid: bool,
+    pub(crate) name: Option<String>,
+    pub(crate) description: Option<String>,
+    pub(crate) error: Option<SkillValidationError>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SkillValidationError {
+    Empty,
+    NotFound,
+    NotDirectory,
+    MissingSkillFile,
+    Unreadable,
+    /// The markdown itself failed the shared parser; the detail is the
+    /// parser's message.
+    Parse(String),
+}
+
+/// G-K2/G-K3: which skill dialog is open. The data behind each dialog lives in
+/// [`SkillDialogsState`]; the focusable inputs live on the shell window (a
+/// dialog builder runs every frame).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SkillDialog {
+    Detail(String),
+    Add,
+    Delete(String),
+}
+
+/// G-K2/G-K3 dialog scratch. Global because the settings page renders inside
+/// the window's own render, where reading the window entity would panic.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct SkillDialogsState {
+    pub(crate) dialog: Option<SkillDialog>,
+    /// Project-level install target (default: user).
+    pub(crate) add_project: bool,
+    pub(crate) busy: bool,
+    /// The latest add-path validation; `None` before the first check.
+    pub(crate) validation: Option<Result<SkillValidationRow, String>>,
+    /// Add/delete failure, shown inside the open dialog.
+    pub(crate) mutation_error: Option<String>,
+}
+
+impl Global for SkillDialogsState {}
+
+impl SkillDialogsState {
+    pub(crate) fn current(cx: &App) -> Self {
+        cx.try_global::<Self>().cloned().unwrap_or_default()
+    }
+
+    pub(crate) fn mutate<R>(cx: &mut App, update: impl FnOnce(&mut Self) -> R) -> R {
+        let mut state = Self::current(cx);
+        let result = update(&mut state);
+        cx.set_global(state);
+        cx.refresh_windows();
+        result
+    }
+}
+
+/// G-K4: the user-defined skill groups persisted at `app.user_skill_groups`.
+/// The stored shape is owned by the shared config contract; this page only
+/// mirrors it into a Global so the settings render (inside the window borrow)
+/// can read it without touching the window entity.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct SkillGroupsCatalog {
+    pub(crate) loaded: bool,
+    /// A non-empty group mutation (move/delete/save) is in flight.
+    pub(crate) busy: bool,
+    pub(crate) error: Option<String>,
+    pub(crate) groups: Vec<openbitfun_core::service::config::UserSkillGroup>,
+}
+
+impl Global for SkillGroupsCatalog {}
+
+impl SkillGroupsCatalog {
+    pub(crate) fn current(cx: &App) -> Self {
+        cx.try_global::<Self>().cloned().unwrap_or_default()
+    }
+
+    pub(crate) fn set(catalog: Self, cx: &mut App) {
+        cx.set_global(catalog);
+        cx.refresh_windows();
+    }
+
+    pub(crate) fn mutate<R>(cx: &mut App, update: impl FnOnce(&mut Self) -> R) -> R {
+        let mut state = Self::current(cx);
+        let result = update(&mut state);
+        cx.set_global(state);
+        cx.refresh_windows();
+        result
+    }
+}
+
+/// G-K4: the open group editor or delete confirmation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum GroupDialog {
+    Edit {
+        /// `None` = create (including "copy as new"); `Some` = edit in place.
+        original: Option<openbitfun_core::service::config::UserSkillGroup>,
+    },
+    Delete(openbitfun_core::service::config::UserSkillGroup),
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct SkillGroupsDialogState {
+    pub(crate) dialog: Option<GroupDialog>,
+    /// Selected member keys, in selection order. Unresolved keys loaded from
+    /// an older catalog stay here so saving never silently drops them.
+    pub(crate) selected: Vec<String>,
+    pub(crate) busy: bool,
+    pub(crate) error: Option<String>,
+}
+
+impl Global for SkillGroupsDialogState {}
+
+impl SkillGroupsDialogState {
+    pub(crate) fn current(cx: &App) -> Self {
+        cx.try_global::<Self>().cloned().unwrap_or_default()
+    }
+
+    pub(crate) fn mutate<R>(cx: &mut App, update: impl FnOnce(&mut Self) -> R) -> R {
+        let mut state = Self::current(cx);
+        let result = update(&mut state);
+        cx.set_global(state);
+        cx.refresh_windows();
+        result
+    }
+}
+
+/// G-K4: validation failures mirrored from the web `saveUserSkillGroup`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GroupEditError {
+    NameRequired,
+    NameDuplicate,
+    /// The group changed elsewhere between load and save.
+    Conflict,
+}
+
+/// G-K4: applies one validated edit to the latest group list. Mirrors
+/// `features/skill-groups/skillGroups.ts::saveUserSkillGroup`: name is trimmed
+/// and required, names are unique case-insensitively, an edit may only replace
+/// the exact original snapshot, and member keys are trimmed + deduped.
+pub(crate) fn apply_group_edit(
+    groups: &[openbitfun_core::service::config::UserSkillGroup],
+    original: Option<&openbitfun_core::service::config::UserSkillGroup>,
+    edited: &openbitfun_core::service::config::UserSkillGroup,
+) -> Result<Vec<openbitfun_core::service::config::UserSkillGroup>, GroupEditError> {
+    let name = edited.name.trim();
+    if name.is_empty() {
+        return Err(GroupEditError::NameRequired);
+    }
+    let current = groups.iter().find(|group| group.id == edited.id);
+    let unchanged = match (current, original) {
+        (Some(current), Some(original)) => current == original,
+        (None, None) => true,
+        _ => false,
+    };
+    if !unchanged {
+        return Err(GroupEditError::Conflict);
+    }
+    let name_lower = name.to_lowercase();
+    if groups
+        .iter()
+        .any(|group| group.id != edited.id && group.name.to_lowercase() == name_lower)
+    {
+        return Err(GroupEditError::NameDuplicate);
+    }
+    let mut next = edited.clone();
+    next.name = name.to_string();
+    next.skill_keys = normalize_group_keys(&edited.skill_keys);
+    let mut out = groups.to_vec();
+    match out.iter().position(|group| group.id == edited.id) {
+        Some(index) => out[index] = next,
+        None => out.push(next),
+    }
+    Ok(out)
+}
+
+/// G-K4: deletes only if the snapshot still matches (web `deleteUserSkillGroup`).
+pub(crate) fn apply_group_delete(
+    groups: &[openbitfun_core::service::config::UserSkillGroup],
+    target: &openbitfun_core::service::config::UserSkillGroup,
+) -> Result<Vec<openbitfun_core::service::config::UserSkillGroup>, GroupEditError> {
+    match groups.iter().find(|group| group.id == target.id) {
+        Some(current) if current == target => Ok(groups
+            .iter()
+            .filter(|group| group.id != target.id)
+            .cloned()
+            .collect()),
+        _ => Err(GroupEditError::Conflict),
+    }
+}
+
+/// G-K4: swaps a group with its neighbour (web `moveUserSkillGroup`). An edge
+/// move is a no-op, not an error; a missing id is a conflict.
+pub(crate) fn apply_group_move(
+    groups: &[openbitfun_core::service::config::UserSkillGroup],
+    id: &str,
+    delta: i32,
+) -> Result<Vec<openbitfun_core::service::config::UserSkillGroup>, GroupEditError> {
+    let Some(index) = groups.iter().position(|group| group.id == id) else {
+        return Err(GroupEditError::Conflict);
+    };
+    let target = index as i32 + delta;
+    if target < 0 || target as usize >= groups.len() {
+        return Ok(groups.to_vec());
+    }
+    let mut out = groups.to_vec();
+    out.swap(index, target as usize);
+    Ok(out)
+}
+
+fn normalize_group_keys(keys: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for key in keys {
+        let key = key.trim();
+        if !key.is_empty() && !out.iter().any(|existing| existing == key) {
+            out.push(key.to_string());
+        }
+    }
+    out
+}
+
+/// G-K4: built-in `group_key` buckets with their member names, ordered the way
+/// the web resolver orders them (known keys first, then alphabetical).
+fn builtin_group_members(rows: &[SkillRow]) -> Vec<(String, Vec<String>)> {
+    const ORDER: [&str; 9] = [
+        "meta",
+        "miniapp",
+        "computer-use",
+        "office",
+        "canvas",
+        "debugging",
+        "coordination",
+        "planning",
+        "gstack",
+    ];
+    let mut buckets: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+    for row in rows {
+        if !row.builtin {
+            continue;
+        }
+        let Some(group) = row.group_key.as_deref().map(str::trim) else {
+            continue;
+        };
+        if group.is_empty() {
+            continue;
+        }
+        buckets
+            .entry(group.to_string())
+            .or_default()
+            .push(row.name.clone());
+    }
+    let mut out: Vec<(String, Vec<String>)> = buckets.into_iter().collect();
+    out.sort_by(|(left, left_members), (right, right_members)| {
+        let left_rank = ORDER
+            .iter()
+            .position(|key| key == left)
+            .unwrap_or(ORDER.len());
+        let right_rank = ORDER
+            .iter()
+            .position(|key| key == right)
+            .unwrap_or(ORDER.len());
+        left_rank
+            .cmp(&right_rank)
+            .then_with(|| left.cmp(right))
+            .then_with(|| left_members.len().cmp(&right_members.len()))
+    });
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Agent catalog
 // ---------------------------------------------------------------------------
@@ -286,6 +566,18 @@ pub(crate) struct AgentCardRow {
     /// SubAgent model). Always `None` for modes and external subagents.
     pub(crate) model_override:
         Option<openbitfun_core::service::config::types::SubagentModelSelection>,
+    /// G-A4: `false` only for external projections that cannot answer a
+    /// follow-up turn (core `AgentInfo.supports_follow_up`).
+    pub(crate) supports_follow_up: bool,
+    /// G-A4: the external provider name shown next to the source.
+    pub(crate) external_provider_label: Option<String>,
+    /// G-A1/G-A2: the default tool set decides whether the tools tab is
+    /// editable and whether the Task subagent selector applies.
+    pub(crate) default_tools: Vec<String>,
+    /// G-A4: modes sharing one stored profile (web `configProfile*`).
+    pub(crate) profile_id: String,
+    pub(crate) profile_label: Option<String>,
+    pub(crate) profile_member_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -300,6 +592,170 @@ impl Global for AgentCatalog {}
 impl AgentCatalog {
     pub(crate) fn try_current(cx: &App) -> Option<Self> {
         cx.try_global::<Self>().cloned()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// G-A1/G-A2/G-A4: the agent detail dialog (tools, SubAgents, facts)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AgentCapabilityCategory {
+    Coding,
+    Docs,
+    Analysis,
+    /// The web's category set includes Testing, but core does not project
+    /// capability categories yet, so the shell heuristic never emits it.
+    #[allow(dead_code)]
+    Testing,
+    Creative,
+    Ops,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AgentCapabilityRow {
+    pub(crate) category: AgentCapabilityCategory,
+    pub(crate) level: u8,
+}
+
+/// G-A4: the web `enrichCapabilities` heuristic. The levels are a presentation
+/// default keyed by the well-known agent ids, not runtime measurements; the
+/// shell ports the same table so both surfaces show the same bars.
+pub(crate) fn agent_capabilities(card: &AgentCardRow, mode_kind: bool) -> Vec<AgentCapabilityRow> {
+    use AgentCapabilityCategory::{Analysis, Coding, Creative, Docs, Ops};
+    let id = card.id.to_lowercase();
+    let rows: Vec<(AgentCapabilityCategory, u8)> = if mode_kind {
+        match id.as_str() {
+            "standard" => vec![(Coding, 5), (Analysis, 4)],
+            "plan" => vec![(Analysis, 5), (Docs, 3)],
+            "cowork" => vec![(Analysis, 4), (Creative, 3)],
+            "computeruse" => vec![(Ops, 5), (Analysis, 3)],
+            "deepresearch" => vec![(Analysis, 5), (Docs, 4)],
+            _ => Vec::new(),
+        }
+    } else {
+        match id.as_str() {
+            "explore" | "researchspecialist" => vec![(Analysis, 4)],
+            "generalpurpose" | "reviewfixer" => vec![(Coding, 4), (Analysis, 4)],
+            _ => Vec::new(),
+        }
+    };
+    rows.into_iter()
+        .map(|(category, level)| AgentCapabilityRow { category, level })
+        .collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AgentToolRow {
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AgentSubagentRow {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) enabled: bool,
+    /// The registry default, used by Reset.
+    pub(crate) default_enabled: bool,
+    /// External subagents are listed for context but cannot be toggled.
+    pub(crate) external: bool,
+}
+
+/// G-A1/G-A2: one load of the detail dialog's editable capabilities.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct AgentDetailPayload {
+    pub(crate) tools: Vec<AgentToolRow>,
+    pub(crate) subagents: Vec<AgentSubagentRow>,
+}
+
+/// G-A1/G-A2/G-A4 dialog scratch. The dialog is keyed by the catalog row id;
+/// tools/subagents are `None` until the runtime answers.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct AgentDetailState {
+    pub(crate) agent_id: Option<String>,
+    pub(crate) mode_kind: bool,
+    pub(crate) profile_id: String,
+    pub(crate) tools: Option<Vec<AgentToolRow>>,
+    pub(crate) subagents: Option<Vec<AgentSubagentRow>>,
+    /// Tool names ticked in the dialog (not yet saved).
+    pub(crate) pending_tools: Vec<String>,
+    /// Subagent ids ticked in the dialog (not yet saved).
+    pub(crate) pending_subagents: Vec<String>,
+    pub(crate) tools_error: Option<String>,
+    pub(crate) subagents_error: Option<String>,
+    pub(crate) busy: bool,
+}
+
+impl Global for AgentDetailState {}
+
+impl AgentDetailState {
+    pub(crate) fn current(cx: &App) -> Self {
+        cx.try_global::<Self>().cloned().unwrap_or_default()
+    }
+
+    pub(crate) fn mutate<R>(cx: &mut App, update: impl FnOnce(&mut Self) -> R) -> R {
+        let mut state = Self::current(cx);
+        let result = update(&mut state);
+        cx.set_global(state);
+        cx.refresh_windows();
+        result
+    }
+}
+
+/// G-A1: the web `isAgentProfileConfigurableToolName` rule — user-selectable
+/// product tools only (no internal gateway, cognitive-framework group, or MCP
+/// tool).
+pub(crate) fn agent_tool_configurable(name: &str) -> bool {
+    const HIDDEN: [&str; 7] = [
+        "GetToolSpec",
+        "CallDeferredTool",
+        "trinity_cognitive_state",
+        "trinity_express",
+        "trinity_recall",
+        "trinity_memorize",
+        "trinity_apply_feedback",
+    ];
+    !HIDDEN.contains(&name) && !name.starts_with("mcp__")
+}
+
+/// G-A1/G-A2: a tooltip-sized capability description. Tool descriptions are
+/// multi-paragraph prompts; the checkbox tooltip shows the first non-empty
+/// line only, capped so a long line cannot paint across the window.
+pub(crate) fn agent_tooltip_text(description: &str) -> Option<String> {
+    const LIMIT: usize = 160;
+    let line = description
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?;
+    if line.chars().count() <= LIMIT {
+        return Some(line.to_string());
+    }
+    let mut text: String = line.chars().take(LIMIT).collect();
+    text.push('…');
+    Some(text)
+}
+
+/// G-A1: applies the dialog's pending ticks. A pure helper so the tool list
+/// stays testable without a runtime.
+pub(crate) fn apply_tool_selection(selected: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for name in selected {
+        let name = name.trim();
+        if !name.is_empty() && !out.iter().any(|existing| existing == name) {
+            out.push(name.to_string());
+        }
+    }
+    out
+}
+
+/// G-A2: applies one pending tick to a subagent toggle list.
+pub(crate) fn toggle_subagent_selection(selected: &mut Vec<String>, id: &str, enabled: bool) {
+    selected.retain(|existing| existing != id);
+    if enabled {
+        selected.push(id.to_string());
     }
 }
 
@@ -575,6 +1031,14 @@ pub(crate) struct McpServerRow {
     pub(crate) enabled: bool,
     pub(crate) auto_start: bool,
     pub(crate) builtin: bool,
+    /// G-M3: remote-only auth projection (web `authConfigured`); local
+    /// servers carry `false`.
+    pub(crate) auth_configured: bool,
+    /// G-M3: where the auth comes from — `headers`, `env`, or `oauth`
+    /// (web `authSource`).
+    pub(crate) auth_source: Option<String>,
+    /// G-M3: the server opted into OAuth (`oauthEnabled` in the config).
+    pub(crate) oauth_enabled: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -622,6 +1086,127 @@ pub(crate) enum McpAction {
     Restart,
     SetEnabled(bool),
     Delete,
+}
+
+/// G-M1/G-M3: the remote auth dialog scratch, keyed by the server id. The
+/// OAuth snapshot rides in from [`crate::runtime::RuntimeEvent::McpOAuthSession`]
+/// polls; the token draft lives in the window's input entity.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct McpAuthDialogState {
+    pub(crate) server_id: Option<String>,
+    pub(crate) server_name: String,
+    pub(crate) server_url: Option<String>,
+    pub(crate) oauth_enabled: bool,
+    pub(crate) auth_configured: bool,
+    pub(crate) auth_source: Option<String>,
+    pub(crate) session: Option<openbitfun_core::service::mcp::auth::MCPRemoteOAuthSessionSnapshot>,
+    pub(crate) starting: bool,
+    pub(crate) cancelling: bool,
+    pub(crate) saving: bool,
+    pub(crate) error: Option<String>,
+}
+
+impl Global for McpAuthDialogState {}
+
+impl McpAuthDialogState {
+    pub(crate) fn current(cx: &App) -> Self {
+        cx.try_global::<Self>().cloned().unwrap_or_default()
+    }
+
+    pub(crate) fn mutate<R>(cx: &mut App, update: impl FnOnce(&mut Self) -> R) -> R {
+        let mut state = Self::current(cx);
+        let result = update(&mut state);
+        cx.set_global(state);
+        cx.refresh_windows();
+        result
+    }
+
+    /// Whether the dialog is open for exactly this server (the stale-response
+    /// guard: a late poll for a previously opened server must not land).
+    pub(crate) fn open_for(&self, server_id: &str) -> bool {
+        self.server_id.as_deref() == Some(server_id)
+    }
+}
+
+/// G-M1: an OAuth flow is live until it reaches a terminal state — the same
+/// rule the web dialog uses to swap button labels and arm close-cancels.
+pub(crate) fn mcp_oauth_flow_active(
+    session: Option<&openbitfun_core::service::mcp::auth::MCPRemoteOAuthSessionSnapshot>,
+) -> bool {
+    use openbitfun_core::service::mcp::auth::MCPRemoteOAuthStatus;
+    matches!(
+        session.map(|session| session.status.clone()),
+        Some(
+            MCPRemoteOAuthStatus::AwaitingBrowser
+                | MCPRemoteOAuthStatus::AwaitingCallback
+                | MCPRemoteOAuthStatus::ExchangingToken
+        )
+    )
+}
+
+/// G-M1: the primary OAuth button's meaning (web `getOAuthActionLabel`):
+/// restart a live flow, reconnect when stored OAuth credentials exist, or
+/// start fresh.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum McpOAuthActionKind {
+    Start,
+    Restart,
+    Reconnect,
+}
+
+pub(crate) fn mcp_oauth_action_kind(
+    session: Option<&openbitfun_core::service::mcp::auth::MCPRemoteOAuthSessionSnapshot>,
+    auth_configured: bool,
+    auth_source: Option<&str>,
+) -> McpOAuthActionKind {
+    if mcp_oauth_flow_active(session) {
+        return McpOAuthActionKind::Restart;
+    }
+    if auth_configured && auth_source == Some("oauth") {
+        return McpOAuthActionKind::Reconnect;
+    }
+    McpOAuthActionKind::Start
+}
+
+/// G-M3: the row's auth fact (web `getRemoteAuthSummary`): which source backs
+/// a configured server, that OAuth is available but unused, or that nothing
+/// is configured yet.
+pub(crate) fn mcp_auth_summary_text(
+    text: &ShellText,
+    auth_configured: bool,
+    auth_source: Option<&str>,
+    oauth_enabled: bool,
+) -> String {
+    if auth_configured {
+        return match auth_source {
+            Some("headers") => text.manage_mcp_auth_source_headers.clone(),
+            Some("env") => text.manage_mcp_auth_source_env.clone(),
+            Some("oauth") => text.manage_mcp_auth_source_oauth.clone(),
+            Some(other) => format!("{} ({other})", text.manage_mcp_auth_configured.clone()),
+            None => text.manage_mcp_auth_configured.clone(),
+        };
+    }
+    if oauth_enabled {
+        return text.manage_mcp_auth_oauth_ready.clone();
+    }
+    text.manage_mcp_auth_missing.clone()
+}
+
+/// G-M1: stable i18n keys for the six OAuth statuses (web
+/// `getOAuthStatusLabel`).
+pub(crate) fn mcp_oauth_status_label(
+    text: &ShellText,
+    status: &openbitfun_core::service::mcp::auth::MCPRemoteOAuthStatus,
+) -> String {
+    use openbitfun_core::service::mcp::auth::MCPRemoteOAuthStatus;
+    match status {
+        MCPRemoteOAuthStatus::AwaitingBrowser => text.manage_mcp_oauth_awaiting_browser.clone(),
+        MCPRemoteOAuthStatus::AwaitingCallback => text.manage_mcp_oauth_awaiting_callback.clone(),
+        MCPRemoteOAuthStatus::ExchangingToken => text.manage_mcp_oauth_exchanging_token.clone(),
+        MCPRemoteOAuthStatus::Authorized => text.manage_mcp_oauth_authorized.clone(),
+        MCPRemoteOAuthStatus::Failed => text.manage_mcp_oauth_failed.clone(),
+        MCPRemoteOAuthStatus::Cancelled => text.manage_mcp_oauth_cancelled.clone(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1000,18 +1585,37 @@ pub(crate) async fn persist_agent_draft(
 /// Last management-action failure, shown as a dismissible banner on the
 /// management pages. A global because the settings render closures only see
 /// `cx`.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct ManageNotice(pub Option<String>);
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ManageNotice(pub(crate) Option<ManageNoticeBody>);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ManageNoticeBody {
+    pub(crate) message: String,
+    /// Success receipts render in the foreground color; everything else is an
+    /// error and keeps the danger color.
+    pub(crate) success: bool,
+}
 
 impl Global for ManageNotice {}
 
 impl ManageNotice {
-    pub(crate) fn current(cx: &App) -> Option<String> {
+    pub(crate) fn current(cx: &App) -> Option<ManageNoticeBody> {
         cx.try_global::<Self>().and_then(|notice| notice.0.clone())
     }
 
     pub(crate) fn set(message: Option<String>, cx: &mut App) {
-        cx.set_global(Self(message));
+        cx.set_global(Self(message.map(|message| ManageNoticeBody {
+            message,
+            success: false,
+        })));
+    }
+
+    /// A settled-without-error receipt (e.g. the remote auth dialog's save).
+    pub(crate) fn set_success(message: String, cx: &mut App) {
+        cx.set_global(Self(Some(ManageNoticeBody {
+            message,
+            success: true,
+        })));
     }
 }
 
@@ -1030,6 +1634,8 @@ pub(crate) enum SkillFacet {
     Project,
     /// A built-in catalog group (`group_key` value).
     Group(String),
+    /// G-K4: the user-group management list (not a skill filter itself).
+    GroupManager,
     /// A non-native discovery ecosystem (`source_id` value).
     Source(String),
     /// The skill market placeholder (T3-17): an explicit degrade, not a fake.
@@ -1129,6 +1735,7 @@ pub(crate) fn skill_matches(row: &SkillRow, facet: &SkillFacet) -> bool {
             !row.builtin && !is_native_source(&row.source_id) && &row.source_id == source
         }
         SkillFacet::Market => false,
+        SkillFacet::GroupManager => false,
     }
 }
 
@@ -1270,6 +1877,9 @@ pub(crate) fn install_page_filters(window: &mut Window, cx: &mut Context<ShellWi
         kind: AgentKindFilter::All,
         input: Some(agents_placeholder),
     });
+    cx.set_global(SkillDialogsState::default());
+    cx.set_global(SkillGroupsCatalog::default());
+    cx.set_global(SkillGroupsDialogState::default());
     cx.subscribe(
         &skills_input,
         |_: &mut ShellWindow, input, event: &InputEvent, cx| {
@@ -1296,7 +1906,11 @@ pub(crate) fn install_page_filters(window: &mut Window, cx: &mut Context<ShellWi
 
 /// The skills page's filter row (G-K5): the search box and the shadowed-row
 /// toggle, above the list the way the web toolbar sits.
-fn skills_filter_row(text: &ShellText, cx: &App) -> gpui_kit::AnyElement {
+fn skills_filter_row(
+    text: &ShellText,
+    view: WeakEntity<ShellWindow>,
+    cx: &App,
+) -> gpui_kit::AnyElement {
     let state = cx.try_global::<SkillsFilterState>();
     let input = state.and_then(|state| state.input.clone());
     let hide_shadowed = state.map(|state| state.hide_shadowed).unwrap_or(false);
@@ -1319,6 +1933,16 @@ fn skills_filter_row(text: &ShellText, cx: &App) -> gpui_kit::AnyElement {
                 let checked = *checked;
                 cx.update_global::<SkillsFilterState, _>(|state, _| state.hide_shadowed = checked);
                 cx.refresh_windows();
+            }),
+    );
+    let add_view = view;
+    row = row.child(div().flex_1()).child(
+        Button::new("skills-add")
+            .label(text.manage_skill_add.clone())
+            .small()
+            .with_variant(ButtonVariant::Secondary)
+            .on_click(move |_, window, cx| {
+                open_skill_dialog(add_view.clone(), SkillDialog::Add, window, cx);
             }),
     );
     row.into_any_element()
@@ -1450,10 +2074,10 @@ fn agents_kind_menu(text: &ShellText, selected: AgentKindFilter) -> gpui_kit::An
 /// The skills page: a facet sidebar (library / groups / sources / explore)
 /// beside the filtered skill list. The market entry renders an explicit
 /// degrade card (T3-17) instead of a dead-end.
-pub(crate) fn skills_group(text: &ShellText) -> SettingGroup {
+pub(crate) fn skills_group(text: &ShellText, view: WeakEntity<ShellWindow>) -> SettingGroup {
     let page_text = text.clone();
     let page_field = SettingItem::render(move |_options, _window, cx| {
-        skills_page(&page_text, cx).into_any_element()
+        skills_page(&page_text, view.clone(), cx).into_any_element()
     });
 
     SettingGroup::new().items(vec![page_field])
@@ -1524,7 +2148,7 @@ fn facet_group_title(label: String, cx: &App) -> gpui_kit::Div {
         .child(label)
 }
 
-fn skills_page(text: &ShellText, cx: &mut App) -> gpui_kit::Div {
+fn skills_page(text: &ShellText, view: WeakEntity<ShellWindow>, cx: &mut App) -> gpui_kit::Div {
     if let Some(message) = ManageNotice::current(cx) {
         let mut column = div().w_full();
         column = column.child(notice_banner(text, &message, cx));
@@ -1586,19 +2210,28 @@ fn skills_page(text: &ShellText, cx: &mut App) -> gpui_kit::Div {
             cx,
         ));
     }
-    if !facets.groups.is_empty() {
-        rail = rail.child(facet_group_title(text.skills_facet_groups.clone(), cx));
-        for (group, count) in &facets.groups {
-            let candidate = SkillFacet::Group(group.clone());
-            rail = rail.child(facet_row(
-                format!("skills-facet-group-{}", group),
-                group.clone(),
-                Some(*count),
-                facet == candidate,
-                set(candidate),
-                cx,
-            ));
-        }
+    // G-K4: the group manager sits above the derived built-in buckets; the
+    // section is always present now that user groups are editable.
+    let user_group_count = SkillGroupsCatalog::current(cx).groups.len();
+    rail = rail.child(facet_group_title(text.skills_facet_groups.clone(), cx));
+    rail = rail.child(facet_row(
+        "skills-facet-group-manager".to_string(),
+        text.skill_groups_manage.clone(),
+        Some(user_group_count),
+        facet == SkillFacet::GroupManager,
+        set(SkillFacet::GroupManager),
+        cx,
+    ));
+    for (group, count) in &facets.groups {
+        let candidate = SkillFacet::Group(group.clone());
+        rail = rail.child(facet_row(
+            format!("skills-facet-group-{}", group),
+            group.clone(),
+            Some(*count),
+            facet == candidate,
+            set(candidate),
+            cx,
+        ));
     }
     if !facets.sources.is_empty() {
         rail = rail.child(facet_group_title(text.skills_facet_sources.clone(), cx));
@@ -1640,9 +2273,19 @@ fn skills_page(text: &ShellText, cx: &mut App) -> gpui_kit::Div {
             .child(content);
     }
 
+    if facet == SkillFacet::GroupManager {
+        return div()
+            .flex()
+            .gap_3()
+            .w_full()
+            .min_w_0()
+            .child(rail)
+            .child(skill_groups_page(text, view, cx));
+    }
+
     // G-K5: the local filter row sits above the list, so the facet rail and
     // the search box narrow the same rows.
-    content = content.child(skills_filter_row(text, cx));
+    content = content.child(skills_filter_row(text, view.clone(), cx));
     let filter = cx
         .try_global::<SkillsFilterState>()
         .map(|state| (state.query.clone(), state.hide_shadowed))
@@ -1674,7 +2317,7 @@ fn skills_page(text: &ShellText, cx: &mut App) -> gpui_kit::Div {
     }
 
     for skill in rows {
-        content = content.child(render_skill_card(skill, text, cx));
+        content = content.child(render_skill_card(skill, view.clone(), text, cx));
     }
     div()
         .flex()
@@ -1695,12 +2338,18 @@ fn facet_key(facet: &SkillFacet) -> String {
         SkillFacet::Group(group) => format!("group-{}", group),
         SkillFacet::Source(source) => format!("source-{}", source),
         SkillFacet::Market => "market".to_string(),
+        SkillFacet::GroupManager => "group-manager".to_string(),
     }
 }
 
 /// One skill card on the right side: name, level/source/shadowed badges,
 /// description, and the global enablement switch (built-ins stay on).
-fn render_skill_card(row: &SkillRow, text: &ShellText, cx: &App) -> gpui_kit::Div {
+fn render_skill_card(
+    row: &SkillRow,
+    view: WeakEntity<ShellWindow>,
+    text: &ShellText,
+    cx: &App,
+) -> gpui_kit::Div {
     let level_label = if row.builtin {
         text.manage_skill_builtin.clone()
     } else if row.project_level {
@@ -1768,22 +2417,1120 @@ fn render_skill_card(row: &SkillRow, text: &ShellText, cx: &App) -> gpui_kit::Di
                     .child(row.description.clone()),
             )
         });
-    if row.builtin {
-        card
-    } else {
+    let mut footer = div().flex().flex_row().items_center().justify_end().gap_2();
+    let detail_view = view;
+    let detail_key = row.key.clone();
+    footer = footer.child(
+        Button::new(SharedString::from(format!("skill-detail-{}", row.key)))
+            .label(text.manage_skill_detail.clone())
+            .small()
+            .with_variant(ButtonVariant::Ghost)
+            .on_click(move |_, window, cx| {
+                open_skill_dialog(
+                    detail_view.clone(),
+                    SkillDialog::Detail(detail_key.clone()),
+                    window,
+                    cx,
+                );
+            }),
+    );
+    if !row.builtin {
         let key = row.key.clone();
         let user_level = !row.project_level;
-        card.child(
-            div().flex().justify_end().child(
-                Switch::new(SharedString::from(format!("skill-toggle-{}", row.key)))
-                    .checked(!row.disabled)
-                    .on_click(move |checked: &bool, _window, _cx| {
-                        set_skill_disabled(key.clone(), user_level, !*checked);
-                    })
-                    .flex_shrink_0(),
-            ),
-        )
+        footer = footer.child(
+            Switch::new(SharedString::from(format!("skill-toggle-{}", row.key)))
+                .checked(!row.disabled)
+                .on_click(move |checked: &bool, _window, _cx| {
+                    set_skill_disabled(key.clone(), user_level, !*checked);
+                })
+                .flex_shrink_0(),
+        );
     }
+    card.child(footer)
+}
+
+/// G-K2/G-K3: opens (or retargets) the one skill dialog. Detail and delete
+/// share the same modal so the Delete button flips the surface instead of
+/// stacking a second dialog.
+pub(crate) fn open_skill_dialog(
+    view: WeakEntity<ShellWindow>,
+    dialog: SkillDialog,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(shell) = view.upgrade() else {
+        return;
+    };
+    let path_input = shell.read(cx).skill_path_input.clone();
+    if matches!(dialog, SkillDialog::Add) {
+        path_input.update(cx, |input, cx| input.set_value(String::new(), window, cx));
+    }
+    let already_open =
+        window.has_active_dialog(cx) && SkillDialogsState::current(cx).dialog.is_some();
+    let opening_add = matches!(dialog, SkillDialog::Add);
+    SkillDialogsState::mutate(cx, |state| {
+        state.dialog = Some(dialog);
+        state.mutation_error = None;
+        if opening_add {
+            state.add_project = false;
+            state.validation = None;
+            state.busy = false;
+        }
+    });
+    if already_open {
+        return;
+    }
+
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let text = i18n::current(cx);
+        let state = SkillDialogsState::current(cx);
+        let Some(kind) = state.dialog.clone() else {
+            return dialog;
+        };
+        let catalog = SkillCatalog::try_current(cx).unwrap_or_default();
+        let row = match &kind {
+            SkillDialog::Detail(key) | SkillDialog::Delete(key) => {
+                catalog.skills.iter().find(|row| &row.key == key)
+            }
+            SkillDialog::Add => None,
+        };
+        let muted = cx.theme().muted_foreground;
+        let danger = cx.theme().danger;
+
+        let (title, content, footer) = match &kind {
+            SkillDialog::Add => {
+                let mut content = div()
+                    .w(px(520.))
+                    .v_flex()
+                    .gap_3()
+                    .child(skill_level_row(state.add_project, &text));
+                let validate_input = path_input.clone();
+                let add_input = path_input.clone();
+                let add_project = state.add_project;
+                content = content
+                    .child(dialog_field(
+                        &text.manage_skill_path,
+                        muted,
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .w_full()
+                            .child(div().flex_1().child(Input::new(&path_input)))
+                            .child(
+                                Button::new("skill-validate")
+                                    .label(text.manage_skill_validate.clone())
+                                    .small()
+                                    .with_variant(ButtonVariant::Secondary)
+                                    .disabled(state.busy)
+                                    .on_click(move |_, _window, cx| {
+                                        let path =
+                                            validate_input.read(cx).value().trim().to_string();
+                                        SkillDialogsState::mutate(cx, |state| {
+                                            state.busy = true;
+                                            state.validation = None;
+                                            state.mutation_error = None;
+                                        });
+                                        match crate::runtime::runtime_handle() {
+                                            Some(handle) => handle.validate_skill_path(path),
+                                            None => {
+                                                let message = i18n::current(cx)
+                                                    .manage_skill_runtime_unavailable
+                                                    .clone();
+                                                SkillDialogsState::mutate(cx, |state| {
+                                                    state.busy = false;
+                                                    state.mutation_error = Some(message);
+                                                });
+                                            }
+                                        }
+                                    }),
+                            ),
+                    ))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(text.manage_skill_path_hint.clone()),
+                    );
+                if let Some(validation) = &state.validation {
+                    content = content.child(skill_validation_line(validation, &text, cx));
+                }
+                if let Some(error) = &state.mutation_error {
+                    content =
+                        content.child(div().text_xs().text_color(danger).child(error.clone()));
+                }
+                let can_add =
+                    !state.busy && matches!(&state.validation, Some(Ok(row)) if row.valid);
+                let footer = div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("skill-add-cancel")
+                            .label(text.session_action_cancel.clone())
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(move |_, window, cx| {
+                                SkillDialogsState::mutate(cx, |state| state.dialog = None);
+                                window.close_dialog(cx);
+                            }),
+                    )
+                    .child(
+                        Button::new("skill-add-confirm")
+                            .label(text.manage_skill_add_action.clone())
+                            .with_variant(ButtonVariant::Primary)
+                            .disabled(!can_add)
+                            .on_click(move |_, _window, cx| {
+                                let path = add_input.read(cx).value().trim().to_string();
+                                SkillDialogsState::mutate(cx, |state| {
+                                    state.busy = true;
+                                    state.mutation_error = None;
+                                });
+                                match crate::runtime::runtime_handle() {
+                                    Some(handle) => handle.add_skill(path, add_project),
+                                    None => {
+                                        let message = i18n::current(cx)
+                                            .manage_skill_runtime_unavailable
+                                            .clone();
+                                        SkillDialogsState::mutate(cx, |state| {
+                                            state.busy = false;
+                                            state.mutation_error = Some(message);
+                                        });
+                                    }
+                                }
+                            }),
+                    );
+                (text.manage_skill_dialog_add_title.clone(), content, footer)
+            }
+            SkillDialog::Detail(key) => {
+                let mut content = div().w(px(520.)).v_flex().gap_3();
+                let mut footer = div().flex().flex_row().justify_end().gap_2();
+                if let Some(row) = row {
+                    let level = if row.builtin {
+                        text.manage_skill_builtin.clone()
+                    } else if row.project_level {
+                        text.manage_skill_project.clone()
+                    } else {
+                        text.manage_skill_user.clone()
+                    };
+                    let mut badges = div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .child(badge(level, cx));
+                    if !is_native_source(&row.source_id) {
+                        badges = badges.child(badge(
+                            if row.source_label.trim().is_empty() {
+                                row.source_id.clone()
+                            } else {
+                                row.source_label.clone()
+                            },
+                            cx,
+                        ));
+                    }
+                    if row.shadowed {
+                        badges = badges.child(
+                            div()
+                                .text_xs()
+                                .text_color(danger)
+                                .child(text.manage_skill_shadowed.clone()),
+                        );
+                    }
+                    content = content
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().foreground)
+                                .child(row.name.clone()),
+                        )
+                        .child(badges)
+                        .child(div().text_xs().text_color(muted).whitespace_normal().child(
+                            if row.description.is_empty() {
+                                text.manage_skill_no_description.clone()
+                            } else {
+                                row.description.clone()
+                            },
+                        ))
+                        .child(dialog_field(
+                            &text.manage_skill_source,
+                            muted,
+                            div().text_sm().text_color(cx.theme().foreground).child(
+                                if row.source_label.trim().is_empty() {
+                                    if row.source_id.trim().is_empty() {
+                                        text.manage_skill_source_native.clone()
+                                    } else {
+                                        row.source_id.clone()
+                                    }
+                                } else {
+                                    row.source_label.clone()
+                                },
+                            ),
+                        ));
+                    let copy_path = row.path.clone();
+                    let open_path = row.path.clone();
+                    content = content.child(dialog_field(
+                        &text.manage_skill_path,
+                        muted,
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap_2()
+                            .w_full()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .child(row.path.clone()),
+                            )
+                            .child(
+                                Button::new("skill-path-copy")
+                                    .label(text.sessions_copy_path.clone())
+                                    .small()
+                                    .with_variant(ButtonVariant::Ghost)
+                                    .on_click(move |_, _window, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            copy_path.clone(),
+                                        ));
+                                    }),
+                            )
+                            .child(
+                                Button::new("skill-path-open")
+                                    .label(text.sessions_reveal.clone())
+                                    .small()
+                                    .with_variant(ButtonVariant::Ghost)
+                                    .on_click(move |_, _window, _cx| {
+                                        crate::markdown::open_external(&open_path);
+                                    }),
+                            ),
+                    ));
+                    if row.deletable {
+                        let delete_key = row.key.clone();
+                        footer = footer.child(
+                            Button::new("skill-detail-delete")
+                                .label(text.manage_skill_delete_action.clone())
+                                .with_variant(ButtonVariant::Danger)
+                                .on_click(move |_, _window, cx| {
+                                    let key = delete_key.clone();
+                                    SkillDialogsState::mutate(cx, |state| {
+                                        state.dialog = Some(SkillDialog::Delete(key));
+                                        state.mutation_error = None;
+                                    });
+                                }),
+                        );
+                    }
+                } else {
+                    content = content.child(
+                        div()
+                            .text_sm()
+                            .text_color(danger)
+                            .child(text.manage_skill_not_found.clone()),
+                    );
+                }
+                footer = footer.child(
+                    Button::new("skill-detail-close")
+                        .label(text.manage_skill_close.clone())
+                        .with_variant(ButtonVariant::Ghost)
+                        .on_click(move |_, window, cx| {
+                            SkillDialogsState::mutate(cx, |state| state.dialog = None);
+                            window.close_dialog(cx);
+                        }),
+                );
+                let _ = key;
+                (
+                    text.manage_skill_dialog_detail_title.clone(),
+                    content,
+                    footer,
+                )
+            }
+            SkillDialog::Delete(key) => {
+                let mut content = div().w(px(420.)).v_flex().gap_2();
+                let mut footer = div().flex().flex_row().justify_end().gap_2();
+                if let Some(row) = row {
+                    content = content.child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().foreground)
+                            .whitespace_normal()
+                            .child(i18n::skill_delete_warning(&row.name, cx)),
+                    );
+                } else {
+                    content = content.child(
+                        div()
+                            .text_sm()
+                            .text_color(danger)
+                            .child(text.manage_skill_not_found.clone()),
+                    );
+                }
+                if let Some(error) = &state.mutation_error {
+                    content =
+                        content.child(div().text_xs().text_color(danger).child(error.clone()));
+                }
+                let cancel_key = key.clone();
+                footer = footer.child(
+                    Button::new("skill-delete-cancel")
+                        .label(text.session_action_cancel.clone())
+                        .with_variant(ButtonVariant::Ghost)
+                        .on_click(move |_, _window, cx| {
+                            let key = cancel_key.clone();
+                            SkillDialogsState::mutate(cx, |state| {
+                                state.dialog = Some(SkillDialog::Detail(key));
+                                state.mutation_error = None;
+                            });
+                        }),
+                );
+                let delete_key = key.clone();
+                if row.is_some() {
+                    footer = footer.child(
+                        Button::new("skill-delete-confirm")
+                            .label(text.manage_skill_delete_action.clone())
+                            .with_variant(ButtonVariant::Danger)
+                            .disabled(state.busy)
+                            .on_click(move |_, _window, cx| {
+                                let key = delete_key.clone();
+                                SkillDialogsState::mutate(cx, |state| {
+                                    state.busy = true;
+                                    state.mutation_error = None;
+                                });
+                                match crate::runtime::runtime_handle() {
+                                    Some(handle) => handle.delete_skill(key),
+                                    None => {
+                                        let message = i18n::current(cx)
+                                            .manage_skill_runtime_unavailable
+                                            .clone();
+                                        SkillDialogsState::mutate(cx, |state| {
+                                            state.busy = false;
+                                            state.mutation_error = Some(message);
+                                        });
+                                    }
+                                }
+                            }),
+                    );
+                }
+                (
+                    text.manage_skill_dialog_delete_title.clone(),
+                    content,
+                    footer,
+                )
+            }
+        };
+        dialog
+            .title(div().child(title))
+            .child(content.debug_selector(|| "skill-dialog".to_string()))
+            .footer(footer)
+    });
+}
+
+fn skill_level_row(active_project: bool, text: &ShellText) -> gpui_kit::AnyElement {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .child(skill_level_button(
+            "skill-level-user",
+            text.manage_skill_user.clone(),
+            !active_project,
+            false,
+        ))
+        .child(skill_level_button(
+            "skill-level-project",
+            text.manage_skill_project.clone(),
+            active_project,
+            true,
+        ))
+        .into_any_element()
+}
+
+fn skill_level_button(
+    id: &'static str,
+    label: String,
+    active: bool,
+    project: bool,
+) -> gpui_kit::AnyElement {
+    Button::new(id)
+        .label(label)
+        .small()
+        .with_variant(if active {
+            ButtonVariant::Primary
+        } else {
+            ButtonVariant::Ghost
+        })
+        .on_click(move |_, _window, cx| {
+            SkillDialogsState::mutate(cx, |state| {
+                state.add_project = project;
+                state.validation = None;
+                state.mutation_error = None;
+            });
+        })
+        .into_any_element()
+}
+
+fn skill_validation_line(
+    result: &Result<SkillValidationRow, String>,
+    text: &ShellText,
+    cx: &App,
+) -> gpui_kit::AnyElement {
+    match result {
+        Ok(row) if row.valid => {
+            let mut column = div()
+                .v_flex()
+                .gap_1()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().success)
+                        .child(text.manage_skill_valid.clone()),
+                )
+                .when_some(row.name.clone(), |column, name| {
+                    column.child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().foreground)
+                            .child(name),
+                    )
+                });
+            if let Some(description) = row.description.clone() {
+                column = column.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .whitespace_normal()
+                        .child(description),
+                );
+            }
+            column.into_any_element()
+        }
+        Ok(row) => div()
+            .text_xs()
+            .text_color(cx.theme().danger)
+            .whitespace_normal()
+            .child(
+                row.error
+                    .as_ref()
+                    .map(|error| i18n::skill_validation_error(error, cx))
+                    .unwrap_or_else(|| text.manage_skill_invalid.clone()),
+            )
+            .into_any_element(),
+        Err(detail) => div()
+            .text_xs()
+            .text_color(cx.theme().danger)
+            .whitespace_normal()
+            .child(i18n::skill_validation_failed(detail, cx))
+            .into_any_element(),
+    }
+}
+
+/// G-K4: the group manager facet. User groups are editable and reorderable;
+/// built-in `group_key` buckets are read-only and can only be copied into a
+/// user group. Mirrors `SkillGroupsView.tsx`, minus the per-row overflow menu
+/// (the shell renders the actions inline).
+fn skill_groups_page(
+    text: &ShellText,
+    view: WeakEntity<ShellWindow>,
+    cx: &mut App,
+) -> gpui_kit::Div {
+    let catalog = SkillGroupsCatalog::current(cx);
+    let skills = SkillCatalog::try_current(cx).unwrap_or_default();
+    let muted = cx.theme().muted_foreground;
+    let danger = cx.theme().danger;
+    let mut content = div().v_flex().gap_2().flex_1().min_w_0();
+
+    let new_view = view.clone();
+    content = content.child(
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .w_full()
+            .child(
+                div()
+                    .v_flex()
+                    .gap_0p5()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().foreground)
+                            .child(text.skill_groups_title.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .whitespace_normal()
+                            .child(text.skill_groups_subtitle.clone()),
+                    ),
+            )
+            .child(
+                Button::new("skill-group-new")
+                    .label(text.skill_group_new.clone())
+                    .small()
+                    .with_variant(ButtonVariant::Primary)
+                    .on_click(move |_, window, cx| {
+                        open_group_dialog(
+                            new_view.clone(),
+                            GroupDialog::Edit { original: None },
+                            None,
+                            window,
+                            cx,
+                        );
+                    }),
+            ),
+    );
+    if let Some(error) = &catalog.error {
+        content = content.child(
+            div()
+                .text_xs()
+                .text_color(danger)
+                .whitespace_normal()
+                .child(i18n::group_operation_failed(error, cx)),
+        );
+    }
+    if !catalog.loaded {
+        content = content.child(
+            div()
+                .text_sm()
+                .text_color(muted)
+                .child(text.skill_groups_loading.clone()),
+        );
+        return content;
+    }
+
+    content = content.child(group_section_title(text.skill_groups_mine.clone(), cx));
+    if catalog.groups.is_empty() {
+        content = content.child(
+            div()
+                .text_xs()
+                .text_color(muted)
+                .child(text.skill_groups_empty.clone()),
+        );
+    } else {
+        let count = catalog.groups.len();
+        for (index, group) in catalog.groups.iter().enumerate() {
+            let members: Vec<String> = group
+                .skill_keys
+                .iter()
+                .map(|key| {
+                    skills
+                        .skills
+                        .iter()
+                        .find(|row| &row.key == key)
+                        .map(|row| row.name.clone())
+                        .unwrap_or_else(|| key.clone())
+                })
+                .collect();
+            let unavailable = group
+                .skill_keys
+                .iter()
+                .filter(|key| !skills.skills.iter().any(|row| &row.key == *key))
+                .count();
+            content = content.child(render_group_row(
+                GroupRowModel {
+                    id: group.id.clone(),
+                    name: group.name.clone(),
+                    keys: group.skill_keys.clone(),
+                    members,
+                    unavailable,
+                    original: Some(group.clone()),
+                },
+                index == 0,
+                index + 1 == count,
+                view.clone(),
+                text,
+                cx,
+            ));
+        }
+    }
+
+    let builtin = builtin_group_members(&skills.skills);
+    if !builtin.is_empty() {
+        content = content.child(group_section_title(text.skill_groups_builtin.clone(), cx));
+        for (name, members) in builtin {
+            let keys: Vec<String> = skills
+                .skills
+                .iter()
+                .filter(|row| row.builtin && row.group_key.as_deref() == Some(name.as_str()))
+                .map(|row| row.key.clone())
+                .collect();
+            content = content.child(render_group_row(
+                GroupRowModel {
+                    id: format!("builtin:{name}"),
+                    name,
+                    keys,
+                    members,
+                    unavailable: 0,
+                    original: None,
+                },
+                true,
+                true,
+                view.clone(),
+                text,
+                cx,
+            ));
+        }
+    }
+    content
+}
+
+struct GroupRowModel {
+    id: String,
+    name: String,
+    keys: Vec<String>,
+    members: Vec<String>,
+    unavailable: usize,
+    /// `Some` = user group (edit/move/delete); `None` = built-in (copy only).
+    original: Option<openbitfun_core::service::config::UserSkillGroup>,
+}
+
+fn group_section_title(label: String, cx: &App) -> gpui_kit::Div {
+    div()
+        .text_xs()
+        .text_color(cx.theme().muted_foreground)
+        .pt_1()
+        .child(label)
+}
+
+fn render_group_row(
+    model: GroupRowModel,
+    first: bool,
+    last: bool,
+    view: WeakEntity<ShellWindow>,
+    text: &ShellText,
+    cx: &App,
+) -> gpui_kit::Div {
+    let busy = SkillGroupsCatalog::current(cx).busy;
+    let muted = cx.theme().muted_foreground;
+    let preview = if !model.members.is_empty() {
+        model.members.join(" · ")
+    } else if model.keys.is_empty() {
+        text.skill_groups_empty_group.clone()
+    } else {
+        text.skill_groups_unresolved.clone()
+    };
+    let mut actions = div().flex().flex_row().items_center().gap_1().flex_wrap();
+    if let Some(original) = model.original.clone() {
+        let edit_view = view.clone();
+        let edit_group = original.clone();
+        actions = actions.child(
+            Button::new(SharedString::from(format!("skill-group-edit-{}", model.id)))
+                .label(i18n::shared_term("tools.edit", cx))
+                .small()
+                .with_variant(ButtonVariant::Ghost)
+                .disabled(busy)
+                .on_click(move |_, window, cx| {
+                    open_group_dialog(
+                        edit_view.clone(),
+                        GroupDialog::Edit {
+                            original: Some(edit_group.clone()),
+                        },
+                        None,
+                        window,
+                        cx,
+                    );
+                }),
+        );
+        let up_id = model.id.clone();
+        actions = actions.child(
+            Button::new(SharedString::from(format!("skill-group-up-{}", model.id)))
+                .label(text.skill_group_up.clone())
+                .small()
+                .with_variant(ButtonVariant::Ghost)
+                .disabled(busy || first)
+                .on_click(move |_, _window, cx| {
+                    save_group_list(cx, |groups| apply_group_move(groups, &up_id, -1));
+                }),
+        );
+        let down_id = model.id.clone();
+        actions = actions.child(
+            Button::new(SharedString::from(format!("skill-group-down-{}", model.id)))
+                .label(text.skill_group_down.clone())
+                .small()
+                .with_variant(ButtonVariant::Ghost)
+                .disabled(busy || last)
+                .on_click(move |_, _window, cx| {
+                    save_group_list(cx, |groups| apply_group_move(groups, &down_id, 1));
+                }),
+        );
+        let delete_view = view.clone();
+        let delete_group = original;
+        actions = actions.child(
+            Button::new(SharedString::from(format!(
+                "skill-group-delete-{}",
+                model.id
+            )))
+            .label(text.skill_group_delete.clone())
+            .small()
+            .with_variant(ButtonVariant::Danger)
+            .disabled(busy)
+            .on_click(move |_, window, cx| {
+                open_group_dialog(
+                    delete_view.clone(),
+                    GroupDialog::Delete(delete_group.clone()),
+                    None,
+                    window,
+                    cx,
+                );
+            }),
+        );
+    }
+    let copy_view = view.clone();
+    let copy_base = model.name.clone();
+    let copy_keys = model.keys.clone();
+    actions = actions.child(
+        Button::new(SharedString::from(format!("skill-group-copy-{}", model.id)))
+            .label(text.skill_group_copy.clone())
+            .small()
+            .with_variant(ButtonVariant::Ghost)
+            .disabled(busy)
+            .on_click(move |_, window, cx| {
+                let groups = SkillGroupsCatalog::current(cx).groups;
+                let mut name = i18n::group_copy_name(&copy_base, cx);
+                let mut index = 2;
+                while groups
+                    .iter()
+                    .any(|group| group.name.to_lowercase() == name.to_lowercase())
+                {
+                    name = i18n::group_copy_name_numbered(&copy_base, index, cx);
+                    index += 1;
+                }
+                open_group_dialog(
+                    copy_view.clone(),
+                    GroupDialog::Edit { original: None },
+                    Some((name, copy_keys.clone())),
+                    window,
+                    cx,
+                );
+            }),
+    );
+
+    let count = i18n::group_member_count(model.keys.len(), cx);
+    div()
+        .v_flex()
+        .gap_1()
+        .p_2()
+        .rounded(cx.theme().radius)
+        .border_1()
+        .border_color(cx.theme().border)
+        .w_full()
+        .min_w_0()
+        .debug_selector(|| "skill-group-row".to_string())
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .min_w_0()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().foreground)
+                        .min_w_0()
+                        .truncate()
+                        .child(model.name.clone()),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(muted)
+                        .flex_shrink_0()
+                        .child(count),
+                )
+                .when(model.unavailable > 0, |row| {
+                    row.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().danger)
+                            .flex_shrink_0()
+                            .child(i18n::group_unavailable_count(model.unavailable, cx)),
+                    )
+                }),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(muted)
+                .min_w_0()
+                .truncate()
+                .child(preview),
+        )
+        .child(actions)
+}
+
+/// G-K4: runs a group-list mutation against the latest catalog, then persists
+/// through the runtime. Row-level actions (move) use this; dialogs keep their
+/// own busy/error state and save directly.
+fn save_group_list(
+    cx: &mut App,
+    update: impl FnOnce(
+        &[openbitfun_core::service::config::UserSkillGroup],
+    )
+        -> Result<Vec<openbitfun_core::service::config::UserSkillGroup>, GroupEditError>,
+) {
+    let groups = SkillGroupsCatalog::current(cx).groups;
+    match update(&groups) {
+        Ok(next) => {
+            SkillGroupsCatalog::mutate(cx, |state| {
+                state.busy = true;
+                state.error = None;
+            });
+            match crate::runtime::runtime_handle() {
+                Some(handle) => handle.save_skill_groups(next),
+                None => {
+                    let message = i18n::current(cx).manage_skill_runtime_unavailable.clone();
+                    SkillGroupsCatalog::mutate(cx, |state| {
+                        state.busy = false;
+                        state.error = Some(message);
+                    });
+                }
+            }
+        }
+        Err(error) => {
+            let message = i18n::group_edit_error(error, cx);
+            SkillGroupsCatalog::mutate(cx, |state| state.error = Some(message));
+        }
+    }
+}
+
+/// G-K4: opens (or retargets) the single group dialog. `prefill` supplies the
+/// name/member list for a new group created by "copy"; editing an existing
+/// group ignores it in favour of the group snapshot.
+pub(crate) fn open_group_dialog(
+    view: WeakEntity<ShellWindow>,
+    dialog: GroupDialog,
+    prefill: Option<(String, Vec<String>)>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(shell) = view.upgrade() else {
+        return;
+    };
+    let name_input = shell.read(cx).skill_group_name_input.clone();
+    let (name, selected) = match &dialog {
+        GroupDialog::Edit {
+            original: Some(group),
+        } => (group.name.clone(), group.skill_keys.clone()),
+        GroupDialog::Edit { original: None } => prefill.unwrap_or_default(),
+        GroupDialog::Delete(group) => (group.name.clone(), Vec::new()),
+    };
+    name_input.update(cx, |input, cx| input.set_value(name.clone(), window, cx));
+    let already_open =
+        window.has_active_dialog(cx) && SkillGroupsDialogState::current(cx).dialog.is_some();
+    SkillGroupsDialogState::mutate(cx, |state| {
+        state.dialog = Some(dialog);
+        state.selected = selected;
+        state.busy = false;
+        state.error = None;
+    });
+    if already_open {
+        return;
+    }
+
+    window.open_dialog(cx, move |dialog_el, _window, cx| {
+        let text = i18n::current(cx);
+        let state = SkillGroupsDialogState::current(cx);
+        let Some(kind) = state.dialog.clone() else {
+            return dialog_el;
+        };
+        let muted = cx.theme().muted_foreground;
+        let danger = cx.theme().danger;
+        match kind {
+            GroupDialog::Edit { original } => {
+                let mut content = div().w(px(520.)).v_flex().gap_3();
+                content = content.child(dialog_field(
+                    &text.skill_group_name_label,
+                    muted,
+                    div().w_full().child(Input::new(&name_input)),
+                ));
+                content = content.child(
+                    div()
+                        .text_xs()
+                        .text_color(muted)
+                        .child(i18n::group_member_count(state.selected.len(), cx)),
+                );
+                let skills = SkillCatalog::try_current(cx).unwrap_or_default();
+                let mut rows: Vec<&SkillRow> = skills.skills.iter().collect();
+                rows.sort_by_key(|row| row.name.to_lowercase());
+                let mut list = div()
+                    .v_flex()
+                    .gap_1()
+                    .max_h(px(320.))
+                    .overflow_y_scrollbar()
+                    .w_full();
+                for row in rows {
+                    let key = row.key.clone();
+                    let checked = state.selected.contains(&key);
+                    list = list.child(
+                        Checkbox::new(SharedString::from(format!(
+                            "skill-group-member-{}",
+                            row.key
+                        )))
+                        .label(row.name.clone())
+                        .checked(checked)
+                        .on_click(move |checked: &bool, _window, cx| {
+                            let key = key.clone();
+                            let checked = *checked;
+                            SkillGroupsDialogState::mutate(cx, |state| {
+                                if checked {
+                                    if !state.selected.contains(&key) {
+                                        state.selected.push(key);
+                                    }
+                                } else {
+                                    state.selected.retain(|existing| existing != &key);
+                                }
+                            });
+                        }),
+                    );
+                }
+                content = content.child(list);
+                if let Some(error) = &state.error {
+                    content =
+                        content.child(div().text_xs().text_color(danger).child(error.clone()));
+                }
+                let cancel = Button::new("skill-group-cancel")
+                    .label(text.session_action_cancel.clone())
+                    .with_variant(ButtonVariant::Ghost)
+                    .on_click(move |_, window, cx| {
+                        SkillGroupsDialogState::mutate(cx, |state| state.dialog = None);
+                        window.close_dialog(cx);
+                    });
+                let save_input = name_input.clone();
+                let save_original = original.clone();
+                let save = Button::new("skill-group-save")
+                    .label(text.skill_group_save.clone())
+                    .with_variant(ButtonVariant::Primary)
+                    .disabled(state.busy)
+                    .on_click(move |_, _window, cx| {
+                        let name = save_input.read(cx).value().trim().to_string();
+                        let selected = SkillGroupsDialogState::current(cx).selected;
+                        let id = save_original
+                            .as_ref()
+                            .map(|group| group.id.clone())
+                            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                        let edited = openbitfun_core::service::config::UserSkillGroup {
+                            id,
+                            name,
+                            skill_keys: selected,
+                        };
+                        let groups = SkillGroupsCatalog::current(cx).groups;
+                        match apply_group_edit(&groups, save_original.as_ref(), &edited) {
+                            Ok(next) => {
+                                SkillGroupsDialogState::mutate(cx, |state| {
+                                    state.busy = true;
+                                    state.error = None;
+                                });
+                                match crate::runtime::runtime_handle() {
+                                    Some(handle) => handle.save_skill_groups(next),
+                                    None => {
+                                        let message = i18n::current(cx)
+                                            .manage_skill_runtime_unavailable
+                                            .clone();
+                                        SkillGroupsDialogState::mutate(cx, |state| {
+                                            state.busy = false;
+                                            state.error = Some(message);
+                                        });
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                let message = i18n::group_edit_error(error, cx);
+                                SkillGroupsDialogState::mutate(cx, |state| {
+                                    state.error = Some(message);
+                                });
+                            }
+                        }
+                    });
+                dialog_el
+                    .title(div().child(text.skill_group_dialog_edit_title.clone()))
+                    .child(content.debug_selector(|| "skill-group-dialog".to_string()))
+                    .footer(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .justify_end()
+                            .gap_2()
+                            .child(cancel)
+                            .child(save),
+                    )
+            }
+            GroupDialog::Delete(target) => {
+                let mut content = div().w(px(420.)).v_flex().gap_2();
+                content = content.child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().foreground)
+                        .whitespace_normal()
+                        .child(i18n::group_delete_warning(&target.name, cx)),
+                );
+                if let Some(error) = &state.error {
+                    content =
+                        content.child(div().text_xs().text_color(danger).child(error.clone()));
+                }
+                let cancel = Button::new("skill-group-delete-cancel")
+                    .label(text.session_action_cancel.clone())
+                    .with_variant(ButtonVariant::Ghost)
+                    .on_click(move |_, window, cx| {
+                        SkillGroupsDialogState::mutate(cx, |state| state.dialog = None);
+                        window.close_dialog(cx);
+                    });
+                let delete_target = target.clone();
+                let delete = Button::new("skill-group-delete-confirm")
+                    .label(text.skill_group_delete.clone())
+                    .with_variant(ButtonVariant::Danger)
+                    .disabled(state.busy)
+                    .on_click(move |_, _window, cx| {
+                        let groups = SkillGroupsCatalog::current(cx).groups;
+                        match apply_group_delete(&groups, &delete_target) {
+                            Ok(next) => {
+                                SkillGroupsDialogState::mutate(cx, |state| {
+                                    state.busy = true;
+                                    state.error = None;
+                                });
+                                match crate::runtime::runtime_handle() {
+                                    Some(handle) => handle.save_skill_groups(next),
+                                    None => {
+                                        let message = i18n::current(cx)
+                                            .manage_skill_runtime_unavailable
+                                            .clone();
+                                        SkillGroupsDialogState::mutate(cx, |state| {
+                                            state.busy = false;
+                                            state.error = Some(message);
+                                        });
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                let message = i18n::group_edit_error(error, cx);
+                                SkillGroupsDialogState::mutate(cx, |state| {
+                                    state.error = Some(message);
+                                });
+                            }
+                        }
+                    });
+                dialog_el
+                    .title(div().child(text.skill_group_dialog_delete_title.clone()))
+                    .child(content.debug_selector(|| "skill-group-dialog".to_string()))
+                    .footer(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .justify_end()
+                            .gap_2()
+                            .child(cancel)
+                            .child(delete),
+                    )
+            }
+        }
+    });
 }
 
 fn badge(label: String, cx: &App) -> gpui_kit::Div {
@@ -2229,6 +3976,24 @@ fn agent_cards(
                     .child(text.manage_agent_review.clone()),
             );
         }
+        let detail_view = view.clone();
+        let detail_id = card.id.clone();
+        let detail_mode_kind = kind == AgentListKind::Modes;
+        badges = badges.child(
+            Button::new(SharedString::from(format!("agent-detail-{}", card.id)))
+                .label(text.agent_detail_open.clone())
+                .small()
+                .with_variant(ButtonVariant::Ghost)
+                .on_click(move |_, window, cx| {
+                    open_agent_detail(
+                        detail_view.clone(),
+                        detail_id.clone(),
+                        detail_mode_kind,
+                        window,
+                        cx,
+                    );
+                }),
+        );
         if card.skills_manageable {
             let mode_id = card.skills_mode_id.clone();
             let mode_name = card.name.clone();
@@ -2961,6 +4726,233 @@ fn preview_mcp_import(view: &WeakEntity<ShellWindow>, window: &mut Window, cx: &
 }
 
 /// The MCP page: one row per configured server with lifecycle, enablement,/// browse, and delete actions, plus the raw JSON config editor.
+/// G-M3: one muted hint line inside the auth dialog (the web dialog renders
+/// the same stack of `json-hint` paragraphs).
+fn mcp_auth_hint(text: String, muted: gpui_kit::Hsla) -> gpui_kit::AnyElement {
+    div()
+        .text_xs()
+        .text_color(muted)
+        .whitespace_normal()
+        .child(text)
+        .into_any_element()
+}
+
+/// G-M1/G-M3: the remote auth dialog — the OAuth flow section (status,
+/// redirect URI, start/restart/reconnect) plus the Bearer-token section
+/// (web `McpToolsConfig` auth dialog). Closing while a flow is live cancels
+/// it, mirroring the web `handleCloseAuthDialog`.
+pub(crate) fn open_mcp_auth_dialog(
+    view: WeakEntity<ShellWindow>,
+    server_id: &str,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(shell) = view.upgrade() else {
+        return;
+    };
+    let Some(row) = McpCatalog::try_current(cx)
+        .and_then(|catalog| catalog.servers.into_iter().find(|s| s.id == server_id))
+    else {
+        return;
+    };
+    let token_input = shell.read(cx).mcp_auth_token_input.clone();
+    token_input.update(cx, |state, cx| state.set_value(String::new(), window, cx));
+    let already_open =
+        window.has_active_dialog(cx) && McpAuthDialogState::current(cx).open_for(server_id);
+    McpAuthDialogState::mutate(cx, |state| {
+        state.server_id = Some(row.id.clone());
+        state.server_name = row.name.clone();
+        state.server_url = Some(row.target.clone()).filter(|_| row.remote);
+        state.oauth_enabled = row.oauth_enabled;
+        state.auth_configured = row.auth_configured;
+        state.auth_source = row.auth_source.clone();
+        state.session = None;
+        state.starting = false;
+        state.cancelling = false;
+        state.saving = false;
+        state.error = None;
+    });
+    // A flow may already be live from an earlier dialog (the core manager
+    // keeps the session); refresh before first paint instead of showing idle.
+    if let Some(handle) = crate::runtime::runtime_handle() {
+        handle.poll_mcp_remote_oauth(server_id.to_string());
+    }
+    if already_open {
+        return;
+    }
+
+    window.open_dialog(cx, move |dialog_el, _window, cx| {
+        let text = i18n::current(cx);
+        let state = McpAuthDialogState::current(cx);
+        let Some(server_id) = state.server_id.clone() else {
+            return dialog_el;
+        };
+        let muted = cx.theme().muted_foreground;
+        let danger = cx.theme().danger;
+        let mut content = div().w(px(560.)).v_flex().gap_2();
+
+        if state.oauth_enabled {
+            content = content.child(mcp_auth_hint(
+                text.manage_mcp_auth_oauth_hint.clone(),
+                muted,
+            ));
+            let status_label = match &state.session {
+                Some(session) => mcp_oauth_status_label(&text, &session.status),
+                None => text.manage_mcp_oauth_idle.clone(),
+            };
+            content = content.child(mcp_auth_hint(
+                i18n::mcp_auth_status_line(&status_label, cx),
+                muted,
+            ));
+            if let Some(session) = &state.session {
+                if let Some(uri) = &session.redirect_uri {
+                    content =
+                        content.child(mcp_auth_hint(i18n::mcp_auth_redirect_line(uri, cx), muted));
+                }
+                if let Some(message) = &session.message {
+                    if !message.is_empty() {
+                        content = content.child(mcp_auth_hint(message.clone(), muted));
+                    }
+                }
+            }
+            let kind = mcp_oauth_action_kind(
+                state.session.as_ref(),
+                state.auth_configured,
+                state.auth_source.as_deref(),
+            );
+            let label = match kind {
+                McpOAuthActionKind::Start => text.manage_mcp_oauth_start.clone(),
+                McpOAuthActionKind::Restart => text.manage_mcp_oauth_restart.clone(),
+                McpOAuthActionKind::Reconnect => text.manage_mcp_oauth_reconnect.clone(),
+            };
+            let start_id = server_id.clone();
+            content = content.child(
+                Button::new("mcp-auth-oauth-start")
+                    .label(label)
+                    .small()
+                    .with_variant(ButtonVariant::Primary)
+                    .disabled(state.starting || state.cancelling || state.saving)
+                    .on_click(move |_, _window, cx| {
+                        McpAuthDialogState::mutate(cx, |state| {
+                            state.starting = true;
+                            state.error = None;
+                        });
+                        if let Some(handle) = crate::runtime::runtime_handle() {
+                            handle.start_mcp_remote_oauth(start_id.clone());
+                        }
+                    }),
+            );
+        }
+
+        content = content.child(mcp_auth_hint(
+            text.manage_mcp_auth_token_hint.clone(),
+            muted,
+        ));
+        content = content.child(mcp_auth_hint(
+            text.manage_mcp_auth_secret_hint.clone(),
+            muted,
+        ));
+        if let Some(url) = &state.server_url {
+            content = content.child(mcp_auth_hint(
+                i18n::mcp_auth_server_url_line(url, cx),
+                muted,
+            ));
+        }
+        content = content.child(dialog_field(
+            &text.manage_mcp_auth_token_label,
+            muted,
+            div().w_full().child(Input::new(&token_input)),
+        ));
+        if let Some(error) = &state.error {
+            content = content.child(div().text_xs().text_color(danger).child(error.clone()));
+        }
+
+        let flow_active = mcp_oauth_flow_active(state.session.as_ref());
+        let clear_id = server_id.clone();
+        let cancel_id = server_id.clone();
+        let save_id = server_id.clone();
+        let mut buttons = div().flex().gap_2().flex_shrink_0();
+        if state.auth_configured {
+            buttons = buttons.child(
+                Button::new("mcp-auth-clear")
+                    .label(text.manage_mcp_auth_clear.clone())
+                    .small()
+                    .with_variant(ButtonVariant::Ghost)
+                    .disabled(state.saving || state.starting || state.cancelling)
+                    .on_click(move |_, _window, cx| {
+                        McpAuthDialogState::mutate(cx, |state| {
+                            state.saving = true;
+                            state.error = None;
+                        });
+                        if let Some(handle) = crate::runtime::runtime_handle() {
+                            handle.clear_mcp_remote_auth(clear_id.clone());
+                        }
+                    }),
+            );
+        }
+        let cancel = Button::new("mcp-auth-cancel")
+            .label(if flow_active {
+                text.manage_mcp_auth_cancel_flow.clone()
+            } else {
+                text.session_action_cancel.clone()
+            })
+            .small()
+            .with_variant(ButtonVariant::Ghost)
+            .on_click(move |_, window, cx| {
+                if flow_active {
+                    if let Some(handle) = crate::runtime::runtime_handle() {
+                        handle.cancel_mcp_remote_oauth(cancel_id.clone());
+                    }
+                }
+                McpAuthDialogState::mutate(cx, |state| state.server_id = None);
+                window.close_dialog(cx);
+            });
+        let token_value_input = token_input.clone();
+        let save = Button::new("mcp-auth-save")
+            .label(text.manage_mcp_auth_save.clone())
+            .small()
+            .with_variant(ButtonVariant::Primary)
+            .disabled(state.saving || state.starting || state.cancelling)
+            .on_click(move |_, _window, cx| {
+                let value = token_value_input.read(cx).value().trim().to_string();
+                if value.is_empty() {
+                    let message = i18n::current(cx).manage_mcp_auth_required.clone();
+                    McpAuthDialogState::mutate(cx, |state| state.error = Some(message));
+                    return;
+                }
+                McpAuthDialogState::mutate(cx, |state| {
+                    state.saving = true;
+                    state.error = None;
+                });
+                if let Some(handle) = crate::runtime::runtime_handle() {
+                    handle.update_mcp_remote_auth(save_id.clone(), value);
+                }
+            });
+        buttons = buttons.child(cancel);
+        buttons = buttons.child(save);
+
+        let close_id = server_id.clone();
+        dialog_el
+            .w(px(620.))
+            .title(div().child(i18n::mcp_auth_dialog_title(&state.server_name, cx)))
+            .child(content.debug_selector(|| "mcp-auth-dialog".to_string()))
+            .footer(div().flex().flex_row().justify_end().gap_2().child(buttons))
+            // Web `handleCloseAuthDialog`: leaving through the dialog's own
+            // chrome (Esc / close icon, not the explicit buttons above)
+            // cancels a live OAuth flow so the core callback listener is not
+            // held until its timeout.
+            .on_close(move |_, _window, cx| {
+                let state = McpAuthDialogState::current(cx);
+                if state.open_for(&close_id) && mcp_oauth_flow_active(state.session.as_ref()) {
+                    if let Some(handle) = crate::runtime::runtime_handle() {
+                        handle.cancel_mcp_remote_oauth(close_id.clone());
+                    }
+                }
+                McpAuthDialogState::mutate(cx, |state| state.server_id = None);
+            })
+    });
+}
+
 pub(crate) fn mcp_group(text: &ShellText, view: WeakEntity<ShellWindow>) -> SettingGroup {
     let list_view = view.clone();
     let list_text = text.clone();
@@ -2997,8 +4989,13 @@ pub(crate) fn mcp_group(text: &ShellText, view: WeakEntity<ShellWindow>) -> Sett
     });
 
     SettingGroup::new().items(vec![
+        // The server rows (URL + auth summary + up to five actions) overflow
+        // the horizontal item's control slot and get clipped at the card
+        // edge — the list needs the full page width (same fix as the
+        // archived-sessions page).
         SettingItem::new(text.manage_mcp_servers.clone(), servers_field)
-            .description(text.manage_mcp_description.clone()),
+            .description(text.manage_mcp_description.clone())
+            .layout(gpui_kit::Axis::Vertical),
         SettingItem::new(text.manage_mcp_import.clone(), import_field)
             .description(text.manage_mcp_import_hint.clone()),
         SettingItem::new(text.manage_mcp_json_item.clone(), json_field)
@@ -3062,8 +5059,29 @@ fn mcp_server_row(
     if server.builtin {
         facts.push(text.manage_mcp_location_builtin.clone());
     }
+    if server.remote {
+        facts.push(mcp_auth_summary_text(
+            text,
+            server.auth_configured,
+            server.auth_source.as_deref(),
+            server.oauth_enabled,
+        ));
+    }
 
     let mut actions = div().flex().items_center().gap_1().flex_shrink_0();
+    if server.remote {
+        let auth_view = view.clone();
+        let auth_id = server.id.clone();
+        actions = actions.child(
+            Button::new(SharedString::from(format!("mcp-auth-{}", server.id)))
+                .label(text.manage_mcp_auth.clone())
+                .small()
+                .with_variant(ButtonVariant::Ghost)
+                .on_click(move |_, window, cx| {
+                    open_mcp_auth_dialog(auth_view.clone(), &auth_id, window, cx);
+                }),
+        );
+    }
     if !server.state.running() {
         let action_id = server.id.clone();
         actions = actions.child(
@@ -3195,7 +5213,16 @@ fn run_mcp_action(action: McpAction, server_id: String) {
 }
 
 /// Dismissible error banner shared by the three management pages.
-fn notice_banner(text: &ShellText, message: &str, cx: &mut App) -> gpui_kit::AnyElement {
+fn notice_banner(
+    text: &ShellText,
+    notice: &ManageNoticeBody,
+    cx: &mut App,
+) -> gpui_kit::AnyElement {
+    let color = if notice.success {
+        cx.theme().foreground
+    } else {
+        cx.theme().danger
+    };
     div()
         .w_full()
         .flex()
@@ -3205,9 +5232,9 @@ fn notice_banner(text: &ShellText, message: &str, cx: &mut App) -> gpui_kit::Any
         .child(
             div()
                 .text_xs()
-                .text_color(cx.theme().danger)
+                .text_color(color)
                 .truncate()
-                .child(message.to_string()),
+                .child(notice.message.clone()),
         )
         .child(
             Button::new("manage-notice-dismiss")
@@ -3653,6 +5680,614 @@ pub(crate) fn open_agent_delete_confirm(
                     ),
             )
     });
+}
+
+/// G-A4: opens the agent detail dialog. The basic/capability facts come from
+/// the catalog row; tools and SubAgents are loaded once per open and edited in
+/// place (G-A1/G-A2).
+pub(crate) fn open_agent_detail(
+    view: WeakEntity<ShellWindow>,
+    agent_id: String,
+    mode_kind: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if view.upgrade().is_none() {
+        return;
+    }
+    let Some(catalog) = AgentCatalog::try_current(cx) else {
+        return;
+    };
+    let rows = if mode_kind {
+        &catalog.modes
+    } else {
+        &catalog.subagents
+    };
+    let Some(card) = rows.iter().find(|row| row.id == agent_id).cloned() else {
+        return;
+    };
+    let already_open =
+        window.has_active_dialog(cx) && AgentDetailState::current(cx).agent_id.is_some();
+    AgentDetailState::mutate(cx, |state| {
+        state.agent_id = Some(agent_id.clone());
+        state.mode_kind = mode_kind;
+        state.profile_id = card.profile_id.clone();
+        state.tools = None;
+        state.subagents = None;
+        state.pending_tools.clear();
+        state.pending_subagents.clear();
+        state.tools_error = None;
+        state.subagents_error = None;
+        state.busy = true;
+    });
+    match crate::runtime::runtime_handle() {
+        Some(handle) => handle.load_agent_capabilities(card.profile_id.clone(), mode_kind),
+        None => {
+            let message = i18n::current(cx).manage_skill_runtime_unavailable.clone();
+            AgentDetailState::mutate(cx, |state| {
+                state.busy = false;
+                state.tools_error = Some(message.clone());
+                state.subagents_error = Some(message);
+            });
+        }
+    }
+    if already_open {
+        return;
+    }
+
+    window.open_dialog(cx, move |dialog_el, _window, cx| {
+        let text = i18n::current(cx);
+        let state = AgentDetailState::current(cx);
+        let catalog = AgentCatalog::try_current(cx);
+        let card = state.agent_id.as_ref().and_then(|id| {
+            let catalog = catalog.as_ref()?;
+            if state.mode_kind {
+                catalog.modes.iter().find(|row| &row.id == id)
+            } else {
+                catalog.subagents.iter().find(|row| &row.id == id)
+            }
+        });
+        let Some(card) = card.cloned() else {
+            return dialog_el
+                .w(px(620.))
+                .title(div().child(text.agent_detail_open.clone()))
+                .child(
+                    div()
+                        .w(px(420.))
+                        .text_sm()
+                        .text_color(cx.theme().danger)
+                        .child(text.agent_detail_missing.clone()),
+                )
+                .footer(agent_detail_close_footer(text.clone()));
+        };
+        let muted = cx.theme().muted_foreground;
+        let danger = cx.theme().danger;
+        let foreground = cx.theme().foreground;
+        // The Dialog already wraps its children in a vertical scroll area; a
+        // second cap here hides everything below the fold (the SubAgents
+        // section) behind a nested scroll that never receives the wheel.
+        let mut content = div().w(px(560.)).v_flex().gap_3();
+
+        content = content.child(
+            div()
+                .v_flex()
+                .gap_1()
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(foreground)
+                        .whitespace_normal()
+                        .child(card.name.clone()),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(muted)
+                        .whitespace_normal()
+                        .child(card.description.clone()),
+                ),
+        );
+
+        let type_label = if state.mode_kind {
+            text.manage_agents_modes.clone()
+        } else {
+            text.manage_agents_subagents.clone()
+        };
+        let source_label = agent_source_label(card.source, &text);
+        let source_value = match &card.external_provider_label {
+            Some(provider) => i18n::agent_external_provider(&source_label, provider, cx),
+            None => source_label,
+        };
+        let follow_up = if card.supports_follow_up {
+            text.agent_detail_supported.clone()
+        } else {
+            text.agent_detail_unsupported.clone()
+        };
+        content = content.child(
+            div()
+                .v_flex()
+                .gap_1()
+                .child(agent_fact_row(
+                    text.agent_detail_type.clone(),
+                    type_label,
+                    cx,
+                ))
+                .child(agent_fact_row(
+                    text.agent_detail_source.clone(),
+                    source_value,
+                    cx,
+                ))
+                .child(agent_fact_row(
+                    text.agent_detail_follow_up.clone(),
+                    follow_up,
+                    cx,
+                )),
+        );
+
+        let capabilities = agent_capabilities(&card, state.mode_kind);
+        if !capabilities.is_empty() {
+            let mut grid = div().v_flex().gap_1();
+            for capability in capabilities {
+                let mut pips = div().flex().flex_row().items_center().gap_0p5();
+                let color = agent_capability_color(capability.category, cx);
+                for index in 0..5 {
+                    pips = pips.child(div().w(px(12.)).h(px(5.)).rounded_sm().bg(
+                        if index < capability.level {
+                            color
+                        } else {
+                            cx.theme().border
+                        },
+                    ));
+                }
+                grid = grid.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .w_full()
+                        .child(
+                            div()
+                                .w(px(96.))
+                                .text_xs()
+                                .text_color(muted)
+                                .child(i18n::agent_capability_label(capability.category, cx)),
+                        )
+                        .child(pips)
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(muted)
+                                .child(format!("{}/5", capability.level)),
+                        ),
+                );
+            }
+            content = content.child(
+                div()
+                    .v_flex()
+                    .gap_1()
+                    .child(agent_section_title(
+                        text.agent_detail_capabilities.clone(),
+                        cx,
+                    ))
+                    .child(grid),
+            );
+        }
+
+        if state.mode_kind && card.profile_member_ids.len() > 1 {
+            let members = card
+                .profile_member_ids
+                .iter()
+                .map(|id| {
+                    catalog
+                        .as_ref()
+                        .and_then(|catalog| catalog.modes.iter().find(|row| &row.id == id))
+                        .map(|row| row.name.clone())
+                        .unwrap_or_else(|| id.clone())
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let label = card
+                .profile_label
+                .clone()
+                .unwrap_or_else(|| text.agent_detail_shared_default.clone());
+            content = content.child(
+                div()
+                    .v_flex()
+                    .gap_1()
+                    .child(agent_section_title(
+                        text.agent_detail_shared_profile.clone(),
+                        cx,
+                    ))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .whitespace_normal()
+                            .child(i18n::agent_shared_profile_description(&members, cx)),
+                    )
+                    .child(div().text_xs().text_color(foreground).child(label)),
+            );
+        }
+
+        if state.mode_kind {
+            let mut section = div().v_flex().gap_1().child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(agent_section_title(text.agent_detail_tools.clone(), cx))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(i18n::agent_tools_selected(state.pending_tools.len(), cx)),
+                    ),
+            );
+            if let Some(error) = &state.tools_error {
+                section = section.child(div().text_xs().text_color(danger).child(error.clone()));
+            }
+            match &state.tools {
+                None => {
+                    section = section.child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(text.agent_detail_loading.clone()),
+                    );
+                }
+                Some(tools) => {
+                    // No inner scroll: the Dialog body already scrolls, and a
+                    // nested scroll region would trap the wheel (the tool list
+                    // below its cap became unreachable).
+                    let mut list = div().v_flex().gap_1().w_full();
+                    for tool in tools {
+                        let name = tool.name.clone();
+                        let checked = state.pending_tools.contains(&name);
+                        let mut row =
+                            Checkbox::new(SharedString::from(format!("agent-tool-{}", tool.name)))
+                                .label(tool.name.clone())
+                                .checked(checked)
+                                .on_click(move |checked: &bool, _window, cx| {
+                                    let name = name.clone();
+                                    let checked = *checked;
+                                    AgentDetailState::mutate(cx, |state| {
+                                        state.pending_tools.retain(|existing| existing != &name);
+                                        if checked {
+                                            state.pending_tools.push(name);
+                                        }
+                                    });
+                                });
+                        if let Some(tip) = agent_tooltip_text(&tool.description) {
+                            row = row.tooltip(tip);
+                        }
+                        list = list.child(row);
+                    }
+                    section = section.child(list);
+                }
+            }
+            let reset_pid = state.profile_id.clone();
+            let reset_mode = state.mode_kind;
+            let save_pid = state.profile_id.clone();
+            let save_mode = state.mode_kind;
+            section = section.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("agent-tools-reset")
+                            .label(text.agent_detail_reset.clone())
+                            .small()
+                            .with_variant(ButtonVariant::Ghost)
+                            .disabled(state.busy)
+                            .on_click(move |_, _window, cx| {
+                                AgentDetailState::mutate(cx, |state| {
+                                    state.busy = true;
+                                    state.tools_error = None;
+                                });
+                                match crate::runtime::runtime_handle() {
+                                    Some(handle) => {
+                                        handle.reset_agent_tools(reset_pid.clone(), reset_mode)
+                                    }
+                                    None => {
+                                        let message = i18n::current(cx)
+                                            .manage_skill_runtime_unavailable
+                                            .clone();
+                                        AgentDetailState::mutate(cx, |state| {
+                                            state.busy = false;
+                                            state.tools_error = Some(message);
+                                        });
+                                    }
+                                }
+                            }),
+                    )
+                    .child(
+                        Button::new("agent-tools-save")
+                            .label(text.agent_detail_save.clone())
+                            .small()
+                            .with_variant(ButtonVariant::Primary)
+                            .disabled(state.busy)
+                            .on_click(move |_, _window, cx| {
+                                let selected = apply_tool_selection(
+                                    &AgentDetailState::current(cx).pending_tools,
+                                );
+                                AgentDetailState::mutate(cx, |state| {
+                                    state.busy = true;
+                                    state.tools_error = None;
+                                });
+                                match crate::runtime::runtime_handle() {
+                                    Some(handle) => handle.save_agent_tools(
+                                        save_pid.clone(),
+                                        selected,
+                                        save_mode,
+                                    ),
+                                    None => {
+                                        let message = i18n::current(cx)
+                                            .manage_skill_runtime_unavailable
+                                            .clone();
+                                        AgentDetailState::mutate(cx, |state| {
+                                            state.busy = false;
+                                            state.tools_error = Some(message);
+                                        });
+                                    }
+                                }
+                            }),
+                    ),
+            );
+            content = content.child(section);
+        }
+
+        let has_task_tool = if state.tools.is_some() {
+            state.pending_tools.iter().any(|tool| tool == "Task")
+        } else {
+            card.default_tools.iter().any(|tool| tool == "Task")
+        };
+        if state.mode_kind && has_task_tool {
+            let mut section = div().v_flex().gap_1().child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(agent_section_title(text.agent_detail_subagents.clone(), cx))
+                    .child(div().text_xs().text_color(muted).child(
+                        i18n::agent_subagents_selected(state.pending_subagents.len(), cx),
+                    )),
+            );
+            if let Some(error) = &state.subagents_error {
+                section = section.child(div().text_xs().text_color(danger).child(error.clone()));
+            }
+            match &state.subagents {
+                None => {
+                    section = section.child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(text.agent_detail_loading.clone()),
+                    );
+                }
+                Some(subagents) if subagents.is_empty() => {
+                    section = section.child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(text.agent_detail_no_subagents.clone()),
+                    );
+                }
+                Some(subagents) => {
+                    let mut list = div().v_flex().gap_1().w_full();
+                    for subagent in subagents {
+                        let id = subagent.id.clone();
+                        let checked = state.pending_subagents.contains(&id);
+                        let label = if subagent.external {
+                            format!("{} · {}", subagent.name, text.manage_agent_source_external)
+                        } else {
+                            subagent.name.clone()
+                        };
+                        let disabled = subagent.external || state.busy;
+                        let mut row = Checkbox::new(SharedString::from(format!(
+                            "agent-subagent-{}",
+                            subagent.id
+                        )))
+                        .label(label)
+                        .checked(checked)
+                        .disabled(disabled)
+                        .on_click(move |checked: &bool, _window, cx| {
+                            let id = id.clone();
+                            let checked = *checked;
+                            AgentDetailState::mutate(cx, |state| {
+                                toggle_subagent_selection(
+                                    &mut state.pending_subagents,
+                                    &id,
+                                    checked,
+                                );
+                            });
+                        });
+                        if let Some(tip) = agent_tooltip_text(&subagent.description) {
+                            row = row.tooltip(tip);
+                        }
+                        list = list.child(row);
+                    }
+                    section = section.child(list);
+                }
+            }
+            let reset_pid = state.profile_id.clone();
+            let save_pid = state.profile_id.clone();
+            section = section.child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("agent-subagents-reset")
+                            .label(text.agent_detail_reset.clone())
+                            .small()
+                            .with_variant(ButtonVariant::Ghost)
+                            .disabled(state.busy)
+                            .on_click(move |_, _window, cx| {
+                                let rows = AgentDetailState::current(cx)
+                                    .subagents
+                                    .clone()
+                                    .unwrap_or_default();
+                                apply_agent_subagent_writes(cx, reset_pid.clone(), rows, true);
+                            }),
+                    )
+                    .child(
+                        Button::new("agent-subagents-save")
+                            .label(text.agent_detail_save.clone())
+                            .small()
+                            .with_variant(ButtonVariant::Primary)
+                            .disabled(state.busy)
+                            .on_click(move |_, _window, cx| {
+                                let rows = AgentDetailState::current(cx)
+                                    .subagents
+                                    .clone()
+                                    .unwrap_or_default();
+                                apply_agent_subagent_writes(cx, save_pid.clone(), rows, false);
+                            }),
+                    ),
+            );
+            content = content.child(section);
+        }
+
+        dialog_el
+            .w(px(620.))
+            .title(div().child(text.agent_detail_open.clone()))
+            .child(content.debug_selector(|| "agent-detail-dialog".to_string()))
+            .footer(agent_detail_close_footer(text.clone()))
+    });
+}
+
+/// G-A2: the writes needed to move the loaded SubAgent snapshot to the pending
+/// ticks. External and already-matching rows are skipped; `reset` restores the
+/// registry defaults instead of the pending list.
+pub(crate) fn plan_agent_subagent_writes(
+    rows: &[AgentSubagentRow],
+    pending: &[String],
+    reset: bool,
+) -> Vec<(String, bool)> {
+    let pending: std::collections::HashSet<&str> = pending.iter().map(String::as_str).collect();
+    let mut writes = Vec::new();
+    for row in rows {
+        if row.external {
+            continue;
+        }
+        let wanted = if reset {
+            row.default_enabled
+        } else {
+            pending.contains(row.id.as_str())
+        };
+        if wanted != row.enabled {
+            writes.push((row.id.clone(), wanted));
+        }
+    }
+    writes
+}
+
+/// G-A2: writes every SubAgent whose pending tick differs from the loaded
+/// snapshot. `reset` ignores the pending list and restores the registry
+/// defaults instead.
+fn apply_agent_subagent_writes(
+    cx: &mut App,
+    profile_id: String,
+    rows: Vec<AgentSubagentRow>,
+    reset: bool,
+) {
+    let state = AgentDetailState::current(cx);
+    let writes = plan_agent_subagent_writes(&rows, &state.pending_subagents, reset);
+    if writes.is_empty() {
+        return;
+    }
+    AgentDetailState::mutate(cx, |state| {
+        state.busy = true;
+        state.subagents_error = None;
+    });
+    let Some(handle) = crate::runtime::runtime_handle() else {
+        let message = i18n::current(cx).manage_skill_runtime_unavailable.clone();
+        AgentDetailState::mutate(cx, |state| {
+            state.busy = false;
+            state.subagents_error = Some(message);
+        });
+        return;
+    };
+    handle.save_agent_subagents(profile_id, writes, true);
+}
+
+fn agent_detail_close_footer(text: ShellText) -> gpui_kit::AnyElement {
+    div()
+        .flex()
+        .flex_row()
+        .justify_end()
+        .child(
+            Button::new("agent-detail-close")
+                .label(text.agent_detail_close.clone())
+                .with_variant(ButtonVariant::Ghost)
+                .on_click(move |_, window, cx| {
+                    AgentDetailState::mutate(cx, |state| state.agent_id = None);
+                    window.close_dialog(cx);
+                }),
+        )
+        .into_any_element()
+}
+
+fn agent_section_title(label: String, cx: &App) -> gpui_kit::Div {
+    div()
+        .text_xs()
+        .text_color(cx.theme().muted_foreground)
+        .child(label)
+}
+
+fn agent_fact_row(label: String, value: String, cx: &App) -> gpui_kit::AnyElement {
+    div()
+        .flex()
+        .flex_row()
+        .items_start()
+        .gap_2()
+        .child(
+            div()
+                .w(px(96.))
+                .flex_shrink_0()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(label),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_sm()
+                .text_color(cx.theme().foreground)
+                .whitespace_normal()
+                .child(value),
+        )
+        .into_any_element()
+}
+
+fn agent_source_label(source: AgentSourceKind, text: &ShellText) -> String {
+    match source {
+        AgentSourceKind::Builtin => text.manage_agent_source_builtin.clone(),
+        AgentSourceKind::User => text.manage_agent_source_user.clone(),
+        AgentSourceKind::Project => text.manage_agent_source_project.clone(),
+        AgentSourceKind::External => text.manage_agent_source_external.clone(),
+    }
+}
+
+fn agent_capability_color(category: AgentCapabilityCategory, cx: &App) -> gpui_kit::Hsla {
+    use AgentCapabilityCategory::{Analysis, Coding, Creative, Docs, Ops, Testing};
+    match category {
+        Coding => cx.theme().primary,
+        Docs => cx.theme().info,
+        Analysis => cx.theme().success,
+        Testing => cx.theme().warning,
+        Creative => cx.theme().danger,
+        Ops => cx.theme().warning,
+    }
 }
 
 /// Opens the per-mode skill selection dialog (T2-11, the web agents detail
@@ -4810,6 +7445,95 @@ mod tests {
         }
     }
 
+    /// G-M1: a flow stays live through the three in-flight states and ends at
+    /// the terminal ones; the button restarts a live flow, reconnects on
+    /// stored OAuth credentials, and only then starts fresh (web
+    /// `getOAuthActionLabel`).
+    #[test]
+    fn mcp_oauth_flow_and_action_labels_follow_the_web_rules() {
+        use openbitfun_core::service::mcp::auth::{
+            MCPRemoteOAuthSessionSnapshot, MCPRemoteOAuthStatus,
+        };
+        let snapshot = |status: MCPRemoteOAuthStatus| {
+            MCPRemoteOAuthSessionSnapshot::new("srv", status, None, None, None)
+        };
+        for status in [
+            MCPRemoteOAuthStatus::AwaitingBrowser,
+            MCPRemoteOAuthStatus::AwaitingCallback,
+            MCPRemoteOAuthStatus::ExchangingToken,
+        ] {
+            let session = snapshot(status.clone());
+            assert!(
+                mcp_oauth_flow_active(Some(&session)),
+                "{status:?} keeps the flow live"
+            );
+            assert_eq!(
+                mcp_oauth_action_kind(Some(&session), true, Some("oauth")),
+                McpOAuthActionKind::Restart,
+                "a live flow always offers Restart"
+            );
+        }
+        for status in [
+            MCPRemoteOAuthStatus::Authorized,
+            MCPRemoteOAuthStatus::Failed,
+            MCPRemoteOAuthStatus::Cancelled,
+        ] {
+            let session = snapshot(status.clone());
+            assert!(
+                !mcp_oauth_flow_active(Some(&session)),
+                "{status:?} is terminal"
+            );
+        }
+        assert!(!mcp_oauth_flow_active(None), "no session means idle");
+        assert_eq!(
+            mcp_oauth_action_kind(None, true, Some("oauth")),
+            McpOAuthActionKind::Reconnect,
+            "stored OAuth credentials reconnect"
+        );
+        assert_eq!(
+            mcp_oauth_action_kind(None, true, Some("headers")),
+            McpOAuthActionKind::Start,
+            "header auth still starts a fresh OAuth flow"
+        );
+        assert_eq!(
+            mcp_oauth_action_kind(None, false, None),
+            McpOAuthActionKind::Start,
+            "unconfigured servers start fresh"
+        );
+    }
+
+    /// G-M3: the row auth fact names the source when configured, the pending
+    /// OAuth state, or the unconfigured fallback (web `getRemoteAuthSummary`).
+    #[test]
+    fn mcp_auth_summary_names_the_source() {
+        let text = crate::i18n::fallback_text(openbitfun_core::service::i18n::LocaleId::EnUS);
+        assert_eq!(
+            mcp_auth_summary_text(&text, true, Some("headers"), false),
+            text.manage_mcp_auth_source_headers
+        );
+        assert_eq!(
+            mcp_auth_summary_text(&text, true, Some("env"), false),
+            text.manage_mcp_auth_source_env
+        );
+        assert_eq!(
+            mcp_auth_summary_text(&text, true, Some("oauth"), false),
+            text.manage_mcp_auth_source_oauth
+        );
+        assert_eq!(
+            mcp_auth_summary_text(&text, true, None, true),
+            text.manage_mcp_auth_configured,
+            "configured without a known source stays plain"
+        );
+        assert_eq!(
+            mcp_auth_summary_text(&text, false, None, true),
+            text.manage_mcp_auth_oauth_ready
+        );
+        assert_eq!(
+            mcp_auth_summary_text(&text, false, None, false),
+            text.manage_mcp_auth_missing
+        );
+    }
+
     #[test]
     fn interaction_payload_round_trips_and_previews() {
         let raw = serde_json::json!({
@@ -5099,7 +7823,193 @@ mod tests {
             group_key: group.map(str::to_string),
             source_id: source.0.to_string(),
             source_label: source.1.to_string(),
+            path: String::new(),
+            deletable: false,
         }
+    }
+
+    fn group(
+        id: &str,
+        name: &str,
+        keys: &[&str],
+    ) -> openbitfun_core::service::config::UserSkillGroup {
+        openbitfun_core::service::config::UserSkillGroup {
+            id: id.to_string(),
+            name: name.to_string(),
+            skill_keys: keys.iter().map(|key| key.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn group_edit_trims_names_and_dedupes_members() {
+        let groups = vec![group("a", "Alpha", &[])];
+        let edited = group("b", "  Beta  ", &["k1", " k1 ", "", "k2"]);
+        let next = apply_group_edit(&groups, None, &edited).expect("valid edit");
+        assert_eq!(next.len(), 2);
+        assert_eq!(next[1].name, "Beta");
+        assert_eq!(next[1].skill_keys, vec!["k1", "k2"]);
+        assert_eq!(next[0], groups[0]);
+    }
+
+    #[test]
+    fn group_edit_rejects_empty_duplicate_and_stale_snapshots() {
+        let groups = vec![group("a", "Alpha", &[]), group("b", "Beta", &["k"])];
+        assert_eq!(
+            apply_group_edit(&groups, None, &group("c", "   ", &[])),
+            Err(GroupEditError::NameRequired)
+        );
+        assert_eq!(
+            apply_group_edit(&groups, None, &group("c", " beta ", &[])),
+            Err(GroupEditError::NameDuplicate)
+        );
+        // Editing with an outdated snapshot is a conflict, like the web.
+        let stale = group("b", "Old name", &[]);
+        assert_eq!(
+            apply_group_edit(&groups, Some(&stale), &group("b", "Beta 2", &[])),
+            Err(GroupEditError::Conflict)
+        );
+        // Creating with an id that already exists is a conflict too.
+        assert_eq!(
+            apply_group_edit(&groups, None, &group("a", "Gamma", &[])),
+            Err(GroupEditError::Conflict)
+        );
+        let next = apply_group_edit(&groups, Some(&groups[1]), &group("b", "Beta", &["k"]))
+            .expect("unchanged edit");
+        assert_eq!(next, groups);
+    }
+
+    #[test]
+    fn group_move_and_delete_follow_the_web_rules() {
+        let groups = vec![
+            group("a", "Alpha", &[]),
+            group("b", "Beta", &[]),
+            group("c", "Gamma", &[]),
+        ];
+        let moved = apply_group_move(&groups, "c", -1).expect("moved");
+        assert_eq!(
+            moved
+                .iter()
+                .map(|group| group.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "c", "b"]
+        );
+        assert_eq!(
+            apply_group_move(&groups, "a", -1).expect("edge no-op"),
+            groups
+        );
+        assert_eq!(
+            apply_group_move(&groups, "missing", 1),
+            Err(GroupEditError::Conflict)
+        );
+        let removed = apply_group_delete(&groups, &groups[1]).expect("removed");
+        assert_eq!(removed.len(), 2);
+        assert_eq!(
+            apply_group_delete(&groups, &group("b", "Other", &[])),
+            Err(GroupEditError::Conflict)
+        );
+    }
+
+    #[test]
+    fn agent_capabilities_follow_the_web_heuristic() {
+        use AgentCapabilityCategory::{Analysis, Coding, Docs};
+        let standard = agent_card("Standard", "", AgentSourceKind::Builtin);
+        let caps = agent_capabilities(&standard, true);
+        assert_eq!(caps[0].category, Coding);
+        assert_eq!(caps[0].level, 5);
+        assert_eq!(caps[1].category, Analysis);
+
+        let plan = agent_card("Plan", "", AgentSourceKind::Builtin);
+        let caps = agent_capabilities(&plan, true);
+        assert_eq!(caps[0].category, Analysis);
+        assert_eq!(caps[1].category, Docs);
+
+        let helper = agent_card("GeneralPurpose", "", AgentSourceKind::Builtin);
+        let caps = agent_capabilities(&helper, false);
+        assert_eq!(caps.len(), 2);
+        assert_eq!(caps[0].category, Coding);
+
+        let unknown = agent_card("custom-helper", "", AgentSourceKind::User);
+        assert!(agent_capabilities(&unknown, false).is_empty());
+    }
+
+    #[test]
+    fn agent_tool_configurability_matches_the_web_guard() {
+        assert!(agent_tool_configurable("Read"));
+        assert!(!agent_tool_configurable("GetToolSpec"));
+        assert!(!agent_tool_configurable("CallDeferredTool"));
+        assert!(!agent_tool_configurable("trinity_cognitive_state"));
+        assert!(!agent_tool_configurable("mcp__github__list_issues"));
+    }
+
+    #[test]
+    fn tool_and_subagent_selections_trim_and_dedupe() {
+        let selected = vec![
+            " Read ".to_string(),
+            "Read".to_string(),
+            String::new(),
+            "Write".to_string(),
+        ];
+        assert_eq!(apply_tool_selection(&selected), vec!["Read", "Write"]);
+
+        let mut pending = vec!["explore".to_string()];
+        toggle_subagent_selection(&mut pending, "explore", false);
+        assert!(pending.is_empty());
+        toggle_subagent_selection(&mut pending, "explore", true);
+        toggle_subagent_selection(&mut pending, "explore", true);
+        assert_eq!(pending, vec!["explore"]);
+    }
+
+    #[test]
+    fn capability_tooltips_keep_one_capped_line() {
+        assert_eq!(
+            agent_tooltip_text("\n\nFirst line\nsecond line"),
+            Some("First line".to_string())
+        );
+        assert_eq!(agent_tooltip_text("   \n  "), None);
+        let long = "x".repeat(200);
+        let tip = agent_tooltip_text(&long).expect("a long line still yields a tip");
+        assert_eq!(tip.chars().count(), 161);
+        assert!(tip.ends_with('…'));
+    }
+
+    #[test]
+    fn subagent_writes_cover_only_changed_local_rows() {
+        let row =
+            |id: &str, enabled: bool, default_enabled: bool, external: bool| AgentSubagentRow {
+                id: id.to_string(),
+                name: id.to_string(),
+                description: String::new(),
+                enabled,
+                default_enabled,
+                external,
+            };
+        let rows = vec![
+            row("explore", true, true, false),
+            row("review", false, false, false),
+            row("external", false, true, true),
+            row("legacy", false, true, false),
+        ];
+
+        // Save: only the rows whose pending tick differs from the snapshot.
+        let pending = vec![
+            "explore".to_string(),
+            "review".to_string(),
+            "external".to_string(),
+        ];
+        assert_eq!(
+            plan_agent_subagent_writes(&rows, &pending, false),
+            vec![("review".to_string(), true)]
+        );
+
+        // Reset: restore the registry defaults, ignoring the pending list.
+        assert_eq!(
+            plan_agent_subagent_writes(&rows, &[], true),
+            vec![("legacy".to_string(), true)]
+        );
+
+        // A snapshot that already matches produces no writes, so Save cannot
+        // leave the dialog stuck in its busy state.
+        assert!(plan_agent_subagent_writes(&rows, &["explore".to_string()], false).is_empty());
     }
 
     #[test]
@@ -5216,6 +8126,8 @@ mod tests {
                     group_key: None,
                     source_id: String::new(),
                     source_label: String::new(),
+                    path: String::new(),
+                    deletable: false,
                 }],
             });
             cx.set_global(crate::i18n::fallback_text(
@@ -5237,7 +8149,8 @@ mod tests {
                 // facet page; that environment is where the wrap broke.
                 Settings::new("skills-wrap-probe")
                     .sidebar_width(gpui_kit::px(180.))
-                    .pages(vec![SettingPage::new("Tools").group(skills_group(&text))])
+                    .pages(vec![SettingPage::new("Tools")
+                        .group(skills_group(&text, WeakEntity::new_invalid()))])
                     .into_any_element()
             }
         }
@@ -5288,6 +8201,8 @@ mod tests {
             group_key: None,
             source_id: "openbitfun".to_string(),
             source_label: "OpenBitFun".to_string(),
+            path: String::new(),
+            deletable: false,
         }
     }
 
@@ -5304,6 +8219,12 @@ mod tests {
             skills_manageable: false,
             skills_mode_id: String::new(),
             model_override: None,
+            supports_follow_up: true,
+            external_provider_label: None,
+            default_tools: Vec::new(),
+            profile_id: name.to_string(),
+            profile_label: None,
+            profile_member_ids: vec![name.to_string()],
         }
     }
 

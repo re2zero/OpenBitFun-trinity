@@ -17,6 +17,7 @@ use gpui_kit::component::setting::{
     NumberFieldOptions, SelectIndex, SettingField, SettingGroup, SettingItem, SettingPage, Settings,
 };
 use gpui_kit::component::sidebar::{Sidebar, SidebarFooter, SidebarItem};
+use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme, Collapsible, Disableable, Sizable, StyledExt, WindowExt};
 use gpui_kit::{
     div, prelude::*, px, Anchor, App, Axis, Entity, FontWeight, Global, IntoElement, SharedString,
@@ -37,6 +38,9 @@ use crate::update::UpdateUiState;
 pub(crate) const LANGUAGE_PATH: &str = "app.language";
 pub(crate) const APPEARANCE_PATH: &str = "appearance.selection";
 pub(crate) const PERMISSION_PRESET_PATH: &str = "tool_permissions.policy.preset";
+/// G-SE17: the ordered user-level rules; the page rewrites the array in one
+/// merged `policy` write so the preset and any newer keys survive.
+pub(crate) const PERMISSION_POLICY_PATH: &str = "tool_permissions.policy";
 pub(crate) const AUTO_APPROVE_ASK_PATH: &str = "tool_permissions.interaction.auto_approve_ask";
 pub(crate) const TERMINAL_FONT_SIZE_PATH: &str = "terminal.font_size";
 pub(crate) const TERMINAL_FONT_FAMILY_PATH: &str = "terminal.font_family";
@@ -72,6 +76,8 @@ pub(crate) const HOOKS_PROJECT_PATH: &str = "app.hooks.project_hooks_enabled";
 /// OpenBitFun co-author line in built-in commit workflows
 /// (`app.ai_experience.enable_git_commit_coauthor`).
 pub(crate) const GIT_COAUTHOR_PATH: &str = "app.ai_experience.enable_git_commit_coauthor";
+/// G-SE24: the quick-actions array (`app.ai_experience.quick_actions`).
+pub(crate) const QUICK_ACTIONS_PATH: &str = "app.ai_experience.quick_actions";
 /// Active web-search provider (`ai.web_search.provider`).
 pub(crate) const WEB_SEARCH_PROVIDER_PATH: &str = "ai.web_search.provider";
 /// Custom HTTP search service endpoint
@@ -112,6 +118,15 @@ pub(crate) const TOOL_JSON_REPAIR_PATH: &str = "ai.allow_tool_json_repair";
 /// A2: the default review team (`ai.review_teams.default`); the page edits two
 /// of its keys and round-trips the rest verbatim.
 pub(crate) const REVIEW_TEAM_PATH: &str = "ai.review_teams.default";
+/// G-SE15: the ChatInput preference document (`app.flow_chat`). The page edits
+/// `default_mode_strategy` and `default_mode_id`, preserving every sibling key.
+pub(crate) const FLOW_CHAT_PATH: &str = "app.flow_chat";
+/// G-SE15: session-title generation (same keys the desktop page writes).
+pub(crate) const SESSION_TITLE_ENABLED_PATH: &str =
+    "app.ai_experience.enable_session_title_generation";
+pub(crate) const SESSION_TITLE_MODEL_PATH: &str = "ai.task_models.session_title";
+/// G-SE16: the managed-worktree defaults (`app.worktrees`).
+pub(crate) const WORKTREES_PATH: &str = "app.worktrees";
 
 /// The measure a settings row's control column carries before the row's own
 /// label column would be squeezed; status sentences wrap inside it instead of
@@ -261,7 +276,7 @@ impl TerminalSettings {
 /// The shell's in-memory mirror of the settings it can change. Kept as a gpui
 /// global so the settings page, the window bootstrap, and tests can read it
 /// synchronously; the on-disk truth stays `GlobalConfig`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub(crate) struct ShellConfig {
     pub(crate) language: LocaleId,
     /// Raw `appearance.selection` value. Unknown ids are kept verbatim so the
@@ -340,6 +355,22 @@ pub(crate) struct ShellConfig {
     /// G-SE13: the `memories` section as the typed shared document. Writes go
     /// key by key through [`persist_object_key`]; the mirror updates in place.
     pub(crate) memories: openbitfun_core::service::config::types::MemoriesConfig,
+    /// G-SE15: `app.flow_chat` as the stored document. The page reads the
+    /// strategy/fixed-mode keys with the web's compatibility rules and writes
+    /// single keys, so sibling preferences survive.
+    pub(crate) flow_chat: serde_json::Value,
+    /// G-SE15: `app.ai_experience.enable_session_title_generation`.
+    pub(crate) session_title_enabled: bool,
+    /// G-SE15: `ai.task_models.session_title`: `inherit` or a model id.
+    pub(crate) session_title_model: String,
+    /// G-SE16: `app.worktrees` as the stored document, edited key by key.
+    pub(crate) worktrees: serde_json::Value,
+    /// G-SE17: `tool_permissions.policy.rules` — the ordered user-level rules.
+    pub(crate) permission_rules: Vec<openbitfun_runtime_ports::PermissionRule>,
+    /// G-SE12: `ai.models` — the configured model rows the editor works on.
+    /// The catalog only carries id/name/provider/enabled; the row editor needs
+    /// the full documents, and keeps this mirror current on every write.
+    pub(crate) ai_models: Vec<openbitfun_core::service::config::types::AIModelConfig>,
 }
 
 impl Global for ShellConfig {}
@@ -421,6 +452,14 @@ impl ShellConfig {
             )
             .unwrap_or(serde_json::Value::Null),
             memories: config.memories.clone(),
+            flow_chat: serde_json::to_value(&config.app.flow_chat)
+                .unwrap_or(serde_json::Value::Null),
+            session_title_enabled: config.app.ai_experience.enable_session_title_generation,
+            session_title_model: task_model_selection_value(&config.ai.task_models.session_title),
+            worktrees: serde_json::to_value(&config.app.worktrees)
+                .unwrap_or(serde_json::Value::Null),
+            permission_rules: config.tool_permissions.policy.rules.clone(),
+            ai_models: config.ai.models.clone(),
         }
     }
 
@@ -475,6 +514,12 @@ impl ShellConfig {
             allow_tool_json_repair: true,
             review_team: serde_json::Value::Null,
             memories: openbitfun_core::service::config::types::MemoriesConfig::default(),
+            flow_chat: serde_json::Value::Null,
+            session_title_enabled: true,
+            session_title_model: "fast".to_string(),
+            worktrees: default_worktree_settings_document(),
+            permission_rules: Vec::new(),
+            ai_models: Vec::new(),
         }
     }
 }
@@ -690,6 +735,106 @@ pub(crate) fn object_u64(document: &serde_json::Value, key: &str, fallback: u64)
         .unwrap_or(fallback)
 }
 
+/// One boolean key of an object document (missing or mistyped = `fallback`).
+pub(crate) fn object_bool(document: &serde_json::Value, key: &str, fallback: bool) -> bool {
+    document
+        .get(key)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(fallback)
+}
+
+/// One string key of an object document (missing or mistyped = `fallback`).
+pub(crate) fn object_str<'a>(
+    document: &'a serde_json::Value,
+    key: &str,
+    fallback: &'a str,
+) -> &'a str {
+    document
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(fallback)
+}
+
+/// G-SE15: the default-Harness strategy, applying the web's compatibility
+/// rule — an explicit `default_mode_strategy` wins; otherwise a stored
+/// `default_mode_id` keeps its historical fixed meaning and an untouched
+/// document follows the last selection.
+pub(crate) fn flow_chat_strategy(document: &serde_json::Value) -> &'static str {
+    match document
+        .get("default_mode_strategy")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("fixed") => "fixed",
+        Some("follow_last") => "follow_last",
+        _ => {
+            let fixed = document
+                .get("default_mode_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .unwrap_or("");
+            if fixed.is_empty() {
+                "follow_last"
+            } else {
+                "fixed"
+            }
+        }
+    }
+}
+
+/// G-SE15: the stored fixed default (falling back to the Standard Harness the
+/// web uses when switching an unset preference to fixed).
+pub(crate) fn flow_chat_fixed_mode(document: &serde_json::Value) -> String {
+    document
+        .get("default_mode_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .unwrap_or("Standard")
+        .to_string()
+}
+
+/// G-SE15: the most recent mode explicitly selected in the composer, when one
+/// was recorded.
+pub(crate) fn flow_chat_last_mode(document: &serde_json::Value) -> Option<String> {
+    document
+        .get("last_mode_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+}
+
+/// G-SE15: one `TaskModelSelection` as the shell's select value (`inherit` or
+/// the fixed model id).
+pub(crate) fn task_model_selection_value(
+    selection: &openbitfun_core::service::config::types::TaskModelSelection,
+) -> String {
+    selection
+        .fixed_model_id()
+        .map(str::to_string)
+        .unwrap_or_else(|| "inherit".to_string())
+}
+
+/// G-SE15: the persisted document for a select value.
+pub(crate) fn task_model_selection_document(value: &str) -> serde_json::Value {
+    if value == "inherit" {
+        serde_json::json!({ "kind": "inherit" })
+    } else {
+        serde_json::json!({ "kind": "fixed", "model_id": value })
+    }
+}
+
+/// G-SE16: the shared worktree defaults (used before the first config read
+/// and for a document that lost a key).
+pub(crate) fn default_worktree_settings_document() -> serde_json::Value {
+    serde_json::to_value(
+        openbitfun_core::service::config::types::GlobalConfig::default()
+            .app
+            .worktrees,
+    )
+    .unwrap_or(serde_json::Value::Null)
+}
+
 /// One theme choice: the product appearance id (the value stored in
 /// `appearance.selection`) and the shell preset that renders it.
 struct AppearanceChoice {
@@ -827,36 +972,38 @@ pub(crate) fn persist(path: &'static str, value: serde_json::Value) {
 /// — written by a newer desktop or web build — survive the write instead of
 /// being dropped by an older shell.
 fn persist_object_key(path: &'static str, key: &str, value: serde_json::Value) {
+    persist_object_keys(path, vec![(key.to_string(), value)]);
+}
+
+/// Persists several keys of one object document in a single read-modify-write,
+/// so two related keys (a strategy plus its value) cannot land out of order.
+fn persist_object_keys(path: &'static str, updates: Vec<(String, serde_json::Value)>) {
     let Some(handle) = crate::runtime::runtime_handle() else {
-        tracing::error!(
-            "Cannot persist {}.{} before the runtime is ready",
-            path,
-            key
-        );
+        tracing::error!("Cannot persist {} before the runtime is ready", path);
         return;
     };
-    let key = key.to_string();
     handle.tokio_handle().spawn(async move {
         let service = match get_global_config_service().await {
             Ok(service) => service,
             Err(error) => {
                 tracing::error!(
-                    "Config service unavailable while persisting {}.{}: {}",
+                    "Config service unavailable while persisting {}: {}",
                     path,
-                    key,
                     error
                 );
                 return;
             }
         };
-        let current = service
+        let mut merged = service
             .get_config::<serde_json::Value>(Some(path))
             .await
             .unwrap_or(serde_json::Value::Null);
-        let merged = merged_object_value(&current, &key, value);
+        for (key, value) in updates {
+            merged = merged_object_value(&merged, &key, value);
+        }
         match service.set_config(path, merged).await {
-            Ok(()) => tracing::info!("Setting persisted: {}.{}", path, key),
-            Err(error) => tracing::error!("Failed to persist {}.{}: {}", path, key, error),
+            Ok(()) => tracing::info!("Setting persisted: {}", path),
+            Err(error) => tracing::error!("Failed to persist {}: {}", path, error),
         }
     });
 }
@@ -1203,12 +1350,12 @@ pub(crate) fn entry_group(
         SettingsEntry::TrinityEngine => trinity_engine_group(text, view, cx),
         SettingsEntry::Memory => memory_group(text, view, cx),
         SettingsEntry::Shortcuts => shortcuts_group(text, cx),
-        SettingsEntry::SessionSearch => session_search_group(text, view),
-        SettingsEntry::WorktreesGit => worktrees_git_group(text, view),
+        SettingsEntry::SessionSearch => session_search_group(text, view, cx),
+        SettingsEntry::WorktreesGit => worktrees_git_group(text, view, cx),
         SettingsEntry::Permissions => permissions_group(text, cx),
-        SettingsEntry::Automation => automation_group(text),
+        SettingsEntry::Automation => automation_group(text, cx),
         SettingsEntry::WebSearch => websearch_group(text, view, cx),
-        SettingsEntry::Skills => crate::manage::skills_group(text),
+        SettingsEntry::Skills => crate::manage::skills_group(text, view),
         SettingsEntry::Agents => crate::manage::agents_group(text, view, cx),
         SettingsEntry::Mcp => crate::manage::mcp_group(text, view),
         SettingsEntry::Usage => usage_group(text, view),
@@ -1622,6 +1769,7 @@ fn nav_item_row(id: SharedString, active: bool, cx: &App) -> gpui_kit::Stateful<
 fn session_search_group(
     text: &ShellText,
     view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    cx: &App,
 ) -> SettingGroup {
     let owned_text = text.clone();
     let open_field = SettingField::render(move |_options, _window, _cx| {
@@ -1638,19 +1786,261 @@ fn session_search_group(
             })
             .into_any_element()
     });
-    SettingGroup::new().items(vec![SettingItem::new(
+
+    let mut items = vec![section_heading_item(
+        "default-harness",
+        text.settings_default_harness_section.clone(),
+        text.settings_default_harness_section_note.clone(),
+    )];
+    items.extend(default_harness_rows(text, cx));
+    items.push(section_heading_item(
+        "session-title",
+        text.settings_session_title_section.clone(),
+        text.settings_session_title_section_note.clone(),
+    ));
+    items.extend(session_title_rows(text, cx));
+    items.push(SettingItem::new(
         text.settings_jump_session_description.clone(),
         open_field,
-    )])
+    ));
+    SettingGroup::new().items(items)
 }
 
-/// The `workspace.worktrees` entry (parity §2.1): worktree management is
-/// the Git panel's job in this shell. The card opens the panel straight onto
-/// its Worktrees view (the resource opening policy, never closes) instead of
-/// faking the web page's controls.
+/// G-SE15: the default-Harness preference (web `DefaultHarnessConfig`): the
+/// strategy plus, while fixed, the fixed Harness. Both writes are one merged
+/// document write so an interleaved older shell cannot drop the sibling key.
+fn default_harness_rows(text: &ShellText, cx: &App) -> Vec<SettingItem> {
+    let flow_chat = ShellConfig::current(cx).flow_chat;
+    let strategy = flow_chat_strategy(&flow_chat);
+    let fixed_mode = flow_chat_fixed_mode(&flow_chat);
+    let last_mode = flow_chat_last_mode(&flow_chat);
+
+    let harness_label = |id: &str| {
+        if crate::manage::HARNESS_IDS.contains(&id) {
+            crate::i18n::shared_agent_name(id, cx)
+        } else {
+            id.to_string()
+        }
+    };
+    let strategy_description = if strategy == "fixed" {
+        text.settings_default_harness_fixed_description.clone()
+    } else if let Some(last) = last_mode.as_deref() {
+        crate::i18n::default_harness_follow_description(&harness_label(last), cx)
+    } else {
+        crate::i18n::default_harness_follow_empty_description(
+            &crate::i18n::shared_agent_name("Standard", cx),
+            cx,
+        )
+    };
+
+    let strategy_field = SettingField::dropdown(
+        vec![
+            (
+                SharedString::from("follow_last"),
+                SharedString::from(text.settings_default_harness_follow_last.clone()),
+            ),
+            (
+                SharedString::from("fixed"),
+                SharedString::from(text.settings_default_harness_fixed.clone()),
+            ),
+        ],
+        |cx: &App| SharedString::from(flow_chat_strategy(&ShellConfig::current(cx).flow_chat)),
+        |value: SharedString, cx: &mut App| {
+            let strategy = if value.as_ref() == "fixed" {
+                "fixed"
+            } else {
+                "follow_last"
+            };
+            let mut document = ShellConfig::current(cx).flow_chat.clone();
+            let mut updates = vec![(
+                "default_mode_strategy".to_string(),
+                serde_json::json!(strategy),
+            )];
+            document = merged_object_value(
+                &document,
+                "default_mode_strategy",
+                serde_json::json!(strategy),
+            );
+            let missing_fixed = document
+                .get("default_mode_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .map(str::is_empty)
+                .unwrap_or(true);
+            if strategy == "fixed" && missing_fixed {
+                let fallback =
+                    flow_chat_last_mode(&document).unwrap_or_else(|| "Standard".to_string());
+                document =
+                    merged_object_value(&document, "default_mode_id", serde_json::json!(fallback));
+                updates.push(("default_mode_id".to_string(), serde_json::json!(fallback)));
+            }
+            cx.global_mut::<ShellConfig>().flow_chat = document;
+            persist_object_keys(FLOW_CHAT_PATH, updates);
+            cx.refresh_windows();
+        },
+    );
+
+    let mut fixed_options: Vec<(SharedString, SharedString)> = crate::manage::HARNESS_IDS
+        .iter()
+        .map(|id| {
+            (
+                SharedString::from(*id),
+                SharedString::from(crate::i18n::shared_agent_name(id, cx)),
+            )
+        })
+        .collect();
+    if !crate::manage::HARNESS_IDS.contains(&fixed_mode.as_str()) {
+        fixed_options.insert(
+            0,
+            (
+                SharedString::from(fixed_mode.clone()),
+                SharedString::from(format!("{fixed_mode} ({})", text.value_compatibility)),
+            ),
+        );
+    }
+    let fixed_field = SettingField::dropdown(
+        fixed_options,
+        |cx: &App| SharedString::from(flow_chat_fixed_mode(&ShellConfig::current(cx).flow_chat)),
+        |value: SharedString, cx: &mut App| {
+            let mode = value.to_string();
+            if mode.trim().is_empty() {
+                return;
+            }
+            let mut document = ShellConfig::current(cx).flow_chat.clone();
+            document = merged_object_value(
+                &document,
+                "default_mode_strategy",
+                serde_json::json!("fixed"),
+            );
+            document = merged_object_value(&document, "default_mode_id", serde_json::json!(mode));
+            cx.global_mut::<ShellConfig>().flow_chat = document;
+            persist_object_keys(
+                FLOW_CHAT_PATH,
+                vec![
+                    (
+                        "default_mode_strategy".to_string(),
+                        serde_json::json!("fixed"),
+                    ),
+                    (
+                        "default_mode_id".to_string(),
+                        serde_json::json!(mode.clone()),
+                    ),
+                ],
+            );
+            cx.refresh_windows();
+        },
+    );
+
+    let mut rows = vec![SettingItem::new(
+        text.settings_default_harness_strategy.clone(),
+        strategy_field,
+    )
+    .description(strategy_description)];
+    if strategy == "fixed" {
+        rows.push(SettingItem::new(
+            text.settings_default_harness_fixed_mode.clone(),
+            fixed_field,
+        ));
+    }
+    rows
+}
+
+/// G-SE15: the session-title switch and its model selector (web
+/// `SessionTitleConfig`). The selector is disabled while generation is off.
+fn session_title_rows(text: &ShellText, cx: &App) -> Vec<SettingItem> {
+    let enabled_field = SettingField::switch(
+        |cx: &App| ShellConfig::current(cx).session_title_enabled,
+        |value: bool, cx: &mut App| {
+            cx.global_mut::<ShellConfig>().session_title_enabled = value;
+            persist(SESSION_TITLE_ENABLED_PATH, serde_json::json!(value));
+            cx.refresh_windows();
+        },
+    );
+
+    let catalog = cx
+        .try_global::<crate::runtime::ModelCatalog>()
+        .cloned()
+        .unwrap_or_default();
+    let current = ShellConfig::current(cx).session_title_model;
+    let model_options = session_title_model_options(&catalog.models, &current, text);
+    let model_field = SettingField::dropdown(
+        model_options,
+        |cx: &App| SharedString::from(ShellConfig::current(cx).session_title_model),
+        |value: SharedString, cx: &mut App| {
+            let value = value.to_string();
+            if value.trim().is_empty() {
+                return;
+            }
+            cx.global_mut::<ShellConfig>().session_title_model = value.clone();
+            persist(
+                SESSION_TITLE_MODEL_PATH,
+                task_model_selection_document(&value),
+            );
+            cx.refresh_windows();
+        },
+    );
+
+    let enabled = ShellConfig::current(cx).session_title_enabled;
+    let model_description = if catalog.models.is_empty() {
+        text.settings_session_title_models_empty.clone()
+    } else {
+        String::new()
+    };
+    let mut model_item =
+        SettingItem::new(text.settings_session_title_model.clone(), model_field).disabled(!enabled);
+    if !model_description.is_empty() {
+        model_item = model_item.description(model_description);
+    }
+
+    vec![
+        SettingItem::new(text.settings_session_title_enable.clone(), enabled_field),
+        model_item,
+    ]
+}
+
+/// G-SE15: the session-title model menu — inherit/fast/primary aliases, every
+/// enabled configured model, and a stored id this build cannot resolve.
+fn session_title_model_options(
+    catalog: &[crate::runtime::ModelChoice],
+    current: &str,
+    text: &ShellText,
+) -> Vec<(SharedString, SharedString)> {
+    let mut options: Vec<(SharedString, SharedString)> = vec![
+        (
+            SharedString::from("inherit"),
+            SharedString::from(text.settings_session_title_model_inherit.clone()),
+        ),
+        (
+            SharedString::from("fast"),
+            SharedString::from(text.settings_session_title_model_fast.clone()),
+        ),
+        (
+            SharedString::from("primary"),
+            SharedString::from(text.settings_session_title_model_primary.clone()),
+        ),
+    ];
+    for model in catalog.iter().filter(|model| model.enabled) {
+        options.push((model.id.clone().into(), model.label().into()));
+    }
+    if !options.iter().any(|(id, _)| id.as_ref() == current) {
+        options.push((
+            SharedString::from(current.to_string()),
+            SharedString::from(format!(
+                "{current} ({})",
+                text.settings_session_title_model_unavailable
+            )),
+        ));
+    }
+    options
+}
+
+/// The `workspace.worktrees` entry (parity §2.1): the web isolation defaults
+/// (G-SE16) plus the jump card that opens worktree management in the Git
+/// panel, which remains this shell's worktree owner.
 fn worktrees_git_group(
     text: &ShellText,
     view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    cx: &App,
 ) -> SettingGroup {
     let owned_text = text.clone();
     let open_field = SettingField::render(move |_options, _window, _cx| {
@@ -1670,10 +2060,113 @@ fn worktrees_git_group(
             })
             .into_any_element()
     });
-    SettingGroup::new().items(vec![SettingItem::new(
-        text.settings_jump_worktrees_description.clone(),
-        open_field,
-    )])
+
+    let document = ShellConfig::current(cx).worktrees.clone();
+    let defaults = default_worktree_settings_document();
+    let root_default = object_str(&defaults, "rootPath", "").to_string();
+    let prefix_default = object_str(&defaults, "branchPrefix", "").to_string();
+    let auto_delete_default = object_bool(&defaults, "autoDeleteEnabled", true);
+    let limit_default = object_u64(&defaults, "autoDeleteLimit", 15);
+
+    let root_field = worktree_text_field("rootPath", root_default);
+    let prefix_field = worktree_text_field("branchPrefix", prefix_default);
+    let copy_changes_field = worktree_switch_field("copyLocalChanges", false);
+    let auto_delete_field = worktree_switch_field("autoDeleteEnabled", auto_delete_default);
+    let limit_field = SettingField::number_input(
+        NumberFieldOptions {
+            min: f64::from(WORKTREE_AUTO_DELETE_MIN),
+            max: f64::from(WORKTREE_AUTO_DELETE_MAX),
+            step: 1.,
+        },
+        move |cx: &App| {
+            object_u64(
+                &ShellConfig::current(cx).worktrees,
+                "autoDeleteLimit",
+                limit_default,
+            ) as f64
+        },
+        |value: f64, cx: &mut App| {
+            if !value.is_finite() {
+                return;
+            }
+            let limit = (value.round() as u64).clamp(
+                u64::from(WORKTREE_AUTO_DELETE_MIN),
+                u64::from(WORKTREE_AUTO_DELETE_MAX),
+            );
+            set_worktree_key("autoDeleteLimit", serde_json::json!(limit), cx);
+        },
+    );
+
+    let auto_delete_enabled = object_bool(&document, "autoDeleteEnabled", auto_delete_default);
+    SettingGroup::new().items(vec![
+        section_heading_item(
+            "worktree-isolation",
+            text.settings_worktree_section.clone(),
+            text.settings_worktree_section_note.clone(),
+        ),
+        SettingItem::new(text.settings_worktree_root.clone(), root_field)
+            .description(text.settings_worktree_root_description.clone()),
+        SettingItem::new(text.settings_worktree_branch_prefix.clone(), prefix_field)
+            .description(text.settings_worktree_branch_prefix_description.clone()),
+        SettingItem::new(
+            text.settings_worktree_copy_changes.clone(),
+            copy_changes_field,
+        )
+        .description(text.settings_worktree_copy_changes_description.clone()),
+        SettingItem::new(
+            text.settings_worktree_auto_delete.clone(),
+            auto_delete_field,
+        )
+        .description(text.settings_worktree_auto_delete_description.clone()),
+        SettingItem::new(
+            text.settings_worktree_auto_delete_limit.clone(),
+            limit_field,
+        )
+        .description(text.settings_worktree_auto_delete_limit_description.clone())
+        .disabled(!auto_delete_enabled),
+        SettingItem::new(text.settings_jump_worktrees_description.clone(), open_field),
+    ])
+}
+
+/// G-SE16: the web root-path/branch-prefix bounds — an empty value is
+/// required at save time on the web page, so the shell keeps the previous
+/// value instead of persisting an unusable worktree root.
+const WORKTREE_AUTO_DELETE_MIN: u32 = 1;
+const WORKTREE_AUTO_DELETE_MAX: u32 = 100;
+
+fn set_worktree_key(key: &str, value: serde_json::Value, cx: &mut App) {
+    let merged = merged_object_value(&ShellConfig::current(cx).worktrees, key, value.clone());
+    cx.global_mut::<ShellConfig>().worktrees = merged;
+    persist_object_key(WORKTREES_PATH, key, value);
+    cx.refresh_windows();
+}
+
+/// G-SE16: one string key of `app.worktrees`. Empty input is ignored (the web
+/// page rejects it; keeping the stored value is the honest shell behavior).
+fn worktree_text_field(key: &'static str, fallback: String) -> SettingField<SharedString> {
+    SettingField::input(
+        move |cx: &App| {
+            SharedString::from(
+                object_str(&ShellConfig::current(cx).worktrees, key, &fallback).to_string(),
+            )
+        },
+        move |value: SharedString, cx: &mut App| {
+            let value = value.to_string();
+            if value.trim().is_empty() {
+                tracing::warn!("Ignoring empty worktree setting: {key}");
+                return;
+            }
+            set_worktree_key(key, serde_json::json!(value), cx);
+        },
+    )
+}
+
+/// G-SE16: one boolean key of `app.worktrees`.
+fn worktree_switch_field(key: &'static str, fallback: bool) -> SettingField<bool> {
+    SettingField::switch(
+        move |cx: &App| object_bool(&ShellConfig::current(cx).worktrees, key, fallback),
+        move |value: bool, cx: &mut App| set_worktree_key(key, serde_json::json!(value), cx),
+    )
 }
 
 fn appearance_group(text: &ShellText, cx: &App) -> SettingGroup {
@@ -2103,29 +2596,69 @@ fn models_group(text: &ShellText, cx: &App) -> SettingGroup {
                 .child(text.models_empty.clone())
                 .into_any_element();
         }
-        let mut list = div().v_flex().gap_1().w_full();
+        let receipts = ModelTestState::current(cx).receipts;
+        let mut list = div().v_flex().gap_2().w_full();
         for model in &catalog.models {
             let (state, state_color) = if model.enabled {
                 (text.models_enabled.clone(), cx.theme().muted_foreground)
             } else {
                 (text.models_disabled.clone(), cx.theme().danger)
             };
-            list = list.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .child(div().min_w_0().truncate().text_sm().child(model.label()))
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .text_sm()
-                            .text_color(state_color)
-                            .child(state),
-                    ),
-            );
+            let testing = matches!(receipts.get(&model.id), Some(ModelTestReceipt::Testing));
+            let test_label = if testing {
+                text.models_testing.clone()
+            } else {
+                text.models_test.clone()
+            };
+            let test_id = model.id.clone();
+            let edit_id = model.id.clone();
+            let edit_label = crate::i18n::shared_term("tools.edit", cx);
+            let row = div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(div().min_w_0().truncate().text_sm().child(model.label()))
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .child(div().text_sm().text_color(state_color).child(state))
+                        .child(
+                            Button::new(SharedString::from(format!("model-test-{}", model.id)))
+                                .label(test_label)
+                                .small()
+                                .with_variant(ButtonVariant::Ghost)
+                                .loading(testing)
+                                .on_click(move |_, _window, cx| {
+                                    start_model_test(test_id.clone(), cx);
+                                }),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!("model-edit-{}", model.id)))
+                                .label(edit_label)
+                                .small()
+                                .with_variant(ButtonVariant::Ghost)
+                                .on_click(move |_, _window, cx| {
+                                    ModelEditorState::mutate(cx, |state| {
+                                        state.model_id = Some(edit_id.clone());
+                                        state.drafts_ready = false;
+                                        state.headers_text.clear();
+                                        state.body_text.clear();
+                                    });
+                                    cx.refresh_windows();
+                                }),
+                        ),
+                );
+            let mut card = div().v_flex().gap_1().w_full().child(row);
+            if let Some(ModelTestReceipt::Done(result)) = receipts.get(&model.id) {
+                card = card.child(model_test_receipt(result, &text, cx));
+            }
+            list = list.child(card);
         }
         list.into_any_element()
     });
@@ -2162,7 +2695,7 @@ fn models_group(text: &ShellText, cx: &App) -> SettingGroup {
     let proxy_username_field = proxy_text_field("username");
     let proxy_password_field = proxy_text_field("password");
 
-    SettingGroup::new().items(vec![
+    let mut items = vec![
         SettingItem::new(text.models_default.clone(), default_field)
             .description(default_description),
         SettingItem::new(text.models_configured.clone(), list_field),
@@ -2190,7 +2723,538 @@ fn models_group(text: &ShellText, cx: &App) -> SettingGroup {
         SettingItem::new(text.settings_proxy_password.clone(), proxy_password_field)
             .description(text.settings_proxy_password_description.clone())
             .disabled(!proxy_on),
-    ])
+    ];
+    // G-SE12: the open row's editor sits directly under the model list.
+    if let Some(editor_items) = model_editor_items(text, cx) {
+        items.extend(editor_items);
+    }
+    SettingGroup::new().items(items)
+}
+
+/// G-SE12: the inline editor for the row opened from the model list. It
+/// writes each change immediately (the shell's settings convention) through
+/// `update_config`, so the shared row keeps unknown fields and sibling models.
+/// The full reasoning-preset authoring panel stays on the web/desktop pages;
+/// the shell selects the default among the presets the stored row already
+/// carries and shows what they do.
+fn model_editor_items(text: &ShellText, cx: &App) -> Option<Vec<SettingItem>> {
+    let model_id = ModelEditorState::current(cx).model_id?;
+    let model = ShellConfig::current(cx)
+        .ai_models
+        .iter()
+        .find(|model| model.id == model_id)?
+        .clone();
+
+    let stored_category = serde_json::to_value(&model.category)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_else(|| "general_chat".to_string());
+
+    let mut items = vec![section_heading_item(
+        "model-editor",
+        format!("{} · {}", text.models_edit_title, model.name),
+        String::new(),
+    )];
+
+    let close_text = text.models_edit_close.clone();
+    items.push(SettingItem::render(move |_options, _window, _cx| {
+        Button::new("model-editor-close")
+            .label(close_text.clone())
+            .small()
+            .with_variant(ButtonVariant::Ghost)
+            .on_click(|_, _window, cx| {
+                ModelEditorState::mutate(cx, |state| state.model_id = None);
+                cx.refresh_windows();
+            })
+            .into_any_element()
+    }));
+
+    // Category: the web's four choices, plus a value written by a newer build
+    // kept verbatim so it is never silently remapped.
+    let mut category_options: Vec<(SharedString, SharedString)> = Vec::new();
+    for value in model_category_values(&stored_category) {
+        let (value, label) = if value == "__stored_unknown" {
+            (stored_category.clone(), stored_category.clone())
+        } else {
+            let label = match value {
+                "general_chat" => text.models_category_general_chat.clone(),
+                "multimodal" => text.models_category_multimodal.clone(),
+                "image_generation" => text.models_category_image_generation.clone(),
+                "speech_recognition" => text.models_category_speech_recognition.clone(),
+                other => other.to_string(),
+            };
+            (value.to_string(), label)
+        };
+        category_options.push((value.into(), label.into()));
+    }
+    let category_get_id = model_id.clone();
+    let category_set_id = model_id.clone();
+    let category_field = SettingField::dropdown(
+        category_options,
+        move |cx: &App| {
+            let stored = ShellConfig::current(cx)
+                .ai_models
+                .iter()
+                .find(|model| model.id == category_get_id)
+                .map(|model| {
+                    serde_json::to_value(&model.category)
+                        .ok()
+                        .and_then(|value| value.as_str().map(str::to_string))
+                        .unwrap_or_else(|| "general_chat".to_string())
+                })
+                .unwrap_or_else(|| "general_chat".to_string());
+            SharedString::from(stored)
+        },
+        move |value: SharedString, cx: &mut App| {
+            set_ai_model_category(&category_set_id, value.to_string(), cx);
+        },
+    );
+
+    let context_get_id = model_id.clone();
+    let context_set_id = model_id.clone();
+    let context_field = SettingField::number_input(
+        NumberFieldOptions {
+            min: f64::from(MODEL_EDITOR_MIN_CONTEXT_WINDOW),
+            max: f64::MAX,
+            step: 1_000.,
+        },
+        move |cx: &App| {
+            ShellConfig::current(cx)
+                .ai_models
+                .iter()
+                .find(|model| model.id == context_get_id)
+                .and_then(|model| model.context_window)
+                .unwrap_or(MODEL_EDITOR_DEFAULT_CONTEXT_WINDOW) as f64
+        },
+        move |value: f64, cx: &mut App| {
+            if value.is_finite() && value >= f64::from(MODEL_EDITOR_MIN_CONTEXT_WINDOW) {
+                set_ai_model_context_window(&context_set_id, value.round() as u32, cx);
+            }
+        },
+    );
+
+    let max_tokens_get_id = model_id.clone();
+    let max_tokens_set_id = model_id.clone();
+    let max_tokens_field = SettingField::number_input(
+        NumberFieldOptions {
+            min: 0.,
+            max: f64::MAX,
+            step: 1_000.,
+        },
+        move |cx: &App| {
+            ShellConfig::current(cx)
+                .ai_models
+                .iter()
+                .find(|model| model.id == max_tokens_get_id)
+                .and_then(|model| model.max_tokens)
+                .unwrap_or(0) as f64
+        },
+        move |value: f64, cx: &mut App| {
+            if !value.is_finite() {
+                return;
+            }
+            let tokens = value.round().max(0.) as u32;
+            if tokens == 0 {
+                set_ai_model_max_tokens(&max_tokens_set_id, None, cx);
+                return;
+            }
+            // The shared contract caps an explicit output limit at 40% of the
+            // context window; an out-of-range value is ignored rather than
+            // persisted invalid.
+            let context = ShellConfig::current(cx)
+                .ai_models
+                .iter()
+                .find(|model| model.id == max_tokens_set_id)
+                .and_then(|model| model.context_window)
+                .unwrap_or(MODEL_EDITOR_DEFAULT_CONTEXT_WINDOW);
+            if openbitfun_core::service::config::types::is_valid_configured_max_output_tokens(
+                context, tokens,
+            ) {
+                set_ai_model_max_tokens(&max_tokens_set_id, Some(tokens), cx);
+            }
+        },
+    );
+
+    let stored_default = model
+        .reasoning
+        .as_ref()
+        .and_then(|reasoning| reasoning.default_preset.clone())
+        .unwrap_or_default();
+    let mut reasoning_options: Vec<(SharedString, SharedString)> = vec![(
+        SharedString::from(""),
+        text.models_reasoning_auto.clone().into(),
+    )];
+    if let Some(reasoning) = model.reasoning.as_ref() {
+        for preset in &reasoning.presets {
+            if preset.disabled || preset.actions.is_empty() {
+                continue;
+            }
+            let label = preset
+                .label
+                .clone()
+                .filter(|label| !label.trim().is_empty())
+                .unwrap_or_else(|| preset.id.clone());
+            reasoning_options.push((preset.id.clone().into(), label.into()));
+        }
+    }
+    if !stored_default.is_empty()
+        && !reasoning_options
+            .iter()
+            .any(|(value, _)| value.as_ref() == stored_default)
+    {
+        reasoning_options.push((stored_default.clone().into(), stored_default.clone().into()));
+    }
+    let reasoning_get_id = model_id.clone();
+    let reasoning_set_id = model_id.clone();
+    let reasoning_field = SettingField::dropdown(
+        reasoning_options,
+        move |cx: &App| {
+            let stored = ShellConfig::current(cx)
+                .ai_models
+                .iter()
+                .find(|model| model.id == reasoning_get_id)
+                .and_then(|model| model.reasoning.as_ref())
+                .and_then(|reasoning| reasoning.default_preset.clone())
+                .unwrap_or_default();
+            SharedString::from(stored)
+        },
+        move |value: SharedString, cx: &mut App| {
+            let value = value.to_string();
+            let preset = (!value.is_empty()).then_some(value);
+            set_ai_model_reasoning_default(&reasoning_set_id, preset, cx);
+        },
+    );
+
+    // What the row's presets actually do, read-only: selection above is the
+    // editable part; authoring presets stays on the pages that own the panel.
+    let presets = model
+        .reasoning
+        .as_ref()
+        .map(|reasoning| reasoning.presets.clone())
+        .unwrap_or_default();
+    let presets_title = text.models_reasoning_presets.clone();
+    let presets_empty = text.models_reasoning_empty.clone();
+    let presets_disabled = text.models_disabled.clone();
+    let presets_item = SettingItem::render(move |_options, _window, cx| {
+        let mut column = div()
+            .v_flex()
+            .gap_1()
+            .w_full()
+            .debug_selector(|| "model-editor-presets".to_string())
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(presets_title.clone()),
+            );
+        if presets.is_empty() {
+            column = column.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(presets_empty.clone()),
+            );
+        }
+        for preset in &presets {
+            let name = preset
+                .label
+                .clone()
+                .filter(|label| !label.trim().is_empty())
+                .unwrap_or_else(|| preset.id.clone());
+            let summary = if preset.actions.is_empty() {
+                crate::i18n::reasoning_no_actions(cx)
+            } else {
+                preset
+                    .actions
+                    .iter()
+                    .map(|action| crate::i18n::reasoning_action_summary(action, cx))
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+            };
+            let mut line = format!("{name} · {summary}");
+            if preset.disabled {
+                line = format!("{line} · {presets_disabled}");
+            }
+            column = column.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(line),
+            );
+        }
+        column.into_any_element()
+    })
+    .layout(Axis::Vertical);
+
+    items.push(SettingItem::new(
+        text.models_category.clone(),
+        category_field,
+    ));
+    items.push(
+        SettingItem::new(text.models_context_window.clone(), context_field)
+            .description(text.models_context_window_hint.clone()),
+    );
+    items.push(
+        SettingItem::new(text.models_max_tokens.clone(), max_tokens_field)
+            .description(text.models_max_tokens_hint.clone()),
+    );
+    items.push(SettingItem::new(
+        text.models_reasoning_default.clone(),
+        reasoning_field,
+    ));
+    items.push(presets_item);
+
+    // G-SE12-3: request shaping. The provider format is fixed for a stored row
+    // (changing it belongs to the provider picker on the web/desktop pages),
+    // so it is shown read-only; the overrides below apply to it.
+    items.push(section_heading_item(
+        "model-advanced",
+        text.models_advanced.clone(),
+        text.models_advanced_note.clone(),
+    ));
+    let request_format = model.provider.clone();
+    let request_format_title = text.models_request_format.clone();
+    items.push(
+        SettingItem::render(move |_options, _window, cx| {
+            div()
+                .v_flex()
+                .gap_0p5()
+                .w_full()
+                .child(div().text_sm().child(request_format_title.clone()))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(request_format.clone()),
+                )
+                .into_any_element()
+        })
+        .layout(Axis::Vertical),
+    );
+
+    let inline_think_get_id = model_id.clone();
+    let inline_think_set_id = model_id.clone();
+    let inline_think_field = SettingField::switch(
+        move |cx: &App| {
+            ShellConfig::current(cx)
+                .ai_models
+                .iter()
+                .find(|model| model.id == inline_think_get_id)
+                .map(|model| model.inline_think_in_text)
+                .unwrap_or(true)
+        },
+        move |value: bool, cx: &mut App| {
+            set_ai_model_inline_think(&inline_think_set_id, value, cx);
+        },
+    );
+
+    let skip_ssl_get_id = model_id.clone();
+    let skip_ssl_set_id = model_id.clone();
+    let skip_ssl_field = SettingField::switch(
+        move |cx: &App| {
+            ShellConfig::current(cx)
+                .ai_models
+                .iter()
+                .find(|model| model.id == skip_ssl_get_id)
+                .map(|model| model.skip_ssl_verify)
+                .unwrap_or(false)
+        },
+        move |value: bool, cx: &mut App| {
+            set_ai_model_skip_ssl(&skip_ssl_set_id, value, cx);
+        },
+    );
+
+    let headers_get_id = model_id.clone();
+    let headers_set_id = model_id.clone();
+    let headers_field = SettingField::input(
+        move |cx: &App| {
+            let editor = ModelEditorState::current(cx);
+            if editor.drafts_ready && editor.model_id.as_deref() == Some(headers_get_id.as_str()) {
+                return SharedString::from(editor.headers_text);
+            }
+            let stored = ShellConfig::current(cx)
+                .ai_models
+                .iter()
+                .find(|model| model.id == headers_get_id)
+                .and_then(|model| model.custom_headers.clone())
+                .unwrap_or_default();
+            SharedString::from(serde_json::to_string(&stored).unwrap_or_else(|_| "{}".to_string()))
+        },
+        move |value: SharedString, cx: &mut App| {
+            set_ai_model_headers_text(&headers_set_id, value.to_string(), cx);
+        },
+    );
+
+    let headers_mode_get_id = model_id.clone();
+    let headers_mode_set_id = model_id.clone();
+    let stored_headers_mode = model
+        .custom_headers_mode
+        .clone()
+        .filter(|mode| !mode.is_empty())
+        .unwrap_or_else(|| "replace".to_string());
+    let mut headers_mode_options = vec![
+        (
+            SharedString::from("replace"),
+            text.models_headers_replace.clone().into(),
+        ),
+        (
+            SharedString::from("merge"),
+            text.models_headers_merge.clone().into(),
+        ),
+    ];
+    if !headers_mode_options
+        .iter()
+        .any(|(value, _)| value.as_ref() == stored_headers_mode)
+    {
+        headers_mode_options.push((
+            SharedString::from(stored_headers_mode.clone()),
+            SharedString::from(stored_headers_mode.clone()),
+        ));
+    }
+    let headers_mode_field = SettingField::dropdown(
+        headers_mode_options,
+        move |cx: &App| {
+            let stored = ShellConfig::current(cx)
+                .ai_models
+                .iter()
+                .find(|model| model.id == headers_mode_get_id)
+                .and_then(|model| model.custom_headers_mode.clone())
+                .filter(|mode| !mode.is_empty())
+                .unwrap_or_else(|| "replace".to_string());
+            SharedString::from(stored)
+        },
+        move |value: SharedString, cx: &mut App| {
+            set_ai_model_header_mode(&headers_mode_set_id, value.to_string(), cx);
+        },
+    );
+
+    let body_get_id = model_id.clone();
+    let body_set_id = model_id.clone();
+    let body_field = SettingField::input(
+        move |cx: &App| {
+            let editor = ModelEditorState::current(cx);
+            if editor.drafts_ready && editor.model_id.as_deref() == Some(body_get_id.as_str()) {
+                return SharedString::from(editor.body_text);
+            }
+            SharedString::from(
+                ShellConfig::current(cx)
+                    .ai_models
+                    .iter()
+                    .find(|model| model.id == body_get_id)
+                    .and_then(|model| model.custom_request_body.clone())
+                    .unwrap_or_default(),
+            )
+        },
+        move |value: SharedString, cx: &mut App| {
+            set_ai_model_body_text(&body_set_id, value.to_string(), cx);
+        },
+    );
+
+    let body_mode_get_id = model_id.clone();
+    let body_mode_set_id = model_id.clone();
+    let stored_body_mode = model
+        .custom_request_body_mode
+        .clone()
+        .filter(|mode| !mode.is_empty())
+        .unwrap_or_else(|| "merge".to_string());
+    let mut body_mode_options = vec![
+        (
+            SharedString::from("merge"),
+            text.models_body_merge.clone().into(),
+        ),
+        (
+            SharedString::from("trim"),
+            text.models_body_trim.clone().into(),
+        ),
+    ];
+    if !body_mode_options
+        .iter()
+        .any(|(value, _)| value.as_ref() == stored_body_mode)
+    {
+        body_mode_options.push((
+            SharedString::from(stored_body_mode.clone()),
+            SharedString::from(stored_body_mode.clone()),
+        ));
+    }
+    let body_mode_field = SettingField::dropdown(
+        body_mode_options,
+        move |cx: &App| {
+            let stored = ShellConfig::current(cx)
+                .ai_models
+                .iter()
+                .find(|model| model.id == body_mode_get_id)
+                .and_then(|model| model.custom_request_body_mode.clone())
+                .filter(|mode| !mode.is_empty())
+                .unwrap_or_else(|| "merge".to_string());
+            SharedString::from(stored)
+        },
+        move |value: SharedString, cx: &mut App| {
+            set_ai_model_body_mode(&body_mode_set_id, value.to_string(), cx);
+        },
+    );
+
+    let headers_description = if stored_headers_mode == "merge" {
+        text.models_headers_merge_hint.clone()
+    } else {
+        text.models_headers_replace_hint.clone()
+    };
+    let body_description = if stored_body_mode == "trim" {
+        text.models_body_trim_hint.clone()
+    } else {
+        text.models_body_hint.clone()
+    };
+
+    items.push(
+        SettingItem::new(text.models_inline_think.clone(), inline_think_field)
+            .description(text.models_inline_think_hint.clone()),
+    );
+    items.push(
+        SettingItem::new(text.models_skip_ssl.clone(), skip_ssl_field)
+            .description(text.models_skip_ssl_warning.clone()),
+    );
+    items.push(
+        SettingItem::new(text.models_headers.clone(), headers_field)
+            .description(format!(
+                "{} {}",
+                text.models_headers_hint, headers_description
+            ))
+            .layout(Axis::Vertical),
+    );
+    items.push(SettingItem::new(
+        text.models_headers_mode.clone(),
+        headers_mode_field,
+    ));
+    items.push(
+        SettingItem::new(text.models_body.clone(), body_field)
+            .description(body_description)
+            .layout(Axis::Vertical),
+    );
+    items.push(SettingItem::new(
+        text.models_body_mode.clone(),
+        body_mode_field,
+    ));
+
+    // Invalid JSON stays in the draft (the stored row is untouched); say so
+    // instead of silently showing a field that is not saving.
+    let editor = ModelEditorState::current(cx);
+    let drafts_here = editor.drafts_ready && editor.model_id.as_deref() == Some(model_id.as_str());
+    let invalid = drafts_here
+        && (!headers_json_valid(&editor.headers_text) || !body_json_valid(&editor.body_text));
+    if invalid {
+        let invalid_text = text.models_json_invalid.clone();
+        items.push(
+            SettingItem::render(move |_options, _window, cx| {
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().danger)
+                    .child(invalid_text.clone())
+                    .into_any_element()
+            })
+            .layout(Axis::Vertical),
+        );
+    }
+
+    Some(items)
 }
 
 /// One in-page section heading, standing in for the web `ConfigPageSection`
@@ -3923,6 +4987,400 @@ fn trinity_engine_group(
     ])
 }
 
+/// G-SE17: one editable row of the global permission rules. The id keys the
+/// row's input states, so reordering or deleting never recycles a text field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PermissionRuleDraft {
+    pub(crate) id: u64,
+    pub(crate) action: String,
+    pub(crate) resource: String,
+    /// `allow` | `ask` | `deny` (the shared snake_case contract).
+    pub(crate) effect: String,
+}
+
+/// G-SE17: the in-page editor state. `active = false` shows the stored rules
+/// read-only; entering edit mode snapshots them into the draft and nothing is
+/// persisted until Save.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct PermissionRulesDraft {
+    pub(crate) active: bool,
+    pub(crate) rules: Vec<PermissionRuleDraft>,
+    pub(crate) next_id: u64,
+}
+
+impl Global for PermissionRulesDraft {}
+
+impl PermissionRulesDraft {
+    pub(crate) fn current(cx: &App) -> Self {
+        cx.try_global::<Self>().cloned().unwrap_or_default()
+    }
+
+    pub(crate) fn mutate<R>(cx: &mut App, change: impl FnOnce(&mut Self) -> R) -> R {
+        if cx.try_global::<Self>().is_none() {
+            cx.set_global(Self::default());
+        }
+        change(cx.global_mut::<Self>())
+    }
+}
+
+/// The shared serialized effect id.
+pub(crate) fn permission_effect_value(
+    effect: openbitfun_runtime_ports::PermissionEffect,
+) -> &'static str {
+    use openbitfun_runtime_ports::PermissionEffect;
+    match effect {
+        PermissionEffect::Allow => "allow",
+        PermissionEffect::Ask => "ask",
+        PermissionEffect::Deny => "deny",
+    }
+}
+
+/// Parses a stored/selected effect id; an unknown value falls back to `ask`
+/// (the conservative interactive default) instead of dropping the rule.
+pub(crate) fn permission_effect_from_value(
+    value: &str,
+) -> openbitfun_runtime_ports::PermissionEffect {
+    use openbitfun_runtime_ports::PermissionEffect;
+    match value {
+        "allow" => PermissionEffect::Allow,
+        "deny" => PermissionEffect::Deny,
+        _ => PermissionEffect::Ask,
+    }
+}
+
+fn permission_effect_label(value: &str, text: &ShellText) -> String {
+    match value {
+        "allow" => text.settings_permission_effect_allow.clone(),
+        "deny" => text.settings_permission_effect_deny.clone(),
+        _ => text.settings_permission_effect_ask.clone(),
+    }
+}
+
+/// Snapshots the stored rules into the editor.
+fn start_permission_rules_draft(cx: &mut App) {
+    let stored = ShellConfig::current(cx).permission_rules;
+    PermissionRulesDraft::mutate(cx, |draft| {
+        draft.rules = stored
+            .iter()
+            .enumerate()
+            .map(|(index, rule)| PermissionRuleDraft {
+                id: index as u64,
+                action: rule.action.clone(),
+                resource: rule.resource.clone(),
+                effect: permission_effect_value(rule.effect).to_string(),
+            })
+            .collect();
+        draft.next_id = stored.len() as u64;
+        draft.active = true;
+    });
+    cx.refresh_windows();
+}
+
+/// Writes the draft back as the ordered rule array. Incomplete rows are
+/// refused (the Save control is disabled for them too).
+fn save_permission_rules(cx: &mut App) {
+    let draft = PermissionRulesDraft::current(cx);
+    if draft
+        .rules
+        .iter()
+        .any(|rule| rule.action.trim().is_empty() || rule.resource.trim().is_empty())
+    {
+        return;
+    }
+    let rules: Vec<openbitfun_runtime_ports::PermissionRule> = draft
+        .rules
+        .iter()
+        .map(|rule| {
+            openbitfun_runtime_ports::PermissionRule::new(
+                rule.action.trim(),
+                rule.resource.trim(),
+                permission_effect_from_value(&rule.effect),
+            )
+        })
+        .collect();
+    cx.global_mut::<ShellConfig>().permission_rules = rules.clone();
+    persist_object_key(
+        PERMISSION_POLICY_PATH,
+        "rules",
+        serde_json::to_value(&rules).unwrap_or(serde_json::json!([])),
+    );
+    PermissionRulesDraft::mutate(cx, |draft| draft.active = false);
+    cx.refresh_windows();
+}
+
+fn permission_rules_readonly_item(text: &ShellText, _cx: &App) -> SettingItem {
+    let text = text.clone();
+    SettingItem::render(move |_options, _window, cx| {
+        let stored = ShellConfig::current(cx).permission_rules.clone();
+        let mut column = div().v_flex().gap_1().w_full();
+        if stored.is_empty() {
+            column = column.child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(text.settings_permission_rules_empty.clone()),
+            );
+        } else {
+            for rule in &stored {
+                column = column.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_2()
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_sm()
+                                .text_color(cx.theme().foreground)
+                                .child(format!("{} · {}", rule.action, rule.resource)),
+                        )
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(permission_effect_label(
+                                    permission_effect_value(rule.effect),
+                                    &text,
+                                )),
+                        ),
+                );
+            }
+        }
+        column = column.child(
+            Button::new("permission-rules-manage")
+                .label(text.settings_permission_rules_manage.clone())
+                .small()
+                .outline()
+                .on_click(move |_, _window, cx| start_permission_rules_draft(cx)),
+        );
+        column.into_any_element()
+    })
+}
+
+/// One editor row: action input, resource input and the effect menu.
+fn permission_rule_item(rule_id: u64, index: usize, count: usize, text: &ShellText) -> SettingItem {
+    let row_text = text.clone();
+    SettingItem::render(move |_options, window, cx| {
+        let draft = PermissionRulesDraft::current(cx);
+        let Some(rule) = draft.rules.iter().find(|rule| rule.id == rule_id).cloned() else {
+            return div().into_any_element();
+        };
+        let action = permission_rule_input(
+            rule_id,
+            "action",
+            &rule.action,
+            &row_text.settings_permission_rules_action,
+            window,
+            cx,
+        );
+        let resource = permission_rule_input(
+            rule_id,
+            "resource",
+            &rule.resource,
+            &row_text.settings_permission_rules_resource,
+            window,
+            cx,
+        );
+
+        let effect_value = rule.effect.clone();
+        let effect_text = row_text.clone();
+        let effect_button = Button::new(SharedString::from(format!(
+            "permission-rule-{rule_id}-effect"
+        )))
+        .label(permission_effect_label(&rule.effect, &row_text))
+        .tooltip(row_text.settings_permission_rules_effect.clone())
+        .small()
+        .outline()
+        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _window, _cx| {
+            let mut menu = menu;
+            for effect in ["allow", "ask", "deny"] {
+                let selected = effect == effect_value;
+                let label = permission_effect_label(effect, &effect_text);
+                let value = effect.to_string();
+                menu = menu.item(PopupMenuItem::new(label).checked(selected).on_click(
+                    move |_, _window, cx| {
+                        let value = value.clone();
+                        PermissionRulesDraft::mutate(cx, |draft| {
+                            if let Some(rule) =
+                                draft.rules.iter_mut().find(|rule| rule.id == rule_id)
+                            {
+                                rule.effect = value;
+                            }
+                        });
+                        cx.refresh_windows();
+                    },
+                ));
+            }
+            menu
+        });
+
+        let up = Button::new(SharedString::from(format!("permission-rule-{rule_id}-up")))
+            .label("↑")
+            .small()
+            .with_variant(ButtonVariant::Ghost)
+            .disabled(index == 0)
+            .on_click(move |_, _window, cx| {
+                PermissionRulesDraft::mutate(cx, |draft| {
+                    if index > 0 {
+                        draft.rules.swap(index - 1, index);
+                    }
+                });
+                cx.refresh_windows();
+            });
+        let down = Button::new(SharedString::from(format!(
+            "permission-rule-{rule_id}-down"
+        )))
+        .label("↓")
+        .small()
+        .with_variant(ButtonVariant::Ghost)
+        .disabled(index + 1 >= count)
+        .on_click(move |_, _window, cx| {
+            PermissionRulesDraft::mutate(cx, |draft| {
+                if index + 1 < draft.rules.len() {
+                    draft.rules.swap(index, index + 1);
+                }
+            });
+            cx.refresh_windows();
+        });
+        let remove = Button::new(SharedString::from(format!(
+            "permission-rule-{rule_id}-remove"
+        )))
+        .label("×")
+        .small()
+        .with_variant(ButtonVariant::Ghost)
+        .on_click(move |_, _window, cx| {
+            PermissionRulesDraft::mutate(cx, |draft| {
+                draft.rules.retain(|rule| rule.id != rule_id);
+            });
+            cx.refresh_windows();
+        });
+
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .w_full()
+            .child(div().w(px(120.)).child(action))
+            .child(div().flex_1().min_w_0().child(resource))
+            .child(effect_button)
+            .child(up)
+            .child(down)
+            .child(remove)
+            .into_any_element()
+    })
+}
+
+/// One text input of an editor row, keyed by the stable row id so the text
+/// follows the row through reorders.
+fn permission_rule_input(
+    rule_id: u64,
+    field: &'static str,
+    value: &str,
+    placeholder: &str,
+    window: &mut Window,
+    cx: &mut App,
+) -> gpui_kit::AnyElement {
+    let key = SharedString::from(format!("permission-rule-{rule_id}-{field}"));
+    let initial = value.to_string();
+    let placeholder = placeholder.to_string();
+    let state = window.use_keyed_state(key, cx, move |window, cx| {
+        let input = cx.new(|cx| {
+            InputState::new(window, cx)
+                .default_value(initial.clone())
+                .placeholder(placeholder.clone())
+        });
+        let subscription = cx.subscribe(
+            &input,
+            move |_, input, event: &gpui_kit::component::input::InputEvent, cx| {
+                if matches!(event, gpui_kit::component::input::InputEvent::Change) {
+                    let value = input.read(cx).value().to_string();
+                    PermissionRulesDraft::mutate(cx, |draft| {
+                        if let Some(rule) = draft.rules.iter_mut().find(|rule| rule.id == rule_id) {
+                            if field == "action" {
+                                rule.action = value.clone();
+                            } else {
+                                rule.resource = value.clone();
+                            }
+                        }
+                    });
+                    cx.refresh_windows();
+                }
+            },
+        );
+        (input, subscription)
+    });
+    let value = SharedString::from(value.to_string());
+    state.update(cx, |(input, _subscription), cx| {
+        if input.read(cx).value() != value {
+            input.update(cx, |input, cx| input.set_value(value.clone(), window, cx));
+        }
+    });
+    Input::new(&state.read(cx).0).small().into_any_element()
+}
+
+/// Add / Save / Discard under the editor rows.
+fn permission_rules_actions_item(text: &ShellText) -> SettingItem {
+    let text = text.clone();
+    SettingItem::render(move |_options, _window, cx| {
+        let draft = PermissionRulesDraft::current(cx);
+        let valid = draft
+            .rules
+            .iter()
+            .all(|rule| !rule.action.trim().is_empty() && !rule.resource.trim().is_empty());
+        let mut row = div().flex().items_center().gap_2().w_full();
+        if !valid {
+            row = row.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().danger)
+                    .child(text.settings_permission_rules_invalid.clone()),
+            );
+        }
+        row = row
+            .child(
+                Button::new("permission-rules-add")
+                    .label(text.settings_permission_rules_add.clone())
+                    .small()
+                    .outline()
+                    .on_click(move |_, _window, cx| {
+                        PermissionRulesDraft::mutate(cx, |draft| {
+                            let id = draft.next_id;
+                            draft.next_id += 1;
+                            draft.rules.push(PermissionRuleDraft {
+                                id,
+                                action: "*".to_string(),
+                                resource: String::new(),
+                                effect: "ask".to_string(),
+                            });
+                        });
+                        cx.refresh_windows();
+                    }),
+            )
+            .child(
+                Button::new("permission-rules-save")
+                    .label(text.settings_permission_rules_save.clone())
+                    .small()
+                    .with_variant(ButtonVariant::Primary)
+                    .disabled(!valid)
+                    .on_click(move |_, _window, cx| save_permission_rules(cx)),
+            )
+            .child(
+                Button::new("permission-rules-discard")
+                    .label(text.settings_permission_rules_discard.clone())
+                    .small()
+                    .with_variant(ButtonVariant::Ghost)
+                    .on_click(move |_, _window, cx| {
+                        PermissionRulesDraft::mutate(cx, |draft| draft.active = false);
+                        cx.refresh_windows();
+                    }),
+            );
+        row.into_any_element()
+    })
+}
+
 fn permissions_group(text: &ShellText, cx: &App) -> SettingGroup {
     let preset_options = vec![
         (
@@ -4037,6 +5495,15 @@ fn permissions_group(text: &ShellText, cx: &App) -> SettingGroup {
         SWARM_MAX_CONCURRENCY_PATH,
     );
 
+    // The row description follows the stored policy, matching the web page's
+    // per-option helper text.
+    let batch_description =
+        if ShellConfig::current(cx).subagent_batch_policy == SUBAGENT_BATCH_POLICIES[1] {
+            text.settings_subagent_batch_parallel_description.clone()
+        } else {
+            text.settings_subagent_batch_safe_description.clone()
+        };
+
     // G-SE20/G-SE21: the two tool-runtime switches.
     let deferred_field = SettingField::switch(
         |cx: &App| ShellConfig::current(cx).deferred_tool_loading,
@@ -4079,12 +5546,31 @@ fn permissions_group(text: &ShellText, cx: &App) -> SettingGroup {
         deferred_item = deferred_item.description(warning);
     }
 
-    SettingGroup::new().items(vec![
+    // G-SE17: the global rule list / editor sits between the two policy rows
+    // and the execution section, matching the web page's placement.
+    let mut items = vec![
         SettingItem::new(text.settings_policy.clone(), preset_field)
             .description(text.settings_policy_description.clone()),
         SettingItem::new(text.settings_auto_approve.clone(), auto_approve_field)
             .description(text.settings_auto_approve_description.clone())
             .disabled(auto_approve_disabled),
+        section_heading_item(
+            "permission-rules",
+            text.settings_permission_rules_section.clone(),
+            text.settings_permission_rules_description.clone(),
+        ),
+    ];
+    let draft = PermissionRulesDraft::current(cx);
+    if draft.active {
+        let count = draft.rules.len();
+        for (index, rule) in draft.rules.iter().enumerate() {
+            items.push(permission_rule_item(rule.id, index, count, text));
+        }
+        items.push(permission_rules_actions_item(text));
+    } else {
+        items.push(permission_rules_readonly_item(text, cx));
+    }
+    items.extend(vec![
         section_heading_item(
             "execution",
             text.settings_execution_section.clone(),
@@ -4104,7 +5590,8 @@ fn permissions_group(text: &ShellText, cx: &App) -> SettingGroup {
         ),
         SettingItem::new(text.settings_subagent_model.clone(), subagent_model_field)
             .description(text.settings_subagent_model_description.clone()),
-        SettingItem::new(text.settings_subagent_batch.clone(), batch_field),
+        SettingItem::new(text.settings_subagent_batch.clone(), batch_field)
+            .description(batch_description),
         SettingItem::new(
             text.settings_subagent_concurrency.clone(),
             subagent_concurrency_field,
@@ -4140,13 +5627,364 @@ fn permissions_group(text: &ShellText, cx: &App) -> SettingGroup {
         .description(text.settings_review_parallelism_description.clone()),
         SettingItem::new(text.settings_review_queue_wait.clone(), review_queue_field)
             .description(text.settings_review_queue_wait_description.clone()),
-    ])
+    ]);
+    SettingGroup::new().items(items)
+}
+
+/// G-SE24: the quick-actions editor state. The draft is page-local: nothing
+/// is written until Save, matching the web modal.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct QuickActionsEditorState {
+    /// Position in the stored array being edited.
+    pub(crate) index: Option<usize>,
+    pub(crate) label: String,
+    pub(crate) prompt: String,
+    /// Two-stage confirmation for a custom action's delete.
+    pub(crate) confirm_delete: Option<usize>,
+}
+
+impl Global for QuickActionsEditorState {}
+
+impl QuickActionsEditorState {
+    fn current(cx: &App) -> Self {
+        cx.try_global::<Self>().cloned().unwrap_or_default()
+    }
+
+    fn mutate<R>(cx: &mut App, change: impl FnOnce(&mut Self) -> R) -> R {
+        if cx.try_global::<Self>().is_none() {
+            cx.set_global(Self::default());
+        }
+        change(cx.global_mut::<Self>())
+    }
+}
+
+/// The canonical English text of a built-in action, when this is one.
+fn quick_action_builtin_default(id: &str) -> Option<(&'static str, &'static str)> {
+    match id {
+        "commit" => Some(crate::shell::QUICK_ACTION_COMMIT_DEFAULTS),
+        "create_pr" => Some(crate::shell::QUICK_ACTION_CREATE_PR_DEFAULTS),
+        _ => None,
+    }
+}
+
+/// Writes the whole array (the shared key is a list, not an object) and
+/// updates the composer menu's mirror.
+fn persist_quick_actions(
+    actions: Vec<openbitfun_core::service::config::types::AiExperienceQuickAction>,
+    cx: &mut App,
+) {
+    cx.global_mut::<ShellConfig>().quick_actions = actions.clone();
+    persist(
+        QUICK_ACTIONS_PATH,
+        serde_json::to_value(&actions).unwrap_or_else(|_| serde_json::json!([])),
+    );
+    cx.refresh_windows();
+}
+
+fn start_quick_action_edit(index: usize, cx: &mut App) {
+    let Some(action) = ShellConfig::current(cx).quick_actions.get(index).cloned() else {
+        return;
+    };
+    let text = crate::i18n::current(cx);
+    let (label, prompt) = crate::shell::resolve_quick_action_text(&action, &text);
+    QuickActionsEditorState::mutate(cx, |state| {
+        state.index = Some(index);
+        state.label = label;
+        state.prompt = prompt;
+    });
+    cx.refresh_windows();
+}
+
+/// The stored-vs-localized normalization of one quick action (web
+/// `normalizeQuickActionTextForStorage`): a built-in row that still carries
+/// its canonical English default and was not edited away from the localized
+/// text stores the default again; everything else keeps the typed text.
+pub(crate) fn normalized_quick_action_text(
+    id: &str,
+    stored_label: &str,
+    stored_prompt: &str,
+    typed_label: &str,
+    typed_prompt: &str,
+    localized_label: &str,
+    localized_prompt: &str,
+) -> (String, String) {
+    let Some((default_label, default_prompt)) = quick_action_builtin_default(id) else {
+        return (typed_label.to_string(), typed_prompt.to_string());
+    };
+    let label = if stored_label == default_label && typed_label == localized_label {
+        default_label.to_string()
+    } else {
+        typed_label.to_string()
+    };
+    let prompt = if stored_prompt == default_prompt && typed_prompt == localized_prompt {
+        default_prompt.to_string()
+    } else {
+        typed_prompt.to_string()
+    };
+    (label, prompt)
+}
+
+fn save_quick_action_edit(cx: &mut App) {
+    let state = QuickActionsEditorState::current(cx);
+    let Some(index) = state.index else {
+        return;
+    };
+    let typed_label = state.label.trim().to_string();
+    let typed_prompt = state.prompt.trim().to_string();
+    if typed_label.is_empty() || typed_prompt.is_empty() {
+        return;
+    }
+    let mut actions = ShellConfig::current(cx).quick_actions;
+    let Some(action) = actions.get_mut(index) else {
+        return;
+    };
+    let text = crate::i18n::current(cx);
+    let (localized_label, localized_prompt) =
+        crate::shell::resolve_quick_action_text(action, &text);
+    let (label, prompt) = normalized_quick_action_text(
+        &action.id,
+        &action.label,
+        &action.prompt,
+        &typed_label,
+        &typed_prompt,
+        &localized_label,
+        &localized_prompt,
+    );
+    action.label = label;
+    action.prompt = prompt;
+    persist_quick_actions(actions, cx);
+    QuickActionsEditorState::mutate(cx, |state| state.index = None);
+    cx.refresh_windows();
+}
+
+fn add_quick_action(cx: &mut App) {
+    let mut actions = ShellConfig::current(cx).quick_actions;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    actions.push(
+        openbitfun_core::service::config::types::AiExperienceQuickAction {
+            id: format!("custom_{now}"),
+            label: String::new(),
+            prompt: String::new(),
+            enabled: true,
+        },
+    );
+    let index = actions.len() - 1;
+    persist_quick_actions(actions, cx);
+    QuickActionsEditorState::mutate(cx, |state| {
+        state.index = Some(index);
+        state.label.clear();
+        state.prompt.clear();
+    });
+    cx.refresh_windows();
+}
+
+fn delete_quick_action(index: usize, cx: &mut App) {
+    let mut actions = ShellConfig::current(cx).quick_actions;
+    let Some(action) = actions.get(index) else {
+        return;
+    };
+    if quick_action_builtin_default(&action.id).is_some() {
+        return;
+    }
+    actions.remove(index);
+    persist_quick_actions(actions, cx);
+    QuickActionsEditorState::mutate(cx, |state| {
+        state.confirm_delete = None;
+        if state.index == Some(index) {
+            state.index = None;
+        }
+    });
+}
+
+fn toggle_quick_action(index: usize, enabled: bool, cx: &mut App) {
+    let mut actions = ShellConfig::current(cx).quick_actions;
+    if let Some(action) = actions.get_mut(index) {
+        action.enabled = enabled;
+    }
+    persist_quick_actions(actions, cx);
+}
+
+/// G-SE24: the automation page's quick-actions section — built-in rows
+/// (editable, not deletable), custom rows (editable and deletable) and the
+/// inline editor.
+fn quick_actions_items(text: &ShellText, cx: &App) -> Vec<SettingItem> {
+    let actions = ShellConfig::current(cx).quick_actions;
+    let state = QuickActionsEditorState::current(cx);
+    let mut items = vec![section_heading_item(
+        "quick-actions-builtin",
+        text.settings_quick_actions_builtin_section.clone(),
+        text.settings_quick_actions_builtin_note.clone(),
+    )];
+
+    let mut custom_indices = Vec::new();
+    for (index, action) in actions.iter().enumerate() {
+        let builtin = quick_action_builtin_default(&action.id).is_some();
+        if !builtin {
+            custom_indices.push(index);
+        }
+        let (label, prompt) = crate::shell::resolve_quick_action_text(action, text);
+        let toggle = SettingField::switch(
+            move |cx: &App| {
+                ShellConfig::current(cx)
+                    .quick_actions
+                    .get(index)
+                    .map(|action| action.enabled)
+                    .unwrap_or(false)
+            },
+            move |value: bool, cx: &mut App| toggle_quick_action(index, value, cx),
+        );
+        items.push(SettingItem::new(label, toggle).description(prompt));
+    }
+
+    items.push(section_heading_item(
+        "quick-actions-custom",
+        text.settings_quick_actions_custom_section.clone(),
+        text.settings_quick_actions_custom_note.clone(),
+    ));
+    if custom_indices.is_empty() {
+        items.push(SettingItem::render({
+            let empty = text.settings_quick_actions_custom_empty.clone();
+            move |_options, _window, cx| {
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(empty.clone())
+                    .into_any_element()
+            }
+        }));
+    }
+    for &index in &custom_indices {
+        let Some(action) = actions.get(index) else {
+            continue;
+        };
+        let (label, _prompt) = crate::shell::resolve_quick_action_text(action, text);
+        let row_text = text.clone();
+        let confirming = state.confirm_delete == Some(index);
+        items.push(SettingItem::render(move |_options, _window, cx| {
+            let edit = Button::new(SharedString::from(format!("quick-action-{index}-edit")))
+                .label(crate::i18n::shared_term("tools.edit", cx))
+                .small()
+                .outline()
+                .on_click(move |_, _window, cx| start_quick_action_edit(index, cx));
+            let delete_text = if confirming {
+                row_text.settings_quick_actions_delete_confirm.clone()
+            } else {
+                row_text.settings_quick_actions_delete.clone()
+            };
+            let delete = Button::new(SharedString::from(format!("quick-action-{index}-delete")))
+                .label(delete_text)
+                .small()
+                .with_variant(ButtonVariant::Danger)
+                .on_click(move |_, _window, cx| {
+                    let already =
+                        QuickActionsEditorState::current(cx).confirm_delete == Some(index);
+                    if already {
+                        delete_quick_action(index, cx);
+                    } else {
+                        QuickActionsEditorState::mutate(cx, |state| {
+                            state.confirm_delete = Some(index);
+                        });
+                        cx.refresh_windows();
+                    }
+                });
+            div()
+                .flex()
+                .items_center()
+                .gap_2()
+                .w_full()
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .truncate()
+                        .text_sm()
+                        .text_color(cx.theme().foreground)
+                        .child(label.clone()),
+                )
+                .child(edit)
+                .child(delete)
+                .into_any_element()
+        }));
+    }
+    items.push(SettingItem::render({
+        let add_text = text.settings_quick_actions_add.clone();
+        move |_options, _window, _cx| {
+            Button::new("quick-action-add")
+                .label(add_text.clone())
+                .small()
+                .outline()
+                .on_click(move |_, _window, cx| add_quick_action(cx))
+                .into_any_element()
+        }
+    }));
+
+    if state.index.is_some() {
+        let label_text = text.settings_quick_actions_label.clone();
+        let prompt_text = text.settings_quick_actions_prompt.clone();
+        let invalid_text = text.settings_quick_actions_invalid.clone();
+        let label_field = SettingField::input(
+            |cx: &App| SharedString::from(QuickActionsEditorState::current(cx).label),
+            |value: SharedString, cx: &mut App| {
+                QuickActionsEditorState::mutate(cx, |state| state.label = value.to_string());
+                cx.refresh_windows();
+            },
+        );
+        let prompt_field = SettingField::input(
+            |cx: &App| SharedString::from(QuickActionsEditorState::current(cx).prompt),
+            |value: SharedString, cx: &mut App| {
+                QuickActionsEditorState::mutate(cx, |state| state.prompt = value.to_string());
+                cx.refresh_windows();
+            },
+        );
+        items.push(SettingItem::new(label_text, label_field).layout(Axis::Vertical));
+        items.push(SettingItem::new(prompt_text, prompt_field).layout(Axis::Vertical));
+        let save_text = text.settings_quick_actions_save.clone();
+        let cancel_text = text.settings_quick_actions_cancel.clone();
+        items.push(SettingItem::render(move |_options, _window, cx| {
+            let state = QuickActionsEditorState::current(cx);
+            let valid = !state.label.trim().is_empty() && !state.prompt.trim().is_empty();
+            let mut row = div().flex().items_center().gap_2().w_full();
+            if !valid {
+                row = row.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().danger)
+                        .child(invalid_text.clone()),
+                );
+            }
+            row = row
+                .child(
+                    Button::new("quick-action-save")
+                        .label(save_text.clone())
+                        .small()
+                        .with_variant(ButtonVariant::Primary)
+                        .disabled(!valid)
+                        .on_click(move |_, _window, cx| save_quick_action_edit(cx)),
+                )
+                .child(
+                    Button::new("quick-action-cancel")
+                        .label(cancel_text.clone())
+                        .small()
+                        .with_variant(ButtonVariant::Ghost)
+                        .on_click(move |_, _window, cx| {
+                            QuickActionsEditorState::mutate(cx, |state| state.index = None);
+                            cx.refresh_windows();
+                        }),
+                );
+            row.into_any_element()
+        }));
+    }
+
+    items
 }
 
 /// Automation group (M22): the native-hooks master switches and the commit
 /// co-author preference. The toggles are the same shared values the desktop
 /// automation page writes; hook declarations themselves stay in hooks.json.
-fn automation_group(text: &ShellText) -> SettingGroup {
+fn automation_group(text: &ShellText, cx: &App) -> SettingGroup {
     let hooks_field = SettingField::switch(
         |cx: &App| ShellConfig::current(cx).hooks_enabled,
         |value: bool, cx: &mut App| {
@@ -4172,14 +6010,572 @@ fn automation_group(text: &ShellText) -> SettingGroup {
         },
     );
 
-    SettingGroup::new().items(vec![
+    let mut items = vec![
         SettingItem::new(text.settings_hooks.clone(), hooks_field)
             .description(text.settings_hooks_description.clone()),
         SettingItem::new(text.settings_hooks_project.clone(), project_hooks_field)
             .description(text.settings_hooks_project_description.clone()),
         SettingItem::new(text.settings_git_coauthor.clone(), coauthor_field)
             .description(text.settings_git_coauthor_description.clone()),
-    ])
+        section_heading_item(
+            "quick-actions",
+            text.settings_quick_actions_section.clone(),
+            text.settings_quick_actions_note.clone(),
+        ),
+    ];
+    items.extend(quick_actions_items(text, cx));
+
+    // G-SE25: where hooks are declared, the imported-source manager, and the
+    // Codex contract reference (web `HooksConfig`).
+    items.push(section_heading_item(
+        "hook-locations",
+        text.settings_hooks_locations_section.clone(),
+        text.settings_hooks_locations_note.clone(),
+    ));
+    for (label, description) in [
+        (
+            text.settings_hooks_user_file.clone(),
+            text.settings_hooks_user_file_desc.clone(),
+        ),
+        (
+            text.settings_hooks_project_file.clone(),
+            text.settings_hooks_project_file_desc.clone(),
+        ),
+    ] {
+        items.push(
+            SettingItem::render(move |_options, _window, cx| {
+                div()
+                    .v_flex()
+                    .gap_0p5()
+                    .w_full()
+                    .child(div().text_sm().child(label.clone()))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(description.clone()),
+                    )
+                    .into_any_element()
+            })
+            .layout(Axis::Vertical),
+        );
+    }
+
+    let imports_note = if ShellConfig::current(cx).hooks_enabled {
+        text.settings_hooks_imports_note.clone()
+    } else {
+        text.settings_hooks_imports_master_disabled.clone()
+    };
+    items.push(section_heading_item(
+        "hook-imports",
+        text.settings_hooks_imports_section.clone(),
+        imports_note,
+    ));
+
+    let refresh_label = text.settings_hooks_imports_refresh.clone();
+    items.push(
+        SettingItem::render(move |_options, _window, cx| {
+            let state = HookImportState::current(cx);
+            let (status, color) = if let Some(error) = state.error.clone() {
+                (error, cx.theme().danger)
+            } else if state.loading {
+                (
+                    crate::i18n::current(cx).settings_hooks_imports_loading,
+                    cx.theme().muted_foreground,
+                )
+            } else {
+                (String::new(), cx.theme().muted_foreground)
+            };
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .w_full()
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_xs()
+                        .text_color(color)
+                        .child(status),
+                )
+                .child(
+                    Button::new("hook-imports-refresh")
+                        .label(refresh_label.clone())
+                        .small()
+                        .with_variant(ButtonVariant::Ghost)
+                        .loading(state.loading)
+                        .on_click(|_, _window, cx| fetch_hook_imports(true, cx)),
+                )
+                .into_any_element()
+        })
+        .layout(Axis::Vertical),
+    );
+
+    let page = HookImportState::current(cx);
+    let snapshot = page.snapshot.clone();
+    let imports = snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.imports.clone())
+        .unwrap_or_default();
+    let diagnostics = snapshot
+        .as_ref()
+        .map(|snapshot| {
+            snapshot
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| {
+                    diagnostic
+                        .code
+                        .starts_with("external_hook.import_store_corrupt.")
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let master_on = ShellConfig::current(cx).hooks_enabled;
+
+    if page.loaded && imports.is_empty() && diagnostics.is_empty() {
+        let empty_text = text.settings_hooks_imports_empty.clone();
+        items.push(
+            SettingItem::render(move |_options, _window, cx| {
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(empty_text.clone())
+                    .into_any_element()
+            })
+            .layout(Axis::Vertical),
+        );
+    }
+
+    for import in imports {
+        let import_id = import.import_id.clone();
+        let name = import.source.display_name.clone();
+        let state_label =
+            hook_import_state_label(&import.state, &import.source.location_hint, text);
+        let enabled = import.enabled;
+        let can_update = !matches!(
+            import.state,
+            openbitfun_product_domains::external_hook_import::ImportedHookSourceStateV1::SourceMissing
+        );
+        let busy = page.busy || page.loading;
+        let armed = page.confirm.as_deref() == Some(&format!("remove:{import_id}"));
+        let update_label = text.settings_hooks_imports_update.clone();
+        let remove_label = text.settings_hooks_imports_remove.clone();
+        let toggle_label = text.settings_hooks_import_toggle.clone();
+        let cancel_label = text.settings_quick_actions_cancel.clone();
+        let confirm_title = text.settings_hooks_import_remove_title.clone();
+        let confirm_note = text.settings_hooks_import_remove_confirm_note.clone();
+        let confirm_label = text.settings_hooks_import_remove_confirm.clone();
+        let row_id = import_id.clone();
+        let click_id = import_id.clone();
+        let update_id = import_id.clone();
+        let remove_id = import_id.clone();
+        let cancel_id = import_id.clone();
+        let confirm_id = import_id.clone();
+        let update_source = import.source.key.clone();
+        items.push(
+            SettingItem::render(move |_options, _window, cx| {
+                let mut column = div()
+                    .v_flex()
+                    .gap_1()
+                    .w_full()
+                    .debug_selector({
+                        let id = row_id.clone();
+                        move || format!("hook-import-{id}")
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .w_full()
+                            .child(div().min_w_0().truncate().text_sm().child(name.clone()))
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap_2()
+                                    .child(
+                                        Switch::new(SharedString::from(format!(
+                                            "hook-import-toggle-{click_id}"
+                                        )))
+                                        .checked(enabled)
+                                        .disabled(busy || !master_on)
+                                        .accessibility_label(toggle_label.clone())
+                                        .on_click({
+                                            let id = click_id.clone();
+                                            move |checked: &bool, _window, cx| {
+                                                set_hook_import_enabled(id.clone(), *checked, cx);
+                                            }
+                                        }),
+                                    )
+                                    .child(
+                                        Button::new(SharedString::from(format!(
+                                            "hook-import-update-{update_id}"
+                                        )))
+                                        .label(update_label.clone())
+                                        .small()
+                                        .with_variant(ButtonVariant::Ghost)
+                                        .disabled(busy || !can_update)
+                                        .on_click({
+                                            let source = update_source.clone();
+                                            move |_, _window, cx| {
+                                                review_hook_import(source.clone(), cx);
+                                            }
+                                        }),
+                                    )
+                                    .child(
+                                        Button::new(SharedString::from(format!(
+                                            "hook-import-remove-{remove_id}"
+                                        )))
+                                        .label(remove_label.clone())
+                                        .small()
+                                        .with_variant(ButtonVariant::Ghost)
+                                        .disabled(busy)
+                                        .on_click({
+                                            let id = remove_id.clone();
+                                            move |_, _window, cx| {
+                                                HookImportState::mutate(cx, |state| {
+                                                    state.confirm = Some(format!("remove:{id}"));
+                                                });
+                                                cx.refresh_windows();
+                                            }
+                                        }),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(state_label.clone()),
+                    );
+                if armed {
+                    column = column
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().danger)
+                                .child(format!("{confirm_title} {confirm_note}")),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .gap_2()
+                                .child(
+                                    Button::new(SharedString::from(format!(
+                                        "hook-import-remove-confirm-{confirm_id}"
+                                    )))
+                                    .label(confirm_label.clone())
+                                    .small()
+                                    .with_variant(ButtonVariant::Primary)
+                                    .on_click({
+                                        let id = confirm_id.clone();
+                                        move |_, _window, cx| {
+                                            remove_hook_import(id.clone(), cx);
+                                        }
+                                    }),
+                                )
+                                .child(
+                                    Button::new(SharedString::from(format!(
+                                        "hook-import-remove-cancel-{cancel_id}"
+                                    )))
+                                    .label(cancel_label.clone())
+                                    .small()
+                                    .with_variant(ButtonVariant::Ghost)
+                                    .on_click(
+                                        |_, _window, cx| {
+                                            HookImportState::mutate(cx, |state| {
+                                                state.confirm = None;
+                                            });
+                                            cx.refresh_windows();
+                                        },
+                                    ),
+                                ),
+                        );
+                }
+                column.into_any_element()
+            })
+            .layout(Axis::Vertical),
+        );
+    }
+
+    for diagnostic in diagnostics {
+        let scope = if diagnostic.code.ends_with(".user_global") {
+            openbitfun_product_domains::external_sources::ExternalSourceScope::UserGlobal
+        } else {
+            openbitfun_product_domains::external_sources::ExternalSourceScope::Project
+        };
+        let message = diagnostic.message.clone();
+        let code = diagnostic.code.clone();
+        let invalid_text = text.settings_hooks_import_store_invalid.clone();
+        let reset_label = text.settings_hooks_import_reset.clone();
+        let reset_title = text.settings_hooks_import_reset_title.clone();
+        let reset_note = text.settings_hooks_import_reset_note.clone();
+        let reset_confirm = text.settings_hooks_import_reset_confirm.clone();
+        let cancel_label = text.settings_quick_actions_cancel.clone();
+        let armed_key = format!("reset:{code}");
+        let armed = page.confirm.as_deref() == Some(armed_key.as_str());
+        let arm_code = code.clone();
+        let run_code = code.clone();
+        let cancel_code = code.clone();
+        items.push(
+            SettingItem::render(move |_options, _window, cx| {
+                let mut column = div()
+                    .v_flex()
+                    .gap_1()
+                    .w_full()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .gap_2()
+                            .w_full()
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_sm()
+                                    .text_color(cx.theme().danger)
+                                    .child(invalid_text.clone()),
+                            )
+                            .child(
+                                Button::new(SharedString::from(format!(
+                                    "hook-import-reset-{arm_code}"
+                                )))
+                                .label(reset_label.clone())
+                                .small()
+                                .with_variant(ButtonVariant::Primary)
+                                .on_click({
+                                    let key = format!("reset:{arm_code}");
+                                    move |_, _window, cx| {
+                                        HookImportState::mutate(cx, |state| {
+                                            state.confirm = Some(key.clone());
+                                        });
+                                        cx.refresh_windows();
+                                    }
+                                }),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(message.clone()),
+                    );
+                if armed {
+                    column = column
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().danger)
+                                .child(format!("{reset_title} {reset_note}")),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .gap_2()
+                                .child(
+                                    Button::new(SharedString::from(format!(
+                                        "hook-import-reset-confirm-{run_code}"
+                                    )))
+                                    .label(reset_confirm.clone())
+                                    .small()
+                                    .with_variant(ButtonVariant::Primary)
+                                    .on_click(
+                                        move |_, _window, cx| {
+                                            reset_hook_import_store(scope, cx);
+                                        },
+                                    ),
+                                )
+                                .child(
+                                    Button::new(SharedString::from(format!(
+                                        "hook-import-reset-cancel-{cancel_code}"
+                                    )))
+                                    .label(cancel_label.clone())
+                                    .small()
+                                    .with_variant(ButtonVariant::Ghost)
+                                    .on_click(
+                                        |_, _window, cx| {
+                                            HookImportState::mutate(cx, |state| {
+                                                state.confirm = None;
+                                            });
+                                            cx.refresh_windows();
+                                        },
+                                    ),
+                                ),
+                        );
+                }
+                column.into_any_element()
+            })
+            .layout(Axis::Vertical),
+        );
+    }
+
+    if let Some(plan) = page.plan.clone() {
+        let is_update = snapshot
+            .as_ref()
+            .map(|snapshot| {
+                snapshot.imports.iter().any(|import| {
+                    import.source.key.provider_id == plan.source.key.provider_id
+                        && import.source.key.source_id == plan.source.key.source_id
+                })
+            })
+            .unwrap_or(false);
+        let title = format!(
+            "{} · {}",
+            text.settings_hooks_import_review_title, plan.source.display_name
+        );
+        let warning = text.settings_hooks_import_review_warning.clone();
+        let stale = page
+            .plan_stale
+            .then(|| text.settings_hooks_import_stale.clone());
+        let timeout_label = text.settings_hooks_import_timeout.clone();
+        let skipped_label = text.settings_hooks_import_skipped.clone();
+        let handlers = plan.handlers.clone();
+        let skipped = plan.skipped.clone();
+        let confirm_label = if is_update {
+            text.settings_hooks_import_confirm_update.clone()
+        } else {
+            text.settings_hooks_import_confirm.clone()
+        };
+        let cancel_label = text.settings_quick_actions_cancel.clone();
+        let busy = page.busy;
+        items.push(
+            SettingItem::render(move |_options, _window, cx| {
+                let mut column = div()
+                    .v_flex()
+                    .gap_1()
+                    .w_full()
+                    .debug_selector(|| "hook-import-review".to_string())
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(title.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().danger)
+                            .child(warning.clone()),
+                    );
+                if let Some(stale) = stale.clone() {
+                    column = column.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(stale),
+                    );
+                }
+                for handler in &handlers {
+                    let matcher = handler
+                        .matcher
+                        .as_deref()
+                        .map(|matcher| format!(" · {matcher}"))
+                        .unwrap_or_default();
+                    let mut line = format!("{} · {}{}", handler.event, handler.command, matcher);
+                    if let Some(timeout) = handler.timeout_seconds {
+                        line.push_str(&format!(" · {timeout_label} {timeout}"));
+                    }
+                    column = column.child(
+                        div()
+                            .min_w_0()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(line),
+                    );
+                }
+                for skipped in &skipped {
+                    column = column.child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!(
+                                "{skipped_label} {} · {}",
+                                skipped.count, skipped.reason_code
+                            )),
+                    );
+                }
+                column
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap_2()
+                            .child(
+                                Button::new("hook-import-review-confirm")
+                                    .label(confirm_label.clone())
+                                    .small()
+                                    .with_variant(ButtonVariant::Primary)
+                                    .loading(busy)
+                                    .on_click(|_, _window, cx| apply_hook_import_plan(cx)),
+                            )
+                            .child(
+                                Button::new("hook-import-review-cancel")
+                                    .label(cancel_label.clone())
+                                    .small()
+                                    .with_variant(ButtonVariant::Ghost)
+                                    .on_click(|_, _window, cx| dismiss_hook_import_plan(cx)),
+                            ),
+                    )
+                    .into_any_element()
+            })
+            .layout(Axis::Vertical),
+        );
+    }
+
+    items.push(section_heading_item(
+        "hooks-compat",
+        text.settings_hooks_compat_section.clone(),
+        text.settings_hooks_compat_note.clone(),
+    ));
+    let reference_label = text.settings_hooks_compat_reference.clone();
+    let open_label = text.settings_hooks_compat_open.clone();
+    items.push(
+        SettingItem::render(move |_options, _window, _cx| {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .w_full()
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_sm()
+                        .child(reference_label.clone()),
+                )
+                .child(
+                    Button::new("hooks-compat-open")
+                        .label(open_label.clone())
+                        .small()
+                        .with_variant(ButtonVariant::Ghost)
+                        .on_click(|_, _window, _cx| {
+                            crate::markdown::open_external("https://learn.chatgpt.com/docs/hooks");
+                        }),
+                )
+                .into_any_element()
+        })
+        .layout(Axis::Vertical),
+    );
+
+    SettingGroup::new().items(items)
 }
 
 /// Whether the custom HTTP search service auth mode needs a device
@@ -4470,8 +6866,8 @@ fn usage_group(
 ) -> SettingGroup {
     let owned_text = text.clone();
     let stats_view = view.clone();
-    let range_field = SettingField::render(move |_options, _window, cx| {
-        usage_stats_field(stats_view.clone(), &owned_text, cx)
+    let range_field = SettingField::render(move |_options, window, cx| {
+        usage_stats_field(stats_view.clone(), &owned_text, window, cx)
     });
     let activity_view = view;
     let activity_text = text.clone();
@@ -4976,6 +7372,7 @@ fn render_usage_activity(
 fn usage_stats_field(
     view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
     text: &ShellText,
+    window: &mut Window,
     cx: &mut App,
 ) -> gpui_kit::AnyElement {
     let Some(shell) = view.upgrade() else {
@@ -5118,45 +7515,871 @@ fn usage_stats_field(
     column = column.child(totals);
     column = column.child(render_usage_trend(&stats, text, cx));
 
-    if !stats.by_model.is_empty() {
+    // G-SE29: the distribution filter is page state, not a persisted
+    // preference — the web resets it when the page mounts.
+    let placeholder = text.settings_usage_filter.clone();
+    let filter_state = window.use_keyed_state(
+        SharedString::from("usage-distribution-filter"),
+        cx,
+        move |window, cx| {
+            let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder.clone()));
+            let subscription = cx.subscribe(
+                &input,
+                |_, input, event: &gpui_kit::component::input::InputEvent, cx| {
+                    if matches!(event, gpui_kit::component::input::InputEvent::Change) {
+                        let value = input.read(cx).value().to_string();
+                        if cx.try_global::<UsageFilter>().is_none() {
+                            cx.set_global(UsageFilter::default());
+                        }
+                        cx.global_mut::<UsageFilter>().0 = value;
+                        cx.refresh_windows();
+                    }
+                },
+            );
+            (input, subscription)
+        },
+    );
+    let filter_entity = filter_state.read(cx).0.clone();
+    let filter = cx
+        .try_global::<UsageFilter>()
+        .map(|filter| filter.0.trim().to_lowercase())
+        .unwrap_or_default();
+    column = column.child(div().w(px(260.)).child(Input::new(&filter_entity).small()));
+
+    column = column.child(usage_distribution(
+        &text.usage_models,
+        &stats.by_model,
+        &filter,
+        text,
+        cx,
+    ));
+    column = column.child(usage_distribution(
+        &text.settings_usage_groups,
+        &stats.by_group,
+        &filter,
+        text,
+        cx,
+    ));
+    column = column.child(usage_distribution(
+        &text.settings_usage_endpoints,
+        &stats.by_endpoint,
+        &filter,
+        text,
+        cx,
+    ));
+    column.into_any_element()
+}
+
+/// G-SE29: the distribution filter; the value lives only for the open
+/// settings window (the web's page-local search state).
+#[derive(Debug, Default, Clone)]
+pub(crate) struct UsageFilter(pub(crate) String);
+
+impl Global for UsageFilter {}
+
+/// G-SE12: per-model connection-test receipts for the models page. The state
+/// is in-memory only — a receipt describes the last probe this process ran,
+/// never persisted configuration.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ModelTestState {
+    pub(crate) receipts: std::collections::HashMap<String, ModelTestReceipt>,
+}
+
+impl Global for ModelTestState {}
+
+impl ModelTestState {
+    /// The current receipts, or the empty set before the first test.
+    pub(crate) fn current(cx: &App) -> Self {
+        cx.try_global::<Self>().cloned().unwrap_or_default()
+    }
+
+    /// Mutates the receipts, materializing the default when no test ran yet.
+    pub(crate) fn mutate<R>(cx: &mut App, change: impl FnOnce(&mut Self) -> R) -> R {
+        if cx.try_global::<Self>().is_none() {
+            cx.set_global(Self::default());
+        }
+        change(cx.global_mut::<Self>())
+    }
+}
+
+/// One model's latest probe: in flight, or finished with either a receipt or
+/// the setup error that kept the test from running.
+#[derive(Debug, Clone)]
+pub(crate) enum ModelTestReceipt {
+    Testing,
+    Done(Result<openbitfun_core::util::types::ConnectionTestResult, String>),
+}
+
+/// G-SE12: starts a probe for one model unless its previous one is still in
+/// flight. The result arrives through the runtime event pump.
+fn start_model_test(model_id: String, cx: &mut App) {
+    if matches!(
+        ModelTestState::current(cx).receipts.get(&model_id),
+        Some(ModelTestReceipt::Testing)
+    ) {
+        return;
+    }
+    let Some(handle) = crate::runtime::runtime_handle() else {
+        return;
+    };
+    ModelTestState::mutate(cx, |state| {
+        state
+            .receipts
+            .insert(model_id.clone(), ModelTestReceipt::Testing);
+    });
+    handle.test_model_connection(model_id);
+    cx.refresh_windows();
+}
+
+/// Formats one finished probe as wrap-friendly lines: the verdict with its
+/// wall-clock time, the localized hint for the runtime's message code, and
+/// the raw details (web `runConfigConnectionTest`).
+fn model_test_receipt(
+    result: &Result<openbitfun_core::util::types::ConnectionTestResult, String>,
+    text: &ShellText,
+    cx: &App,
+) -> gpui_kit::AnyElement {
+    let (success, mut lines) = match result {
+        Ok(receipt) => {
+            let mut lines = vec![crate::i18n::model_test_result_label(
+                receipt.success,
+                receipt.response_time_ms,
+                cx,
+            )];
+            if let Some(code) = receipt.message_code.as_ref() {
+                lines.push(crate::i18n::model_test_message_code(code, cx));
+            }
+            if let Some(details) = receipt
+                .error_details
+                .as_deref()
+                .filter(|details| !details.trim().is_empty())
+            {
+                lines.push(if receipt.success {
+                    details.to_string()
+                } else {
+                    format!("{}: {details}", text.models_test_details)
+                });
+            }
+            (receipt.success, lines)
+        }
+        Err(error) => (
+            false,
+            vec![
+                crate::i18n::model_test_error_label(cx),
+                format!("{}: {error}", text.models_test_details),
+            ],
+        ),
+    };
+    let color = if success {
+        cx.theme().success
+    } else {
+        cx.theme().danger
+    };
+    let mut column = div()
+        .v_flex()
+        .gap_0p5()
+        .w_full()
+        .pl_1()
+        .child(div().text_xs().text_color(color).child(lines.remove(0)));
+    for line in lines {
         column = column.child(
             div()
                 .text_xs()
                 .text_color(cx.theme().muted_foreground)
-                .child(text.usage_models.clone()),
+                .child(line),
         );
-        let mut rows = div().v_flex().gap_1().w_full();
-        for model in stats.by_model.iter().take(20) {
-            let mut facts = format!("{} · {}", model.requests, model.tokens);
-            if let Some(rate) = model.cache_hit_rate {
-                facts.push_str(&format!(" · {:.0}%", rate * 100.));
-            }
-            rows = rows.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_sm()
-                            .text_color(cx.theme().foreground)
-                            .child(model.name.clone()),
-                    )
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(facts),
-                    ),
-            );
-        }
-        column = column.child(rows);
     }
     column.into_any_element()
+}
+
+/// G-SE12: the model row currently open in the inline editor. Page-local like
+/// the web modal's editing state; opening another row replaces it. The two
+/// text drafts let a half-typed JSON field survive a frame without being
+/// written to the shared config until it parses.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct ModelEditorState {
+    pub(crate) model_id: Option<String>,
+    /// Raw headers/body text while the open row is being edited.
+    pub(crate) headers_text: String,
+    pub(crate) body_text: String,
+    /// Whether the drafts belong to the open row; reset when it opens or
+    /// another row replaces it.
+    pub(crate) drafts_ready: bool,
+}
+
+impl Global for ModelEditorState {}
+
+impl ModelEditorState {
+    /// The open row, or `None` before any row was opened.
+    pub(crate) fn current(cx: &App) -> Self {
+        cx.try_global::<Self>().cloned().unwrap_or_default()
+    }
+
+    /// Mutates the page state, materializing the default on first use.
+    pub(crate) fn mutate<R>(cx: &mut App, change: impl FnOnce(&mut Self) -> R) -> R {
+        if cx.try_global::<Self>().is_none() {
+            cx.set_global(Self::default());
+        }
+        change(cx.global_mut::<Self>())
+    }
+}
+
+/// G-SE25: the automation page's Hook-import projection plus the page-local
+/// review/busy state. A global for the same reason the other settings pages
+/// keep theirs there: the page is built inside the window render.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct HookImportState {
+    pub(crate) loaded: bool,
+    pub(crate) loading: bool,
+    pub(crate) busy: bool,
+    pub(crate) snapshot:
+        Option<openbitfun_product_domains::external_hook_import::ExternalHookImportSnapshotV1>,
+    /// The reviewed plan currently shown, when any.
+    pub(crate) plan:
+        Option<openbitfun_product_domains::external_hook_import::ExternalHookImportPlanV1>,
+    /// The plan was rebuilt because the source changed; the page says nothing
+    /// was written yet.
+    pub(crate) plan_stale: bool,
+    /// The last action's failure, shown above the list.
+    pub(crate) error: Option<String>,
+    /// An armed destructive action: `remove:<import_id>` or `reset:<scope>`.
+    /// The second click on the same row runs it.
+    pub(crate) confirm: Option<String>,
+}
+
+impl Global for HookImportState {}
+
+impl HookImportState {
+    /// The current page state, or the empty default before the first load.
+    pub(crate) fn current(cx: &App) -> Self {
+        cx.try_global::<Self>().cloned().unwrap_or_default()
+    }
+
+    /// Mutates the page state, materializing the default on first use.
+    pub(crate) fn mutate<R>(cx: &mut App, change: impl FnOnce(&mut Self) -> R) -> R {
+        if cx.try_global::<Self>().is_none() {
+            cx.set_global(Self::default());
+        }
+        change(cx.global_mut::<Self>())
+    }
+}
+
+/// G-SE25: reads the import projection (Refresh re-probes source updates).
+pub(crate) fn fetch_hook_imports(refresh_updates: bool, cx: &mut App) {
+    let Some(handle) = crate::runtime::runtime_handle() else {
+        return;
+    };
+    let start = HookImportState::mutate(cx, |state| {
+        if state.loading || state.busy {
+            return false;
+        }
+        state.loading = true;
+        state.error = None;
+        true
+    });
+    if !start {
+        return;
+    }
+    handle.reload_hook_imports(refresh_updates);
+    cx.refresh_windows();
+}
+
+/// G-SE25: toggles one imported source. Mutations are revision-guarded; a
+/// stale revision surfaces as the refreshed snapshot (core re-reads it).
+pub(crate) fn set_hook_import_enabled(import_id: String, enabled: bool, cx: &mut App) {
+    let Some(handle) = crate::runtime::runtime_handle() else {
+        return;
+    };
+    let revision = HookImportState::current(cx)
+        .snapshot
+        .map(|snapshot| snapshot.revision);
+    let Some(revision) = revision else {
+        return;
+    };
+    HookImportState::mutate(cx, |state| {
+        if state.busy {
+            return;
+        }
+        state.busy = true;
+        state.error = None;
+        state.confirm = None;
+    });
+    handle.mutate_hook_import(
+        revision,
+        openbitfun_product_domains::external_hook_import::ExternalHookImportMutationV1::SetEnabled {
+            import_id,
+            enabled,
+        },
+    );
+    cx.refresh_windows();
+}
+
+/// G-SE25: removes the managed copy of one imported source (two-step).
+pub(crate) fn remove_hook_import(import_id: String, cx: &mut App) {
+    let Some(handle) = crate::runtime::runtime_handle() else {
+        return;
+    };
+    let revision = HookImportState::current(cx)
+        .snapshot
+        .map(|snapshot| snapshot.revision);
+    let Some(revision) = revision else {
+        return;
+    };
+    HookImportState::mutate(cx, |state| {
+        if state.busy {
+            return;
+        }
+        state.busy = true;
+        state.error = None;
+        state.confirm = None;
+    });
+    handle.mutate_hook_import(
+        revision,
+        openbitfun_product_domains::external_hook_import::ExternalHookImportMutationV1::Remove {
+            import_id,
+        },
+    );
+    cx.refresh_windows();
+}
+
+/// G-SE25: resets one corrupt import store (two-step). Source application
+/// files are never touched; only OpenBitFun's managed index is rebuilt.
+pub(crate) fn reset_hook_import_store(
+    scope: openbitfun_product_domains::external_sources::ExternalSourceScope,
+    cx: &mut App,
+) {
+    let Some(handle) = crate::runtime::runtime_handle() else {
+        return;
+    };
+    let revision = HookImportState::current(cx)
+        .snapshot
+        .map(|snapshot| snapshot.revision);
+    let Some(revision) = revision else {
+        return;
+    };
+    HookImportState::mutate(cx, |state| {
+        if state.busy {
+            return;
+        }
+        state.busy = true;
+        state.error = None;
+        state.confirm = None;
+    });
+    handle.mutate_hook_import(
+        revision,
+        openbitfun_product_domains::external_hook_import::ExternalHookImportMutationV1::ResetCorruptStore {
+            scope,
+        },
+    );
+    cx.refresh_windows();
+}
+
+/// G-SE25: prepares the review plan for an existing import or a catalog
+/// source's first import.
+pub(crate) fn review_hook_import(
+    source: openbitfun_product_domains::external_sources::SourceKey,
+    cx: &mut App,
+) {
+    let Some(handle) = crate::runtime::runtime_handle() else {
+        return;
+    };
+    HookImportState::mutate(cx, |state| {
+        if state.busy || state.loading {
+            return;
+        }
+        state.busy = true;
+        state.error = None;
+        state.plan = None;
+        state.plan_stale = false;
+    });
+    handle.plan_hook_import(source);
+    cx.refresh_windows();
+}
+
+/// G-SE25: applies the reviewed plan (nothing is written before this).
+pub(crate) fn apply_hook_import_plan(cx: &mut App) {
+    let Some(handle) = crate::runtime::runtime_handle() else {
+        return;
+    };
+    let plan = HookImportState::current(cx).plan;
+    let Some(plan) = plan else {
+        return;
+    };
+    HookImportState::mutate(cx, |state| {
+        if state.busy {
+            return;
+        }
+        state.busy = true;
+        state.error = None;
+    });
+    handle.apply_hook_import(plan.source.key, plan.plan_fingerprint);
+    cx.refresh_windows();
+}
+
+/// G-SE25: closes the review block without writing.
+pub(crate) fn dismiss_hook_import_plan(cx: &mut App) {
+    HookImportState::mutate(cx, |state| {
+        state.plan = None;
+        state.plan_stale = false;
+    });
+    cx.refresh_windows();
+}
+
+/// G-SE25: one import state's row copy (web `imports.state.*`).
+fn hook_import_state_label(
+    state: &openbitfun_product_domains::external_hook_import::ImportedHookSourceStateV1,
+    location: &str,
+    text: &ShellText,
+) -> String {
+    use openbitfun_product_domains::external_hook_import::ImportedHookSourceStateV1 as State;
+    match state {
+        State::Current => format!("{} · {location}", text.settings_hook_import_state_current),
+        State::UpdateAvailable => format!(
+            "{} · {location}",
+            text.settings_hook_import_state_update_available
+        ),
+        State::SourceMissing => text.settings_hook_import_state_source_missing.clone(),
+        State::UpdateCheckFailed => text.settings_hook_import_state_update_check_failed.clone(),
+        State::BundleMissing => text.settings_hook_import_state_bundle_missing.clone(),
+    }
+}
+
+/// The context window the web editor shows for a model that never stored one
+/// (`config.context_window || 300000`).
+const MODEL_EDITOR_DEFAULT_CONTEXT_WINDOW: u32 = 300_000;
+/// The shared contract's lower bound (`MIN_MODEL_CONTEXT_WINDOW_TOKENS`).
+const MODEL_EDITOR_MIN_CONTEXT_WINDOW: u32 =
+    openbitfun_core::service::config::types::MIN_MODEL_CONTEXT_WINDOW_TOKENS;
+
+/// Updates the in-memory mirror of one model row. The page reads this mirror,
+/// so a change is visible on the next frame; the persisted copy follows
+/// through the matching `persist_*` helper.
+fn update_ai_model_mirror(
+    model_id: &str,
+    cx: &mut App,
+    change: impl FnOnce(&mut openbitfun_core::service::config::types::AIModelConfig),
+) -> bool {
+    let config = cx.global_mut::<ShellConfig>();
+    match config
+        .ai_models
+        .iter_mut()
+        .find(|model| model.id == model_id)
+    {
+        Some(model) => {
+            change(model);
+            true
+        }
+        None => false,
+    }
+}
+
+/// Writes one model row back into `ai.models` through `update_config`, which
+/// serializes list mutations under the config lock. The row is edited as JSON
+/// so fields this build does not know survive the write; `None` removes a key
+/// (the web omits cleared optional values instead of writing null).
+fn persist_ai_model_fields(model_id: &str, fields: Vec<(&'static str, Option<serde_json::Value>)>) {
+    let Some(handle) = crate::runtime::runtime_handle() else {
+        tracing::error!("Cannot persist a model row before the runtime is ready");
+        return;
+    };
+    let target_id = model_id.to_string();
+    let log_id = target_id.clone();
+    handle.tokio_handle().spawn(async move {
+        let service = match get_global_config_service().await {
+            Ok(service) => service,
+            Err(error) => {
+                tracing::error!(
+                    "Config service unavailable while persisting model {log_id}: {error}"
+                );
+                return;
+            }
+        };
+        let result = service
+            .update_config::<serde_json::Value, ()>("ai.models", move |section| {
+                let Some(models) = section.as_array_mut() else {
+                    return Ok(());
+                };
+                let Some(model) = models.iter_mut().find(|model| {
+                    model.get("id").and_then(serde_json::Value::as_str) == Some(target_id.as_str())
+                }) else {
+                    return Ok(());
+                };
+                let Some(object) = model.as_object_mut() else {
+                    return Ok(());
+                };
+                for (key, value) in fields {
+                    match value {
+                        Some(value) => {
+                            object.insert(key.to_string(), value);
+                        }
+                        None => {
+                            object.remove(key);
+                        }
+                    }
+                }
+                Ok(())
+            })
+            .await;
+        match result {
+            Ok(()) => tracing::info!("Model row persisted: {log_id}"),
+            Err(error) => tracing::error!("Failed to persist model row {log_id}: {error}"),
+        }
+    });
+}
+
+/// G-SE12: the row editor's category choice. The web offers four categories;
+/// a value written by a newer build stays listed verbatim instead of being
+/// silently replaced.
+pub(crate) fn model_category_values(stored: &str) -> Vec<&'static str> {
+    let mut values = vec![
+        "general_chat",
+        "multimodal",
+        "image_generation",
+        "speech_recognition",
+    ];
+    if !stored.is_empty() && !values.contains(&stored) {
+        values.push("__stored_unknown");
+    }
+    values
+}
+
+/// G-SE12-3: whether a headers draft is empty or an object of string values.
+fn headers_json_valid(text: &str) -> bool {
+    text.trim().is_empty()
+        || matches!(
+            serde_json::from_str::<serde_json::Value>(text),
+            Ok(serde_json::Value::Object(fields))
+                if fields.values().all(serde_json::Value::is_string)
+        )
+}
+
+/// G-SE12-3: whether a body draft is empty or a JSON object.
+fn body_json_valid(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed.is_empty()
+        || matches!(
+            serde_json::from_str::<serde_json::Value>(trimmed),
+            Ok(serde_json::Value::Object(_))
+        )
+}
+
+/// G-SE12: one row's write actions, shared by the editor widgets.
+fn set_ai_model_category(model_id: &str, category: String, cx: &mut App) {
+    if update_ai_model_mirror(model_id, cx, |model| {
+        model.category =
+            serde_json::from_value(serde_json::Value::String(category.clone())).unwrap_or_default();
+    }) {
+        persist_ai_model_fields(
+            model_id,
+            vec![("category", Some(serde_json::Value::String(category)))],
+        );
+        cx.refresh_windows();
+    }
+}
+
+fn set_ai_model_context_window(model_id: &str, tokens: u32, cx: &mut App) {
+    let tokens = tokens.max(MODEL_EDITOR_MIN_CONTEXT_WINDOW);
+    let mut cleared_max_tokens = false;
+    if update_ai_model_mirror(model_id, cx, |model| {
+        model.context_window = Some(tokens);
+        // The shared contract caps an explicit output limit at 40% of the
+        // context window. Shrinking the window below a stored cap would make
+        // the row invalid, so the cap falls back to the automatic tier (the
+        // web blocks the save instead; the shell never persists an invalid
+        // pair).
+        if let Some(max_tokens) = model.max_tokens {
+            if !openbitfun_core::service::config::types::is_valid_configured_max_output_tokens(
+                tokens, max_tokens,
+            ) {
+                model.max_tokens = None;
+                cleared_max_tokens = true;
+            }
+        }
+    }) {
+        let mut fields = vec![("context_window", Some(serde_json::json!(tokens)))];
+        if cleared_max_tokens {
+            fields.push(("max_tokens", None));
+        }
+        persist_ai_model_fields(model_id, fields);
+        cx.refresh_windows();
+    }
+}
+
+fn set_ai_model_max_tokens(model_id: &str, tokens: Option<u32>, cx: &mut App) {
+    if update_ai_model_mirror(model_id, cx, |model| model.max_tokens = tokens) {
+        persist_ai_model_fields(
+            model_id,
+            vec![("max_tokens", tokens.map(|tokens| serde_json::json!(tokens)))],
+        );
+        cx.refresh_windows();
+    }
+}
+
+fn set_ai_model_reasoning_default(model_id: &str, preset: Option<String>, cx: &mut App) {
+    if update_ai_model_mirror(model_id, cx, |model| {
+        let reasoning = model
+            .reasoning
+            .get_or_insert_with(openbitfun_core::service::config::types::ReasoningConfig::default);
+        reasoning.default_preset = preset.clone();
+    }) {
+        let Some(handle) = crate::runtime::runtime_handle() else {
+            return;
+        };
+        let target_id = model_id.to_string();
+        let log_id = target_id.clone();
+        handle.tokio_handle().spawn(async move {
+            let Ok(service) = get_global_config_service().await else {
+                return;
+            };
+            let result = service
+                .update_config::<serde_json::Value, ()>("ai.models", move |section| {
+                    let Some(models) = section.as_array_mut() else {
+                        return Ok(());
+                    };
+                    let Some(model) = models.iter_mut().find(|model| {
+                        model.get("id").and_then(serde_json::Value::as_str)
+                            == Some(target_id.as_str())
+                    }) else {
+                        return Ok(());
+                    };
+                    let Some(object) = model.as_object_mut() else {
+                        return Ok(());
+                    };
+                    let reasoning = object
+                        .entry("reasoning")
+                        .or_insert_with(|| serde_json::json!({}));
+                    if !reasoning.is_object() {
+                        *reasoning = serde_json::json!({});
+                    }
+                    let Some(fields) = reasoning.as_object_mut() else {
+                        return Ok(());
+                    };
+                    match preset {
+                        Some(preset) => {
+                            fields.insert(
+                                "default_preset".to_string(),
+                                serde_json::Value::String(preset),
+                            );
+                        }
+                        None => {
+                            fields.remove("default_preset");
+                        }
+                    }
+                    Ok(())
+                })
+                .await;
+            match result {
+                Ok(()) => tracing::info!("Model reasoning default persisted: {log_id}"),
+                Err(error) => {
+                    tracing::error!("Failed to persist reasoning default {log_id}: {error}")
+                }
+            }
+        });
+        cx.refresh_windows();
+    }
+}
+
+/// G-SE12-3: advanced request-shaping values. Each writes one key immediately;
+/// the JSON text fields write only once the text parses, so a half-typed
+/// brace never lands in the shared row.
+fn set_ai_model_skip_ssl(model_id: &str, enabled: bool, cx: &mut App) {
+    if update_ai_model_mirror(model_id, cx, |model| model.skip_ssl_verify = enabled) {
+        persist_ai_model_fields(
+            model_id,
+            vec![("skip_ssl_verify", Some(serde_json::json!(enabled)))],
+        );
+        cx.refresh_windows();
+    }
+}
+
+fn set_ai_model_inline_think(model_id: &str, enabled: bool, cx: &mut App) {
+    if update_ai_model_mirror(model_id, cx, |model| model.inline_think_in_text = enabled) {
+        persist_ai_model_fields(
+            model_id,
+            vec![("inline_think_in_text", Some(serde_json::json!(enabled)))],
+        );
+        cx.refresh_windows();
+    }
+}
+
+fn set_ai_model_header_mode(model_id: &str, mode: String, cx: &mut App) {
+    if update_ai_model_mirror(model_id, cx, |model| {
+        model.custom_headers_mode = Some(mode.clone());
+    }) {
+        persist_ai_model_fields(
+            model_id,
+            vec![("custom_headers_mode", Some(serde_json::json!(mode)))],
+        );
+        cx.refresh_windows();
+    }
+}
+
+fn set_ai_model_body_mode(model_id: &str, mode: String, cx: &mut App) {
+    if update_ai_model_mirror(model_id, cx, |model| {
+        model.custom_request_body_mode = Some(mode.clone());
+    }) {
+        persist_ai_model_fields(
+            model_id,
+            vec![("custom_request_body_mode", Some(serde_json::json!(mode)))],
+        );
+        cx.refresh_windows();
+    }
+}
+
+fn set_ai_model_headers_text(model_id: &str, text: String, cx: &mut App) {
+    ModelEditorState::mutate(cx, |state| {
+        state.drafts_ready = true;
+        state.headers_text = text.clone();
+    });
+    let Some(serde_json::Value::Object(fields)) = (if text.trim().is_empty() {
+        Some(serde_json::Value::Object(Default::default()))
+    } else {
+        serde_json::from_str(&text).ok()
+    }) else {
+        return;
+    };
+    if !fields.values().all(serde_json::Value::is_string) {
+        return;
+    }
+    let headers: std::collections::HashMap<String, String> = fields
+        .into_iter()
+        .map(|(key, value)| (key, value.as_str().unwrap_or_default().to_string()))
+        .collect();
+    if update_ai_model_mirror(model_id, cx, |model| {
+        model.custom_headers = if headers.is_empty() {
+            None
+        } else {
+            Some(headers.clone())
+        };
+    }) {
+        persist_ai_model_fields(
+            model_id,
+            vec![(
+                "custom_headers",
+                if headers.is_empty() {
+                    None
+                } else {
+                    Some(serde_json::json!(headers))
+                },
+            )],
+        );
+        cx.refresh_windows();
+    }
+}
+
+fn set_ai_model_body_text(model_id: &str, text: String, cx: &mut App) {
+    ModelEditorState::mutate(cx, |state| {
+        state.drafts_ready = true;
+        state.body_text = text.clone();
+    });
+    let trimmed = text.trim();
+    let stored = if trimmed.is_empty() {
+        None
+    } else {
+        match serde_json::from_str::<serde_json::Value>(trimmed) {
+            Ok(value) if value.is_object() => Some(trimmed.to_string()),
+            _ => return,
+        }
+    };
+    if update_ai_model_mirror(model_id, cx, |model| {
+        model.custom_request_body = stored.clone();
+    }) {
+        persist_ai_model_fields(
+            model_id,
+            vec![(
+                "custom_request_body",
+                stored.as_ref().map(|body| serde_json::json!(body)),
+            )],
+        );
+        cx.refresh_windows();
+    }
+}
+
+/// Whether one distribution row matches the filter: its display name or its
+/// provider label, case-insensitively.
+pub(crate) fn usage_entry_matches(
+    entry: &openbitfun_services_core::token_usage::UsageStatisticsEntry,
+    query: &str,
+) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    entry.name.to_lowercase().contains(query)
+        || entry
+            .provider_name
+            .as_deref()
+            .map(|provider| provider.to_lowercase().contains(query))
+            .unwrap_or(false)
+}
+
+/// One distribution block (model / group / endpoint) over the same totals the
+/// summary uses. Every row carries requests, tokens and, when telemetry
+/// exists, its cache hit rate; the filter applies across all three blocks, as
+/// in the web panel.
+fn usage_distribution(
+    title: &str,
+    entries: &[openbitfun_services_core::token_usage::UsageStatisticsEntry],
+    filter: &str,
+    text: &ShellText,
+    cx: &App,
+) -> gpui_kit::AnyElement {
+    if entries.is_empty() {
+        return div().into_any_element();
+    }
+    let visible: Vec<_> = entries
+        .iter()
+        .filter(|entry| usage_entry_matches(entry, filter))
+        .take(20)
+        .collect();
+    let mut block = div().v_flex().gap_1().w_full().child(
+        div()
+            .text_xs()
+            .text_color(cx.theme().muted_foreground)
+            .child(title.to_string()),
+    );
+    if visible.is_empty() {
+        block = block.child(
+            div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(text.settings_usage_filter_empty.clone()),
+        );
+        return block.into_any_element();
+    }
+    for entry in visible {
+        let mut facts = format!("{} · {}", entry.requests, entry.tokens);
+        if let Some(rate) = entry.cache_hit_rate {
+            facts.push_str(&format!(" · {:.0}%", rate * 100.));
+        }
+        let secondary = entry.provider_name.clone().unwrap_or_default();
+        block = block.child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_sm()
+                        .text_color(cx.theme().foreground)
+                        .child(if secondary.is_empty() {
+                            entry.name.clone()
+                        } else {
+                            format!("{} · {secondary}", entry.name)
+                        }),
+                )
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(facts),
+                ),
+        );
+    }
+    block.into_any_element()
 }
 
 /// Archived sessions page (M22): the active workspace's archived sessions
@@ -6895,5 +10118,247 @@ mod tests {
         assert_eq!(grid.total_tokens, 125);
         assert_eq!(grid.cells.len(), grid.week_count * 7);
         assert_eq!(grid.week_count, 27);
+    }
+
+    /// G-SE15: the strategy follows the web's compatibility rule — an explicit
+    /// key wins, a legacy stored fixed id keeps its fixed meaning, and an
+    /// untouched document follows the last selection.
+    #[test]
+    fn flow_chat_strategy_keeps_the_legacy_meaning() {
+        assert_eq!(
+            flow_chat_strategy(&serde_json::json!({ "default_mode_strategy": "follow_last" })),
+            "follow_last"
+        );
+        assert_eq!(
+            flow_chat_strategy(&serde_json::json!({ "default_mode_strategy": "fixed" })),
+            "fixed"
+        );
+        assert_eq!(
+            flow_chat_strategy(&serde_json::json!({ "default_mode_id": "Creative" })),
+            "fixed"
+        );
+        assert_eq!(
+            flow_chat_strategy(&serde_json::json!({ "default_mode_id": "   " })),
+            "follow_last"
+        );
+        assert_eq!(flow_chat_strategy(&serde_json::json!({})), "follow_last");
+        assert_eq!(flow_chat_strategy(&serde_json::Value::Null), "follow_last");
+    }
+
+    /// G-SE15: an unset fixed mode reads as Standard (the web's switch-to-fixed
+    /// fallback), and the composer's last selection is optional.
+    #[test]
+    fn flow_chat_fixed_and_last_mode_values() {
+        assert_eq!(flow_chat_fixed_mode(&serde_json::json!({})), "Standard");
+        assert_eq!(
+            flow_chat_fixed_mode(&serde_json::json!({ "default_mode_id": "Ultimate" })),
+            "Ultimate"
+        );
+        assert_eq!(
+            flow_chat_last_mode(&serde_json::json!({ "last_mode_id": "Minimal" })),
+            Some("Minimal".to_string())
+        );
+        assert_eq!(
+            flow_chat_last_mode(&serde_json::json!({ "last_mode_id": " " })),
+            None
+        );
+        assert_eq!(flow_chat_last_mode(&serde_json::json!({})), None);
+    }
+
+    /// G-SE15: the session-title selection round-trips through the shared
+    /// `TaskModelSelection` document shape.
+    #[test]
+    fn task_model_selection_round_trips_the_shared_shape() {
+        use openbitfun_core::service::config::types::TaskModelSelection;
+        assert_eq!(
+            task_model_selection_document("inherit"),
+            serde_json::json!({ "kind": "inherit" })
+        );
+        assert_eq!(
+            task_model_selection_document("fast"),
+            serde_json::json!({ "kind": "fixed", "model_id": "fast" })
+        );
+        let fixed: TaskModelSelection =
+            serde_json::from_value(task_model_selection_document("model-b")).unwrap();
+        assert_eq!(task_model_selection_value(&fixed), "model-b");
+        let inherit: TaskModelSelection =
+            serde_json::from_value(task_model_selection_document("inherit")).unwrap();
+        assert_eq!(task_model_selection_value(&inherit), "inherit");
+    }
+
+    /// G-SE15: the session-title model menu carries the three aliases, the
+    /// enabled catalog, and a stored id it cannot resolve.
+    #[test]
+    fn session_title_model_options_keep_an_unavailable_choice() {
+        let text = sample_text();
+        let catalog = vec![
+            crate::runtime::ModelChoice {
+                id: "model-a".to_string(),
+                name: "Model A".to_string(),
+                provider: "p".to_string(),
+                enabled: true,
+            },
+            crate::runtime::ModelChoice {
+                id: "model-off".to_string(),
+                name: "Model Off".to_string(),
+                provider: "p".to_string(),
+                enabled: false,
+            },
+        ];
+        let options = session_title_model_options(&catalog, "gone", &text);
+        assert_eq!(options[0].0.as_ref(), "inherit");
+        assert_eq!(options[1].0.as_ref(), "fast");
+        assert_eq!(options[2].0.as_ref(), "primary");
+        assert!(options.iter().any(|(id, _)| id.as_ref() == "model-a"));
+        assert!(!options.iter().any(|(id, _)| id.as_ref() == "model-off"));
+        let missing = &options.last().unwrap().1;
+        assert!(missing.contains("gone"));
+        assert!(missing.contains(&text.settings_session_title_model_unavailable));
+    }
+
+    /// G-SE16: the worktree fallbacks are the shared config defaults, so a
+    /// first-run shell shows the same values the desktop page does.
+    #[test]
+    fn worktree_defaults_match_the_shared_config() {
+        let defaults = default_worktree_settings_document();
+        let shared = openbitfun_core::service::config::types::GlobalConfig::default()
+            .app
+            .worktrees;
+        assert_eq!(object_str(&defaults, "rootPath", ""), shared.root_path);
+        assert_eq!(
+            object_str(&defaults, "branchPrefix", ""),
+            shared.branch_prefix
+        );
+        assert_eq!(
+            object_bool(&defaults, "copyLocalChanges", true),
+            shared.copy_local_changes
+        );
+        assert_eq!(
+            object_bool(&defaults, "autoDeleteEnabled", false),
+            shared.auto_delete_enabled
+        );
+        assert_eq!(
+            object_u64(&defaults, "autoDeleteLimit", 0),
+            shared.auto_delete_limit as u64
+        );
+    }
+
+    /// G-SE12: a category written by a newer build stays selectable instead of
+    /// being remapped to a shell-known value.
+    #[test]
+    fn model_category_values_keep_an_unknown_stored_value() {
+        let known = model_category_values("multimodal");
+        assert_eq!(known.len(), 4);
+        assert!(known.contains(&"speech_recognition"));
+
+        let unknown = model_category_values("future_category");
+        assert_eq!(unknown.len(), 5);
+        assert_eq!(*unknown.last().unwrap(), "__stored_unknown");
+    }
+
+    /// G-SE12-3: only an object of string values may reach the shared header
+    /// map, and an empty draft clears it; the body accepts an empty draft or
+    /// any JSON object.
+    #[test]
+    fn model_json_drafts_accept_only_the_shared_shapes() {
+        assert!(headers_json_valid(""));
+        assert!(headers_json_valid("{\"X-Trace\":\"on\"}"));
+        assert!(!headers_json_valid("{\"X-Trace\":1}"));
+        assert!(!headers_json_valid("[]"));
+        assert!(!headers_json_valid("{"));
+
+        assert!(body_json_valid(""));
+        assert!(body_json_valid("{\"temperature\":0.8}"));
+        assert!(!body_json_valid("[1, 2]"));
+        assert!(!body_json_valid("{"));
+    }
+
+    /// G-SE17: stored/selected effects round-trip the shared ids and an
+    /// unknown id degrades to the interactive default instead of vanishing.
+    #[test]
+    fn permission_effects_round_trip_the_shared_ids() {
+        use openbitfun_runtime_ports::PermissionEffect;
+        for (value, effect) in [
+            ("allow", PermissionEffect::Allow),
+            ("ask", PermissionEffect::Ask),
+            ("deny", PermissionEffect::Deny),
+        ] {
+            assert_eq!(permission_effect_from_value(value), effect);
+            assert_eq!(permission_effect_value(effect), value);
+        }
+        assert_eq!(
+            permission_effect_from_value("future-effect"),
+            PermissionEffect::Ask
+        );
+    }
+
+    /// G-SE29: the distribution filter matches the row name or its provider,
+    /// case-insensitively, and an empty filter keeps everything.
+    #[test]
+    fn usage_entry_filter_matches_name_and_provider() {
+        use openbitfun_services_core::token_usage::{UsageAttributionStatus, UsageStatisticsEntry};
+        let entry = UsageStatisticsEntry {
+            key: "model-a".to_string(),
+            name: "Model A".to_string(),
+            provider_name: Some("DeepSeek".to_string()),
+            attribution_status: UsageAttributionStatus::Resolved,
+            requests: 3,
+            tokens: 120,
+            cache_hit_rate: Some(0.5),
+            cached_tokens: 60,
+            reported_input_tokens: 120,
+        };
+        assert!(usage_entry_matches(&entry, ""));
+        assert!(usage_entry_matches(&entry, "model a"));
+        assert!(usage_entry_matches(&entry, "deepseek"));
+        assert!(!usage_entry_matches(&entry, "openai"));
+        let unattributed = UsageStatisticsEntry {
+            provider_name: None,
+            name: "Unknown".to_string(),
+            ..entry
+        };
+        assert!(usage_entry_matches(&unattributed, "unknown"));
+        assert!(!usage_entry_matches(&unattributed, "deepseek"));
+    }
+
+    /// G-SE24: the canonical English default is written back only while the
+    /// stored text is still that default; customized text stays verbatim.
+    #[test]
+    fn quick_action_text_normalizes_only_unmodified_builtins() {
+        let (label, prompt) = normalized_quick_action_text(
+            "commit",
+            "Commit",
+            "Commit all current code changes",
+            "提交",
+            "提交当前所有代码变更",
+            "提交",
+            "提交当前所有代码变更",
+        );
+        assert_eq!(label, "Commit");
+        assert_eq!(prompt, "Commit all current code changes");
+
+        let (label, prompt) = normalized_quick_action_text(
+            "commit",
+            "My commit",
+            "My prompt",
+            "My commit",
+            "My prompt",
+            "My commit",
+            "My prompt",
+        );
+        assert_eq!(label, "My commit");
+        assert_eq!(prompt, "My prompt");
+
+        let (label, prompt) = normalized_quick_action_text(
+            "custom_1",
+            "Anything",
+            "Anything",
+            "Typed",
+            "Typed prompt",
+            "Typed",
+            "Typed prompt",
+        );
+        assert_eq!(label, "Typed");
+        assert_eq!(prompt, "Typed prompt");
     }
 }

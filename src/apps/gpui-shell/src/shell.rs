@@ -906,7 +906,7 @@ impl SidebarItem for SidebarEntry {
                     .items_center()
                     .gap_1()
                     .flex_shrink_0()
-                    .when_some(review_kind, |this, kind| {
+                    .when_some(review_kind, |this, _kind| {
                         this.child(
                             div()
                                 .text_xs()
@@ -2003,6 +2003,8 @@ pub(crate) struct ShellWindow {
     /// snapshot the merge writes back into).
     pub(crate) mcp_import_text: Entity<TextareaState>,
     pub(crate) mcp_import_path: Entity<InputState>,
+    /// G-M1/G-M3: the remote auth dialog's Bearer-token draft.
+    pub(crate) mcp_auth_token_input: Entity<InputState>,
     pub(crate) mcp_import_active: bool,
     pub(crate) mcp_import_loading: bool,
     pub(crate) mcp_import_error: Option<String>,
@@ -2028,6 +2030,27 @@ pub(crate) struct ShellWindow {
     /// (`provider`, `configured`); fetched when the settings view opens.
     pub(crate) websearch_status: Option<(String, bool)>,
     pub(crate) websearch_credential_input: Entity<InputState>,
+    /// G-P1: the task editor dialog's inputs and page flags. The inputs live
+    /// on the window like the other dialog fields so a re-render keeps text;
+    /// the flags below select the schedule/target shape and the edit target.
+    pub(crate) task_name_input: Entity<InputState>,
+    pub(crate) task_prompt_input: Entity<TextareaState>,
+    pub(crate) task_at_input: Entity<InputState>,
+    pub(crate) task_every_input: Entity<InputState>,
+    pub(crate) task_anchor_input: Entity<InputState>,
+    pub(crate) task_cron_input: Entity<InputState>,
+    pub(crate) task_tz_input: Entity<InputState>,
+    pub(crate) task_editor_target: Option<String>,
+    pub(crate) task_editor_kind: crate::tasks::TaskScheduleKind,
+    pub(crate) task_editor_unit: crate::tasks::TaskIntervalUnit,
+    pub(crate) task_editor_target_kind: crate::tasks::TaskTargetKind,
+    pub(crate) task_editor_session: Option<String>,
+    pub(crate) task_editor_enabled: bool,
+    pub(crate) task_editor_error: Option<String>,
+    /// G-K2/G-K3: the add-skill path field.
+    pub(crate) skill_path_input: Entity<InputState>,
+    /// G-K4: the group editor's name field.
+    pub(crate) skill_group_name_input: Entity<InputState>,
     /// R7b plugin UI contributions: the projection (fixture provider behind
     /// the env gate) plus the per-scene shell runtime (control entities and
     /// visible diagnostics). Rendering dispatches through `crate::plugin_ui`.
@@ -2105,7 +2128,21 @@ impl ShellWindow {
         let mcp_json_state = cx.new(|cx| TextareaState::new(window, cx));
         let mcp_import_text = cx.new(|cx| TextareaState::new(window, cx));
         let mcp_import_path = cx.new(|cx| InputState::new(window, cx));
+        let mcp_auth_token_input = cx.new(|cx| InputState::new(window, cx));
         let websearch_credential_input = cx.new(|cx| InputState::new(window, cx));
+        let task_name_input = cx.new(|cx| InputState::new(window, cx));
+        let task_prompt_input = cx.new(|cx| TextareaState::new(window, cx));
+        let task_at_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("YYYY-MM-DDTHH:MM"));
+        let task_every_input = cx.new(|cx| InputState::new(window, cx).placeholder("1"));
+        let task_anchor_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("YYYY-MM-DDTHH:MM"));
+        let task_cron_input = cx.new(|cx| InputState::new(window, cx).placeholder("0 8 * * *"));
+        let task_tz_input = cx.new(|cx| InputState::new(window, cx).placeholder("Asia/Shanghai"));
+        let skill_path_input = cx.new(|cx| InputState::new(window, cx));
+        let skill_group_name_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(text.skill_group_name_placeholder.clone())
+        });
         let settings_search_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(text.settings_nav_search_placeholder.clone())
         });
@@ -2257,6 +2294,7 @@ impl ShellWindow {
             mcp_json_error: None,
             mcp_import_text,
             mcp_import_path,
+            mcp_auth_token_input,
             mcp_import_active: false,
             mcp_import_loading: false,
             mcp_import_error: None,
@@ -2273,6 +2311,22 @@ impl ShellWindow {
             usage_activity_loading: false,
             websearch_status: None,
             websearch_credential_input,
+            task_name_input,
+            task_prompt_input,
+            task_at_input,
+            task_every_input,
+            task_anchor_input,
+            task_cron_input,
+            task_tz_input,
+            skill_path_input,
+            skill_group_name_input,
+            task_editor_target: None,
+            task_editor_kind: crate::tasks::TaskScheduleKind::At,
+            task_editor_unit: crate::tasks::TaskIntervalUnit::Hour,
+            task_editor_target_kind: crate::tasks::TaskTargetKind::Workspace,
+            task_editor_session: None,
+            task_editor_enabled: true,
+            task_editor_error: None,
             plugin_ui,
             plugin_ui_scenes: std::collections::BTreeMap::new(),
             plugin_ui_auto_open: Self::plugin_ui_auto_open_requested(),
@@ -3040,6 +3094,64 @@ impl ShellWindow {
                     Some(i18n::current(cx).manage_mcp_import_file_failed.clone());
                 cx.refresh_windows();
             }
+            // G-M1: an OAuth poll landed; only the dialog's own server
+            // accepts it, so a stale loop for a previously opened server
+            // cannot repaint the new one (same guard as G-A4).
+            RuntimeEvent::McpOAuthSession(session) => {
+                let mut accepted = session.is_none();
+                if let Some(snapshot) = &session {
+                    let mut state = crate::manage::McpAuthDialogState::current(cx);
+                    if state.open_for(&snapshot.server_id) {
+                        state.session = Some(snapshot.clone());
+                        state.starting = false;
+                        cx.set_global(state);
+                        accepted = true;
+                    }
+                }
+                if accepted {
+                    cx.refresh_windows();
+                }
+            }
+            // G-M3: a token save/clear (or failed OAuth start) settled. With
+            // the dialog open the error lands inline; otherwise it falls back
+            // to the page banner. Success closes the dialog with a notice.
+            RuntimeEvent::McpAuthSaved(result) => {
+                let dialog_open = crate::manage::McpAuthDialogState::current(cx)
+                    .server_id
+                    .is_some();
+                match result {
+                    Ok(()) => {
+                        let saved = i18n::current(cx).manage_mcp_auth_saved.clone();
+                        if dialog_open && window.has_active_dialog(cx) {
+                            crate::manage::McpAuthDialogState::mutate(cx, |state| {
+                                state.server_id = None;
+                                state.saving = false;
+                            });
+                            window.close_dialog(cx);
+                        } else {
+                            crate::manage::McpAuthDialogState::mutate(cx, |state| {
+                                state.server_id = None;
+                                state.saving = false;
+                            });
+                        }
+                        crate::manage::ManageNotice::set_success(saved, cx);
+                    }
+                    Err(message) => {
+                        tracing::warn!("MCP remote auth operation failed: {message}");
+                        let message = i18n::failed_status(&message, cx);
+                        if dialog_open {
+                            crate::manage::McpAuthDialogState::mutate(cx, |state| {
+                                state.saving = false;
+                                state.starting = false;
+                                state.error = Some(message);
+                            });
+                        } else {
+                            crate::manage::ManageNotice::set(Some(message), cx);
+                        }
+                    }
+                }
+                cx.refresh_windows();
+            }
             RuntimeEvent::PluginUiBridgeReady { providers } => {
                 for install in providers {
                     let crate::runtime::PluginUiProviderInstall {
@@ -3111,6 +3223,102 @@ impl ShellWindow {
                 cx.set_global(catalog);
                 cx.refresh_windows();
             }
+            RuntimeEvent::SkillValidationFinished(result) => {
+                crate::manage::SkillDialogsState::mutate(cx, |state| {
+                    state.busy = false;
+                    state.validation = Some(result);
+                });
+            }
+            RuntimeEvent::SkillAdded(result) => match result {
+                Ok(message) => {
+                    tracing::info!("{message}");
+                    crate::manage::SkillDialogsState::mutate(cx, |state| {
+                        state.dialog = None;
+                        state.busy = false;
+                        state.validation = None;
+                        state.mutation_error = None;
+                    });
+                    window.close_dialog(cx);
+                }
+                Err(error) => {
+                    crate::manage::SkillDialogsState::mutate(cx, |state| {
+                        state.busy = false;
+                        state.mutation_error = Some(error);
+                    });
+                }
+            },
+            RuntimeEvent::SkillDeleted(result) => match result {
+                Ok(message) => {
+                    tracing::info!("{message}");
+                    crate::manage::SkillDialogsState::mutate(cx, |state| {
+                        state.dialog = None;
+                        state.busy = false;
+                        state.mutation_error = None;
+                    });
+                    window.close_dialog(cx);
+                }
+                Err(error) => {
+                    crate::manage::SkillDialogsState::mutate(cx, |state| {
+                        state.mutation_error = Some(error);
+                    });
+                }
+            },
+            RuntimeEvent::SkillGroups(result) => match result {
+                Ok(groups) => {
+                    crate::manage::SkillGroupsCatalog::set(
+                        crate::manage::SkillGroupsCatalog {
+                            loaded: true,
+                            busy: false,
+                            error: None,
+                            groups,
+                        },
+                        cx,
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!("Failed to load user skill groups: {error}");
+                    crate::manage::SkillGroupsCatalog::mutate(cx, |state| {
+                        state.loaded = true;
+                        state.busy = false;
+                        state.error = Some(error);
+                    });
+                }
+            },
+            RuntimeEvent::SkillGroupsSaved(result) => match result {
+                Ok(groups) => {
+                    let had_dialog = crate::manage::SkillGroupsDialogState::current(cx)
+                        .dialog
+                        .is_some();
+                    crate::manage::SkillGroupsCatalog::set(
+                        crate::manage::SkillGroupsCatalog {
+                            loaded: true,
+                            busy: false,
+                            error: None,
+                            groups,
+                        },
+                        cx,
+                    );
+                    crate::manage::SkillGroupsDialogState::mutate(cx, |state| {
+                        state.dialog = None;
+                        state.busy = false;
+                        state.error = None;
+                    });
+                    if had_dialog {
+                        window.close_dialog(cx);
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!("Failed to save user skill groups: {error}");
+                    crate::manage::SkillGroupsCatalog::mutate(cx, |state| {
+                        state.busy = false;
+                        state.error = Some(error.clone());
+                    });
+                    crate::manage::SkillGroupsDialogState::mutate(cx, |state| {
+                        state.busy = false;
+                        state.error = Some(error);
+                    });
+                }
+            },
             RuntimeEvent::AgentCatalog(catalog) => {
                 cx.set_global(catalog);
                 if self.agent_create_active {
@@ -3153,6 +3361,82 @@ impl ShellWindow {
                     }
                 }
                 cx.refresh_windows();
+            }
+            RuntimeEvent::AgentCapabilities { profile_id, result } => {
+                let current = crate::manage::AgentDetailState::current(cx);
+                if current.agent_id.is_none() || current.profile_id != profile_id {
+                    return;
+                }
+                match result {
+                    Ok(payload) => {
+                        crate::manage::AgentDetailState::mutate(cx, |state| {
+                            state.pending_tools = payload
+                                .tools
+                                .iter()
+                                .filter(|tool| tool.enabled)
+                                .map(|tool| tool.name.clone())
+                                .collect();
+                            state.pending_subagents = payload
+                                .subagents
+                                .iter()
+                                .filter(|subagent| subagent.enabled)
+                                .map(|subagent| subagent.id.clone())
+                                .collect();
+                            state.tools = Some(payload.tools);
+                            state.subagents = Some(payload.subagents);
+                            state.busy = false;
+                            state.tools_error = None;
+                            state.subagents_error = None;
+                        });
+                    }
+                    Err(error) => {
+                        tracing::warn!("Agent capabilities load failed: {error}");
+                        let message = i18n::failed_status(&error, cx);
+                        crate::manage::AgentDetailState::mutate(cx, |state| {
+                            state.tools_error = Some(message.clone());
+                            state.subagents_error = Some(message);
+                            state.busy = false;
+                        });
+                    }
+                }
+            }
+            RuntimeEvent::AgentCapabilitiesSaved { profile_id, result } => {
+                let current = crate::manage::AgentDetailState::current(cx);
+                if current.agent_id.is_none() || current.profile_id != profile_id {
+                    return;
+                }
+                match result {
+                    Ok(payload) => {
+                        crate::manage::AgentDetailState::mutate(cx, |state| {
+                            state.pending_tools = payload
+                                .tools
+                                .iter()
+                                .filter(|tool| tool.enabled)
+                                .map(|tool| tool.name.clone())
+                                .collect();
+                            state.pending_subagents = payload
+                                .subagents
+                                .iter()
+                                .filter(|subagent| subagent.enabled)
+                                .map(|subagent| subagent.id.clone())
+                                .collect();
+                            state.tools = Some(payload.tools);
+                            state.subagents = Some(payload.subagents);
+                            state.busy = false;
+                            state.tools_error = None;
+                            state.subagents_error = None;
+                        });
+                    }
+                    Err(error) => {
+                        tracing::warn!("Agent capability write failed: {error}");
+                        let message = i18n::failed_status(&error, cx);
+                        crate::manage::AgentDetailState::mutate(cx, |state| {
+                            state.busy = false;
+                            state.tools_error = Some(message.clone());
+                            state.subagents_error = Some(message);
+                        });
+                    }
+                }
             }
             RuntimeEvent::McpCatalog(catalog) => {
                 cx.set_global(catalog);
@@ -3225,7 +3509,7 @@ impl ShellWindow {
                         self.mcp_import_candidates.clear();
                         self.mcp_import_id_inputs.clear();
                         window.close_dialog(cx);
-                        crate::manage::ManageNotice::set(Some(saved), cx);
+                        crate::manage::ManageNotice::set_success(saved, cx);
                     }
                     Err(message) => {
                         tracing::warn!("Failed to save MCP JSON config: {message}");
@@ -3582,6 +3866,52 @@ impl ShellWindow {
                 cx.set_global(runtime::ModelCatalog {
                     loaded: true,
                     models,
+                });
+                cx.refresh_windows();
+            }
+            RuntimeEvent::ModelTestFinished { model_id, result } => {
+                crate::settings::ModelTestState::mutate(cx, |state| {
+                    state
+                        .receipts
+                        .insert(model_id, crate::settings::ModelTestReceipt::Done(result));
+                });
+                cx.refresh_windows();
+            }
+            RuntimeEvent::HookImports(snapshot) => {
+                settings::HookImportState::mutate(cx, |state| {
+                    state.snapshot = Some(*snapshot);
+                    state.loaded = true;
+                    state.loading = false;
+                    state.busy = false;
+                    state.error = None;
+                    state.plan = None;
+                    state.plan_stale = false;
+                    state.confirm = None;
+                });
+                cx.refresh_windows();
+            }
+            RuntimeEvent::HookImportPlan(plan) => {
+                settings::HookImportState::mutate(cx, |state| {
+                    state.plan = Some(*plan);
+                    state.plan_stale = false;
+                    state.busy = false;
+                    state.error = None;
+                });
+                cx.refresh_windows();
+            }
+            RuntimeEvent::HookImportPlanStale(plan) => {
+                settings::HookImportState::mutate(cx, |state| {
+                    state.plan = Some(*plan);
+                    state.plan_stale = true;
+                    state.busy = false;
+                });
+                cx.refresh_windows();
+            }
+            RuntimeEvent::HookImportFailed(error) => {
+                settings::HookImportState::mutate(cx, |state| {
+                    state.error = Some(error);
+                    state.loading = false;
+                    state.busy = false;
                 });
                 cx.refresh_windows();
             }
@@ -4233,6 +4563,11 @@ impl ShellWindow {
         // the page's own retry.
         if page == settings::SettingsEntry::TrinityEngine {
             self.reload_trinity_engine(cx);
+        }
+        // G-SE25: the automation page reads the Hook-import projection on
+        // selection (web loads on mount); a plain read uses the catalog cache.
+        if page == settings::SettingsEntry::Automation {
+            settings::fetch_hook_imports(false, cx);
         }
         cx.notify();
     }
@@ -7878,8 +8213,9 @@ fn btw_question(input: &str) -> Option<&str> {
 /// defaults (English; `config-contracts` writes the same values). The
 /// localized copy replaces them only while the stored text still equals
 /// these defaults — a customized action keeps its stored text verbatim.
-const QUICK_ACTION_COMMIT_DEFAULTS: (&str, &str) = ("Commit", "Commit all current code changes");
-const QUICK_ACTION_CREATE_PR_DEFAULTS: (&str, &str) =
+pub(crate) const QUICK_ACTION_COMMIT_DEFAULTS: (&str, &str) =
+    ("Commit", "Commit all current code changes");
+pub(crate) const QUICK_ACTION_CREATE_PR_DEFAULTS: (&str, &str) =
     ("Create PR", "Create a Pull Request for the current branch");
 
 /// One stored-vs-default text of a built-in quick action (web
@@ -7895,7 +8231,7 @@ fn builtin_quick_action_text(stored: &str, default: &str, localized: &str) -> St
 /// Resolves a quick action's display label and the prompt a click sends
 /// (web `resolveQuickActionText` port): built-in `commit`/`create_pr`
 /// localize the shared English defaults, everything else stays verbatim.
-fn resolve_quick_action_text(
+pub(crate) fn resolve_quick_action_text(
     action: &openbitfun_core::service::config::types::AiExperienceQuickAction,
     text: &ShellText,
 ) -> (String, String) {
@@ -11334,7 +11670,7 @@ mod tests {
 
         // The card entry point opens the child; the opened echo settles the
         // subagent child context onto the pane.
-        window.update(|window, cx| {
+        window.update(|_window, cx| {
             shell.update(cx, |shell, cx| {
                 shell.open_subagent_run("child-1".into(), "parent".into(), cx);
             });
@@ -11353,7 +11689,7 @@ mod tests {
         });
 
         // Returning to the parent re-annotates the reloaded card.
-        window.update(|window, cx| {
+        window.update(|_window, cx| {
             shell.update(cx, |shell, cx| shell.return_from_child(cx));
         });
         window.update(|window, cx| {
@@ -11563,6 +11899,8 @@ mod tests {
                             group_key: None,
                             source_id: String::new(),
                             source_label: String::new(),
+                            path: String::new(),
+                            deletable: false,
                         }],
                     }),
                     window,
@@ -11581,6 +11919,9 @@ mod tests {
                             enabled: true,
                             auto_start: true,
                             builtin: false,
+                            auth_configured: false,
+                            auth_source: None,
+                            oauth_enabled: false,
                         }],
                     }),
                     window,
@@ -11631,6 +11972,12 @@ mod tests {
                 skills_manageable: false,
                 skills_mode_id: id.to_string(),
                 model_override: subagent.then_some(SubagentModelSelection::Inherit),
+                supports_follow_up: true,
+                external_provider_label: None,
+                default_tools: Vec::new(),
+                profile_id: id.to_string(),
+                profile_label: None,
+                profile_member_ids: vec![id.to_string()],
             }
         };
         let catalog = crate::manage::AgentCatalog {
@@ -11663,7 +12010,7 @@ mod tests {
         });
         let view = shell_view.clone();
         {
-            let mut window = cx.add_empty_window();
+            let window = cx.add_empty_window();
             window.draw(point(px(0.), px(0.)), size(px(1100.), px(900.)), {
                 let text = text.clone();
                 let view = view.clone();
@@ -11722,7 +12069,7 @@ mod tests {
                 ..Default::default()
             });
         });
-        let mut window = cx.add_empty_window();
+        let window = cx.add_empty_window();
         window.draw(point(px(0.), px(0.)), size(px(1100.), px(900.)), {
             let text = text.clone();
             let view = view.clone();
@@ -12202,7 +12549,7 @@ mod tests {
             ),
         ];
         for (page, sections) in cases {
-            let mut window = cx.add_empty_window();
+            let window = cx.add_empty_window();
             let text = text.clone();
             let view = shell_view.clone();
             let page = *page;
@@ -12425,20 +12772,6 @@ mod tests {
     impl Render for SettingsHarness {
         fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             settings::render_page(&self.text, self.view.clone(), self.page, cx)
-        }
-    }
-
-    /// Renders only the archived list body for the bulk-delete test (T1-4);
-    /// the field needs a view wrapper for the same layout reason as
-    /// [`SettingsHarness`].
-    struct ArchivedFieldHarness {
-        text: ShellText,
-        view: gpui_kit::WeakEntity<ShellWindow>,
-    }
-
-    impl Render for ArchivedFieldHarness {
-        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-            settings::archived_sessions_field(self.view.clone(), &self.text, window, cx)
         }
     }
 
@@ -13135,7 +13468,7 @@ mod tests {
         let window = cx.add_empty_window();
         let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
 
-        window.update(|window, cx| {
+        window.update(|_window, cx| {
             shell.update(cx, |shell, cx| {
                 shell.tabs.open(TabKind::Scene(tabs::SceneId::Insights));
                 shell.insights.loaded = true;
@@ -13214,7 +13547,7 @@ mod tests {
         };
 
         // Tasks: a long all-jobs list.
-        window.update(|window, cx| {
+        window.update(|_window, cx| {
             shell.update(cx, |shell, cx| {
                 shell.tabs.open(TabKind::Scene(tabs::SceneId::Tasks));
                 shell.tasks.loaded = true;
@@ -13265,7 +13598,7 @@ mod tests {
         );
 
         // Trinity: a long memory timeline.
-        window.update(|window, cx| {
+        window.update(|_window, cx| {
             shell.update(cx, |shell, cx| {
                 shell.tabs.open(TabKind::Scene(tabs::SceneId::Trinity));
                 shell.trinity.loaded = true;
@@ -13296,6 +13629,104 @@ mod tests {
             content.size.height,
             container.size.height
         );
+    }
+
+    /// G-P1: the scheduled-job dialog opens over the shell window (dialogs are
+    /// window overlays, so this needs a real root-view frame) and prefills from
+    /// the edited job through the window-owned inputs the save path reads.
+    #[gpui_kit::test]
+    fn task_editor_opens_prefilled_from_the_edited_job(cx: &mut gpui_kit::TestAppContext) {
+        use openbitfun_core::service::cron::{
+            CronJob, CronJobPayload, CronJobTarget, CronSchedule, CronWorkspaceRef,
+        };
+
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let editor_tx = tx.clone();
+        // Dialogs live on the gpui-component window root, so the test window
+        // needs the same `Root` wrapper the real `gpui_kit::open_window`
+        // installs; a bare view would panic at `WindowState`.
+        let (root, window) = cx.add_window_view(|window, cx| {
+            let shell = cx.new(|cx| ShellWindow::new(tx, rx, window, cx));
+            gpui_kit::base::Root::new(shell, window, cx)
+        });
+        let shell = window.update(|_, cx| {
+            root.read(cx)
+                .view()
+                .clone()
+                .downcast::<ShellWindow>()
+                .ok()
+                .expect("the window root wraps the shell")
+        });
+        let job = CronJob {
+            id: "job-edit".to_string(),
+            name: "Nightly".to_string(),
+            schedule: CronSchedule::Cron {
+                expr: "0 9 * * *".to_string(),
+                tz: Some("Asia/Shanghai".to_string()),
+            },
+            payload: CronJobPayload {
+                text: "Summarize the day".to_string(),
+            },
+            enabled: false,
+            target: CronJobTarget::Workspace {
+                workspace: CronWorkspaceRef {
+                    workspace_id: Some("ws-1".to_string()),
+                    workspace_path: "/tmp/ws".to_string(),
+                    project_workspace_path: None,
+                    execution_target: None,
+                    remote_connection_id: None,
+                    remote_ssh_host: None,
+                },
+                launch: Default::default(),
+            },
+            created_at_ms: 0,
+            config_updated_at_ms: 0,
+            updated_at_ms: 0,
+            state: Default::default(),
+        };
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.tabs.open(TabKind::Scene(tabs::SceneId::Tasks));
+                shell.tasks.loaded = true;
+                cx.notify();
+            });
+            crate::tasks::open_task_editor(
+                shell.downgrade(),
+                Some(job.clone()),
+                editor_tx.clone(),
+                window,
+                cx,
+            );
+        });
+        draw_window_for_test(window);
+        let editor = window
+            .debug_bounds("task-editor")
+            .expect("the task editor dialog renders over the window");
+        assert!(editor.size.width >= px(500.));
+
+        window.update(|_, cx| {
+            let shell = shell.read(cx);
+            assert_eq!(
+                shell.task_name_input.read(cx).value().to_string(),
+                "Nightly"
+            );
+            assert_eq!(
+                shell.task_prompt_input.read(cx).value().to_string(),
+                "Summarize the day"
+            );
+            assert_eq!(shell.task_editor_kind, crate::tasks::TaskScheduleKind::Cron);
+            assert_eq!(
+                shell.task_cron_input.read(cx).value().to_string(),
+                "0 9 * * *"
+            );
+            assert_eq!(
+                shell.task_tz_input.read(cx).value().to_string(),
+                "Asia/Shanghai"
+            );
+            assert_eq!(shell.task_editor_target.as_deref(), Some("job-edit"));
+            assert!(!shell.task_editor_enabled);
+        });
     }
 
     /// The trinity tab fetches status and timeline on independent flags: the
@@ -13725,9 +14156,9 @@ mod tests {
     fn flat_projection_orders_every_workspace_and_scopes_rows(cx: &mut gpui_kit::TestAppContext) {
         install_shell_globals(cx);
         let (tx, rx) = mpsc::unbounded_channel();
-        let mut window = cx.add_empty_window();
+        let window = cx.add_empty_window();
         let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
-        let text = sample_shell_text();
+        let _text = sample_shell_text();
 
         window.update(|window, cx| {
             shell.update(cx, |shell, cx| {
@@ -13894,7 +14325,7 @@ mod tests {
     fn foreign_group_rows_carry_their_workspace(cx: &mut gpui_kit::TestAppContext) {
         install_shell_globals(cx);
         let (tx, rx) = mpsc::unbounded_channel();
-        let mut window = cx.add_empty_window();
+        let window = cx.add_empty_window();
         let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
         let text = sample_shell_text();
 
@@ -14082,7 +14513,7 @@ mod tests {
     fn archived_settings_page_renders_the_bulk_delete(cx: &mut gpui_kit::TestAppContext) {
         install_shell_globals(cx);
         let (tx, rx) = mpsc::unbounded_channel();
-        let mut window = cx.add_empty_window();
+        let window = cx.add_empty_window();
         let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
         let text = sample_shell_text();
 
@@ -14190,7 +14621,7 @@ mod tests {
     fn trinity_engine_page_tracks_daemon_settlements(cx: &mut gpui_kit::TestAppContext) {
         install_shell_globals(cx);
         let (tx, rx) = mpsc::unbounded_channel();
-        let mut window = cx.add_empty_window();
+        let window = cx.add_empty_window();
         let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
         let text = sample_shell_text();
 
@@ -14320,7 +14751,7 @@ mod tests {
     fn memory_page_tracks_reset_and_clear_settlements(cx: &mut gpui_kit::TestAppContext) {
         install_shell_globals(cx);
         let (tx, rx) = mpsc::unbounded_channel();
-        let mut window = cx.add_empty_window();
+        let window = cx.add_empty_window();
         let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
         let text = sample_shell_text();
 
@@ -14443,7 +14874,7 @@ mod tests {
         cx.update(|cx| settings::install_global_shortcuts(cx));
 
         let (tx, rx) = mpsc::unbounded_channel();
-        let mut window = cx.add_empty_window();
+        let window = cx.add_empty_window();
         let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
         let text = sample_shell_text();
 
@@ -14605,7 +15036,7 @@ mod tests {
     fn background_subagent_badges_track_the_child_lifecycle(cx: &mut gpui_kit::TestAppContext) {
         install_shell_globals(cx);
         let (tx, _rx) = mpsc::unbounded_channel();
-        let mut window = cx.add_empty_window();
+        let window = cx.add_empty_window();
         let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, _rx, window, cx)));
         let task_card = |background: bool| RuntimeEvent::ToolUpdate {
             session_id: "parent".into(),
@@ -14726,7 +15157,7 @@ mod tests {
 
         install_shell_globals(cx);
         let (tx, _rx) = mpsc::unbounded_channel();
-        let mut window = cx.add_empty_window();
+        let window = cx.add_empty_window();
         let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, _rx, window, cx)));
         window.update(|window, cx| {
             shell.update(cx, |shell, cx| {
@@ -16201,7 +16632,7 @@ mod tests {
         window.update(|window, cx| {
             inject_terminal_tab(&shell, "one", window, cx);
             inject_terminal_tab(&shell, "two", window, cx);
-            shell.update(cx, |shell, cx| {
+            shell.update(cx, |shell, _cx| {
                 shell.terminal_open = true;
                 shell.active_terminal = 1;
                 assert_eq!(shell.terminals.len(), 2);
@@ -16226,7 +16657,7 @@ mod tests {
         // button, and the active pane all lay out inside the dock.
         window.update(|window, cx| {
             inject_terminal_tab(&shell, "again", window, cx);
-            shell.update(cx, |shell, cx| shell.terminal_open = true);
+            shell.update(cx, |shell, _cx| shell.terminal_open = true);
         });
         window.draw(point(px(0.), px(0.)), size(px(1200.), px(800.)), {
             let shell = shell.clone();
@@ -16301,7 +16732,7 @@ mod tests {
             cx.set_global(config);
             inject_terminal_tab(&shell, "one", window, cx);
             inject_terminal_profile_tab(&shell, "dev", window, cx);
-            shell.update(cx, |shell, cx| {
+            shell.update(cx, |shell, _cx| {
                 shell.terminal_open = true;
                 shell.active_terminal = 1;
             });

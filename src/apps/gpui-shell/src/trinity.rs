@@ -35,8 +35,6 @@ const RPC_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Timeline page size (web `TIMELINE_LIMIT`).
 pub(crate) const TIMELINE_LIMIT: i64 = 50;
-/// History points pulled for the trend (web `HISTORY_LIMIT`).
-const HISTORY_LIMIT: i64 = 120;
 
 /// Port assumed when neither the override nor the config supplies one.
 /// Matches the desktop host and the factory template.

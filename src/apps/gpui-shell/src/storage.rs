@@ -25,7 +25,6 @@ pub const STORAGE_ROOT_ENV: &str = "OPENBITFUN_GPUI_STORAGE_ROOT";
 const USER_ROOT_ENV: &str = "OPENBITFUN_USER_ROOT";
 const E2E_USER_ROOT_ENV: &str = "OPENBITFUN_E2E_USER_ROOT";
 const PRODUCT_HOME_ENV: &str = "OPENBITFUN_HOME";
-const E2E_PRODUCT_HOME_ENV: &str = "OPENBITFUN_E2E_HOME";
 const DEFAULT_DIRECTORY_NAME: &str = "openbitfun-gpui-shell";
 
 /// What the shell decided about its storage roots.
