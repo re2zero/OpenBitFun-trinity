@@ -536,6 +536,11 @@
 
 - **G-M1 OAuth 授权流 UI**（T3-18）：web `McpToolsConfig.tsx:1677-1775`（OAuth 状态/开始授权/redirectUri/token）；
   壳有登录式 token 编辑但无 OAuth 流程。**B 档**。
+  **✅ 交付**（2026-10-23，与 G-M3 同批）：MCP 行「远程认证」打开认证对话框，OAuth 段 = 提示、状态六态行、
+  回调地址/消息行、「通过 OAuth 连接 / 重新发起 / 重新连接」三态按钮（web `getOAuthActionLabel` 同判）。
+  流程经 core `start_remote_oauth_authorization`（本地回调监听 + 后台状态机，授权 URL 开系统浏览器），壳侧
+  1s 轮询带 epoch 守卫（新循环顶掉旧循环，迟到快照按 server_id 拒收）；经对话框 chrome 离开（Esc/背板/X，
+  `Dialog::on_close`）取消活跃流（web `handleCloseAuthDialog` 同语义），core 300s 回调超时兜底终态。
 - **G-M2 粘贴/文件导入 + 预览导入**：web `MCPServerConfigDialog.tsx:217-342`；壳编辑器无粘贴导入预览。**A 档**。
   **✅ 交付**（2026-10-16，A 批 3 尾车 `b402be1a9`，文档 `733cb7a4a`）****：MCP 页「导入配置」对话框（`manage.rs::open_mcp_import_dialog`）——
   粘贴框 + **键入 JSON 文件路径**（壳无原生选择器，与「打开项目」同范式，读文件后内容进粘贴框）+ 「预览导入」出候选表
@@ -548,6 +553,13 @@
   这是 core 既有语义，非本批引入。
 - **G-M3 auth 模式细分（auto/oauth/token/headers）+ 远程认证对话框**：web 同文件；壳简化为 URL/凭据。
   **B 档（与 G-M1 同批）**。
+  **✅ 交付**（2026-10-23）：remote 行补认证事实摘要（web `getRemoteAuthSummary` 同表：configured+来源
+  headers/env/oauth、OAuth 就绪未授权、未配置）与「远程认证」入口；对话框 Bearer token 段 = 粘贴提示 +
+  遮蔽警示 + 服务器地址行，「保存并重连」走 `reauthenticate_remote_server`（存头后重启，连接失败错误内联、
+  凭据已落盘），「清除认证」走 `clear_remote_server_auth`（清头与 OAuth 凭据并停连接，成功回执 +
+  行摘要即时翻转）。目录投影补 `auth_configured`/`auth_source`/`oauth_enabled`。
+  **在案分歧**：web 的 auth 模式四档细分（auto/oauth/token/headers 单选）壳未做模式选择器——壳与 core 写面
+  一致按「headers 存值 + OAuth 就绪/已授权」二面呈现；摘要文案为壳自拟 gpui-shell 键（web 为单条插值串）。
 
 ### 2.10 任务看板（G-P）
 
@@ -739,7 +751,7 @@
 | 3 | Trinity 引擎配置页 | G-SE14 **✅ 交付 2026-10-18** | trinityd 配置面已有（web 同源） | 0.5 |
 | 4 | 技能管理写面（添加/删除/分组/详情/搜索） | G-K2..K5 **✅ 全部交付（K2/K3/K5 2026-10-20，K4 2026-10-21）** | 分组读写走 `app.user_skill_groups` | 1 |
 | 5 | 智能体编辑面（工具/子代理/模型覆盖/过滤/详情） | G-A1/A2/A4 **✅ 交付 2026-10-21**；G-A3/A5/A6 ✅ 2026-10-15/16 | profiles 写路径已通（T2-11/12）；model 页未移植 | 1-1.5 |
-| 6 | MCP OAuth + 导入/认证细分 | G-M1,G-M3 | OAuth 流程需 core 支持核对 | 1 |
+| 6 | MCP OAuth + 导入/认证细分 | G-M1,G-M3 **✅ 交付 2026-10-23**（G-M2 已于 2026-10-16 交付） | core OAuth/凭据写面已有 | 1 |
 | 7 | Git 尾巴（AI commit message、branches/graph） | G-G2,G-G4 | branches/graph 为净新增（§1.6） | 1-1.5 |
 | 8 | 搜索 actions/entities | G-Q1 | action 目录 + 聚合查询 | 1 |
 | 9 | 洞察补齐（模型/五阶段/图表/TOC） | G-I2..I4 | 复用报告结构，图表自绘 | 1-1.5 |
@@ -918,6 +930,7 @@ turn footer 完成时间/耗时 meta（=G-S1）与 copy 成功态图标反馈（
 
 | 日期 | 变更 |
 |---|---|
+| 2026-10-23 | **B 档 G-M1/G-M3 远程 MCP 认证（OAuth 流 + Bearer token + 行内认证摘要）**。MCP 列表 remote 行补认证事实（web `getRemoteAuthSummary` 同表：configured+来源 headers/env/oauth / OAuth 就绪未授权 / 未配置）与「远程认证」入口；认证对话框 = OAuth 段（提示、状态六态、回调地址、消息行、开始/重新发起/重新连接三态按钮，web `getOAuthActionLabel` 同判）+ Bearer token 段（「保存并重连」= `reauthenticate_remote_server` 存头后重启，连接失败错误内联且凭据已落盘；「清除认证」= `clear_remote_server_auth` 清头与 OAuth 凭据并停连接，成功回执、行摘要即时翻转）。OAuth 流经 core `start_remote_oauth_authorization`（本地回调监听 + 后台状态机，授权 URL 开系统浏览器），壳侧 1s 轮询带 epoch 守卫（新对话框顶掉旧循环、迟到快照按 server_id 拒收）；经对话框 chrome 离开（Esc/背板/X）由 `Dialog::on_close` 取消活跃流（web `handleCloseAuthDialog` 同语义），core 300s 回调超时兜底。目录投影补 `auth_configured`/`auth_source`/`oauth_enabled`。纯函数 `mcp_oauth_flow_active`/`mcp_oauth_action_kind`/`mcp_auth_summary_text` + 2 项单测。**顺带修 3**（冒烟发现）：① MCP 服务器列表整块塞在横排设置项控件槽、行尾动作（含新入口）被卡片右缘裁掉 → 列表项改 `SettingItem::layout(Axis::Vertical)`（归档页同款药方）；② 认证对话框沿用 kit 默认 448px 宽 → 显式 `.w(px(620.))`（G-A4 同款）；③ 成功回执复用错误横幅（红色 danger）→ `ManageNotice` 加 `success` 位，成功走前景色（技能组保存同享）。**在案分歧**：web 的 auth 模式四档细分选择器未做（壳按 headers 存值 + OAuth 就绪/已授权二面呈现，与 core 写面一致）；摘要文案为壳自拟键。**坑**：`open_dialog` 的 builder 是 `Fn`，输入 Entity 要在 builder 体内现场 clone 再 move 进 `on_click`（E0507）；`Dialog::on_close` 不覆盖按钮自身的 `window.close_dialog` 直关路径（恰好避免双取消）；kit 依赖名为 `gpui-kit`，`gpui::Axis` 不可达，要用 `gpui_kit::Axis`。ftl 1284→**1312 ×3**（28 键）；壳 lib **378 全绿（0 告警）**；i18n:audit / check:core-boundaries / check:repo-hygiene / fmt:rs 绿；Xvfb :371 隔离根冒烟 0 panic，证据帧 `m1-03..11`（页面行摘要与入口 / 对话框 620px / OAuth 启动失败内联 / token 键入 / 保存后握手失败内联且头已落盘 / docs 清除认证成功回执前景色 / 清除后行摘要翻回 OAuth 就绪；清除前后 `app.json` 的 headers 落盘双向核对）。 |
 | 2026-10-21 | **B 档 G-A1/G-A2 + A/B 档 G-A4 智能体详情与能力编辑**（`7d7e62ada`）。智能体卡片尾部统一出「详情」（`agent-detail-{id}`），打开统一详情对话框：基本事实（类型/来源/external provider/连续对话）、能力 5 级条（web `enrichCapabilities` 同表）、共享 profile（成员名单 + 标签）、工具段（仅主智能体）与子智能体段。工具列表从 core 注册表投影，过滤与 web `isAgentProfileConfigurableToolName` 一致（`GetToolSpec`/`CallDeferredTool` + 五个 `trinity_*` + `mcp__*`），勾选后「保存」写 `persist_agent_profile_from_value(enabled_tools)`、「重置」走 `reset_agent_profile_to_default`（只清工具覆盖）；子代理段仅在生效工具含 Task 时出现，external 行标注并禁用，保存只写与快照不同的行（`plan_agent_subagent_writes` 纯函数 → `save_agent_subagents` 一次批量写 + 一次目录刷新），重置恢复 registry 默认。事件携带 profile id，重开对话框不会被迟到响应污染。**在案分歧**：web 的 ToolGroupPicker 用户分组编辑与 model 页未移植（模型菜单仍在行上）；能力条用壳主题语义色。**坑**：`Dialog` 默认 448px，必须显式 `.w()`（否则右侧计数与保存按钮被裁）；`Dialog` 自带 body 滚动，内容再套 `max_h + overflow_y_scrollbar` 会形成内层滚动、末尾段落不可达且吞滚轮 → 列表不再设内层滚动；工具描述是多段 prompt，tooltip 只取首行并截 160 字。ftl 1258→**1284 ×3**；壳 lib **376 全绿（0 告警）**；i18n:audit / check:core-boundaries / check:repo-hygiene / fmt:rs 绿；Xvfb :271/:272 隔离根冒烟 0 panic，证据帧 `a6-01..05`（`d10796bfabb9d78f` 详情 / `af97b4b50cbf59e3` 工具保存 28→29 且落盘 `added_tools:["AgentDelete"]` / `66914f2f8db209f9` 列表下滚到 Task·Read 可达 / `55793c1b5506a960` 子代理保存 2→3 且落盘 `subagent_overrides` / `3c322742127701a7` 子代理详情紧凑态）。 |
 | 2026-10-21 | **B 档 G-K4 技能分组管理**。技能 facet 新增「管理分组」页：我的分组可编辑/复制/上移/下移/删除，内置 `group_key` 分组只读列出并可复制为我的分组；编辑器 = 组名 + 全目录技能勾选（不可用成员保留 key），删除二次确认。持久化直接复用共享契约 `app.user_skill_groups`（`AppConfig.user_skill_groups` version 1），写回 `update_config("app")` 的 camelCase JSON 并保留兄弟键；校验对齐 web `saveUserSkillGroup`（trim 必填/大小写不敏感重名/快照冲突/成员去重），移动与删除为纯函数并有 3 项单测。**在案分歧**：编辑器无搜索、内置分组标题取 `group_key`、加载失败无重试按钮。**坑**：`gpui_kit::Div` 的滚动需要 `gpui_kit::component::scroll::ScrollableElement` 在作用域内（仅 `overflow_y_scroll` 方法名不可用）；对话框输入仍放窗口实体（`skill_group_name_input`），勾选/错误态放全局。ftl 1230→**1258 ×3**；`i18n:audit` 0 错 0 警；壳 lib **371 全绿（0 告警）**；`fmt:rs` 绿。 |
 | 2026-10-20 | **A/B 档 G-K2 技能详情 + G-K3 添加/删除技能**。技能卡尾部统一出「详情」ghost 按钮，详情模态展示等级/来源/shadowed、名称、描述、来源与文件夹路径，并给「复制路径」「在文件管理器显示」；native 非内置技能可在详情内转入删除确认（警告含技能名）。过滤行右侧新增「添加技能」：user/project 等级 + 路径输入 + 「校验」，校验结果逐类本地化（空/不存在/不是目录/缺 SKILL.md/不可读/解析失败），通过后才可添加；运行时不可用单独提示。新增 runtime 三面：`validate_skill_path` / `add_skill` / `delete_skill` 与对应事件，`SkillRow` 补 `path` / `deletable`。写面守卫：添加拒绝同名文件夹与自拷（canonicalize 后比较），删除只对 native 非内置技能、托管根包含校验后 `remove_dir_all`。**在案分歧**：无目录浏览按钮（改为键入 + 校验）；详情不显示外部链接（投影未携带）。**坑**：`open_dialog` 的 builder 每帧重建，输入状态必须放窗口实体（`skill_path_input`）而对话框草稿放全局（`SkillDialogsState`）；builder 内先取 `i18n::current(cx)` 再调 `mutate(cx, …)`，否则闭包借用冲突（E0502）；重复 locale 字面量会撞 `sharedTermDuplicates`（`OpenBitFun` 改走 `service.t("shared.product.name")`，未抬 baseline）；不再经 `ShellText` 的校验/警告字段已删，统一用 `resolve_with` 参数化助手。ftl 1205→**1230 ×3**；`i18n:audit` 0 错 0 警；壳 lib **368 全绿（0 告警）**；`fmt:rs` 绿。 |
