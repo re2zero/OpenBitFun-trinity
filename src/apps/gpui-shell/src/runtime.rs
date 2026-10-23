@@ -470,6 +470,13 @@ pub(crate) enum RuntimeEvent {
     McpJsonSaved(Result<(), String>),
     /// G-M2: one typed import path's file content, for the paste box.
     McpImportFile(Result<String, String>),
+    /// G-M1/G-M3: one remote OAuth session poll. The core manager drives the
+    /// status transitions in the background; the dialog applies a snapshot
+    /// only when its server id matches.
+    McpOAuthSession(Option<openbitfun_core::service::mcp::auth::MCPRemoteOAuthSessionSnapshot>),
+    /// G-M3: a remote auth write or clear settled; either way the catalog
+    /// refreshes so the row's auth summary follows.
+    McpAuthSaved(Result<(), String>),
     /// T2-7: one resources/read call finished for the browse dialog.
     McpResourceRead(Box<crate::manage::McpResourceReadOutcome>),
     /// A management action (agent creation, MCP lifecycle) failed; the
@@ -2629,6 +2636,111 @@ impl RuntimeHandle {
         });
     }
 
+    /// G-M1: starts the remote OAuth authorization flow. The core manager
+    /// binds the local callback listener and drives the status transitions on
+    /// background tasks; the authorization URL opens in the system browser and
+    /// a poll loop keeps the dialog's status line fresh until the flow reaches
+    /// a terminal state (or the dialog closes and bumps the epoch).
+    pub(crate) fn start_mcp_remote_oauth(&self, server_id: String) {
+        let epoch = advance_mcp_oauth_epoch();
+        self.tokio.spawn(async move {
+            let Some(service) = openbitfun_core::service::mcp::get_global_mcp_service() else {
+                publish(RuntimeEvent::McpAuthSaved(Err(
+                    "MCP service is not initialized".to_string(),
+                )));
+                return;
+            };
+            match service
+                .server_manager()
+                .start_remote_oauth_authorization(&server_id)
+                .await
+            {
+                Ok(snapshot) => {
+                    if let Some(url) = &snapshot.authorization_url {
+                        crate::markdown::open_external(url);
+                    }
+                    publish(RuntimeEvent::McpOAuthSession(Some(snapshot)));
+                    poll_mcp_remote_oauth_loop(&service, server_id, epoch).await;
+                }
+                Err(error) => {
+                    tracing::warn!("Failed to start MCP remote OAuth for {server_id}: {error}");
+                    publish(RuntimeEvent::McpAuthSaved(Err(error.to_string())));
+                }
+            }
+        });
+    }
+
+    /// G-M1: polls one live OAuth session (the dialog reopen path — the core
+    /// manager keeps the state; this only refreshes the view).
+    pub(crate) fn poll_mcp_remote_oauth(&self, server_id: String) {
+        let epoch = advance_mcp_oauth_epoch();
+        self.tokio.spawn(async move {
+            let Some(service) = openbitfun_core::service::mcp::get_global_mcp_service() else {
+                return;
+            };
+            poll_mcp_remote_oauth_loop(&service, server_id, epoch).await;
+        });
+    }
+
+    /// G-M1: cancels a live OAuth session (the dialog's close-while-active
+    /// path, web `handleCloseAuthDialog`). The cancelled snapshot still
+    /// publishes so a reopening dialog shows why the flow stopped.
+    pub(crate) fn cancel_mcp_remote_oauth(&self, server_id: String) {
+        advance_mcp_oauth_epoch();
+        self.tokio.spawn(async move {
+            let Some(service) = openbitfun_core::service::mcp::get_global_mcp_service() else {
+                return;
+            };
+            let manager = service.server_manager();
+            if let Err(error) = manager.cancel_remote_oauth_authorization(&server_id).await {
+                tracing::warn!("Failed to cancel MCP remote OAuth for {server_id}: {error}");
+            }
+            publish(RuntimeEvent::McpOAuthSession(
+                manager.get_remote_oauth_session(&server_id).await,
+            ));
+        });
+    }
+
+    /// G-M3: saves one remote server's Bearer token (web
+    /// `update_mcp_remote_auth`); core stores it and reconnects the server.
+    pub(crate) fn update_mcp_remote_auth(&self, server_id: String, authorization_value: String) {
+        self.tokio.spawn(async move {
+            let result = match openbitfun_core::service::mcp::get_global_mcp_service() {
+                Some(service) => service
+                    .server_manager()
+                    .reauthenticate_remote_server(&server_id, &authorization_value)
+                    .await
+                    .map_err(|error| error.to_string()),
+                None => Err("MCP service is not initialized".to_string()),
+            };
+            if let Err(message) = &result {
+                tracing::warn!("Failed to update MCP remote auth for {server_id}: {message}");
+            }
+            publish(RuntimeEvent::McpAuthSaved(result));
+            publish(RuntimeEvent::McpCatalog(fetch_mcp_catalog().await));
+        });
+    }
+
+    /// G-M3: clears one remote server's stored auth (token headers and OAuth
+    /// credentials) and stops the connection so stale credentials drop.
+    pub(crate) fn clear_mcp_remote_auth(&self, server_id: String) {
+        self.tokio.spawn(async move {
+            let result = match openbitfun_core::service::mcp::get_global_mcp_service() {
+                Some(service) => service
+                    .server_manager()
+                    .clear_remote_server_auth(&server_id)
+                    .await
+                    .map_err(|error| error.to_string()),
+                None => Err("MCP service is not initialized".to_string()),
+            };
+            if let Err(message) = &result {
+                tracing::warn!("Failed to clear MCP remote auth for {server_id}: {message}");
+            }
+            publish(RuntimeEvent::McpAuthSaved(result));
+            publish(RuntimeEvent::McpCatalog(fetch_mcp_catalog().await));
+        });
+    }
+
     /// G-Y4: exports the whole MindGraph through the daemon (`memory.export`),
     /// which reads the graph and writes the file at `path` (web T10).
     pub(crate) fn trinity_memory_export(&self, path: String) {
@@ -3806,6 +3918,52 @@ fn map_mcp_status(
     }
 }
 
+/// G-M1: one bump per OAuth poll loop start / dialog close. A loop exits as
+/// soon as the epoch it captured stops being current, so only the newest
+/// dialog's polls keep publishing.
+static MCP_OAUTH_POLL_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn advance_mcp_oauth_epoch() -> u64 {
+    MCP_OAUTH_POLL_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+}
+
+fn mcp_oauth_poll_epoch_current(epoch: u64) -> bool {
+    MCP_OAUTH_POLL_EPOCH.load(std::sync::atomic::Ordering::SeqCst) == epoch
+}
+
+/// G-M1: one poll per second while an OAuth flow is live; terminal states (or
+/// an epoch bump from a newer dialog) end the loop. Mirrors the web
+/// `pollOAuthSession` cadence.
+async fn poll_mcp_remote_oauth_loop(
+    service: &openbitfun_core::service::mcp::MCPService,
+    server_id: String,
+    epoch: u64,
+) {
+    use openbitfun_core::service::mcp::auth::MCPRemoteOAuthStatus;
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        if !mcp_oauth_poll_epoch_current(epoch) {
+            return;
+        }
+        let snapshot = service
+            .server_manager()
+            .get_remote_oauth_session(&server_id)
+            .await;
+        let terminal = snapshot.as_ref().is_some_and(|session| {
+            matches!(
+                session.status,
+                MCPRemoteOAuthStatus::Authorized
+                    | MCPRemoteOAuthStatus::Failed
+                    | MCPRemoteOAuthStatus::Cancelled
+            )
+        });
+        publish(RuntimeEvent::McpOAuthSession(snapshot));
+        if terminal {
+            return;
+        }
+    }
+}
+
 async fn fetch_mcp_catalog() -> crate::manage::McpCatalog {
     use openbitfun_core::service::mcp::{ConfigLocation, MCPServerType};
 
@@ -3851,6 +4009,30 @@ async fn fetch_mcp_catalog() -> crate::manage::McpCatalog {
             }
             command
         };
+        // G-M3: the same auth projection the desktop `get_mcp_servers`
+        // command serves — static token/header config, or stored OAuth
+        // credentials when the server opts into OAuth.
+        let static_auth_configured = remote
+            && openbitfun_core::service::mcp::MCPConfigService::has_remote_authorization(&config);
+        let oauth_enabled = remote && config.remote_oauth_enabled();
+        let oauth_auth_configured = if oauth_enabled {
+            manager
+                .has_remote_oauth_credentials(&config.id)
+                .await
+                .unwrap_or(false)
+        } else {
+            false
+        };
+        let auth_source = if static_auth_configured {
+            openbitfun_core::service::mcp::MCPConfigService::get_remote_authorization_source(
+                &config,
+            )
+            .map(str::to_string)
+        } else if oauth_auth_configured {
+            Some("oauth".to_string())
+        } else {
+            None
+        };
         servers.push(crate::manage::McpServerRow {
             id: config.id,
             name: config.name,
@@ -3861,6 +4043,9 @@ async fn fetch_mcp_catalog() -> crate::manage::McpCatalog {
             enabled: config.enabled,
             auto_start: config.auto_start,
             builtin: config.location == ConfigLocation::BuiltIn,
+            auth_configured: remote && (static_auth_configured || oauth_auth_configured),
+            auth_source,
+            oauth_enabled,
         });
     }
     crate::manage::McpCatalog {

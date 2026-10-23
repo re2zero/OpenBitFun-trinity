@@ -716,6 +716,34 @@ pub(crate) struct ShellText {
     pub manage_mcp_resource_binary: String,
     pub manage_mcp_resource_empty: String,
     pub manage_mcp_resource_failed: String,
+    /// G-M1/G-M3: the remote auth dialog and the row auth summary (web
+    /// `McpToolsConfig` auth dialog + `getRemoteAuthSummary`).
+    pub manage_mcp_auth: String,
+    pub manage_mcp_auth_oauth_hint: String,
+    pub manage_mcp_oauth_idle: String,
+    pub manage_mcp_oauth_awaiting_browser: String,
+    pub manage_mcp_oauth_awaiting_callback: String,
+    pub manage_mcp_oauth_exchanging_token: String,
+    pub manage_mcp_oauth_authorized: String,
+    pub manage_mcp_oauth_failed: String,
+    pub manage_mcp_oauth_cancelled: String,
+    pub manage_mcp_oauth_start: String,
+    pub manage_mcp_oauth_restart: String,
+    pub manage_mcp_oauth_reconnect: String,
+    pub manage_mcp_auth_token_hint: String,
+    pub manage_mcp_auth_secret_hint: String,
+    pub manage_mcp_auth_token_label: String,
+    pub manage_mcp_auth_clear: String,
+    pub manage_mcp_auth_cancel_flow: String,
+    pub manage_mcp_auth_save: String,
+    pub manage_mcp_auth_required: String,
+    pub manage_mcp_auth_saved: String,
+    pub manage_mcp_auth_configured: String,
+    pub manage_mcp_auth_oauth_ready: String,
+    pub manage_mcp_auth_missing: String,
+    pub manage_mcp_auth_source_headers: String,
+    pub manage_mcp_auth_source_env: String,
+    pub manage_mcp_auth_source_oauth: String,
     pub manage_error_dismiss: String,
     // M22 general page (tray/autostart/updates) and the new settings pages.
     pub value_unsupported: String,
@@ -1453,6 +1481,41 @@ pub(crate) fn group_delete_warning(name: &str, cx: &App) -> String {
     resolve_with(
         "gpui-shell-skill-groups-delete-warning",
         TranslationArgs::new().with_string("name", name.to_string()),
+        cx,
+    )
+}
+
+/// G-M1/G-M3: the remote auth dialog's parametrized lines (web
+/// `modal.remoteAuthTitle` / `remoteOAuthCurrentStatus` /
+/// `remoteOAuthRedirectUri` / `remoteAuthServerUrl`).
+pub(crate) fn mcp_auth_dialog_title(name: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-manage-mcp-auth-title",
+        TranslationArgs::new().with_string("name", name.to_string()),
+        cx,
+    )
+}
+
+pub(crate) fn mcp_auth_status_line(status: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-manage-mcp-auth-status-line",
+        TranslationArgs::new().with_string("status", status.to_string()),
+        cx,
+    )
+}
+
+pub(crate) fn mcp_auth_redirect_line(uri: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-manage-mcp-auth-redirect-line",
+        TranslationArgs::new().with_string("uri", uri.to_string()),
+        cx,
+    )
+}
+
+pub(crate) fn mcp_auth_server_url_line(url: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-manage-mcp-auth-server-url-line",
+        TranslationArgs::new().with_string("url", url.to_string()),
         cx,
     )
 }
@@ -2748,6 +2811,46 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         manage_mcp_resource_binary: "(Binary content not shown)".to_string(),
         manage_mcp_resource_empty: "The resource returned no content.".to_string(),
         manage_mcp_resource_failed: "Failed to read the resource content.".to_string(),
+        manage_mcp_auth: "Remote Auth".to_string(),
+        manage_mcp_auth_oauth_hint: {
+            "Use OAuth to connect this remote MCP server. OpenBitFun will listen on a local \
+             callback URL and reconnect the server after authorization."
+                .to_string()
+        },
+        manage_mcp_oauth_idle: "Not started yet".to_string(),
+        manage_mcp_oauth_awaiting_browser: "Waiting to open browser".to_string(),
+        manage_mcp_oauth_awaiting_callback: "Waiting for provider callback".to_string(),
+        manage_mcp_oauth_exchanging_token: "Exchanging authorization code".to_string(),
+        manage_mcp_oauth_authorized: "Authorized".to_string(),
+        manage_mcp_oauth_failed: "Failed".to_string(),
+        manage_mcp_oauth_cancelled: "Cancelled".to_string(),
+        manage_mcp_oauth_start: "Connect with OAuth".to_string(),
+        manage_mcp_oauth_restart: "Restart OAuth".to_string(),
+        manage_mcp_oauth_reconnect: "Reconnect with OAuth".to_string(),
+        manage_mcp_auth_token_hint: {
+            "Paste a Bearer token or a full Authorization header value. Saving will restart the \
+             remote MCP server."
+                .to_string()
+        },
+        manage_mcp_auth_secret_hint: {
+            "Authorization is masked by default and saved only on the current execution host. Do \
+             not paste it into chats, tickets, or online troubleshooting tools."
+                .to_string()
+        },
+        manage_mcp_auth_token_label: "Access token (Bearer)".to_string(),
+        manage_mcp_auth_clear: "Clear auth".to_string(),
+        manage_mcp_auth_cancel_flow: "Cancel OAuth".to_string(),
+        manage_mcp_auth_save: "Save and Reconnect".to_string(),
+        manage_mcp_auth_required: {
+            "Please provide a Bearer token or full Authorization header value.".to_string()
+        },
+        manage_mcp_auth_saved: "Remote auth updated.".to_string(),
+        manage_mcp_auth_configured: "configured".to_string(),
+        manage_mcp_auth_oauth_ready: "OAuth configured, authorization required".to_string(),
+        manage_mcp_auth_missing: "not configured".to_string(),
+        manage_mcp_auth_source_headers: "configured via headers".to_string(),
+        manage_mcp_auth_source_env: "configured via env".to_string(),
+        manage_mcp_auth_source_oauth: "configured via OAuth".to_string(),
         manage_error_dismiss: "Dismiss".to_string(),
         value_unsupported: "unsupported".to_string(),
         settings_general: "General".to_string(),
@@ -4100,6 +4203,40 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         manage_mcp_resource_binary: service.t("gpui-shell-manage-mcp-resource-binary").await,
         manage_mcp_resource_empty: service.t("gpui-shell-manage-mcp-resource-empty").await,
         manage_mcp_resource_failed: service.t("gpui-shell-manage-mcp-resource-failed").await,
+        manage_mcp_auth: service.t("gpui-shell-manage-mcp-auth").await,
+        manage_mcp_auth_oauth_hint: service.t("gpui-shell-manage-mcp-auth-oauth-hint").await,
+        manage_mcp_oauth_idle: service.t("gpui-shell-manage-mcp-oauth-idle").await,
+        manage_mcp_oauth_awaiting_browser: service
+            .t("gpui-shell-manage-mcp-oauth-awaiting-browser")
+            .await,
+        manage_mcp_oauth_awaiting_callback: service
+            .t("gpui-shell-manage-mcp-oauth-awaiting-callback")
+            .await,
+        manage_mcp_oauth_exchanging_token: service
+            .t("gpui-shell-manage-mcp-oauth-exchanging-token")
+            .await,
+        manage_mcp_oauth_authorized: service.t("gpui-shell-manage-mcp-oauth-authorized").await,
+        manage_mcp_oauth_failed: service.t("shared.statuses.failed").await,
+        manage_mcp_oauth_cancelled: service.t("shared.statuses.cancelled").await,
+        manage_mcp_oauth_start: service.t("gpui-shell-manage-mcp-oauth-start").await,
+        manage_mcp_oauth_restart: service.t("gpui-shell-manage-mcp-oauth-restart").await,
+        manage_mcp_oauth_reconnect: service.t("gpui-shell-manage-mcp-oauth-reconnect").await,
+        manage_mcp_auth_token_hint: service.t("gpui-shell-manage-mcp-auth-token-hint").await,
+        manage_mcp_auth_secret_hint: service.t("gpui-shell-manage-mcp-auth-secret-hint").await,
+        manage_mcp_auth_token_label: service.t("gpui-shell-manage-mcp-auth-token-label").await,
+        manage_mcp_auth_clear: service.t("gpui-shell-manage-mcp-auth-clear").await,
+        manage_mcp_auth_cancel_flow: service.t("gpui-shell-manage-mcp-auth-cancel-flow").await,
+        manage_mcp_auth_save: service.t("gpui-shell-manage-mcp-auth-save").await,
+        manage_mcp_auth_required: service.t("gpui-shell-manage-mcp-auth-required").await,
+        manage_mcp_auth_saved: service.t("gpui-shell-manage-mcp-auth-saved").await,
+        manage_mcp_auth_configured: service.t("gpui-shell-manage-mcp-auth-configured").await,
+        manage_mcp_auth_oauth_ready: service.t("gpui-shell-manage-mcp-auth-oauth-ready").await,
+        manage_mcp_auth_missing: service.t("gpui-shell-manage-mcp-auth-missing").await,
+        manage_mcp_auth_source_headers: service
+            .t("gpui-shell-manage-mcp-auth-source-headers")
+            .await,
+        manage_mcp_auth_source_env: service.t("gpui-shell-manage-mcp-auth-source-env").await,
+        manage_mcp_auth_source_oauth: service.t("gpui-shell-manage-mcp-auth-source-oauth").await,
         manage_error_dismiss: service.t("gpui-shell-manage-error-dismiss").await,
         value_unsupported: service.t("gpui-shell-value-unsupported").await,
         settings_general: service.t("gpui-shell-settings-general").await,

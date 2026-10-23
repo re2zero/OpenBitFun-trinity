@@ -1031,6 +1031,14 @@ pub(crate) struct McpServerRow {
     pub(crate) enabled: bool,
     pub(crate) auto_start: bool,
     pub(crate) builtin: bool,
+    /// G-M3: remote-only auth projection (web `authConfigured`); local
+    /// servers carry `false`.
+    pub(crate) auth_configured: bool,
+    /// G-M3: where the auth comes from — `headers`, `env`, or `oauth`
+    /// (web `authSource`).
+    pub(crate) auth_source: Option<String>,
+    /// G-M3: the server opted into OAuth (`oauthEnabled` in the config).
+    pub(crate) oauth_enabled: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -1078,6 +1086,127 @@ pub(crate) enum McpAction {
     Restart,
     SetEnabled(bool),
     Delete,
+}
+
+/// G-M1/G-M3: the remote auth dialog scratch, keyed by the server id. The
+/// OAuth snapshot rides in from [`crate::runtime::RuntimeEvent::McpOAuthSession`]
+/// polls; the token draft lives in the window's input entity.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct McpAuthDialogState {
+    pub(crate) server_id: Option<String>,
+    pub(crate) server_name: String,
+    pub(crate) server_url: Option<String>,
+    pub(crate) oauth_enabled: bool,
+    pub(crate) auth_configured: bool,
+    pub(crate) auth_source: Option<String>,
+    pub(crate) session: Option<openbitfun_core::service::mcp::auth::MCPRemoteOAuthSessionSnapshot>,
+    pub(crate) starting: bool,
+    pub(crate) cancelling: bool,
+    pub(crate) saving: bool,
+    pub(crate) error: Option<String>,
+}
+
+impl Global for McpAuthDialogState {}
+
+impl McpAuthDialogState {
+    pub(crate) fn current(cx: &App) -> Self {
+        cx.try_global::<Self>().cloned().unwrap_or_default()
+    }
+
+    pub(crate) fn mutate<R>(cx: &mut App, update: impl FnOnce(&mut Self) -> R) -> R {
+        let mut state = Self::current(cx);
+        let result = update(&mut state);
+        cx.set_global(state);
+        cx.refresh_windows();
+        result
+    }
+
+    /// Whether the dialog is open for exactly this server (the stale-response
+    /// guard: a late poll for a previously opened server must not land).
+    pub(crate) fn open_for(&self, server_id: &str) -> bool {
+        self.server_id.as_deref() == Some(server_id)
+    }
+}
+
+/// G-M1: an OAuth flow is live until it reaches a terminal state — the same
+/// rule the web dialog uses to swap button labels and arm close-cancels.
+pub(crate) fn mcp_oauth_flow_active(
+    session: Option<&openbitfun_core::service::mcp::auth::MCPRemoteOAuthSessionSnapshot>,
+) -> bool {
+    use openbitfun_core::service::mcp::auth::MCPRemoteOAuthStatus;
+    matches!(
+        session.map(|session| session.status.clone()),
+        Some(
+            MCPRemoteOAuthStatus::AwaitingBrowser
+                | MCPRemoteOAuthStatus::AwaitingCallback
+                | MCPRemoteOAuthStatus::ExchangingToken
+        )
+    )
+}
+
+/// G-M1: the primary OAuth button's meaning (web `getOAuthActionLabel`):
+/// restart a live flow, reconnect when stored OAuth credentials exist, or
+/// start fresh.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum McpOAuthActionKind {
+    Start,
+    Restart,
+    Reconnect,
+}
+
+pub(crate) fn mcp_oauth_action_kind(
+    session: Option<&openbitfun_core::service::mcp::auth::MCPRemoteOAuthSessionSnapshot>,
+    auth_configured: bool,
+    auth_source: Option<&str>,
+) -> McpOAuthActionKind {
+    if mcp_oauth_flow_active(session) {
+        return McpOAuthActionKind::Restart;
+    }
+    if auth_configured && auth_source == Some("oauth") {
+        return McpOAuthActionKind::Reconnect;
+    }
+    McpOAuthActionKind::Start
+}
+
+/// G-M3: the row's auth fact (web `getRemoteAuthSummary`): which source backs
+/// a configured server, that OAuth is available but unused, or that nothing
+/// is configured yet.
+pub(crate) fn mcp_auth_summary_text(
+    text: &ShellText,
+    auth_configured: bool,
+    auth_source: Option<&str>,
+    oauth_enabled: bool,
+) -> String {
+    if auth_configured {
+        return match auth_source {
+            Some("headers") => text.manage_mcp_auth_source_headers.clone(),
+            Some("env") => text.manage_mcp_auth_source_env.clone(),
+            Some("oauth") => text.manage_mcp_auth_source_oauth.clone(),
+            Some(other) => format!("{} ({other})", text.manage_mcp_auth_configured.clone()),
+            None => text.manage_mcp_auth_configured.clone(),
+        };
+    }
+    if oauth_enabled {
+        return text.manage_mcp_auth_oauth_ready.clone();
+    }
+    text.manage_mcp_auth_missing.clone()
+}
+
+/// G-M1: stable i18n keys for the six OAuth statuses (web
+/// `getOAuthStatusLabel`).
+pub(crate) fn mcp_oauth_status_label(
+    text: &ShellText,
+    status: &openbitfun_core::service::mcp::auth::MCPRemoteOAuthStatus,
+) -> String {
+    use openbitfun_core::service::mcp::auth::MCPRemoteOAuthStatus;
+    match status {
+        MCPRemoteOAuthStatus::AwaitingBrowser => text.manage_mcp_oauth_awaiting_browser.clone(),
+        MCPRemoteOAuthStatus::AwaitingCallback => text.manage_mcp_oauth_awaiting_callback.clone(),
+        MCPRemoteOAuthStatus::ExchangingToken => text.manage_mcp_oauth_exchanging_token.clone(),
+        MCPRemoteOAuthStatus::Authorized => text.manage_mcp_oauth_authorized.clone(),
+        MCPRemoteOAuthStatus::Failed => text.manage_mcp_oauth_failed.clone(),
+        MCPRemoteOAuthStatus::Cancelled => text.manage_mcp_oauth_cancelled.clone(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1456,18 +1585,37 @@ pub(crate) async fn persist_agent_draft(
 /// Last management-action failure, shown as a dismissible banner on the
 /// management pages. A global because the settings render closures only see
 /// `cx`.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub(crate) struct ManageNotice(pub Option<String>);
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ManageNotice(pub(crate) Option<ManageNoticeBody>);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ManageNoticeBody {
+    pub(crate) message: String,
+    /// Success receipts render in the foreground color; everything else is an
+    /// error and keeps the danger color.
+    pub(crate) success: bool,
+}
 
 impl Global for ManageNotice {}
 
 impl ManageNotice {
-    pub(crate) fn current(cx: &App) -> Option<String> {
+    pub(crate) fn current(cx: &App) -> Option<ManageNoticeBody> {
         cx.try_global::<Self>().and_then(|notice| notice.0.clone())
     }
 
     pub(crate) fn set(message: Option<String>, cx: &mut App) {
-        cx.set_global(Self(message));
+        cx.set_global(Self(message.map(|message| ManageNoticeBody {
+            message,
+            success: false,
+        })));
+    }
+
+    /// A settled-without-error receipt (e.g. the remote auth dialog's save).
+    pub(crate) fn set_success(message: String, cx: &mut App) {
+        cx.set_global(Self(Some(ManageNoticeBody {
+            message,
+            success: true,
+        })));
     }
 }
 
@@ -4578,6 +4726,233 @@ fn preview_mcp_import(view: &WeakEntity<ShellWindow>, window: &mut Window, cx: &
 }
 
 /// The MCP page: one row per configured server with lifecycle, enablement,/// browse, and delete actions, plus the raw JSON config editor.
+/// G-M3: one muted hint line inside the auth dialog (the web dialog renders
+/// the same stack of `json-hint` paragraphs).
+fn mcp_auth_hint(text: String, muted: gpui_kit::Hsla) -> gpui_kit::AnyElement {
+    div()
+        .text_xs()
+        .text_color(muted)
+        .whitespace_normal()
+        .child(text)
+        .into_any_element()
+}
+
+/// G-M1/G-M3: the remote auth dialog — the OAuth flow section (status,
+/// redirect URI, start/restart/reconnect) plus the Bearer-token section
+/// (web `McpToolsConfig` auth dialog). Closing while a flow is live cancels
+/// it, mirroring the web `handleCloseAuthDialog`.
+pub(crate) fn open_mcp_auth_dialog(
+    view: WeakEntity<ShellWindow>,
+    server_id: &str,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(shell) = view.upgrade() else {
+        return;
+    };
+    let Some(row) = McpCatalog::try_current(cx)
+        .and_then(|catalog| catalog.servers.into_iter().find(|s| s.id == server_id))
+    else {
+        return;
+    };
+    let token_input = shell.read(cx).mcp_auth_token_input.clone();
+    token_input.update(cx, |state, cx| state.set_value(String::new(), window, cx));
+    let already_open =
+        window.has_active_dialog(cx) && McpAuthDialogState::current(cx).open_for(server_id);
+    McpAuthDialogState::mutate(cx, |state| {
+        state.server_id = Some(row.id.clone());
+        state.server_name = row.name.clone();
+        state.server_url = Some(row.target.clone()).filter(|_| row.remote);
+        state.oauth_enabled = row.oauth_enabled;
+        state.auth_configured = row.auth_configured;
+        state.auth_source = row.auth_source.clone();
+        state.session = None;
+        state.starting = false;
+        state.cancelling = false;
+        state.saving = false;
+        state.error = None;
+    });
+    // A flow may already be live from an earlier dialog (the core manager
+    // keeps the session); refresh before first paint instead of showing idle.
+    if let Some(handle) = crate::runtime::runtime_handle() {
+        handle.poll_mcp_remote_oauth(server_id.to_string());
+    }
+    if already_open {
+        return;
+    }
+
+    window.open_dialog(cx, move |dialog_el, _window, cx| {
+        let text = i18n::current(cx);
+        let state = McpAuthDialogState::current(cx);
+        let Some(server_id) = state.server_id.clone() else {
+            return dialog_el;
+        };
+        let muted = cx.theme().muted_foreground;
+        let danger = cx.theme().danger;
+        let mut content = div().w(px(560.)).v_flex().gap_2();
+
+        if state.oauth_enabled {
+            content = content.child(mcp_auth_hint(
+                text.manage_mcp_auth_oauth_hint.clone(),
+                muted,
+            ));
+            let status_label = match &state.session {
+                Some(session) => mcp_oauth_status_label(&text, &session.status),
+                None => text.manage_mcp_oauth_idle.clone(),
+            };
+            content = content.child(mcp_auth_hint(
+                i18n::mcp_auth_status_line(&status_label, cx),
+                muted,
+            ));
+            if let Some(session) = &state.session {
+                if let Some(uri) = &session.redirect_uri {
+                    content =
+                        content.child(mcp_auth_hint(i18n::mcp_auth_redirect_line(uri, cx), muted));
+                }
+                if let Some(message) = &session.message {
+                    if !message.is_empty() {
+                        content = content.child(mcp_auth_hint(message.clone(), muted));
+                    }
+                }
+            }
+            let kind = mcp_oauth_action_kind(
+                state.session.as_ref(),
+                state.auth_configured,
+                state.auth_source.as_deref(),
+            );
+            let label = match kind {
+                McpOAuthActionKind::Start => text.manage_mcp_oauth_start.clone(),
+                McpOAuthActionKind::Restart => text.manage_mcp_oauth_restart.clone(),
+                McpOAuthActionKind::Reconnect => text.manage_mcp_oauth_reconnect.clone(),
+            };
+            let start_id = server_id.clone();
+            content = content.child(
+                Button::new("mcp-auth-oauth-start")
+                    .label(label)
+                    .small()
+                    .with_variant(ButtonVariant::Primary)
+                    .disabled(state.starting || state.cancelling || state.saving)
+                    .on_click(move |_, _window, cx| {
+                        McpAuthDialogState::mutate(cx, |state| {
+                            state.starting = true;
+                            state.error = None;
+                        });
+                        if let Some(handle) = crate::runtime::runtime_handle() {
+                            handle.start_mcp_remote_oauth(start_id.clone());
+                        }
+                    }),
+            );
+        }
+
+        content = content.child(mcp_auth_hint(
+            text.manage_mcp_auth_token_hint.clone(),
+            muted,
+        ));
+        content = content.child(mcp_auth_hint(
+            text.manage_mcp_auth_secret_hint.clone(),
+            muted,
+        ));
+        if let Some(url) = &state.server_url {
+            content = content.child(mcp_auth_hint(
+                i18n::mcp_auth_server_url_line(url, cx),
+                muted,
+            ));
+        }
+        content = content.child(dialog_field(
+            &text.manage_mcp_auth_token_label,
+            muted,
+            div().w_full().child(Input::new(&token_input)),
+        ));
+        if let Some(error) = &state.error {
+            content = content.child(div().text_xs().text_color(danger).child(error.clone()));
+        }
+
+        let flow_active = mcp_oauth_flow_active(state.session.as_ref());
+        let clear_id = server_id.clone();
+        let cancel_id = server_id.clone();
+        let save_id = server_id.clone();
+        let mut buttons = div().flex().gap_2().flex_shrink_0();
+        if state.auth_configured {
+            buttons = buttons.child(
+                Button::new("mcp-auth-clear")
+                    .label(text.manage_mcp_auth_clear.clone())
+                    .small()
+                    .with_variant(ButtonVariant::Ghost)
+                    .disabled(state.saving || state.starting || state.cancelling)
+                    .on_click(move |_, _window, cx| {
+                        McpAuthDialogState::mutate(cx, |state| {
+                            state.saving = true;
+                            state.error = None;
+                        });
+                        if let Some(handle) = crate::runtime::runtime_handle() {
+                            handle.clear_mcp_remote_auth(clear_id.clone());
+                        }
+                    }),
+            );
+        }
+        let cancel = Button::new("mcp-auth-cancel")
+            .label(if flow_active {
+                text.manage_mcp_auth_cancel_flow.clone()
+            } else {
+                text.session_action_cancel.clone()
+            })
+            .small()
+            .with_variant(ButtonVariant::Ghost)
+            .on_click(move |_, window, cx| {
+                if flow_active {
+                    if let Some(handle) = crate::runtime::runtime_handle() {
+                        handle.cancel_mcp_remote_oauth(cancel_id.clone());
+                    }
+                }
+                McpAuthDialogState::mutate(cx, |state| state.server_id = None);
+                window.close_dialog(cx);
+            });
+        let token_value_input = token_input.clone();
+        let save = Button::new("mcp-auth-save")
+            .label(text.manage_mcp_auth_save.clone())
+            .small()
+            .with_variant(ButtonVariant::Primary)
+            .disabled(state.saving || state.starting || state.cancelling)
+            .on_click(move |_, _window, cx| {
+                let value = token_value_input.read(cx).value().trim().to_string();
+                if value.is_empty() {
+                    let message = i18n::current(cx).manage_mcp_auth_required.clone();
+                    McpAuthDialogState::mutate(cx, |state| state.error = Some(message));
+                    return;
+                }
+                McpAuthDialogState::mutate(cx, |state| {
+                    state.saving = true;
+                    state.error = None;
+                });
+                if let Some(handle) = crate::runtime::runtime_handle() {
+                    handle.update_mcp_remote_auth(save_id.clone(), value);
+                }
+            });
+        buttons = buttons.child(cancel);
+        buttons = buttons.child(save);
+
+        let close_id = server_id.clone();
+        dialog_el
+            .w(px(620.))
+            .title(div().child(i18n::mcp_auth_dialog_title(&state.server_name, cx)))
+            .child(content.debug_selector(|| "mcp-auth-dialog".to_string()))
+            .footer(div().flex().flex_row().justify_end().gap_2().child(buttons))
+            // Web `handleCloseAuthDialog`: leaving through the dialog's own
+            // chrome (Esc / close icon, not the explicit buttons above)
+            // cancels a live OAuth flow so the core callback listener is not
+            // held until its timeout.
+            .on_close(move |_, _window, cx| {
+                let state = McpAuthDialogState::current(cx);
+                if state.open_for(&close_id) && mcp_oauth_flow_active(state.session.as_ref()) {
+                    if let Some(handle) = crate::runtime::runtime_handle() {
+                        handle.cancel_mcp_remote_oauth(close_id.clone());
+                    }
+                }
+                McpAuthDialogState::mutate(cx, |state| state.server_id = None);
+            })
+    });
+}
+
 pub(crate) fn mcp_group(text: &ShellText, view: WeakEntity<ShellWindow>) -> SettingGroup {
     let list_view = view.clone();
     let list_text = text.clone();
@@ -4614,8 +4989,13 @@ pub(crate) fn mcp_group(text: &ShellText, view: WeakEntity<ShellWindow>) -> Sett
     });
 
     SettingGroup::new().items(vec![
+        // The server rows (URL + auth summary + up to five actions) overflow
+        // the horizontal item's control slot and get clipped at the card
+        // edge — the list needs the full page width (same fix as the
+        // archived-sessions page).
         SettingItem::new(text.manage_mcp_servers.clone(), servers_field)
-            .description(text.manage_mcp_description.clone()),
+            .description(text.manage_mcp_description.clone())
+            .layout(gpui_kit::Axis::Vertical),
         SettingItem::new(text.manage_mcp_import.clone(), import_field)
             .description(text.manage_mcp_import_hint.clone()),
         SettingItem::new(text.manage_mcp_json_item.clone(), json_field)
@@ -4679,8 +5059,29 @@ fn mcp_server_row(
     if server.builtin {
         facts.push(text.manage_mcp_location_builtin.clone());
     }
+    if server.remote {
+        facts.push(mcp_auth_summary_text(
+            text,
+            server.auth_configured,
+            server.auth_source.as_deref(),
+            server.oauth_enabled,
+        ));
+    }
 
     let mut actions = div().flex().items_center().gap_1().flex_shrink_0();
+    if server.remote {
+        let auth_view = view.clone();
+        let auth_id = server.id.clone();
+        actions = actions.child(
+            Button::new(SharedString::from(format!("mcp-auth-{}", server.id)))
+                .label(text.manage_mcp_auth.clone())
+                .small()
+                .with_variant(ButtonVariant::Ghost)
+                .on_click(move |_, window, cx| {
+                    open_mcp_auth_dialog(auth_view.clone(), &auth_id, window, cx);
+                }),
+        );
+    }
     if !server.state.running() {
         let action_id = server.id.clone();
         actions = actions.child(
@@ -4812,7 +5213,16 @@ fn run_mcp_action(action: McpAction, server_id: String) {
 }
 
 /// Dismissible error banner shared by the three management pages.
-fn notice_banner(text: &ShellText, message: &str, cx: &mut App) -> gpui_kit::AnyElement {
+fn notice_banner(
+    text: &ShellText,
+    notice: &ManageNoticeBody,
+    cx: &mut App,
+) -> gpui_kit::AnyElement {
+    let color = if notice.success {
+        cx.theme().foreground
+    } else {
+        cx.theme().danger
+    };
     div()
         .w_full()
         .flex()
@@ -4822,9 +5232,9 @@ fn notice_banner(text: &ShellText, message: &str, cx: &mut App) -> gpui_kit::Any
         .child(
             div()
                 .text_xs()
-                .text_color(cx.theme().danger)
+                .text_color(color)
                 .truncate()
-                .child(message.to_string()),
+                .child(notice.message.clone()),
         )
         .child(
             Button::new("manage-notice-dismiss")
@@ -7033,6 +7443,95 @@ mod tests {
         for state in [Uninitialized, Starting, NeedsAuth, Failed, Stopped] {
             assert!(!state.running(), "{state:?} does not count as running");
         }
+    }
+
+    /// G-M1: a flow stays live through the three in-flight states and ends at
+    /// the terminal ones; the button restarts a live flow, reconnects on
+    /// stored OAuth credentials, and only then starts fresh (web
+    /// `getOAuthActionLabel`).
+    #[test]
+    fn mcp_oauth_flow_and_action_labels_follow_the_web_rules() {
+        use openbitfun_core::service::mcp::auth::{
+            MCPRemoteOAuthSessionSnapshot, MCPRemoteOAuthStatus,
+        };
+        let snapshot = |status: MCPRemoteOAuthStatus| {
+            MCPRemoteOAuthSessionSnapshot::new("srv", status, None, None, None)
+        };
+        for status in [
+            MCPRemoteOAuthStatus::AwaitingBrowser,
+            MCPRemoteOAuthStatus::AwaitingCallback,
+            MCPRemoteOAuthStatus::ExchangingToken,
+        ] {
+            let session = snapshot(status.clone());
+            assert!(
+                mcp_oauth_flow_active(Some(&session)),
+                "{status:?} keeps the flow live"
+            );
+            assert_eq!(
+                mcp_oauth_action_kind(Some(&session), true, Some("oauth")),
+                McpOAuthActionKind::Restart,
+                "a live flow always offers Restart"
+            );
+        }
+        for status in [
+            MCPRemoteOAuthStatus::Authorized,
+            MCPRemoteOAuthStatus::Failed,
+            MCPRemoteOAuthStatus::Cancelled,
+        ] {
+            let session = snapshot(status.clone());
+            assert!(
+                !mcp_oauth_flow_active(Some(&session)),
+                "{status:?} is terminal"
+            );
+        }
+        assert!(!mcp_oauth_flow_active(None), "no session means idle");
+        assert_eq!(
+            mcp_oauth_action_kind(None, true, Some("oauth")),
+            McpOAuthActionKind::Reconnect,
+            "stored OAuth credentials reconnect"
+        );
+        assert_eq!(
+            mcp_oauth_action_kind(None, true, Some("headers")),
+            McpOAuthActionKind::Start,
+            "header auth still starts a fresh OAuth flow"
+        );
+        assert_eq!(
+            mcp_oauth_action_kind(None, false, None),
+            McpOAuthActionKind::Start,
+            "unconfigured servers start fresh"
+        );
+    }
+
+    /// G-M3: the row auth fact names the source when configured, the pending
+    /// OAuth state, or the unconfigured fallback (web `getRemoteAuthSummary`).
+    #[test]
+    fn mcp_auth_summary_names_the_source() {
+        let text = crate::i18n::fallback_text(openbitfun_core::service::i18n::LocaleId::EnUS);
+        assert_eq!(
+            mcp_auth_summary_text(&text, true, Some("headers"), false),
+            text.manage_mcp_auth_source_headers
+        );
+        assert_eq!(
+            mcp_auth_summary_text(&text, true, Some("env"), false),
+            text.manage_mcp_auth_source_env
+        );
+        assert_eq!(
+            mcp_auth_summary_text(&text, true, Some("oauth"), false),
+            text.manage_mcp_auth_source_oauth
+        );
+        assert_eq!(
+            mcp_auth_summary_text(&text, true, None, true),
+            text.manage_mcp_auth_configured,
+            "configured without a known source stays plain"
+        );
+        assert_eq!(
+            mcp_auth_summary_text(&text, false, None, true),
+            text.manage_mcp_auth_oauth_ready
+        );
+        assert_eq!(
+            mcp_auth_summary_text(&text, false, None, false),
+            text.manage_mcp_auth_missing
+        );
     }
 
     #[test]

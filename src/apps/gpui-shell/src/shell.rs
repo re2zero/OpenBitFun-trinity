@@ -2003,6 +2003,8 @@ pub(crate) struct ShellWindow {
     /// snapshot the merge writes back into).
     pub(crate) mcp_import_text: Entity<TextareaState>,
     pub(crate) mcp_import_path: Entity<InputState>,
+    /// G-M1/G-M3: the remote auth dialog's Bearer-token draft.
+    pub(crate) mcp_auth_token_input: Entity<InputState>,
     pub(crate) mcp_import_active: bool,
     pub(crate) mcp_import_loading: bool,
     pub(crate) mcp_import_error: Option<String>,
@@ -2126,6 +2128,7 @@ impl ShellWindow {
         let mcp_json_state = cx.new(|cx| TextareaState::new(window, cx));
         let mcp_import_text = cx.new(|cx| TextareaState::new(window, cx));
         let mcp_import_path = cx.new(|cx| InputState::new(window, cx));
+        let mcp_auth_token_input = cx.new(|cx| InputState::new(window, cx));
         let websearch_credential_input = cx.new(|cx| InputState::new(window, cx));
         let task_name_input = cx.new(|cx| InputState::new(window, cx));
         let task_prompt_input = cx.new(|cx| TextareaState::new(window, cx));
@@ -2291,6 +2294,7 @@ impl ShellWindow {
             mcp_json_error: None,
             mcp_import_text,
             mcp_import_path,
+            mcp_auth_token_input,
             mcp_import_active: false,
             mcp_import_loading: false,
             mcp_import_error: None,
@@ -3090,6 +3094,64 @@ impl ShellWindow {
                     Some(i18n::current(cx).manage_mcp_import_file_failed.clone());
                 cx.refresh_windows();
             }
+            // G-M1: an OAuth poll landed; only the dialog's own server
+            // accepts it, so a stale loop for a previously opened server
+            // cannot repaint the new one (same guard as G-A4).
+            RuntimeEvent::McpOAuthSession(session) => {
+                let mut accepted = session.is_none();
+                if let Some(snapshot) = &session {
+                    let mut state = crate::manage::McpAuthDialogState::current(cx);
+                    if state.open_for(&snapshot.server_id) {
+                        state.session = Some(snapshot.clone());
+                        state.starting = false;
+                        cx.set_global(state);
+                        accepted = true;
+                    }
+                }
+                if accepted {
+                    cx.refresh_windows();
+                }
+            }
+            // G-M3: a token save/clear (or failed OAuth start) settled. With
+            // the dialog open the error lands inline; otherwise it falls back
+            // to the page banner. Success closes the dialog with a notice.
+            RuntimeEvent::McpAuthSaved(result) => {
+                let dialog_open = crate::manage::McpAuthDialogState::current(cx)
+                    .server_id
+                    .is_some();
+                match result {
+                    Ok(()) => {
+                        let saved = i18n::current(cx).manage_mcp_auth_saved.clone();
+                        if dialog_open && window.has_active_dialog(cx) {
+                            crate::manage::McpAuthDialogState::mutate(cx, |state| {
+                                state.server_id = None;
+                                state.saving = false;
+                            });
+                            window.close_dialog(cx);
+                        } else {
+                            crate::manage::McpAuthDialogState::mutate(cx, |state| {
+                                state.server_id = None;
+                                state.saving = false;
+                            });
+                        }
+                        crate::manage::ManageNotice::set_success(saved, cx);
+                    }
+                    Err(message) => {
+                        tracing::warn!("MCP remote auth operation failed: {message}");
+                        let message = i18n::failed_status(&message, cx);
+                        if dialog_open {
+                            crate::manage::McpAuthDialogState::mutate(cx, |state| {
+                                state.saving = false;
+                                state.starting = false;
+                                state.error = Some(message);
+                            });
+                        } else {
+                            crate::manage::ManageNotice::set(Some(message), cx);
+                        }
+                    }
+                }
+                cx.refresh_windows();
+            }
             RuntimeEvent::PluginUiBridgeReady { providers } => {
                 for install in providers {
                     let crate::runtime::PluginUiProviderInstall {
@@ -3447,7 +3509,7 @@ impl ShellWindow {
                         self.mcp_import_candidates.clear();
                         self.mcp_import_id_inputs.clear();
                         window.close_dialog(cx);
-                        crate::manage::ManageNotice::set(Some(saved), cx);
+                        crate::manage::ManageNotice::set_success(saved, cx);
                     }
                     Err(message) => {
                         tracing::warn!("Failed to save MCP JSON config: {message}");
@@ -11857,6 +11919,9 @@ mod tests {
                             enabled: true,
                             auto_start: true,
                             builtin: false,
+                            auth_configured: false,
+                            auth_source: None,
+                            oauth_enabled: false,
                         }],
                     }),
                     window,
