@@ -187,16 +187,16 @@ impl PluginHostInstance {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct PluginHostLaunchSpec {
-    runtime_name: &'static str,
-    default_command: &'static str,
-    command_env: &'static str,
-    entry_env: &'static str,
-    entry_filename: &'static str,
+pub(crate) struct PluginHostLaunchSpec {
+    pub(crate) runtime_name: &'static str,
+    pub(crate) default_command: &'static str,
+    pub(crate) command_env: &'static str,
+    pub(crate) entry_env: &'static str,
+    pub(crate) entry_filename: &'static str,
 }
 
 impl PluginHostLaunchSpec {
-    fn bun() -> Self {
+    pub(crate) fn bun() -> Self {
         Self {
             runtime_name: "Bun",
             default_command: "bun",
@@ -1870,7 +1870,7 @@ async fn register_plugin_tools(
     Ok(names)
 }
 
-fn resolve_host_entry(spec: PluginHostLaunchSpec) -> crate::OpenBitFunResult<PathBuf> {
+pub(crate) fn resolve_host_entry(spec: PluginHostLaunchSpec) -> crate::OpenBitFunResult<PathBuf> {
     if let Some(entry) = std::env::var_os(spec.entry_env) {
         return absolutize_existing_entry(PathBuf::from(entry), spec);
     }

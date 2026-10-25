@@ -1,8 +1,9 @@
 use crate::{
     hook_function_runtime, read_frame, read_host_stream, register_backend_handlers, write_frame,
     BackendDiagnosticError, BackendDiagnosticEvent, BackendRouteFailure, BackendRouteRequest,
-    HostStreamReadError, JsonRpcPeer, OpenCodeBackendHandler, PluginDeclaration, PluginHostError,
-    PluginInstanceOpenRequest, PluginPrepareRequest, StreamDescriptor, DEFAULT_MAX_FRAME_BYTES,
+    HostStreamReadError, JsonRpcPeer, OpenCodeBackendHandler, PluginDeclaration,
+    PluginGenerationLease, PluginHostError, PluginInstanceOpenRequest, PluginPrepareRequest,
+    StreamDescriptor, DEFAULT_MAX_FRAME_BYTES,
 };
 use async_trait::async_trait;
 use openbitfun_runtime_ports::{
@@ -707,6 +708,227 @@ async fn draining_rejects_new_notifications() {
         .expect_err("new notification should be rejected while draining");
 
     assert!(matches!(error, PluginHostError::ShuttingDown));
+}
+
+fn ui_lease() -> PluginGenerationLease {
+    PluginGenerationLease {
+        instance_id: "openbitfun:ui-instance".to_string(),
+        generation_key: "generation-fixture".to_string(),
+        revision: "revision-fixture".to_string(),
+    }
+}
+
+#[tokio::test]
+async fn describe_ui_parses_sections_over_the_fenced_lease() {
+    let (backend_stream, mut host_stream) = connected_streams().await;
+    let peer = JsonRpcPeer::start_with_capabilities(
+        backend_stream,
+        31,
+        DEFAULT_MAX_FRAME_BYTES,
+        crate::PluginHostCapabilities::all_supported(),
+    );
+    let client = peer.client();
+    let host = tokio::spawn(async move {
+        let request = read_frame(&mut host_stream, DEFAULT_MAX_FRAME_BYTES)
+            .await
+            .expect("describe request should be readable");
+        assert_eq!(request["method"], "host.ui.describe");
+        assert_eq!(request["params"]["instanceID"], "openbitfun:ui-instance");
+        assert_eq!(request["params"]["generationKey"], "generation-fixture");
+        write_frame(
+            &mut host_stream,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": {
+                    "instanceID": "openbitfun:ui-instance",
+                    "generationKey": "generation-fixture",
+                    "revision": "revision-fixture",
+                    "ui": [{
+                        "plugin": { "id": "fixture.ui-board", "spec": "/pkg/board.ts", "entry": "/pkg/board.ts", "index": 0 },
+                        "contributions": { "schemaVersion": 1, "scenes": [{ "id": "board" }] },
+                        "files": { "ui/scenes/board.json": "{\"schemaVersion\":1,\"root\":{}}" }
+                    }]
+                }
+            }),
+            DEFAULT_MAX_FRAME_BYTES,
+        )
+        .await
+        .expect("describe response should be written");
+    });
+
+    let sections = client
+        .describe_ui(&ui_lease(), Duration::from_secs(1))
+        .await
+        .expect("describe_ui should resolve");
+
+    assert_eq!(sections.len(), 1);
+    assert_eq!(sections[0].plugin_id.as_deref(), Some("fixture.ui-board"));
+    assert_eq!(sections[0].plugin_spec, "/pkg/board.ts");
+    assert_eq!(sections[0].contributions["schemaVersion"], 1);
+    assert_eq!(
+        sections[0]
+            .files
+            .get("ui/scenes/board.json")
+            .map(String::as_str),
+        Some("{\"schemaVersion\":1,\"root\":{}}")
+    );
+    host.await.expect("fake host should finish");
+}
+
+#[tokio::test]
+async fn describe_ui_rejects_a_stale_lease_response() {
+    let (backend_stream, mut host_stream) = connected_streams().await;
+    let peer = JsonRpcPeer::start_with_capabilities(
+        backend_stream,
+        32,
+        DEFAULT_MAX_FRAME_BYTES,
+        crate::PluginHostCapabilities::all_supported(),
+    );
+    let client = peer.client();
+    let host = tokio::spawn(async move {
+        let request = read_frame(&mut host_stream, DEFAULT_MAX_FRAME_BYTES)
+            .await
+            .expect("describe request should be readable");
+        write_frame(
+            &mut host_stream,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": {
+                    "instanceID": "openbitfun:ui-instance",
+                    "generationKey": "generation-other",
+                    "revision": "revision-fixture",
+                    "ui": []
+                }
+            }),
+            DEFAULT_MAX_FRAME_BYTES,
+        )
+        .await
+        .expect("describe response should be written");
+    });
+
+    let error = client
+        .describe_ui(&ui_lease(), Duration::from_secs(1))
+        .await
+        .expect_err("a stale lease response must be rejected");
+
+    assert!(matches!(error, PluginHostError::Protocol(_)));
+    host.await.expect("fake host should finish");
+}
+
+#[tokio::test]
+async fn dispatch_ui_event_round_trips_payload_and_tree() {
+    let (backend_stream, mut host_stream) = connected_streams().await;
+    let peer = JsonRpcPeer::start_with_capabilities(
+        backend_stream,
+        33,
+        DEFAULT_MAX_FRAME_BYTES,
+        crate::PluginHostCapabilities::all_supported(),
+    );
+    let client = peer.client();
+    let host = tokio::spawn(async move {
+        let request = read_frame(&mut host_stream, DEFAULT_MAX_FRAME_BYTES)
+            .await
+            .expect("event request should be readable");
+        assert_eq!(request["method"], "host.ui.event");
+        assert_eq!(
+            request["params"]["plugin"],
+            json!({ "id": "fixture.ui-board", "spec": "/pkg/board.ts" })
+        );
+        assert_eq!(request["params"]["sceneID"], "board");
+        assert_eq!(request["params"]["action"], "increment");
+        assert_eq!(
+            request["params"]["payload"],
+            json!({ "kind": "text", "value": "hi" })
+        );
+        write_frame(
+            &mut host_stream,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": request["id"],
+                "result": {
+                    "instanceID": "openbitfun:ui-instance",
+                    "generationKey": "generation-fixture",
+                    "revision": "revision-fixture",
+                    "tree": { "schemaVersion": 1, "root": { "type": "text", "props": { "text": "hi" } } }
+                }
+            }),
+            DEFAULT_MAX_FRAME_BYTES,
+        )
+        .await
+        .expect("event response should be written");
+
+        let unchanged = read_frame(&mut host_stream, DEFAULT_MAX_FRAME_BYTES)
+            .await
+            .expect("second event request should be readable");
+        assert!(unchanged["params"]["payload"].is_null());
+        write_frame(
+            &mut host_stream,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": unchanged["id"],
+                "result": {
+                    "instanceID": "openbitfun:ui-instance",
+                    "generationKey": "generation-fixture",
+                    "revision": "revision-fixture",
+                    "tree": null
+                }
+            }),
+            DEFAULT_MAX_FRAME_BYTES,
+        )
+        .await
+        .expect("unchanged response should be written");
+    });
+    let payload = json!({ "kind": "text", "value": "hi" });
+
+    let tree = client
+        .dispatch_ui_event(
+            &ui_lease(),
+            Some("fixture.ui-board"),
+            "/pkg/board.ts",
+            "board",
+            "increment",
+            Some(&payload),
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("dispatch_ui_event should resolve");
+    assert_eq!(
+        tree.expect("a replacement tree should be present")["schemaVersion"],
+        1
+    );
+
+    let unchanged = client
+        .dispatch_ui_event(
+            &ui_lease(),
+            None,
+            "/pkg/board.ts",
+            "board",
+            "increment",
+            None,
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("unchanged dispatch should resolve");
+    assert_eq!(unchanged, None);
+    host.await.expect("fake host should finish");
+}
+
+#[tokio::test]
+async fn ui_methods_require_the_negotiated_capability() {
+    let (backend_stream, _host_stream) = connected_streams().await;
+    let peer = JsonRpcPeer::start(backend_stream, 34, DEFAULT_MAX_FRAME_BYTES);
+    let client = peer.client();
+
+    let error = client
+        .describe_ui(&ui_lease(), Duration::from_secs(1))
+        .await
+        .expect_err("describe_ui must refuse without the capability");
+
+    assert!(
+        matches!(error, PluginHostError::Protocol(ref message) if message.contains("ui-contributions-v1"))
+    );
 }
 
 async fn connected_streams() -> (TcpStream, TcpStream) {

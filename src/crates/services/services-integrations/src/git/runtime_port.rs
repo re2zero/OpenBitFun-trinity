@@ -7,17 +7,24 @@ use git2::{
     Delta, DiffFindOptions, DiffFlags, DiffOptions, Patch, Repository, Status, StatusOptions,
 };
 use openbitfun_runtime_ports::{
-    GitPort, PortError, PortErrorKind, PortResult, RuntimeServiceCapability, RuntimeServicePort,
-    WorkspaceDiffContent, WorkspaceDiffFile, WorkspaceDiffFileStatus, WorkspaceDiffSnapshot,
+    GitCommitSummary, GitPort, GitRepositoryOverview, GitTrustSnapshot, GitTrustState, PortError,
+    PortErrorKind, PortResult, RuntimeServiceCapability, RuntimeServicePort, WorkspaceDiffContent,
+    WorkspaceDiffFile, WorkspaceDiffFileStatus, WorkspaceDiffSnapshot,
 };
 
-use super::utils::discover_repository;
-use super::GitError;
+use super::types::{GitAddParams, GitCommitParams, GitLogParams, GitPullParams, GitPushParams};
+use super::utils::{discover_repository, get_current_branch};
+use super::{GitError, GitService};
 
 const MAX_WORKSPACE_DIFF_FILES: usize = 256;
 const MAX_WORKSPACE_DIFF_FILE_BYTES: usize = 1024 * 1024;
 const MAX_WORKSPACE_DIFF_TOTAL_BYTES: usize = 3 * 1024 * 1024;
 
+/// The workspace git port: the workspace-scoped diff snapshot plus the
+/// write operations (stage/unstage/commit/push), history, overview, and the
+/// ownership-trust probe/decision. Every operation delegates to
+/// [`GitService`] rooted at the bound workspace, so a workspace inside a
+/// parent repository stays scoped exactly like the diff path.
 #[derive(Debug, Clone)]
 pub struct GitWorkspaceDiffPort {
     workspace_root: PathBuf,
@@ -46,6 +53,182 @@ impl GitPort for GitWorkspaceDiffPort {
             .map_err(|error| PortError::new(PortErrorKind::Backend, error.to_string()))?
             .map_err(map_git_error)
     }
+
+    async fn stage_files(&self, files: Vec<String>, all: bool, update: bool) -> PortResult<()> {
+        GitService::add_files(
+            &self.workspace_root,
+            GitAddParams {
+                files,
+                all: Some(all),
+                update: Some(update),
+            },
+        )
+        .await
+        .map(|_| ())
+        .map_err(map_git_error)
+    }
+
+    async fn unstage_files(&self, files: Vec<String>) -> PortResult<()> {
+        GitService::reset_files(&self.workspace_root, &files, true)
+            .await
+            .map(|_| ())
+            .map_err(map_git_error)
+    }
+
+    async fn discard_files(&self, files: Vec<String>) -> PortResult<()> {
+        // Unstage first so a staged-then-edited path lands back at HEAD
+        // (no-op for paths without staged changes), then restore the
+        // working-tree copy from the index.
+        let root = &self.workspace_root;
+        GitService::reset_files(root, &files, true)
+            .await
+            .map_err(map_git_error)?;
+        GitService::reset_files(root, &files, false)
+            .await
+            .map(|_| ())
+            .map_err(map_git_error)
+    }
+
+    async fn commit_staged(&self, message: String, stage_all: bool) -> PortResult<()> {
+        GitService::commit(
+            &self.workspace_root,
+            GitCommitParams {
+                message,
+                amend: None,
+                all: Some(stage_all),
+                no_verify: None,
+                author: None,
+            },
+        )
+        .await
+        .map(|_| ())
+        .map_err(map_git_error)
+    }
+
+    async fn push(
+        &self,
+        remote: Option<String>,
+        branch: Option<String>,
+        set_upstream: bool,
+    ) -> PortResult<()> {
+        GitService::push(
+            &self.workspace_root,
+            GitPushParams {
+                remote,
+                branch,
+                force: None,
+                set_upstream: Some(set_upstream),
+            },
+        )
+        .await
+        .map(|_| ())
+        .map_err(map_git_error)
+    }
+
+    async fn pull(&self, remote: Option<String>, branch: Option<String>) -> PortResult<()> {
+        GitService::pull(
+            &self.workspace_root,
+            GitPullParams {
+                remote,
+                branch,
+                rebase: None,
+            },
+        )
+        .await
+        .map(|_| ())
+        .map_err(map_git_error)
+    }
+
+    async fn commit_history(&self, limit: usize) -> PortResult<Vec<GitCommitSummary>> {
+        let commits = GitService::get_commits(
+            &self.workspace_root,
+            GitLogParams {
+                max_count: Some(limit.max(1) as i32),
+                ..GitLogParams::default()
+            },
+        )
+        .await
+        .map_err(map_git_error)?;
+        Ok(commits
+            .into_iter()
+            .map(|commit| GitCommitSummary {
+                subject: commit
+                    .message
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .to_string(),
+                hash: commit.hash,
+                short_hash: commit.short_hash,
+                author: commit.author,
+                date: commit.date,
+            })
+            .collect())
+    }
+
+    async fn repository_overview(&self) -> PortResult<GitRepositoryOverview> {
+        let workspace_root = self.workspace_root.clone();
+        tokio::task::spawn_blocking(move || overview_of(&workspace_root))
+            .await
+            .map_err(|error| PortError::new(PortErrorKind::Backend, error.to_string()))?
+            .map_err(map_git_error)
+    }
+
+    async fn trust_report(&self) -> PortResult<GitTrustSnapshot> {
+        let report = GitService::inspect_trust(&self.workspace_root)
+            .await
+            .map_err(map_git_error)?;
+        Ok(GitTrustSnapshot {
+            state: trust_state(report.state),
+            repository_path: report.repository_path,
+            detail: report.detail,
+            manual_command: report.manual_command,
+        })
+    }
+
+    async fn trust_repository(&self) -> PortResult<GitTrustSnapshot> {
+        let outcome = GitService::trust_repository(&self.workspace_root)
+            .await
+            .map_err(map_git_error)?;
+        Ok(GitTrustSnapshot {
+            state: trust_state(outcome.state),
+            repository_path: outcome.repository_path,
+            detail: outcome.detail,
+            manual_command: outcome.manual_command,
+        })
+    }
+}
+
+fn trust_state(state: super::trust::GitTrustState) -> GitTrustState {
+    match state {
+        super::trust::GitTrustState::Trusted => GitTrustState::Trusted,
+        super::trust::GitTrustState::TrustRequired => GitTrustState::TrustRequired,
+        super::trust::GitTrustState::NotARepository => GitTrustState::NotARepository,
+    }
+}
+
+/// Repository facts read straight from libgit2: the branch, its remotes, and
+/// the ahead/behind counts against its upstream. `has_changes` stays `false`
+/// on purpose — the diff snapshot is the changes surface, and rescanning the
+/// worktree here would double that cost on every refresh.
+fn overview_of(workspace_root: &Path) -> Result<GitRepositoryOverview, GitError> {
+    let repository = discover_repository(workspace_root)?;
+    let current_branch = get_current_branch(&repository)?;
+    let remotes = repository
+        .remotes()
+        .map_err(|error| GitError::CommandFailed(error.to_string()))?
+        .iter()
+        .filter_map(|name| name.ok().flatten().map(str::to_string))
+        .collect();
+    let (ahead, behind) =
+        GitService::get_ahead_behind_count(&repository, &current_branch).unwrap_or((0, 0));
+    Ok(GitRepositoryOverview {
+        current_branch,
+        has_changes: false,
+        remotes,
+        ahead: ahead.max(0) as usize,
+        behind: behind.max(0) as usize,
+    })
 }
 
 fn collect_workspace_diff(workspace_root: &Path) -> Result<WorkspaceDiffSnapshot, GitError> {

@@ -197,6 +197,10 @@ pub struct UsagePattern {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InsightsSuggestions {
+    /// Reports written before the product rename persist this key as
+    /// `bitfun_md_additions`; without the alias those saved reports fail to
+    /// deserialize and vanish from the history list.
+    #[serde(alias = "bitfun_md_additions")]
     pub openbitfun_md_additions: Vec<MdAddition>,
     pub features_to_try: Vec<FeatureRecommendation>,
     pub usage_patterns: Vec<UsagePattern>,
@@ -348,4 +352,126 @@ pub struct InsightsReportMeta {
 pub struct GenerateInsightsRequest {
     pub days: Option<u32>,
     pub model_id: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A report saved before the product rename: the OPENBITFUN.md additions
+    /// key is persisted as `bitfun_md_additions`.
+    const LEGACY_REPORT: &str = r#"{
+        "generated_at": 1785725436,
+        "date_range": {
+            "start": "2026-08-01T16:31:29.115+00:00",
+            "end": "2026-08-03T00:44:44.204+00:00"
+        },
+        "total_sessions": 6,
+        "analyzed_sessions": 6,
+        "total_messages": 243,
+        "days_covered": 3,
+        "generation_models": ["deepseek-v4-flash-free"],
+        "stats": {
+            "total_hours": 1.1754669,
+            "msgs_per_day": 81.0,
+            "top_tools": [["ExecCommand", 15]],
+            "top_goals": [["身份询问", 10]],
+            "outcomes": { "fully_achieved": 6 },
+            "satisfaction": { "satisfied": 2 },
+            "session_types": { "quick_question": 3 },
+            "languages": { "Rust": 13 },
+            "hour_counts": { "0": 1 },
+            "agent_types": { "agentic": 2 }
+        },
+        "at_a_glance": {
+            "whats_working": "working",
+            "whats_hindering": "hindering",
+            "quick_wins": "quick",
+            "looking_ahead": "ahead"
+        },
+        "interaction_style": {
+            "narrative": "narrative",
+            "key_patterns": ["pattern"]
+        },
+        "project_areas": [
+            { "name": "pi-plugin", "session_count": 1, "description": "align" }
+        ],
+        "big_wins": [
+            { "title": "scope", "description": "d", "impact": "i" }
+        ],
+        "friction_categories": [
+            {
+                "category": "verify-first",
+                "count": 2,
+                "description": "d",
+                "examples": ["e"],
+                "suggestion": "s"
+            }
+        ],
+        "suggestions": {
+            "bitfun_md_additions": [
+                {
+                    "section": "提交规范",
+                    "content": "提交前必须运行 git status",
+                    "rationale": "只提交本次修改的文件"
+                }
+            ],
+            "features_to_try": [
+                {
+                    "feature": "Skills",
+                    "description": "d",
+                    "example_usage": "e",
+                    "benefit": "b"
+                }
+            ],
+            "usage_patterns": [
+                {
+                    "pattern": "p",
+                    "description": "d",
+                    "detail": "det",
+                    "suggested_prompt": "sp"
+                }
+            ]
+        },
+        "on_the_horizon": [
+            {
+                "title": "t",
+                "whats_possible": "w",
+                "how_to_try": "h",
+                "copyable_prompt": "cp"
+            }
+        ]
+    }"#;
+
+    /// Upgrade compatibility: a report saved under the old key must still load,
+    /// and re-saving it keeps the current key.
+    #[test]
+    fn legacy_reports_still_carry_the_md_additions() {
+        let report: InsightsReport =
+            serde_json::from_str(LEGACY_REPORT).expect("legacy report deserializes");
+
+        assert_eq!(report.suggestions.openbitfun_md_additions.len(), 1);
+        assert_eq!(
+            report.suggestions.openbitfun_md_additions[0].section,
+            "提交规范"
+        );
+        assert_eq!(report.suggestions.features_to_try.len(), 1);
+        assert_eq!(report.suggestions.usage_patterns.len(), 1);
+
+        let value = serde_json::to_value(&report).expect("report serializes");
+        let suggestions = value["suggestions"]
+            .as_object()
+            .expect("suggestions serialize as an object");
+        assert!(suggestions.contains_key("openbitfun_md_additions"));
+        assert!(!suggestions.contains_key("bitfun_md_additions"));
+    }
+
+    /// The current shape keeps working (the alias must not break the new key).
+    #[test]
+    fn current_reports_read_the_openbitfun_md_additions() {
+        let current = LEGACY_REPORT.replace("bitfun_md_additions", "openbitfun_md_additions");
+        let report: InsightsReport =
+            serde_json::from_str(&current).expect("current report deserializes");
+        assert_eq!(report.suggestions.openbitfun_md_additions.len(), 1);
+    }
 }

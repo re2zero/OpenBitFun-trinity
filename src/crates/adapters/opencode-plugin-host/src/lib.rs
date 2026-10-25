@@ -33,7 +33,7 @@ pub use http::OpenCodeClientRoute;
 pub(crate) use http::{read_host_stream, HostStreamReadError, StreamDescriptor};
 pub use peer::{
     hook_function_runtime, JsonRpcPeer, OpenCodeHookFunctionRuntime, PluginHostClient,
-    RpcHandlerError,
+    PluginUiSection, RpcHandlerError,
 };
 
 const PROTOCOL_VERSION: u64 = 1;
@@ -45,6 +45,7 @@ const MIN_NEGOTIATED_FRAME_BYTES: usize = 1024;
 pub const CONFIG_CONTRIBUTORS_V1: &str = "config-contributors-v1";
 pub const CONFIG_CONTRIBUTIONS_V2: &str = "config-contributions-v2";
 pub const GENERATION_FENCING_V1: &str = "generation-fencing-v1";
+pub const UI_CONTRIBUTIONS_V1: &str = "ui-contributions-v1";
 static NEXT_CONNECTION_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -59,6 +60,7 @@ impl PluginHostCapabilities {
                 CONFIG_CONTRIBUTORS_V1,
                 CONFIG_CONTRIBUTIONS_V2,
                 GENERATION_FENCING_V1,
+                UI_CONTRIBUTIONS_V1,
             ]
             .into_iter()
             .map(str::to_string)
@@ -588,6 +590,7 @@ async fn complete_handshake(
         CONFIG_CONTRIBUTORS_V1,
         CONFIG_CONTRIBUTIONS_V2,
         GENERATION_FENCING_V1,
+        UI_CONTRIBUTIONS_V1,
     ]
     .into_iter()
     .filter(|capability| requested_capabilities.contains(capability))

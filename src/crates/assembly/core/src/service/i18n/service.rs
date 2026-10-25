@@ -123,6 +123,31 @@ impl I18nService {
         Some(bundle)
     }
 
+    /// Adds host-owned Fluent messages to one initialized locale bundle.
+    ///
+    /// Host apps keep their surface copy out of the shared core catalog: they
+    /// call this right after [`Self::initialize`] with their own compiled-in
+    /// ftl. Unknown locales are ignored (the registry stays the source of
+    /// truth for which locales exist); message ids overlapping the core
+    /// catalog are rejected by the bundle itself.
+    pub async fn register_locale_resource(
+        &self,
+        locale: LocaleId,
+        fluent_source: &str,
+    ) -> OpenBitFunResult<()> {
+        let mut bundles = self.bundles.write().await;
+        let bundle = bundles
+            .get_mut(&locale)
+            .ok_or_else(|| OpenBitFunError::Service(format!("locale not initialized: {locale}")))?;
+        let resource = FluentResource::try_new(fluent_source.to_string()).map_err(|errors| {
+            OpenBitFunError::Service(format!("invalid ftl resource for {locale}: {errors:?}"))
+        })?;
+        bundle.add_resource(resource).map_err(|error| {
+            OpenBitFunError::Service(format!("ftl rejected for {locale}: {error:?}"))
+        })?;
+        Ok(())
+    }
+
     /// Returns the current locale.
     pub async fn get_current_locale(&self) -> LocaleId {
         *self.current_locale.read().await

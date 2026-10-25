@@ -13,9 +13,10 @@ pub mod product_control_owner_registry;
 pub mod product_release;
 pub mod product_search;
 pub mod remote_surface;
+pub mod tool_permissions;
+
 #[cfg(feature = "external-sources")]
 pub mod session_import;
-pub mod tool_permissions;
 
 #[cfg(feature = "appearance-market")]
 pub mod appearance_market;
@@ -43,6 +44,9 @@ pub mod external_subagents;
 
 #[cfg(feature = "external-sources")]
 pub mod plugin_capabilities;
+
+#[cfg(feature = "external-sources")]
+pub mod plugin_ui;
 
 #[cfg(feature = "external-sources")]
 pub mod workspace_references;

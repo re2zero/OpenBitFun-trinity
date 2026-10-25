@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "root": {
+    "type": "column",
+    "props": { "gap": 3, "padding": 4 },
+    "children": [
+      { "type": "heading", "props": { "text": "@title", "level": 1 } },
+      { "type": "text", "props": { "text": "count = 0", "tone": "muted" } },
+      { "type": "text", "props": { "text": "name = " } },
+      {
+        "type": "input",
+        "props": { "placeholder": "@name.hint", "value": "" },
+        "on": { "submit": "set-name" }
+      },
+      {
+        "type": "button",
+        "props": { "label": "@btn.increment", "tone": "primary" },
+        "on": { "press": "increment" }
+      }
+    ]
+  }
+}

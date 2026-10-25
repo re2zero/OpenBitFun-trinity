@@ -863,6 +863,91 @@ impl FileTreeService {
         Ok(nodes)
     }
 
+    /// Lists one directory level with ignore-file filtering (`gitignore`,
+    /// `.ignore`, git exclude) the way the search walker applies them, while
+    /// still showing unignored hidden entries. Unlike
+    /// [`Self::get_directory_contents`], this never descends and the result
+    /// comes back in the tree builder's order: directories first, then name
+    /// order.
+    pub async fn get_directory_listing(&self, path: &str) -> Result<Vec<FileTreeNode>, String> {
+        let path_buf = PathBuf::from(path);
+        if !path_buf.exists() {
+            return Err("Directory does not exist".to_string());
+        }
+        if !path_buf.is_dir() {
+            return Err("Path is not a directory".to_string());
+        }
+        let skip_patterns = self.options.skip_patterns.clone();
+        // The ignore walker is blocking IO; keep it off the async workers.
+        tokio::task::spawn_blocking(move || {
+            let mut walker = WalkBuilder::new(&path_buf);
+            walker
+                .hidden(false)
+                .ignore(true)
+                .git_ignore(true)
+                .git_exclude(true)
+                .max_depth(Some(1));
+
+            let mut entries: Vec<(bool, std::ffi::OsString, FileTreeNode)> = Vec::new();
+            for entry in walker.build().flatten() {
+                if entry.depth() == 0 {
+                    // The walked root itself.
+                    continue;
+                }
+                let file_name = entry.file_name().to_os_string();
+                let file_name_str = file_name.to_string_lossy().to_string();
+                if skip_patterns.iter().any(|pattern| {
+                    file_name_str == *pattern
+                        || (pattern.contains('*') && {
+                            let parts: Vec<&str> = pattern.split('*').collect();
+                            parts.len() == 2
+                                && file_name_str.starts_with(parts[0])
+                                && file_name_str.ends_with(parts[1])
+                        })
+                }) {
+                    continue;
+                }
+                let entry_path = entry.path().to_path_buf();
+                let metadata = entry.metadata().ok();
+                let is_directory = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                let size = if is_directory {
+                    None
+                } else {
+                    metadata.as_ref().map(|value| value.len())
+                };
+                let modified = metadata
+                    .and_then(|value| value.modified().ok())
+                    .map(|value| {
+                        let time: chrono::DateTime<chrono::Utc> = value.into();
+                        time.format("%Y-%m-%d %H:%M:%S").to_string()
+                    });
+                let extension = if is_directory {
+                    None
+                } else {
+                    entry_path
+                        .extension()
+                        .map(|value| value.to_string_lossy().to_string())
+                };
+                let path_str = entry_path.to_string_lossy().to_string();
+                let node =
+                    FileTreeNode::new(path_str.clone(), file_name_str, path_str, is_directory)
+                        .with_metadata(size, modified)
+                        .with_extension(extension);
+                entries.push((is_directory, file_name, node));
+            }
+
+            entries.sort_by(|a, b| match (a.0, b.0) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.1.cmp(&b.1),
+            });
+
+            Ok(entries.into_iter().map(|(_, _, node)| node).collect())
+        })
+        .await
+        .map_err(|error| format!("Directory listing task failed: {error}"))?
+    }
+
     fn detect_mime_type(&self, path: &Path) -> Option<String> {
         if let Some(extension) = path.extension().and_then(|e| e.to_str()) {
             match extension.to_lowercase().as_str() {

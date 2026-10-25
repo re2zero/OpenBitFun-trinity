@@ -270,6 +270,17 @@ impl FileSystemService {
             .map_err(map_filesystem_error)
     }
 
+    /// One-level local directory listing with ignore-file filtering
+    /// (gitignore, `.ignore`, git exclude); see the services-core owner for
+    /// the exact semantics. Local by definition: remote workspaces route
+    /// through `build_file_tree_on_connection`.
+    pub async fn get_directory_listing(&self, path: &str) -> OpenBitFunResult<Vec<FileTreeNode>> {
+        self.inner
+            .get_directory_listing(path)
+            .await
+            .map_err(map_filesystem_error)
+    }
+
     /// Searches files.
     pub async fn search_files(
         &self,

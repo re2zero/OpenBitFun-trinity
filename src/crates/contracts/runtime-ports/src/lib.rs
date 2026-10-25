@@ -36,7 +36,8 @@ pub use local_workspace_snapshot::{
 };
 #[cfg(feature = "product-search")]
 pub use openbitfun_product_domains::product_search::{
-    SessionContentSearchRequest, SessionContentSearchResponse,
+    SessionContentSearchRequest, SessionContentSearchResponse, SessionSearchHit,
+    SessionSearchHitKind, SessionSearchMatchField,
 };
 #[cfg(feature = "permission")]
 pub use openbitfun_product_domains::tool_permissions::{

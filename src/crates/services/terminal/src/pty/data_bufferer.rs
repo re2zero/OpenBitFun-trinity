@@ -143,6 +143,20 @@ impl DataBufferer {
         Self::do_flush(process_id, self.buffers.clone(), self.output_tx.clone()).await;
     }
 
+    /// Takes any bytes still buffered for a process without going through the
+    /// output channel, so a caller can deliver them itself in order (used to
+    /// flush the tail ahead of a process-exit event).
+    pub async fn take_pending(&self, process_id: u32) -> Vec<u8> {
+        let mut buffers = self.buffers.write().await;
+        match buffers.get_mut(&process_id) {
+            Some(buffer) => {
+                buffer.flush_scheduled = false;
+                std::mem::take(&mut buffer.data)
+            }
+            None => Vec::new(),
+        }
+    }
+
     /// Internal flush implementation
     async fn do_flush(
         process_id: u32,

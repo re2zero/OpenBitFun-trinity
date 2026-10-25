@@ -9,7 +9,7 @@
 //! - Write and control operations don't require locks
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use log::{info, warn};
@@ -88,6 +88,13 @@ pub struct PtyService {
     /// Next process ID
     next_id: AtomicU32,
 
+    /// Whether this service's buffered-data forwarding task has started.
+    /// Per instance on purpose: the bufferer and event sender it drains are
+    /// instance state, so a process-wide flag would starve every later service
+    /// in the same process (reproduced 2026-10-09: a second `PtyService`
+    /// received no `ProcessData` at all).
+    buffer_forwarding_started: AtomicBool,
+
     /// Event sender
     event_tx: mpsc::Sender<PtyServiceEvent>,
 
@@ -106,6 +113,7 @@ impl PtyService {
             processes: Arc::new(RwLock::new(HashMap::new())),
             bufferer,
             next_id: AtomicU32::new(1),
+            buffer_forwarding_started: AtomicBool::new(false),
             event_tx,
             event_rx: Arc::new(Mutex::new(event_rx)),
         }
@@ -183,6 +191,18 @@ impl PtyService {
                     }
                     PtyEvent::Exit { exit_code } => {
                         info!("PTY process {} exited with code {:?}", id, exit_code);
+                        // Deliver the buffered tail on this task, before the
+                        // exit event, so consumers see every byte the process
+                        // wrote ahead of its exit (a plain flush would race,
+                        // because the forwarding task is a separate hop).
+                        let tail = bufferer.take_pending(id).await;
+                        if !tail.is_empty() {
+                            flow_control.track_output(tail.len());
+                            let _ = event_tx
+                                .send(PtyServiceEvent::ProcessData { id, data: tail })
+                                .await;
+                        }
+                        bufferer.stop_buffering(id).await;
                         let _ = event_tx
                             .send(PtyServiceEvent::ProcessExit { id, exit_code })
                             .await;
@@ -219,10 +239,9 @@ impl PtyService {
 
     /// Start forwarding buffered data as events
     async fn start_buffer_forwarding(&self) {
-        // Only start once
-        static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-        if STARTED.swap(true, Ordering::Relaxed) {
+        // Only start once per service (see the field comment: a process-wide
+        // flag would disconnect every service created after the first).
+        if self.buffer_forwarding_started.swap(true, Ordering::Relaxed) {
             return;
         }
 
@@ -393,6 +412,7 @@ impl Drop for PtyService {
 mod tests {
     use super::PtyService;
     use crate::config::{ShellConfig, TerminalConfig};
+    use crate::pty::service::PtyServiceEvent;
     use crate::shell::ShellType;
 
     #[tokio::test(flavor = "current_thread")]
@@ -435,5 +455,112 @@ mod tests {
             .await
             .expect("stale process eviction must be idempotent");
         assert!(!service.has_process(process_id).await);
+    }
+
+    /// Platform shell plus the arguments that run a one-line script.
+    fn scripted_shell(script: &str) -> (String, Vec<String>, ShellType) {
+        if cfg!(windows) {
+            (
+                "cmd.exe".to_string(),
+                vec!["/C".to_string(), script.to_string()],
+                ShellType::Cmd,
+            )
+        } else {
+            (
+                "/bin/sh".to_string(),
+                vec!["-c".to_string(), script.to_string()],
+                ShellType::Sh,
+            )
+        }
+    }
+
+    /// Regression: nothing observes the child, so a process that exits on its
+    /// own (no shutdown request) used to never report `ProcessExit` at all.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_process_that_exits_on_its_own_reports_its_exit() {
+        let service = PtyService::new(TerminalConfig::default());
+        let (executable, args, shell_type) = scripted_shell("exit 7");
+        let process_id = service
+            .create_process(
+                ShellConfig {
+                    executable,
+                    args,
+                    ..ShellConfig::default()
+                },
+                shell_type,
+                80,
+                24,
+            )
+            .await
+            .expect("create test PTY");
+
+        let mut exit_code = None;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        while let Ok(Some(event)) = tokio::time::timeout_at(deadline, service.recv_event()).await {
+            match event {
+                PtyServiceEvent::ProcessExit {
+                    id,
+                    exit_code: code,
+                } if id == process_id => {
+                    exit_code = code;
+                    break;
+                }
+                PtyServiceEvent::ProcessData { id, data } => {
+                    let _ = service.acknowledge_data(id, data.len()).await;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(
+            exit_code,
+            Some(7),
+            "a self-exiting process must report its exit code"
+        );
+    }
+
+    /// Regression: the buffer-forwarding task was gated by a process-wide
+    /// flag, so every `PtyService` created after the first one in the same
+    /// process silently received no `ProcessData` at all.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_second_service_in_the_same_process_still_forwards_data() {
+        for round in 1..=2 {
+            let service = PtyService::new(TerminalConfig::default());
+            let (executable, args, shell_type) = scripted_shell("echo round");
+            let process_id = service
+                .create_process(
+                    ShellConfig {
+                        executable,
+                        args,
+                        ..ShellConfig::default()
+                    },
+                    shell_type,
+                    80,
+                    24,
+                )
+                .await
+                .expect("create test PTY");
+
+            let mut collected = Vec::new();
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+            while let Ok(Some(event)) =
+                tokio::time::timeout_at(deadline, service.recv_event()).await
+            {
+                match event {
+                    PtyServiceEvent::ProcessData { id, data } if id == process_id => {
+                        collected.extend_from_slice(&data);
+                        let _ = service.acknowledge_data(id, data.len()).await;
+                        if String::from_utf8_lossy(&collected).contains("round") {
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            assert!(
+                String::from_utf8_lossy(&collected).contains("round"),
+                "service instance {round} must forward process data, got {:?}",
+                String::from_utf8_lossy(&collected)
+            );
+        }
     }
 }
