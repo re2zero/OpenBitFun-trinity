@@ -131,7 +131,7 @@ struct PlatformEntry {
     /// frontend, which is a clear "not offered" state rather than a failure to
     /// fetch.
     #[serde(default)]
-    gpui: Option<ReleaseAsset>,
+    gpui_shell: Option<ReleaseAsset>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -640,7 +640,7 @@ fn shell_asset<'a>(manifest: &'a ReleaseManifest, platform_key: &str) -> Result<
             platform.target
         );
     }
-    let asset = platform.gpui.as_ref().ok_or_else(|| {
+    let asset = platform.gpui_shell.as_ref().ok_or_else(|| {
         anyhow!("the manifest does not offer a gpuiShell asset for {platform_key}")
     })?;
     if !asset.filename.ends_with(".tar.gz") {

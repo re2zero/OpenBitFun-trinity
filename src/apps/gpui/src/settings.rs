@@ -9077,15 +9077,15 @@ mod tests {
     fn settings_entries_carry_unique_nav_metadata() {
         let text = sample_text();
         let entries = settings_entries().collect::<Vec<_>>();
-        assert_eq!(entries.len(), 18);
+        assert_eq!(entries.len(), 17);
         let mut slugs = entries
             .iter()
             .map(|&entry| entry_slug(entry))
             .collect::<Vec<_>>();
-        assert_eq!(slugs.len(), 18);
+        assert_eq!(slugs.len(), 17);
         slugs.sort_unstable();
         slugs.dedup();
-        assert_eq!(slugs.len(), 18, "slugs key the page elements");
+        assert_eq!(slugs.len(), 17, "slugs key the page elements");
         for (ix, &entry) in entries.iter().enumerate() {
             assert!(!entry_label(entry, &text).is_empty(), "{entry:?}");
             assert!(!entry_description(entry, &text).is_empty(), "{entry:?}");
@@ -9108,7 +9108,7 @@ mod tests {
         );
         assert_eq!(
             tree.iter().map(|group| group.rows.len()).sum::<usize>(),
-            18,
+            17,
             "every tree entry is a row"
         );
         assert!(matches!(
@@ -9166,7 +9166,7 @@ mod tests {
             .iter()
             .map(|&category| category_entries(category).len())
             .sum();
-        assert_eq!(total, 18, "16 real pages + 2 redirect cards");
+        assert_eq!(total, 17, "15 real pages + 2 redirect cards");
         assert_eq!(HIDDEN_REGISTRY_PAGES.len(), 5);
     }
 
