@@ -473,6 +473,11 @@ export const capabilityContractDependencyRules = [
       ['openbitfun-desktop', capabilityConsumer([
         capabilityEdge(['agent-api', 'permission', 'workspace-ports']),
       ])],
+      ['openbitfun-gpui', capabilityConsumer([
+        // `git-port`: the shell's changes view reads the workspace diff
+        // snapshot (M8).
+        capabilityEdge(['agent-api', 'git-port']),
+      ])],
       ['openbitfun-opencode-adapter', capabilityConsumer([
         capabilityEdge(['hook-function-runtime', 'plugin-runtime']),
         capabilityEdge(['script-tool-runtime'], { kind: 'dev' }),
@@ -689,6 +694,9 @@ export const capabilityContractDependencyRules = [
         ['external-sources', 'function-agents', 'model-catalog', 'mcp-runtime', 'opencode-plugin-host', 'plugin-runtime', 'product-search', 'product-full', 'remote-connect', 'tools-mcp'],
       )],
       ['openbitfun-desktop', capabilityConsumer([
+        capabilityEdge(['agent-runtime']),
+      ])],
+      ['openbitfun-gpui', capabilityConsumer([
         capabilityEdge(['agent-runtime']),
       ])],
       ['openbitfun-product-capabilities', capabilityConsumer([

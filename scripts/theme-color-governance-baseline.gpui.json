@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "description": "Baseline for the GPUI desktop shell color surface. Design colors must come from the canonical design-token authoring sources embedded via include_str!; only the narrowly owned terminal protocol palette and the contrast fallback may be literal. Lower these values when owned literals are removed.",
+  "budgets": {
+    "productionColorOccurrences": {
+      "max": 18
+    },
+    "productionUniqueColors": {
+      "max": 16
+    },
+    "unownedColorOccurrences": {
+      "max": 0
+    },
+    "unownedUniqueColors": {
+      "max": 0
+    },
+    "staleOwners": {
+      "max": 0
+    },
+    "includeContractsMissing": {
+      "max": 0
+    }
+  }
+}

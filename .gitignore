@@ -135,3 +135,6 @@ src/apps/mobile/android/.kotlin/
 
 # Retired implementation-process notes stay local; durable docs live with their owner.
 /docs/superpowers/
+
+# Session-relay planning artifacts stay local (see .relay/PLAN.md).
+/.relay/

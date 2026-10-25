@@ -326,7 +326,9 @@ test('Agent Runtime leaf capabilities have one managed feature and source contra
     'native-hook-runtime',
     'native-hook-settings',
   ]);
-  assert.equal(rule.consumers.size, 11);
+  // Stale on HEAD since `openbitfun-services-integrations` was registered as a
+  // consumer in the rules; the inventory just keeps count and rules in step.
+  assert.equal(rule.consumers.size, 12);
   assert.ok(rule.consumers.has('openbitfun-legacy-migration-adapters'));
   assert.ok(
     guardedEmptyInternalDefaultManifestPaths.includes(
@@ -3359,7 +3361,7 @@ test('resolved third-party feature unions reject global capability regressions',
 
   const mutated = structuredClone(validRecords);
   mutated[0].features.push('https', 'vendored-openssl');
-  mutated[2].features.push('exr');
+  mutated[2].features.push('unreviewed-codec');
   mutated[3].features.push('https', 'openssl-sys', 'vendored-openssl');
   mutated.push({
     name: 'image',
@@ -3371,7 +3373,7 @@ test('resolved third-party feature unions reject global capability regressions',
     { root: TEST_ROOT },
   ).map((violation) => violation.message).join('\n');
   assert.match(messages, /resolved git2.*https, vendored-openssl/);
-  assert.match(messages, /resolved image 0\.25\.10.*exr/);
+  assert.match(messages, /resolved image 0\.25\.10.*unreviewed-codec/);
   assert.match(messages, /resolved libgit2-sys.*https, openssl-sys, vendored-openssl/);
   assert.match(messages, /resolved image 0\.26\.0 uses an unreviewed version family/);
 });

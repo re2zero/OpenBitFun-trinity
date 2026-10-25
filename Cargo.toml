@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "src/apps/cli",
+    "src/apps/gpui",
     "src/apps/sdk-host",
     "src/apps/desktop",
     "src/apps/miniapp-shell",
@@ -184,6 +185,9 @@ git2 = { version = "0.21", default-features = false, features = ["vendored-libgi
 # Terminal
 portable-pty = "0.8"
 vte = "0.15.0"
+# VT screen model (grid/scrollback/alternate screen) on top of vte parsing.
+# gpui M7 uses it as the terminal emulator backend; serde default is off.
+alacritty_terminal = { version = "=0.26.0", default-features = false }
 clap = { version = "4.6.1", features = ["derive"] }
 crossterm = "0.28"
 ratatui = "0.29"
@@ -218,6 +222,7 @@ rusqlite = { version = "0.32", default-features = false }
 tauri = { version = "2.11" }
 tauri-plugin-opener = "2.5"
 tauri-plugin-dialog = "2.7"
+
 tauri-plugin-fs = "2.5"
 tauri-plugin-log = "2.8"
 tauri-plugin-autostart = "2.5"
@@ -228,6 +233,16 @@ tauri-plugin-single-instance = "2.4"
 # webview2-com 0.38 COM types openbitfun-webdriver is built against.
 tauri-plugin-clipboard-manager = "~2.3.3"
 notify-rust = { version = "4.18", default-features = false }
+# M22 gpui tray (StatusNotifierItem) and launch-at-login, sharing the
+# auto-launch version the desktop's tauri-plugin-autostart already pins. ksni
+# needs one of its runtime features; the shell drives it from a plain thread
+# through the blocking facade. The `async-io` flavor is load-bearing: with
+# `tokio` the workspace unifies zbus onto the tokio executor, and then
+# gpui-base's reduce-motion portal follower panics on the executor-less gpui
+# main thread ("there is no reactor running"). Both flavors run the tray the
+# same way; async-io needs no ambient reactor anywhere in the shell.
+ksni = { version = "0.3", default-features = false, features = ["async-io", "blocking"] }
+auto-launch = "0.5"
 tauri-build = { version = "2.6", features = [] }
 keepawake = "0.6.0"
 
@@ -309,6 +324,12 @@ russh-keys = "0.45"
 shellexpand = "3"
 ssh_config = "0.1"
 rustls = { version = "0.23", default-features = false }
+
+# GPUI desktop shell (experimental native frontend in src/apps/gpui).
+# D20: single-dependency line on gpui-kit; its pinned gpui-pre (zed main
+# snapshot) carries x11/wayland/font-kit by default, so no platform features
+# are selected here.
+gpui-kit = "=0.7.1"
 
 [patch.crates-io]
 # Keep Socket.IO on the product-owned ring provider; see the patch note.
