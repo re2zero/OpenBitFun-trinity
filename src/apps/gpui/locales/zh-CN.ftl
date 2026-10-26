@@ -2,6 +2,8 @@ gpui-shell-theme = 主题
 gpui-shell-language = 语言
 gpui-shell-status-starting = 正在启动 OpenBitFun 运行时…
 gpui-shell-status-failed = 运行时启动失败：{ $error }
+gpui-shell-chat-send-failed = 发送失败
+gpui-shell-chat-continue-editing = 继续编辑
 gpui-shell-sessions-title = 会话
 gpui-shell-nav-assistant = 智能助理
 gpui-shell-nav-tasks = 任务看板
@@ -743,6 +745,9 @@ gpui-shell-settings-update-installing = 正在下载安装…
 gpui-shell-settings-update-installed = 已安装
 gpui-shell-settings-update-restart = 重启以应用
 gpui-shell-settings-update-unsupported = 此构建不支持自更新
+gpui-shell-settings-update-unsupported-platform = { $bin } 自更新仅支持 Linux x86_64 与 ARM64 构建。
+gpui-shell-settings-update-unsupported-executable = { $bin } 自更新要求使用官方可执行文件名 `{ $bin }`（当前为 `{ $path }`）；请从安装包重新安装。
+gpui-shell-settings-update-unsupported-development = { $bin } 自更新拒绝替换 cargo `target` 目录内的构建产物；请先把二进制文件复制出构建树。
 gpui-shell-settings-update-failed = 更新检查失败
 gpui-shell-settings-automation = 自动化
 gpui-shell-settings-hooks = Agent 钩子
@@ -1185,5 +1190,3 @@ gpui-shell-manage-mcp-import-id-required = 请填写服务 ID。
 gpui-shell-manage-mcp-import-invalid-id = 新 ID 需为 1-128 位字母、数字、点、连字符或下划线。
 gpui-shell-manage-mcp-import-id-conflict = 此 ID 已存在或被重复选择，请使用其他 ID。
 gpui-shell-manage-mcp-import-shape = 此配置包含壳无法安全导入的字段，请继续使用 JSON 编辑器维护。
-
-# Trinity memory transfer.

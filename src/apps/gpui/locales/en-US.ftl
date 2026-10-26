@@ -2,6 +2,8 @@ gpui-shell-theme = Theme
 gpui-shell-language = Language
 gpui-shell-status-starting = Starting OpenBitFun runtime…
 gpui-shell-status-failed = Runtime failed: { $error }
+gpui-shell-chat-send-failed = Failed to send
+gpui-shell-chat-continue-editing = Continue editing
 gpui-shell-sessions-title = Sessions
 gpui-shell-nav-assistant = AI Assistant
 gpui-shell-nav-tasks = Task Board
@@ -752,6 +754,9 @@ gpui-shell-settings-update-installing = Downloading and installing…
 gpui-shell-settings-update-installed = Installed
 gpui-shell-settings-update-restart = Restart to apply
 gpui-shell-settings-update-unsupported = Self-update unavailable
+gpui-shell-settings-update-unsupported-platform = { $bin } self-update supports Linux x86_64 and ARM64 builds only.
+gpui-shell-settings-update-unsupported-executable = { $bin } self-update requires the official executable name `{ $bin }` (running as `{ $path }`); reinstall it from the package you installed.
+gpui-shell-settings-update-unsupported-development = { $bin } self-update refuses to replace a build artifact inside a cargo `target` directory; copy the binary out of the build tree first.
 gpui-shell-settings-update-failed = Update check failed
 gpui-shell-settings-automation = Automation
 gpui-shell-settings-hooks = Agent hooks
@@ -1196,6 +1201,3 @@ gpui-shell-manage-mcp-import-id-required = Enter a service ID.
 gpui-shell-manage-mcp-import-invalid-id = Use 1-128 letters, digits, dots, hyphens, or underscores for a new ID.
 gpui-shell-manage-mcp-import-id-conflict = This ID already exists or is selected twice. Choose a different ID.
 gpui-shell-manage-mcp-import-shape = This configuration uses fields the shell cannot import safely. Keep it in the JSON editor.
-
-# Trinity memory transfer (web T10 RPCs). The daemon reads/writes the file;
-# the shell supplies a typed path.

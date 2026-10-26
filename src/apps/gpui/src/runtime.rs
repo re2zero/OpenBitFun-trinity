@@ -227,9 +227,13 @@ pub(crate) enum RuntimeEvent {
         turn_id: String,
         message: String,
     },
-    /// Submitting a message failed; the turn never started.
+    /// Submitting a message failed; the turn never started. `message` is the
+    /// submitted text when the failure came from a dialog-turn submission
+    /// (the shell keeps it visible as the failed prompt); `/btw` failures
+    /// report `None` and surface only the error.
     SendFailed {
         session_id: String,
+        message: Option<String>,
         error: String,
     },
     /// A dialog turn started executing (busy marker for the open session).
@@ -761,6 +765,13 @@ pub(crate) enum ChatEntry {
         text: String,
         turn_id: Option<String>,
     },
+    /// A prompt whose submission failed (the web failed-submission preview):
+    /// the text stays visible with the send error and a "continue editing"
+    /// refill. Ephemeral like the web preview — a transcript reload drops it.
+    FailedUser {
+        text: String,
+        error: String,
+    },
     /// Assistant markdown (streamed chunks accumulate into one entry per
     /// model round, keyed by `round_id`).
     Assistant {
@@ -1257,6 +1268,7 @@ impl RuntimeHandle {
                 tracing::error!("Coordinator not initialized; /btw unavailable");
                 let _ = tx.send(RuntimeEvent::SendFailed {
                     session_id: session_id.clone(),
+                    message: None,
                     error: "coordinator not ready".to_string(),
                 });
                 return;
@@ -1293,6 +1305,7 @@ impl RuntimeHandle {
                     tracing::error!("Failed to start /btw turn: {}", error);
                     let _ = tx.send(RuntimeEvent::SendFailed {
                         session_id,
+                        message: None,
                         error: error.to_string(),
                     });
                 }
@@ -4196,6 +4209,7 @@ impl RuntimeHandle {
                 tracing::error!("Failed to submit turn: {message}");
                 let _ = tx.send(RuntimeEvent::SendFailed {
                     session_id,
+                    message: Some(message.clone()),
                     error: message,
                 });
             }

@@ -1684,6 +1684,63 @@ pub(crate) fn btw_empty(cx: &App) -> String {
     resolve_with("gpui-shell-btw-empty", TranslationArgs::new(), cx)
 }
 
+/// The composer model picker's localized label for a runtime tier alias;
+/// unknown ids pass through as their raw id (the previous behavior).
+pub(crate) fn model_alias_label(id: &str, cx: &App) -> String {
+    match id {
+        "primary" => resolve_with(
+            "gpui-shell-memory-model-primary",
+            TranslationArgs::new(),
+            cx,
+        ),
+        "fast" => resolve_with("gpui-shell-memory-model-fast", TranslationArgs::new(), cx),
+        other => other.to_string(),
+    }
+}
+
+/// The transcript alert's generic send-failure label (web `error.sendFailed`);
+/// the concrete error text follows it in the row.
+pub(crate) fn chat_send_failed(cx: &App) -> String {
+    resolve_with("gpui-shell-chat-send-failed", TranslationArgs::new(), cx)
+}
+
+/// The failed-submission alert's refill action (web `message.continueEditing`).
+pub(crate) fn chat_continue_editing(cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-chat-continue-editing",
+        TranslationArgs::new(),
+        cx,
+    )
+}
+
+/// The settings page's localized self-update refusal for one unsupported
+/// state; the raw English `Display` text stays the install-path diagnostic.
+pub(crate) fn update_unsupported_detail(
+    reason: &crate::update::UpdateUnsupportedReason,
+    cx: &App,
+) -> String {
+    let bin = crate::cli::BIN_NAME;
+    match reason {
+        crate::update::UpdateUnsupportedReason::Platform => resolve_with(
+            "gpui-shell-settings-update-unsupported-platform",
+            TranslationArgs::new().with_string("bin", bin),
+            cx,
+        ),
+        crate::update::UpdateUnsupportedReason::ExecutableName { running_as } => resolve_with(
+            "gpui-shell-settings-update-unsupported-executable",
+            TranslationArgs::new()
+                .with_string("bin", bin)
+                .with_string("path", running_as),
+            cx,
+        ),
+        crate::update::UpdateUnsupportedReason::DevelopmentBuild => resolve_with(
+            "gpui-shell-settings-update-unsupported-development",
+            TranslationArgs::new().with_string("bin", bin),
+            cx,
+        ),
+    }
+}
+
 /// Resolves the localized turn-count label for one session row.
 pub(crate) fn turns_label(turn_count: usize, cx: &App) -> String {
     resolve_with(

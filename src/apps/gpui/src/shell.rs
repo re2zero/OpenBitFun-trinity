@@ -2663,14 +2663,25 @@ impl ShellWindow {
                     self.list_sync_append(&session_id, cx);
                 }
             }
-            RuntimeEvent::SendFailed { session_id, error } => {
+            RuntimeEvent::SendFailed {
+                session_id,
+                message: body,
+                error,
+            } => {
                 if let Some(chat) = self.chat_mut_for(&session_id) {
                     chat.submitting = false;
-                    // The user entry is appended on TurnAccepted, so a
-                    // failed submission only surfaces the error notice.
-                    chat.entries.push(ChatEntry::Notice {
-                        text: i18n::failed_status(&error, cx),
-                    });
+                    // The user entry is appended on TurnAccepted; a failed
+                    // submission keeps its prompt visible instead (the web
+                    // failed preview), while /btw failures surface only the
+                    // error notice.
+                    if let Some(body) = body {
+                        chat.entries
+                            .push(ChatEntry::FailedUser { text: body, error });
+                    } else {
+                        chat.entries.push(ChatEntry::Notice {
+                            text: i18n::failed_status(&error, cx),
+                        });
+                    }
                     self.list_sync_append(&session_id, cx);
                 }
             }
@@ -5801,6 +5812,73 @@ fn render_chat_item(
                 );
             column.into_any_element()
         }
+        ChatEntry::FailedUser { text: body, error } => {
+            // Web `UserMessageItem` failed phase: the prompt keeps its bubble
+            // (danger-framed) above an alert row whose "continue editing"
+            // refills the composer and retires the entry.
+            let alert: SharedString = format!("{}: {error}", i18n::chat_send_failed(cx)).into();
+            let continue_label: SharedString = i18n::chat_continue_editing(cx).into();
+            let column = div()
+                .w_full()
+                .v_flex()
+                .child(
+                    div()
+                        .debug_selector(|| "user-bubble-failed".to_string())
+                        .self_end()
+                        .max_w(px(USER_BUBBLE_MAX_WIDTH))
+                        .min_w_0()
+                        .border_1()
+                        .border_color(cx.theme().danger)
+                        .rounded(px(USER_BUBBLE_RADIUS))
+                        .child(
+                            Bubble::new()
+                                .with_variant(BubbleVariant::Muted)
+                                .content(
+                                    BubbleContent::new()
+                                        .rounded(px(USER_BUBBLE_RADIUS))
+                                        .px(px(USER_BUBBLE_PADDING_X))
+                                        .py(px(USER_BUBBLE_PADDING_Y)),
+                                )
+                                .w_full()
+                                .child(div().line_clamp(3).child(body.clone())),
+                        ),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .mt(px(FLOW_ITEM_GAP))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
+                        .text_sm()
+                        .text_color(cx.theme().danger)
+                        .child(alert)
+                        .when_some(fork, |this, fork| {
+                            let view = fork.view.clone();
+                            let session_id = fork.session_id.clone();
+                            let body = body.clone();
+                            this.child(
+                                Button::new(SharedString::from(format!("failed-continue-{row}")))
+                                    .label(continue_label)
+                                    .small()
+                                    .with_variant(ButtonVariant::Secondary)
+                                    .on_click(move |_, _window, cx| {
+                                        let _ = view.update(cx, |shell, cx| {
+                                            shell.prefill_composer(body.clone(), cx);
+                                            if let Some(chat) = shell.chat_mut_for(&session_id) {
+                                                chat.entries.retain(|entry| {
+                                                    !matches!(entry, ChatEntry::FailedUser { .. })
+                                                });
+                                            }
+                                            cx.notify();
+                                        });
+                                    }),
+                            )
+                        }),
+                );
+            column.into_any_element()
+        }
         ChatEntry::Assistant { text: body, .. } => {
             // The rich-render hooks the desktop MarkdownRenderer wires: links
             // route by target (external opener vs the shell's file viewer),
@@ -5899,7 +5977,8 @@ struct TurnMeta {
 /// The finished-turn tail test for row `index`: the entry must close a turn
 /// (the next row is a user prompt, or the transcript ends) and that turn must
 /// be complete — a tail row while `busy`/`submitting` is still streaming.
-/// Notice/info rows carry no actions of their own and never host the footer.
+/// Notice/info/failed rows carry no actions of their own and never host the
+/// footer.
 fn turn_footer_plan(
     entries: &[ChatEntry],
     index: usize,
@@ -5909,7 +5988,10 @@ fn turn_footer_plan(
     turn_times: &HashMap<String, runtime::TurnTimes>,
 ) -> Option<TurnFooterPlan> {
     match entries.get(index)? {
-        ChatEntry::User { .. } | ChatEntry::Notice { .. } | ChatEntry::Info { .. } => {
+        ChatEntry::User { .. }
+        | ChatEntry::FailedUser { .. }
+        | ChatEntry::Notice { .. }
+        | ChatEntry::Info { .. } => {
             return None;
         }
         ChatEntry::Assistant { .. } | ChatEntry::Tool(_) => {}
@@ -7036,7 +7118,10 @@ impl ShellWindow {
                 tx: snapshot.event_tx.clone(),
                 view: this.downgrade(),
             });
-            let is_user = matches!(entry, Some(ChatEntry::User { .. }));
+            let is_user = matches!(
+                entry,
+                Some(ChatEntry::User { .. } | ChatEntry::FailedUser { .. })
+            );
             match entry {
                 Some(entry) => {
                     let mut row = div()
@@ -7311,6 +7396,20 @@ impl ShellWindow {
                         .upgrade()
                         .map(|view| view.read(cx).pending_attachment_payload())
                         .unwrap_or_default();
+                    // A new submission retires a previous failed preview:
+                    // the slot is single, exactly like the web's.
+                    if let Some(view) = view_for_send.upgrade() {
+                        view.update(cx, |shell, cx| {
+                            if let Some(chat) = shell.chat_mut_for(&session_for_send) {
+                                let before = chat.entries.len();
+                                chat.entries
+                                    .retain(|entry| !matches!(entry, ChatEntry::FailedUser { .. }));
+                                if chat.entries.len() != before {
+                                    cx.notify();
+                                }
+                            }
+                        });
+                    }
                     if let Some(handle) = runtime::runtime_handle() {
                         handle.send_message(
                             session_for_send.clone(),
@@ -10627,7 +10726,7 @@ impl ShellWindow {
                 .iter()
                 .find(|model| model.id == id)
                 .map(|model| model.label())
-                .unwrap_or_else(|| id.to_string()),
+                .unwrap_or_else(|| i18n::model_alias_label(id, cx)),
             None => text.model_default.clone(),
         };
         let options: Vec<(String, String, bool)> = catalog
@@ -12822,6 +12921,127 @@ mod tests {
             }
             assert!(shell.usage_report.is_none(), "usage dialog stays closed");
         });
+    }
+
+    #[gpui_kit::test]
+    fn send_failure_keeps_the_prompt_for_continue_editing(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+
+        window.update(|window, cx| {
+            shell.update(cx, |shell, cx| {
+                shell.apply_runtime_event(
+                    RuntimeEvent::SessionOpened(crate::runtime::OpenedSession {
+                        reload: false,
+                        session_id: "s-1".into(),
+                        name: "First".into(),
+                        agent_type: "Standard".into(),
+                        model_id: None,
+                        entries: Vec::new(),
+                        busy: false,
+                        turn_times: Default::default(),
+                    }),
+                    window,
+                    cx,
+                );
+                // A failed submission keeps the prompt visible as the failed
+                // preview instead of dropping it with the draft.
+                shell.apply_runtime_event(
+                    RuntimeEvent::SendFailed {
+                        session_id: "s-1".into(),
+                        message: Some("retry me".into()),
+                        error: "offline".into(),
+                    },
+                    window,
+                    cx,
+                );
+                // A /btw failure carries no prompt and stays notice-only.
+                shell.apply_runtime_event(
+                    RuntimeEvent::SendFailed {
+                        session_id: "s-1".into(),
+                        message: None,
+                        error: "coordinator not ready".into(),
+                    },
+                    window,
+                    cx,
+                );
+                // The next accepted turn echoes behind the failed preview.
+                shell.apply_runtime_event(
+                    RuntimeEvent::TurnAccepted {
+                        session_id: "s-1".into(),
+                        turn_id: "turn-1".into(),
+                        message: "retry me".into(),
+                    },
+                    window,
+                    cx,
+                );
+            });
+        });
+
+        window.update(|_, cx| {
+            let shell = shell.read(cx);
+            let chat = shell.active_chat().expect("chat opened");
+            assert!(!chat.submitting, "the failed submission unblocks sending");
+            let mut entries = chat.entries.iter();
+            match entries.next_back() {
+                Some(ChatEntry::User { text, .. }) => assert_eq!(text, "retry me"),
+                other => panic!("expected the accepted echo, got {other:?}"),
+            }
+            match entries.next_back() {
+                // The notice text resolves through the i18n service, which
+                // tests run without: presence is the contract here.
+                Some(ChatEntry::Notice { .. }) => {}
+                other => panic!("expected the btw error notice, got {other:?}"),
+            }
+            match entries.next_back() {
+                Some(ChatEntry::FailedUser { text, error }) => {
+                    assert_eq!(text, "retry me");
+                    assert_eq!(error, "offline");
+                }
+                other => panic!("expected the failed preview, got {other:?}"),
+            }
+        });
+    }
+
+    #[gpui_kit::test]
+    fn transcript_renders_the_failed_submission_entry(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| gpui_kit::init(cx));
+
+        let entries = Rc::new(vec![ChatEntry::FailedUser {
+            text: "hello".into(),
+            error: "offline".into(),
+        }]);
+        let render_count: Rc<Cell<usize>> = Default::default();
+        let scroller = cx.new(|cx| MessageScrollerState::new(entries.len(), cx));
+        let window = cx.add_empty_window();
+        let mut draw = |render_count: Rc<Cell<usize>>| {
+            let scroller = scroller.clone();
+            let entries = entries.clone();
+            render_count.set(0);
+            window.draw(
+                point(px(0.), px(0.)),
+                size(px(800.), px(600.)),
+                move |_, cx| {
+                    cx.new(|_| TranscriptListHarness {
+                        scroller,
+                        entries,
+                        render_count,
+                        text: sample_shell_text(),
+                    })
+                    .into_any_element()
+                },
+            );
+        };
+        // The failed preview renders like any row (no fork context here, so
+        // the refill button stays off); two draws settle the first layout.
+        draw(render_count.clone());
+        draw(render_count.clone());
+        assert!(
+            render_count.get() >= 1,
+            "the failed preview row must render"
+        );
     }
 
     #[test]

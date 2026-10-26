@@ -2415,6 +2415,9 @@ fn general_group(
 /// logs the reason and publishes the real state back through the pump.
 fn set_autostart(enabled: bool, cx: &mut App) {
     cx.set_global(AutostartState(enabled));
+    // Paint the optimistic state now; the async platform write would
+    // otherwise leave the switch stale until the event pump refreshes.
+    cx.refresh_windows();
     let Some(handle) = crate::runtime::runtime_handle() else {
         tracing::error!("Cannot change launch-at-login before the runtime is ready");
         return;
@@ -2435,6 +2438,9 @@ fn set_autostart(enabled: bool, cx: &mut App) {
 /// and the config listener publishes the resulting state either way.
 fn set_prevent_sleep(enabled: bool, cx: &mut App) {
     cx.set_global(PreventSleepState(enabled));
+    // Paint the optimistic state now; the async inhibitor write would
+    // otherwise leave the switch stale until the event pump refreshes.
+    cx.refresh_windows();
     let Some(handle) = crate::runtime::runtime_handle() else {
         tracing::error!("Cannot change prevent-sleep before the runtime is ready");
         return;
@@ -2536,7 +2542,11 @@ fn update_check_field(
         }
         UpdateUiState::Unsupported { reason } => {
             column = column.child(note(
-                format!("{}: {reason}", text.settings_update_unsupported),
+                format!(
+                    "{}: {}",
+                    text.settings_update_unsupported,
+                    crate::i18n::update_unsupported_detail(&reason, cx)
+                ),
                 false,
             ));
         }

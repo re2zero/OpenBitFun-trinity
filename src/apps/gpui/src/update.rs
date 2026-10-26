@@ -252,7 +252,7 @@ enum PlanOutcome {
     /// A newer release with a usable `gpuiShell` asset is offered.
     Ready(UpdatePlan),
     /// This build cannot update itself; the reason is user-facing.
-    Unsupported(String),
+    Unsupported(UpdateUnsupportedReason),
 }
 
 /// Everything the install step needs, resolved and validated up front.
@@ -353,8 +353,47 @@ pub(crate) struct UpdateCheckReport {
     /// current.
     pub(crate) offered_version: Option<String>,
     /// This build cannot update itself (development tree, unsupported
-    /// platform, wrong executable name); the reason is user-facing.
-    pub(crate) unsupported_reason: Option<String>,
+    /// platform, wrong executable name).
+    pub(crate) unsupported_reason: Option<UpdateUnsupportedReason>,
+}
+
+/// Why this build cannot replace itself. The `Display` text is the raw
+/// English diagnostic (shared with the CLI install path); the settings page
+/// renders localized copy through [`crate::i18n::update_unsupported_detail`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum UpdateUnsupportedReason {
+    /// No updater feed exists for this platform (Linux x86_64/ARM64 only).
+    Platform,
+    /// The running executable is not the official [`BIN_NAME`] name.
+    ExecutableName {
+        /// Where the non-official binary actually lives.
+        running_as: String,
+    },
+    /// The binary lives inside a cargo `target` directory.
+    DevelopmentBuild,
+}
+
+impl std::fmt::Display for UpdateUnsupportedReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Platform => write!(
+                f,
+                "{BIN_NAME} self-update supports Linux x86_64 and ARM64 builds only."
+            ),
+            Self::ExecutableName { running_as } => write!(
+                f,
+                "{BIN_NAME} self-update requires the official executable name \
+                 `{BIN_NAME}` (running as `{running_as}`); reinstall it from the \
+                 package you installed."
+            ),
+            Self::DevelopmentBuild => write!(
+                f,
+                "{BIN_NAME} self-update refuses to replace a build artifact inside \
+                 a cargo `target` directory; copy the binary out of the build tree \
+                 first."
+            ),
+        }
+    }
 }
 
 /// Feed source for the GUI entry points: `None` means the official feed, a
@@ -545,7 +584,7 @@ pub(crate) enum UpdateUiState {
     /// This build cannot update itself; the reason is shown instead of a
     /// button that would fail.
     Unsupported {
-        reason: String,
+        reason: UpdateUnsupportedReason,
     },
     Installing,
     /// The new binary sits on disk; a restart applies it.
@@ -584,24 +623,17 @@ pub(crate) fn spawn_detached_restart() -> Result<()> {
 
 /// Why this build cannot replace itself, or `None` when it can. Stated as an
 /// explicit unsupported state instead of a fake success.
-fn unsupported_reason(current_exe: &Path) -> Option<String> {
+fn unsupported_reason(current_exe: &Path) -> Option<UpdateUnsupportedReason> {
     if platform_key().is_none() {
-        return Some(format!(
-            "{BIN_NAME} self-update supports Linux x86_64 and ARM64 builds only."
-        ));
+        return Some(UpdateUnsupportedReason::Platform);
     }
     if current_exe.file_name() != Some(OsStr::new(BIN_NAME)) {
-        return Some(format!(
-            "{BIN_NAME} self-update requires the official executable name `{BIN_NAME}` \
-             (running as `{}`); reinstall it from the package you installed.",
-            current_exe.display()
-        ));
+        return Some(UpdateUnsupportedReason::ExecutableName {
+            running_as: current_exe.display().to_string(),
+        });
     }
     if is_development_binary(current_exe) {
-        return Some(format!(
-            "{BIN_NAME} self-update refuses to replace a build artifact inside a cargo `target` \
-             directory; copy the binary out of the build tree first."
-        ));
+        return Some(UpdateUnsupportedReason::DevelopmentBuild);
     }
     None
 }
@@ -1314,11 +1346,14 @@ mod tests {
         // Wrong name: refused with the reason.
         let renamed = dir.path().join("openbitfun-gpui-copy");
         let reason = unsupported_reason(&renamed).expect("a renamed binary is refused");
-        assert!(reason.contains("official executable name"), "{reason}");
+        assert!(
+            reason.to_string().contains("official executable name"),
+            "{reason}"
+        );
         // Development build: refused even under the official name.
         let development = dir.path().join("target").join("release").join(BIN_NAME);
         let reason = unsupported_reason(&development).expect("a cargo artifact is refused");
-        assert!(reason.contains("target"), "{reason}");
+        assert!(reason.to_string().contains("target"), "{reason}");
     }
 
     /// The GUI check reuses the same gate as the CLI: under `cargo test` the
@@ -1334,7 +1369,7 @@ mod tests {
         let reason = report
             .unsupported_reason
             .expect("a cargo-tree binary is unsupported");
-        assert!(reason.contains("target"), "{reason}");
+        assert!(reason.to_string().contains("target"), "{reason}");
     }
 
     #[test]
