@@ -4790,4 +4790,17 @@ mod tests {
         assert_eq!(detect("en_US.UTF-8"), LocaleId::EnUS);
         assert_eq!(detect("C"), LocaleId::EnUS);
     }
+
+    #[test]
+    fn shell_ftl_resources_parse_for_every_locale() {
+        for (locale, source) in [
+            ("zh-CN", include_str!("../locales/zh-CN.ftl")),
+            ("zh-TW", include_str!("../locales/zh-TW.ftl")),
+            ("en-US", include_str!("../locales/en-US.ftl")),
+        ] {
+            if let Err((_, errors)) = fluent_bundle::FluentResource::try_new(source.to_string()) {
+                panic!("{locale} ftl failed to parse: {errors:?}");
+            }
+        }
+    }
 }

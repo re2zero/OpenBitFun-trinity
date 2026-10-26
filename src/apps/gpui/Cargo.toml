@@ -109,6 +109,10 @@ zip = { workspace = true }
 # gpui-kit's test-support forwards to gpui/gpui-platform/gpui-base/
 # gpui-component test features, covering `#[gpui_kit::test]` headless windows.
 gpui-kit = { workspace = true, features = ["test-support"] }
+# Parses the compiled-in ftl catalogs in tests; the i18n:audit checks key
+# parity but not Fluent grammar, and a malformed select expression only
+# surfaces as a runtime registration failure.
+fluent-bundle = { workspace = true }
 # `tests/pty_integration.rs` drives the real PTY, and `tests/update_integration.rs`
 # serves the release fixture over a local HTTP/1.1 listener and runs the real
 # binary as the updater. Headless shell tests also construct terminal panes

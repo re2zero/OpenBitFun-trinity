@@ -266,7 +266,10 @@ gpui-shell-models-reasoning-effort = Effort: { $value }
 gpui-shell-models-reasoning-on = Reasoning on
 gpui-shell-models-reasoning-off = Reasoning off
 gpui-shell-models-reasoning-budget = Token budget: { $value }
-gpui-shell-models-reasoning-patch = { $count -> [one] 1 request patch *[other] { $count } request patches }
+gpui-shell-models-reasoning-patch = { $count ->
+  [one] 1 request patch
+  *[other] { $count } request patches
+}
 gpui-shell-models-reasoning-no-actions = No actions configured
 gpui-shell-models-advanced = Advanced Settings
 gpui-shell-models-advanced-note = Adapt requests and responses to service-specific requirements; keep the defaults if unsure.
