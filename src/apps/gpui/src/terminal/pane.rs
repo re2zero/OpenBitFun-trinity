@@ -11,7 +11,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{
     canvas, div, hsla, point, px, size, App, Bounds, ClipboardItem, Context, Entity, FocusHandle,
     FontStyle, FontWeight, InputHandler, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, Render, ScrollWheelEvent, SharedString, TextAlign, UTF16Selection,
+    MouseUpEvent, Pixels, Point, Render, ScrollEvent, SharedString, TextAlign, UTF16Selection,
     UnderlineStyle, Window,
 };
 use terminal_core::{PtyService, PtyServiceEvent, ShellConfig, ShellType, TerminalConfig};
@@ -508,12 +508,7 @@ impl TerminalPane {
         self.write_bytes(paste_payload(text, bracketed).into_bytes());
     }
 
-    fn on_scroll_wheel(
-        &mut self,
-        event: &ScrollWheelEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn on_scroll(&mut self, event: &ScrollEvent, _window: &mut Window, cx: &mut Context<Self>) {
         if self.exited {
             return;
         }
@@ -789,7 +784,7 @@ impl Render for TerminalPane {
                 }),
             )
             .on_key_down(cx.listener(Self::on_key_down))
-            .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
+            .on_scroll(cx.listener(Self::on_scroll))
             .child(
                 div().size_full().child(
                     canvas(

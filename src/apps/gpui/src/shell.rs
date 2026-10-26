@@ -10882,9 +10882,10 @@ pub fn launch_main_window(tokio_handle: tokio::runtime::Handle) {
     let view_event_tx = event_tx.clone();
 
     gpui_kit::application()
-        .with_assets(ShellAssets)
+        .with_assets(crate::ely_support::compose_assets(ShellAssets))
         .run(move |cx: &mut App| {
             gpui_kit::init(cx);
+            crate::ely_support::init(cx);
 
             // Global search palette shortcut (R1b), matching the desktop's
             // Ctrl K, plus the sidebar drawer toggle (web Ctrl B). Both come

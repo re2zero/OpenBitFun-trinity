@@ -329,7 +329,15 @@ rustls = { version = "0.23", default-features = false }
 # D20: single-dependency line on gpui-kit; its pinned gpui-pre (zed main
 # snapshot) carries x11/wayland/font-kit by default, so no platform features
 # are selected here.
-gpui-kit = "=0.7.1"
+# gpui-ely era: 0.8.1 pins gpui-pre =0.3.10, which is also the pin the
+# vendored Ely component library tracks, so both can share one gpui graph.
+gpui-kit = "=0.8.1"
+
+# Ely component library (card/section structure primitives for the gpui-ely
+# redesign), consumed as a path dependency to the upstream checkout. Vendoring
+# into third_party/ is deferred until the redesign lands; see
+# .relay/design/gpui-ely/README.md (local design ledger) decision DE1/DE3.
+ely-core = { path = "../up/Ely-GPUI-Components/crates/ely-core" }
 
 [patch.crates-io]
 # Keep Socket.IO on the product-owned ring provider; see the patch note.

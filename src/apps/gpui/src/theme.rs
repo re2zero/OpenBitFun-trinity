@@ -37,6 +37,9 @@ impl ThemePreset {
         }
         Theme::change(mode, None, cx);
         install_text_view_style(cx);
+        // The Ely card surfaces read their own palette; keep both theme
+        // globals on the same colors after every preset change.
+        crate::ely_support::sync_palette(mode, cx);
         cx.refresh_windows();
         tracing::info!("Theme preset applied: {}", self.id);
     }

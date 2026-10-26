@@ -3352,22 +3352,21 @@ pub(crate) const GLOBAL_SHORTCUTS: &[GlobalShortcut] = &[
 /// settings page documents. A stroke that does not parse panics here at
 /// startup rather than silently shipping an unbound key.
 pub(crate) fn install_global_shortcuts(cx: &mut App) {
-    cx.bind_keys(GLOBAL_SHORTCUTS.iter().map(|shortcut| {
-        gpui_kit::KeyBinding::load(
-            shortcut.stroke,
-            (shortcut.action)(),
-            None,
-            false,
-            None,
-            &gpui_kit::DummyKeyboardMapper,
-        )
-        .unwrap_or_else(|error| {
-            panic!(
-                "Shell shortcut {} does not parse: {}",
-                shortcut.stroke, error
-            )
+    // KeyBinding::load reads the host keyboard mapper and OS from `cx`, so the
+    // bindings must be resolved before `bind_keys` takes the mutable borrow.
+    let bindings = GLOBAL_SHORTCUTS
+        .iter()
+        .map(|shortcut| {
+            gpui_kit::KeyBinding::load(shortcut.stroke, (shortcut.action)(), None, false, None, cx)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "Shell shortcut {} does not parse: {}",
+                        shortcut.stroke, error
+                    )
+                })
         })
-    }));
+        .collect::<Vec<_>>();
+    cx.bind_keys(bindings);
 }
 
 /// G-SE7 read-only shortcuts page (`application.shortcuts`): what the shell
@@ -3455,7 +3454,8 @@ fn shortcut_row(strokes: &[&str], label: String) -> SettingItem {
             .gap_1()
             .flex_shrink_0();
         for stroke in &strokes {
-            if let Ok(keystroke) = gpui_kit::Keystroke::parse(stroke) {
+            if let Ok(keystroke) = gpui_kit::Keystroke::parse_with_os(stroke, cx.platform_info().os)
+            {
                 caps = caps.child(gpui_kit::component::kbd::Kbd::new(keystroke));
             }
         }

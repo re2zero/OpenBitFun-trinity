@@ -7,6 +7,10 @@ description = "OpenBitFun GPUI desktop shell (experimental native frontend)"
 
 [dependencies]
 gpui-kit = { workspace = true }
+# gpui-ely redesign: card/section structure primitives from the Ely upstream
+# checkout; its gpui-pre pin (=0.3.10) is the one gpui-kit 0.8.1 pins, so both
+# resolve to a single gpui graph.
+ely-core = { workspace = true }
 openbitfun-core = { path = "../../crates/assembly/core", features = [
     "i18n-runtime",
     # Embedded runtime closure, aligned with `src/apps/cli/Cargo.toml` (PLAN M3):

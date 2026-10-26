@@ -9,6 +9,7 @@
 pub mod assets;
 pub mod cli;
 pub mod diagnostics;
+pub mod ely_support;
 pub mod files;
 pub mod git;
 pub mod i18n;
