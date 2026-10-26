@@ -190,6 +190,14 @@ Narrower local guides already exist for some subtrees:
 
 ## Verification
 
+For tool catalog feature gates, loaded-spec collection, and native/PTC
+presentation, check both the native baseline and the optional PTC owner:
+
+```bash
+cargo test --locked -p openbitfun-core --no-default-features --features agent-runtime,git --lib agentic::tools::product_runtime::
+cargo test --locked -p openbitfun-core --no-default-features --features ptc-runtime --lib agentic::tools::product_runtime::
+```
+
 For config-backed product-control option defaults, typed binding, and persisted readback:
 
 ```bash
@@ -290,6 +298,13 @@ cargo test --locked -p openbitfun-core --no-default-features --features agent-ru
 These fixtures exercise both pool strategies, inherited bindings, read-only previews,
 Agent tool restrictions, and native/tool-assisted image paths. They do not contact
 providers or exercise live SSH, relay, peer, or dispatch connections.
+
+For built-in MiniApp image-tool parity and five-image native/tool-assisted input,
+include the concrete image-tool owner in the same focused fixture:
+
+```bash
+cargo test --locked -p openbitfun-core --no-default-features --features agent-runtime,git,tools-image-analysis --lib -- image_input input_model_tests
+```
 
 For model selector latency, run the catalog and session mutation owner fixtures:
 
