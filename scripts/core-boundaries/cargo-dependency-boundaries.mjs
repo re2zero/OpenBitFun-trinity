@@ -346,6 +346,13 @@ const REQWEST_PACKAGE_PROFILES = new Map([
     dependencyFeatures: ['http2', 'json', 'query', 'rustls-no-provider', 'stream'],
     optional: false,
   }],
+  // The gpui shell mirrors the CLI self-update client; the ring TLS provider
+  // is selected through openbitfun-services-core in the same closure.
+  ['openbitfun-gpui', {
+    dependencyFeatures: ['http2', 'rustls-no-provider', 'stream'],
+    optional: false,
+    tlsProviderDependency: 'openbitfun-services-core',
+  }],
   ['openbitfun-miniapp-market-service', {
     dependencyFeatures: ['form', 'http2', 'json', 'rustls-no-provider'],
     optional: false,
@@ -592,6 +599,8 @@ const THIRD_PARTY_CAPABILITY_PROFILES = new Map([
       ['openbitfun-webdriver', dependencyProfile(['jpeg', 'png'], {
         useDefaultFeatures: false,
       })],
+      // The gpui shell decodes the embedded brand PNG into the tray icon pixmap.
+      ['openbitfun-gpui', dependencyProfile(['png'], { useDefaultFeatures: false })],
     ]),
   }],
   ['tokio-tungstenite', {
@@ -857,8 +866,15 @@ const RESOLVED_THIRD_PARTY_CAPABILITY_POLICIES = new Map([
     versionPrefix: '0.25.',
     ignoredVersionPrefixes: ['0.24.'],
     // macOS clipboard support currently adds TIFF through arboard. The other
-    // formats are the codecs selected by reviewed OpenBitFun owners.
-    allowedFeatures: new Set(['bmp', 'gif', 'jpeg', 'png', 'tiff', 'webp']),
+    // formats are the codecs selected by reviewed OpenBitFun owners. The gpui
+    // framework crates (gpui-pre/gpui-fast) structurally enable the full codec
+    // set — including dds, exr, ff, hdr, ico, pnm, qoi, rayon, tga — for
+    // canvas asset decoding; they are external dependencies, not OpenBitFun
+    // owner surfaces.
+    allowedFeatures: new Set([
+      'bmp', 'dds', 'exr', 'ff', 'gif', 'hdr', 'ico', 'jpeg',
+      'pnm', 'png', 'qoi', 'rayon', 'tga', 'tiff', 'webp',
+    ]),
   }],
 ]);
 
