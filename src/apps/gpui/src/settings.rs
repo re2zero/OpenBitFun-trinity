@@ -1808,10 +1808,94 @@ fn session_search_group(
     SettingGroup::new().items(items)
 }
 
-/// G-SE15: the default-Harness preference (web `DefaultHarnessConfig`): the
-/// strategy plus, while fixed, the fixed Harness. Both writes are one merged
-/// document write so an interleaved older shell cannot drop the sibling key.
-fn default_harness_rows(text: &ShellText, cx: &App) -> Vec<SettingItem> {
+/// G-SE15 setters both session-search renderers share. The strategy and
+/// fixed-mode writes are one merged document write each so an interleaved
+/// older shell cannot drop the sibling key.
+pub(crate) fn set_flow_chat_strategy(value: &str, cx: &mut App) {
+    let strategy = if value == "fixed" {
+        "fixed"
+    } else {
+        "follow_last"
+    };
+    let mut document = ShellConfig::current(cx).flow_chat.clone();
+    let mut updates = vec![(
+        "default_mode_strategy".to_string(),
+        serde_json::json!(strategy),
+    )];
+    document = merged_object_value(
+        &document,
+        "default_mode_strategy",
+        serde_json::json!(strategy),
+    );
+    let missing_fixed = document
+        .get("default_mode_id")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .map(str::is_empty)
+        .unwrap_or(true);
+    if strategy == "fixed" && missing_fixed {
+        let fallback = flow_chat_last_mode(&document).unwrap_or_else(|| "Standard".to_string());
+        document = merged_object_value(&document, "default_mode_id", serde_json::json!(fallback));
+        updates.push(("default_mode_id".to_string(), serde_json::json!(fallback)));
+    }
+    cx.global_mut::<ShellConfig>().flow_chat = document;
+    persist_object_keys(FLOW_CHAT_PATH, updates);
+    cx.refresh_windows();
+}
+
+pub(crate) fn set_flow_chat_fixed_mode(mode: &str, cx: &mut App) {
+    if mode.trim().is_empty() {
+        return;
+    }
+    let mut document = ShellConfig::current(cx).flow_chat.clone();
+    document = merged_object_value(
+        &document,
+        "default_mode_strategy",
+        serde_json::json!("fixed"),
+    );
+    document = merged_object_value(&document, "default_mode_id", serde_json::json!(mode));
+    cx.global_mut::<ShellConfig>().flow_chat = document;
+    persist_object_keys(
+        FLOW_CHAT_PATH,
+        vec![
+            (
+                "default_mode_strategy".to_string(),
+                serde_json::json!("fixed"),
+            ),
+            ("default_mode_id".to_string(), serde_json::json!(mode)),
+        ],
+    );
+    cx.refresh_windows();
+}
+
+pub(crate) fn set_session_title_enabled(value: bool, cx: &mut App) {
+    cx.global_mut::<ShellConfig>().session_title_enabled = value;
+    persist(SESSION_TITLE_ENABLED_PATH, serde_json::json!(value));
+    cx.refresh_windows();
+}
+
+pub(crate) fn set_session_title_model(value: &str, cx: &mut App) {
+    if value.trim().is_empty() {
+        return;
+    }
+    cx.global_mut::<ShellConfig>().session_title_model = value.to_string();
+    persist(
+        SESSION_TITLE_MODEL_PATH,
+        task_model_selection_document(value),
+    );
+    cx.refresh_windows();
+}
+
+/// What both default-Harness renderers display: the active strategy, the
+/// strategy row's description, and the fixed-mode menu (the harness ids, then
+/// a stored id outside the catalog so the menu shows what is persisted).
+pub(crate) struct DefaultHarnessFacts {
+    pub(crate) strategy: &'static str,
+    pub(crate) strategy_description: String,
+    pub(crate) fixed_options: Vec<(SharedString, SharedString)>,
+}
+
+pub(crate) fn default_harness_facts(text: &ShellText, cx: &App) -> DefaultHarnessFacts {
     let flow_chat = ShellConfig::current(cx).flow_chat;
     let strategy = flow_chat_strategy(&flow_chat);
     let fixed_mode = flow_chat_fixed_mode(&flow_chat);
@@ -1835,53 +1919,6 @@ fn default_harness_rows(text: &ShellText, cx: &App) -> Vec<SettingItem> {
         )
     };
 
-    let strategy_field = SettingField::dropdown(
-        vec![
-            (
-                SharedString::from("follow_last"),
-                SharedString::from(text.settings_default_harness_follow_last.clone()),
-            ),
-            (
-                SharedString::from("fixed"),
-                SharedString::from(text.settings_default_harness_fixed.clone()),
-            ),
-        ],
-        |cx: &App| SharedString::from(flow_chat_strategy(&ShellConfig::current(cx).flow_chat)),
-        |value: SharedString, cx: &mut App| {
-            let strategy = if value.as_ref() == "fixed" {
-                "fixed"
-            } else {
-                "follow_last"
-            };
-            let mut document = ShellConfig::current(cx).flow_chat.clone();
-            let mut updates = vec![(
-                "default_mode_strategy".to_string(),
-                serde_json::json!(strategy),
-            )];
-            document = merged_object_value(
-                &document,
-                "default_mode_strategy",
-                serde_json::json!(strategy),
-            );
-            let missing_fixed = document
-                .get("default_mode_id")
-                .and_then(serde_json::Value::as_str)
-                .map(str::trim)
-                .map(str::is_empty)
-                .unwrap_or(true);
-            if strategy == "fixed" && missing_fixed {
-                let fallback =
-                    flow_chat_last_mode(&document).unwrap_or_else(|| "Standard".to_string());
-                document =
-                    merged_object_value(&document, "default_mode_id", serde_json::json!(fallback));
-                updates.push(("default_mode_id".to_string(), serde_json::json!(fallback)));
-            }
-            cx.global_mut::<ShellConfig>().flow_chat = document;
-            persist_object_keys(FLOW_CHAT_PATH, updates);
-            cx.refresh_windows();
-        },
-    );
-
     let mut fixed_options: Vec<(SharedString, SharedString)> = crate::manage::HARNESS_IDS
         .iter()
         .map(|id| {
@@ -1900,45 +1937,46 @@ fn default_harness_rows(text: &ShellText, cx: &App) -> Vec<SettingItem> {
             ),
         );
     }
-    let fixed_field = SettingField::dropdown(
+
+    DefaultHarnessFacts {
+        strategy,
+        strategy_description,
         fixed_options,
+    }
+}
+
+/// G-SE15: the default-Harness preference (web `DefaultHarnessConfig`): the
+/// strategy plus, while fixed, the fixed Harness. Both writes are one merged
+/// document write so an interleaved older shell cannot drop the sibling key.
+fn default_harness_rows(text: &ShellText, cx: &App) -> Vec<SettingItem> {
+    let facts = default_harness_facts(text, cx);
+    let strategy_field = SettingField::dropdown(
+        vec![
+            (
+                SharedString::from("follow_last"),
+                SharedString::from(text.settings_default_harness_follow_last.clone()),
+            ),
+            (
+                SharedString::from("fixed"),
+                SharedString::from(text.settings_default_harness_fixed.clone()),
+            ),
+        ],
+        |cx: &App| SharedString::from(flow_chat_strategy(&ShellConfig::current(cx).flow_chat)),
+        |value: SharedString, cx: &mut App| set_flow_chat_strategy(&value, cx),
+    );
+
+    let fixed_field = SettingField::dropdown(
+        facts.fixed_options,
         |cx: &App| SharedString::from(flow_chat_fixed_mode(&ShellConfig::current(cx).flow_chat)),
-        |value: SharedString, cx: &mut App| {
-            let mode = value.to_string();
-            if mode.trim().is_empty() {
-                return;
-            }
-            let mut document = ShellConfig::current(cx).flow_chat.clone();
-            document = merged_object_value(
-                &document,
-                "default_mode_strategy",
-                serde_json::json!("fixed"),
-            );
-            document = merged_object_value(&document, "default_mode_id", serde_json::json!(mode));
-            cx.global_mut::<ShellConfig>().flow_chat = document;
-            persist_object_keys(
-                FLOW_CHAT_PATH,
-                vec![
-                    (
-                        "default_mode_strategy".to_string(),
-                        serde_json::json!("fixed"),
-                    ),
-                    (
-                        "default_mode_id".to_string(),
-                        serde_json::json!(mode.clone()),
-                    ),
-                ],
-            );
-            cx.refresh_windows();
-        },
+        |value: SharedString, cx: &mut App| set_flow_chat_fixed_mode(&value, cx),
     );
 
     let mut rows = vec![SettingItem::new(
         text.settings_default_harness_strategy.clone(),
         strategy_field,
     )
-    .description(strategy_description)];
-    if strategy == "fixed" {
+    .description(facts.strategy_description)];
+    if facts.strategy == "fixed" {
         rows.push(SettingItem::new(
             text.settings_default_harness_fixed_mode.clone(),
             fixed_field,
@@ -1952,11 +1990,7 @@ fn default_harness_rows(text: &ShellText, cx: &App) -> Vec<SettingItem> {
 fn session_title_rows(text: &ShellText, cx: &App) -> Vec<SettingItem> {
     let enabled_field = SettingField::switch(
         |cx: &App| ShellConfig::current(cx).session_title_enabled,
-        |value: bool, cx: &mut App| {
-            cx.global_mut::<ShellConfig>().session_title_enabled = value;
-            persist(SESSION_TITLE_ENABLED_PATH, serde_json::json!(value));
-            cx.refresh_windows();
-        },
+        set_session_title_enabled,
     );
 
     let catalog = cx
@@ -1968,18 +2002,7 @@ fn session_title_rows(text: &ShellText, cx: &App) -> Vec<SettingItem> {
     let model_field = SettingField::dropdown(
         model_options,
         |cx: &App| SharedString::from(ShellConfig::current(cx).session_title_model),
-        |value: SharedString, cx: &mut App| {
-            let value = value.to_string();
-            if value.trim().is_empty() {
-                return;
-            }
-            cx.global_mut::<ShellConfig>().session_title_model = value.clone();
-            persist(
-                SESSION_TITLE_MODEL_PATH,
-                task_model_selection_document(&value),
-            );
-            cx.refresh_windows();
-        },
+        |value: SharedString, cx: &mut App| set_session_title_model(&value, cx),
     );
 
     let enabled = ShellConfig::current(cx).session_title_enabled;
@@ -2002,7 +2025,7 @@ fn session_title_rows(text: &ShellText, cx: &App) -> Vec<SettingItem> {
 
 /// G-SE15: the session-title model menu — inherit/fast/primary aliases, every
 /// enabled configured model, and a stored id this build cannot resolve.
-fn session_title_model_options(
+pub(crate) fn session_title_model_options(
     catalog: &[crate::runtime::ModelChoice],
     current: &str,
     text: &ShellText,
@@ -2133,14 +2156,42 @@ fn worktrees_git_group(
 /// G-SE16: the web root-path/branch-prefix bounds — an empty value is
 /// required at save time on the web page, so the shell keeps the previous
 /// value instead of persisting an unusable worktree root.
-const WORKTREE_AUTO_DELETE_MIN: u32 = 1;
-const WORKTREE_AUTO_DELETE_MAX: u32 = 100;
+pub(crate) const WORKTREE_AUTO_DELETE_MIN: u32 = 1;
+pub(crate) const WORKTREE_AUTO_DELETE_MAX: u32 = 100;
 
-fn set_worktree_key(key: &str, value: serde_json::Value, cx: &mut App) {
+pub(crate) fn set_worktree_key(key: &str, value: serde_json::Value, cx: &mut App) {
     let merged = merged_object_value(&ShellConfig::current(cx).worktrees, key, value.clone());
     cx.global_mut::<ShellConfig>().worktrees = merged;
     persist_object_key(WORKTREES_PATH, key, value);
     cx.refresh_windows();
+}
+
+/// One string key of `app.worktrees`. Empty input is ignored (the web page
+/// rejects it; keeping the stored value is the honest shell behavior).
+pub(crate) fn set_worktree_text(key: &'static str, value: &str, cx: &mut App) {
+    if value.trim().is_empty() {
+        tracing::warn!("Ignoring empty worktree setting: {key}");
+        return;
+    }
+    set_worktree_key(key, serde_json::json!(value), cx);
+}
+
+/// One boolean key of `app.worktrees`.
+pub(crate) fn set_worktree_switch(key: &'static str, value: bool, cx: &mut App) {
+    set_worktree_key(key, serde_json::json!(value), cx);
+}
+
+/// The auto-delete limit setter both worktree renderers share: round to a
+/// whole count inside the web bounds.
+pub(crate) fn set_worktree_auto_delete_limit(value: f64, cx: &mut App) {
+    if !value.is_finite() {
+        return;
+    }
+    let limit = (value.round() as u64).clamp(
+        u64::from(WORKTREE_AUTO_DELETE_MIN),
+        u64::from(WORKTREE_AUTO_DELETE_MAX),
+    );
+    set_worktree_key("autoDeleteLimit", serde_json::json!(limit), cx);
 }
 
 /// G-SE16: one string key of `app.worktrees`. Empty input is ignored (the web
@@ -2152,14 +2203,7 @@ fn worktree_text_field(key: &'static str, fallback: String) -> SettingField<Shar
                 object_str(&ShellConfig::current(cx).worktrees, key, &fallback).to_string(),
             )
         },
-        move |value: SharedString, cx: &mut App| {
-            let value = value.to_string();
-            if value.trim().is_empty() {
-                tracing::warn!("Ignoring empty worktree setting: {key}");
-                return;
-            }
-            set_worktree_key(key, serde_json::json!(value), cx);
-        },
+        move |value: SharedString, cx: &mut App| set_worktree_text(key, &value, cx),
     )
 }
 
@@ -2167,31 +2211,15 @@ fn worktree_text_field(key: &'static str, fallback: String) -> SettingField<Shar
 fn worktree_switch_field(key: &'static str, fallback: bool) -> SettingField<bool> {
     SettingField::switch(
         move |cx: &App| object_bool(&ShellConfig::current(cx).worktrees, key, fallback),
-        move |value: bool, cx: &mut App| set_worktree_key(key, serde_json::json!(value), cx),
+        move |value: bool, cx: &mut App| set_worktree_switch(key, value, cx),
     )
 }
 
 fn appearance_group(text: &ShellText, cx: &App) -> SettingGroup {
-    let language_options = vec![
-        (SharedString::from("zh-CN"), SharedString::from("简体中文")),
-        (SharedString::from("zh-TW"), SharedString::from("繁體中文")),
-        (SharedString::from("en-US"), SharedString::from("English")),
-    ];
     let language_field = SettingField::dropdown(
-        language_options,
+        language_choices(),
         |cx: &App| SharedString::from(ShellConfig::current(cx).language.as_str()),
-        |value: SharedString, cx: &mut App| {
-            let Some(locale) = LocaleId::from_str(&value) else {
-                tracing::warn!("Ignoring unsupported language selection: {}", value);
-                return;
-            };
-            cx.global_mut::<ShellConfig>().language = locale;
-            crate::i18n::load_locale(locale, cx);
-            persist(
-                LANGUAGE_PATH,
-                serde_json::Value::String(locale.as_str().to_string()),
-            );
-        },
+        |value: SharedString, cx: &mut App| set_language(&value, cx),
     );
 
     let theme_field = {
@@ -2206,14 +2234,7 @@ fn appearance_group(text: &ShellText, cx: &App) -> SettingGroup {
     let level_field = SettingField::dropdown(
         level_options,
         |cx: &App| SharedString::from(ShellConfig::current(cx).ui_font_level.clone()),
-        |value: SharedString, cx: &mut App| {
-            let value = value.to_string();
-            if !ui_font_level_known(&value) {
-                tracing::warn!("Ignoring unsupported UI font level: {value}");
-                return;
-            }
-            set_ui_font(&value, ShellConfig::current(cx).ui_font_custom_px, cx);
-        },
+        |value: SharedString, cx: &mut App| set_ui_font_level(&value, cx),
     );
     let custom_field = SettingField::number_input(
         NumberFieldOptions {
@@ -2227,13 +2248,7 @@ fn appearance_group(text: &ShellText, cx: &App) -> SettingGroup {
                 ShellConfig::current(cx).ui_font_custom_px,
             ))
         },
-        |value: f64, cx: &mut App| {
-            if !value.is_finite() {
-                return;
-            }
-            let px = (value.round() as u32).clamp(MIN_UI_FONT_PX, MAX_UI_FONT_PX);
-            set_ui_font(UI_FONT_CUSTOM_LEVEL, Some(px), cx);
-        },
+        |value: f64, cx: &mut App| set_ui_font_custom_px(value, cx),
     );
 
     let mut items = vec![
@@ -2257,7 +2272,10 @@ fn appearance_group(text: &ShellText, cx: &App) -> SettingGroup {
 
 /// G-SE5: the UI size menu — the shared levels, then the custom entry, then a
 /// stored id outside the list so the page shows what is persisted.
-fn ui_font_level_options(current: &str, text: &ShellText) -> Vec<(SharedString, SharedString)> {
+pub(crate) fn ui_font_level_options(
+    current: &str,
+    text: &ShellText,
+) -> Vec<(SharedString, SharedString)> {
     let mut options: Vec<(SharedString, SharedString)> = UI_FONT_LEVELS
         .iter()
         .map(|(id, _)| {
@@ -2296,6 +2314,51 @@ fn ui_font_level_label(level: &str, text: &ShellText) -> String {
         "large" => text.ui_font_level_large.clone(),
         _ => text.ui_font_level_custom.clone(),
     }
+}
+
+/// The three shell locales with their native names — the same list the web
+/// page offers through `supportedLocales`.
+pub(crate) fn language_choices() -> Vec<(SharedString, SharedString)> {
+    vec![
+        (SharedString::from("zh-CN"), SharedString::from("简体中文")),
+        (SharedString::from("zh-TW"), SharedString::from("繁體中文")),
+        (SharedString::from("en-US"), SharedString::from("English")),
+    ]
+}
+
+/// The language setter both appearance renderers share: switch the shell
+/// locale, reload the text bundle, persist to `app.language`.
+pub(crate) fn set_language(value: &str, cx: &mut App) {
+    let Some(locale) = LocaleId::from_str(value) else {
+        tracing::warn!("Ignoring unsupported language selection: {value}");
+        return;
+    };
+    cx.global_mut::<ShellConfig>().language = locale;
+    crate::i18n::load_locale(locale, cx);
+    persist(
+        LANGUAGE_PATH,
+        serde_json::Value::String(locale.as_str().to_string()),
+    );
+}
+
+/// The UI size setter both appearance renderers share: a stored id the shell
+/// does not know is ignored, like every other verbatim value here.
+pub(crate) fn set_ui_font_level(level: &str, cx: &mut App) {
+    if !ui_font_level_known(level) {
+        tracing::warn!("Ignoring unsupported UI font level: {level}");
+        return;
+    }
+    set_ui_font(level, ShellConfig::current(cx).ui_font_custom_px, cx);
+}
+
+/// The custom size setter both appearance renderers share: round to whole px
+/// inside the shared range and switch to the custom level.
+pub(crate) fn set_ui_font_custom_px(value: f64, cx: &mut App) {
+    if !value.is_finite() {
+        return;
+    }
+    let px = (value.round() as u32).clamp(MIN_UI_FONT_PX, MAX_UI_FONT_PX);
+    set_ui_font(UI_FONT_CUSTOM_LEVEL, Some(px), cx);
 }
 
 /// General group (M22): launch-at-login, the close-button behavior, and the
@@ -3453,18 +3516,7 @@ fn shortcut_row(strokes: &[&str], label: String) -> SettingItem {
         None => format!("shortcut-row-{}", label),
     };
     SettingItem::render(move |_options, _window, cx| {
-        let mut caps = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap_1()
-            .flex_shrink_0();
-        for stroke in &strokes {
-            if let Ok(keystroke) = gpui_kit::Keystroke::parse_with_os(stroke, cx.platform_info().os)
-            {
-                caps = caps.child(gpui_kit::component::kbd::Kbd::new(keystroke));
-            }
-        }
+        let caps = shortcut_keycaps(&strokes, cx);
         div()
             .flex()
             .flex_row()
@@ -3493,6 +3545,22 @@ fn shortcut_row(strokes: &[&str], label: String) -> SettingItem {
             .child(caps)
             .into_any_element()
     })
+}
+
+/// The `Kbd` column of a shortcut row — shared by both shortcut renderers.
+pub(crate) fn shortcut_keycaps(strokes: &[String], cx: &App) -> gpui_kit::AnyElement {
+    let mut caps = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_1()
+        .flex_shrink_0();
+    for stroke in strokes {
+        if let Ok(keystroke) = gpui_kit::Keystroke::parse_with_os(stroke, cx.platform_info().os) {
+            caps = caps.child(gpui_kit::component::kbd::Kbd::new(keystroke));
+        }
+    }
+    caps.into_any_element()
 }
 
 /// G-SE10: one streaming-timeout number field. Zero writes `null`, the shared
@@ -3539,6 +3607,40 @@ fn proxy_text_field(key: &'static str) -> SettingField<SharedString> {
     )
 }
 
+/// The terminal setters both terminal renderers share; each writes its
+/// `terminal.*` config path and refreshes so the terminal panel follows.
+pub(crate) fn set_terminal_font_size(value: f64, cx: &mut App) {
+    let Some(size) = clamp_font_size(value) else {
+        tracing::warn!("Ignoring out-of-range terminal font size: {value}");
+        return;
+    };
+    cx.global_mut::<ShellConfig>().terminal.font_size = size;
+    persist(TERMINAL_FONT_SIZE_PATH, serde_json::json!(size));
+    cx.refresh_windows();
+}
+
+pub(crate) fn set_terminal_font_family(value: &str, cx: &mut App) {
+    cx.global_mut::<ShellConfig>().terminal.font_family = value.to_string();
+    persist(TERMINAL_FONT_FAMILY_PATH, serde_json::json!(value));
+    cx.refresh_windows();
+}
+
+pub(crate) fn set_terminal_scrollback(value: f64, cx: &mut App) {
+    let Some(lines) = clamp_scrollback(value) else {
+        tracing::warn!("Ignoring out-of-range terminal scrollback: {value}");
+        return;
+    };
+    cx.global_mut::<ShellConfig>().terminal.scrollback = lines;
+    persist(TERMINAL_SCROLLBACK_PATH, serde_json::json!(lines));
+    cx.refresh_windows();
+}
+
+pub(crate) fn set_terminal_default_shell(value: &str, cx: &mut App) {
+    cx.global_mut::<ShellConfig>().terminal.default_shell = value.to_string();
+    persist(TERMINAL_DEFAULT_SHELL_PATH, serde_json::json!(value));
+    cx.refresh_windows();
+}
+
 /// Terminal preferences for the built-in terminal (M7 pane). The values are
 /// the shared `terminal.*` entries, so the desktop terminal and this pane read
 /// the same document; font size and family apply to a running pane, while the
@@ -3554,25 +3656,12 @@ fn terminal_group(
             step: 1.,
         },
         |cx: &App| f64::from(ShellConfig::current(cx).terminal.font_size),
-        |value: f64, cx: &mut App| {
-            let Some(size) = clamp_font_size(value) else {
-                tracing::warn!("Ignoring out-of-range terminal font size: {}", value);
-                return;
-            };
-            cx.global_mut::<ShellConfig>().terminal.font_size = size;
-            persist(TERMINAL_FONT_SIZE_PATH, serde_json::json!(size));
-            cx.refresh_windows();
-        },
+        set_terminal_font_size,
     );
 
     let font_family_field = SettingField::input(
         |cx: &App| SharedString::from(ShellConfig::current(cx).terminal.font_family.clone()),
-        |value: SharedString, cx: &mut App| {
-            let value = value.to_string();
-            cx.global_mut::<ShellConfig>().terminal.font_family = value.clone();
-            persist(TERMINAL_FONT_FAMILY_PATH, serde_json::json!(value));
-            cx.refresh_windows();
-        },
+        |value: SharedString, cx: &mut App| set_terminal_font_family(&value, cx),
     );
 
     let scrollback_field = SettingField::number_input(
@@ -3582,25 +3671,12 @@ fn terminal_group(
             step: 1000.,
         },
         |cx: &App| f64::from(ShellConfig::current(cx).terminal.scrollback),
-        |value: f64, cx: &mut App| {
-            let Some(lines) = clamp_scrollback(value) else {
-                tracing::warn!("Ignoring out-of-range terminal scrollback: {}", value);
-                return;
-            };
-            cx.global_mut::<ShellConfig>().terminal.scrollback = lines;
-            persist(TERMINAL_SCROLLBACK_PATH, serde_json::json!(lines));
-            cx.refresh_windows();
-        },
+        set_terminal_scrollback,
     );
 
     let shell_field = SettingField::input(
         |cx: &App| SharedString::from(ShellConfig::current(cx).terminal.default_shell.clone()),
-        |value: SharedString, cx: &mut App| {
-            let value = value.to_string();
-            cx.global_mut::<ShellConfig>().terminal.default_shell = value.clone();
-            persist(TERMINAL_DEFAULT_SHELL_PATH, serde_json::json!(value));
-            cx.refresh_windows();
-        },
+        |value: SharedString, cx: &mut App| set_terminal_default_shell(&value, cx),
     );
 
     let owned_text = text.clone();
@@ -3628,7 +3704,7 @@ fn terminal_group(
 /// The terminal-profiles list (M17): one row per profile with edit/delete,
 /// plus the add action. Rows render read-only; editing opens the profile
 /// dialog through the shell (dialog state lives on the window).
-fn terminal_profiles_field(
+pub(crate) fn terminal_profiles_field(
     view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
     text: &ShellText,
     _window: &mut gpui_kit::Window,
@@ -4537,7 +4613,7 @@ fn memory_advanced_items(
 
 /// A page-level info line, tinted with the info color: the memory page's
 /// scope notice and the shortcuts page's fixed-bindings note share it.
-fn info_note(message: &str, cx: &App) -> gpui_kit::AnyElement {
+pub(crate) fn info_note(message: &str, cx: &App) -> gpui_kit::AnyElement {
     div()
         .w_full()
         .rounded(cx.theme().radius)
@@ -8962,7 +9038,7 @@ pub(crate) fn open_path_in_file_manager(dir: &std::path::Path) {
 /// the live window appearance at click time. Uses the same
 /// `Button + caret + dropdown_menu_with_anchor` shape as the typed setting
 /// fields, so the whole button opens the menu.
-fn theme_button(text: &ShellText, cx: &App) -> gpui_kit::AnyElement {
+pub(crate) fn theme_button(text: &ShellText, cx: &App) -> gpui_kit::AnyElement {
     let current = ShellConfig::current(cx).appearance;
     let label = appearance_label(&current, text);
     let mut options: Vec<(String, String, bool)> = APPEARANCE_CHOICES

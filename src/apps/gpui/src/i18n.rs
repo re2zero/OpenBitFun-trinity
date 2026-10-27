@@ -361,6 +361,11 @@ pub(crate) struct ShellText {
     /// Top tab bar (R1a): close button tooltip.
     pub tab_close: String,
     pub settings_appearance: String,
+    /// The 外观 page's card heads, one per web `ConfigPageSection` (interface
+    /// language / theme / font size).
+    pub settings_appearance_interface_title: String,
+    pub settings_appearance_interface_description: String,
+    pub settings_appearance_font_title: String,
     pub settings_permissions: String,
     pub settings_language_description: String,
     pub settings_theme_description: String,
@@ -2421,6 +2426,11 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_title: "Settings".to_string(),
         tab_close: "Close tab".to_string(),
         settings_appearance: "Appearance".to_string(),
+        settings_appearance_interface_title: "Interface".to_string(),
+        settings_appearance_interface_description:
+            "Choose the language for menus, buttons, and messages; changes apply immediately"
+                .to_string(),
+        settings_appearance_font_title: "Font Size".to_string(),
         settings_permissions: "Permissions".to_string(),
         settings_language_description: "Interface language for the shell and desktop app."
             .to_string(),
@@ -3695,6 +3705,15 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         settings_title: service.t("shared.features.settings").await,
         tab_close: service.t("gpui-shell-tab-close").await,
         settings_appearance: service.t("gpui-shell-settings-appearance").await,
+        settings_appearance_interface_title: service
+            .t("gpui-shell-settings-appearance-interface-title")
+            .await,
+        settings_appearance_interface_description: service
+            .t("gpui-shell-settings-appearance-interface-desc")
+            .await,
+        settings_appearance_font_title: service
+            .t("gpui-shell-settings-appearance-font-title")
+            .await,
         settings_permissions: service.t("gpui-shell-settings-permissions").await,
         settings_language_description: service.t("gpui-shell-settings-language-desc").await,
         settings_theme_description: service.t("gpui-shell-settings-theme-desc").await,

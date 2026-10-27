@@ -12052,14 +12052,24 @@ mod tests {
         });
 
         let cases: &[(settings::SettingsEntry, &[&str])] = &[
-            (settings::SettingsEntry::Appearance, &[]),
+            // The appearance page renders through the card path: its three
+            // cards carry the anchors now.
+            (
+                settings::SettingsEntry::Appearance,
+                &[
+                    "settings-card-appearance-language",
+                    "settings-card-appearance-theme",
+                    "settings-card-appearance-font",
+                ],
+            ),
             // G-SE7: the shortcuts table renders its sections and rows; the
-            // binding cross-check has its own test.
+            // binding cross-check has its own test. The page is on the card
+            // path, so the cards carry the anchors.
             (
                 settings::SettingsEntry::Shortcuts,
                 &[
-                    "settings-section-shortcuts-global",
-                    "settings-section-shortcuts-terminal",
+                    "settings-card-shortcuts-global",
+                    "settings-card-shortcuts-terminal",
                 ],
             ),
             // G-SE13: the three memory sections render collapsed; the
@@ -14385,11 +14395,15 @@ mod tests {
         );
         window.run_until_parked();
         assert!(
-            window.debug_bounds("shortcut-row-ctrl-k").is_some(),
+            window
+                .debug_bounds("settings-row-shortcut-ctrl-k")
+                .is_some(),
             "the global table renders its search row"
         );
         assert!(
-            window.debug_bounds("shortcut-row-ctrl-shift-c").is_some(),
+            window
+                .debug_bounds("settings-row-shortcut-ctrl-shift-c")
+                .is_some(),
             "the terminal section renders its copy row"
         );
     }

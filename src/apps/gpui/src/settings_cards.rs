@@ -10,20 +10,30 @@
 //! that renders through this path and `None` for one still on the component
 //! `Settings` pipeline (`settings::render_page`).
 
-use gpui_kit::component::button::Button;
+use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
+use gpui_kit::component::input::{Input, InputEvent, InputState, NumberInput};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::switch::Switch;
-use gpui_kit::component::ActiveTheme;
+use gpui_kit::component::{ActiveTheme, Disableable};
 use gpui_kit::{
-    div, prelude::*, px, Anchor, AnyElement, App, FontWeight, IntoElement, ParentElement,
-    RenderOnce, SharedString, Styled, Window,
+    div, prelude::*, px, Anchor, AnyElement, App, Entity, FontWeight, IntoElement, ParentElement,
+    RenderOnce, SharedString, Styled, Subscription, Window,
 };
 use std::rc::Rc;
 
 use crate::i18n::ShellText;
 use crate::settings::{
-    entry_description, entry_label, set_autostart, set_prevent_sleep, SettingsEntry, ShellConfig,
-    CLOSE_BEHAVIOR_PATH, CLOSE_MINIMIZE, CLOSE_QUIT,
+    default_harness_facts, default_worktree_settings_document, entry_description, entry_label,
+    flow_chat_fixed_mode, flow_chat_strategy, language_choices, object_bool, object_str,
+    object_u64, session_title_model_options, set_autostart, set_flow_chat_fixed_mode,
+    set_flow_chat_strategy, set_language, set_prevent_sleep, set_session_title_enabled,
+    set_session_title_model, set_terminal_default_shell, set_terminal_font_family,
+    set_terminal_font_size, set_terminal_scrollback, set_ui_font_custom_px, set_ui_font_level,
+    set_worktree_auto_delete_limit, set_worktree_switch, set_worktree_text, shortcut_keycaps,
+    terminal_profiles_field, theme_button, ui_font_base_px, ui_font_level_options, SettingsEntry,
+    ShellConfig, CLOSE_BEHAVIOR_PATH, CLOSE_MINIMIZE, CLOSE_QUIT, GLOBAL_SHORTCUTS, MAX_FONT_SIZE,
+    MAX_SCROLLBACK, MAX_UI_FONT_PX, MIN_FONT_SIZE, MIN_SCROLLBACK, MIN_UI_FONT_PX,
+    UI_FONT_CUSTOM_LEVEL,
 };
 use crate::shell::ShellWindow;
 
@@ -35,6 +45,12 @@ pub(crate) struct SettingsCardRow {
     label: SharedString,
     description: Option<SharedString>,
     control: AnyElement,
+    /// Web `ConfigPageRow`'s multiline mode: the label block sits above and
+    /// the content spans the full width below (collection rows — lists with
+    /// their own actions — read better than a crushed trailing lane).
+    multiline: bool,
+    /// The component pipeline's disabled item: reduced opacity.
+    disabled: bool,
 }
 
 impl SettingsCardRow {
@@ -46,6 +62,8 @@ impl SettingsCardRow {
             label: label.into(),
             description: None,
             control: div().into_any_element(),
+            multiline: false,
+            disabled: false,
         }
     }
 
@@ -61,6 +79,21 @@ impl SettingsCardRow {
         self
     }
 
+    /// Stack the label over full-width content instead of the trailing lane.
+    #[allow(dead_code)]
+    pub(crate) fn multiline(mut self) -> Self {
+        self.multiline = true;
+        self
+    }
+
+    /// The component pipeline's disabled item: reduced opacity. Controls also
+    /// take the flag so the interaction (not just the look) turns off.
+    #[allow(dead_code)]
+    pub(crate) fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
     fn render_row(self, divider: bool, edge_top: bool, edge_bottom: bool, cx: &App) -> AnyElement {
         let theme = cx.theme();
         // A softer derivative of the border token: the card outline keeps the
@@ -68,16 +101,28 @@ impl SettingsCardRow {
         let divider_color = theme.border.opacity(0.6);
         let radius = theme.radius_lg;
         let label = self.label.clone();
-        div()
+        let label_block = div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap_0p5()
+            .child(div().child(label))
+            .children(self.description.map(|text| {
+                div()
+                    .text_sm()
+                    .text_color(theme.muted_foreground)
+                    .child(text)
+            }));
+        let row = div()
             .id(self.id.clone())
             .debug_selector(move || format!("settings-row-{}", self.id))
             .flex()
-            .flex_row()
-            .items_center()
             .gap_4()
             .px_4()
             .py_3()
             .when(divider, |row| row.border_t_1().border_color(divider_color))
+            .when(self.disabled, |row| row.opacity(0.5))
             .hover(move |mut style| {
                 if edge_top {
                     style.corner_radii.top_left = Some(radius.into());
@@ -89,29 +134,22 @@ impl SettingsCardRow {
                 }
                 style.bg(theme.list_hover)
             })
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap_0p5()
-                    .child(div().child(label))
-                    .children(self.description.map(|text| {
-                        div()
-                            .text_sm()
-                            .text_color(theme.muted_foreground)
-                            .child(text)
-                    })),
-            )
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .child(self.control),
-            )
-            .into_any_element()
+            .child(label_block);
+        if self.multiline {
+            row.flex_col()
+                .child(div().w_full().child(self.control))
+                .into_any_element()
+        } else {
+            row.items_center()
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .child(self.control),
+                )
+                .into_any_element()
+        }
     }
 }
 
@@ -231,22 +269,23 @@ impl RenderOnce for SettingsCard {
 /// Runs an element constructor during the element-tree pass instead of
 /// `ShellWindow::render`. The shell entity cannot be read while its own
 /// render is on the stack; controls that need the window state (the update
-/// check row reads the shell's update state) defer like the component
-/// pipeline's `SettingItem::render` callbacks do.
+/// check row reads the shell's update state) or window-keyed input state
+/// (the text and number controls) defer like the component pipeline's
+/// `SettingItem::render` callbacks do.
 #[derive(IntoElement)]
 struct DeferredControl<F>
 where
-    F: FnOnce(&mut App) -> AnyElement + 'static,
+    F: FnOnce(&mut Window, &mut App) -> AnyElement + 'static,
 {
     construct: F,
 }
 
 impl<F> RenderOnce for DeferredControl<F>
 where
-    F: FnOnce(&mut App) -> AnyElement + 'static,
+    F: FnOnce(&mut Window, &mut App) -> AnyElement + 'static,
 {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
-        (self.construct)(cx)
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        (self.construct)(window, cx)
     }
 }
 
@@ -260,9 +299,31 @@ pub(crate) fn render_card_page(
 ) -> Option<AnyElement> {
     let cards = match entry {
         SettingsEntry::General => general_cards(text, view, cx),
+        SettingsEntry::Appearance => appearance_cards(text, cx),
+        SettingsEntry::Terminal => terminal_cards(text, view, cx),
+        SettingsEntry::SessionSearch => session_search_cards(text, view, cx),
+        SettingsEntry::WorktreesGit => worktrees_git_cards(text, view, cx),
+        SettingsEntry::Shortcuts => shortcuts_cards(text, cx),
         _ => return None,
     };
-    Some(page_frame(entry, text, cards, cx))
+    Some(page_frame(
+        entry,
+        text,
+        page_preamble(entry, text, cx),
+        cards,
+        cx,
+    ))
+}
+
+/// Elements rendered between the page header and the first card — the
+/// shortcuts page's read-only note is the only consumer so far.
+fn page_preamble(entry: SettingsEntry, text: &ShellText, cx: &App) -> Vec<AnyElement> {
+    match entry {
+        SettingsEntry::Shortcuts => {
+            vec![crate::settings::info_note(&text.shortcuts_fixed_note, cx)]
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// The page frame: the web `ConfigPageHeader` geometry over a scrollable card
@@ -270,6 +331,7 @@ pub(crate) fn render_card_page(
 fn page_frame(
     entry: SettingsEntry,
     text: &ShellText,
+    preamble: Vec<AnyElement>,
     cards: Vec<SettingsCard>,
     cx: &App,
 ) -> AnyElement {
@@ -313,6 +375,7 @@ fn page_frame(
                 .gap_4()
                 .px_4()
                 .pb_8()
+                .children(preamble)
                 .children(cards),
         )
         .into_any_element()
@@ -325,9 +388,11 @@ fn switch_control(
     id: impl Into<SharedString>,
     checked: bool,
     on_change: impl Fn(bool, &mut App) + 'static,
+    disabled: bool,
 ) -> AnyElement {
     Switch::new(id.into())
         .checked(checked)
+        .disabled(disabled)
         .on_click(move |checked: &bool, _, cx: &mut App| on_change(*checked, cx))
         .into_any_element()
 }
@@ -339,11 +404,13 @@ fn dropdown_control(
     label: impl Into<SharedString>,
     options: Rc<Vec<(SharedString, SharedString)>>,
     on_select: Rc<dyn Fn(SharedString, &mut App)>,
+    disabled: bool,
 ) -> AnyElement {
     Button::new(id.into())
         .label(label)
         .dropdown_caret(true)
         .outline()
+        .disabled(disabled)
         .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _window, _cx| {
             let mut menu = menu;
             for (value, option_label) in options.iter() {
@@ -358,6 +425,162 @@ fn dropdown_control(
             menu
         })
         .into_any_element()
+}
+
+/// Bounds and stepping for [`number_input_control`] — the same engine config
+/// the component pipeline's number field applies: `+`/`-` and Up/Down step by
+/// `step`, out-of-range text is tolerated while typing and clamped on blur.
+#[derive(Clone, Copy)]
+pub(crate) struct NumberRange {
+    pub(crate) min: f64,
+    pub(crate) max: f64,
+    pub(crate) step: f64,
+}
+
+struct StringFieldState {
+    input: Entity<InputState>,
+    _subscription: Subscription,
+}
+
+/// A text input wired to the row's value — the component pipeline's string
+/// field semantics: the engine state is keyed by the row id, every change
+/// reports, and the displayed text follows the setting when it changes
+/// elsewhere. The row label doubles as the input's accessible name.
+fn text_input_control(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    value: SharedString,
+    on_change: impl Fn(SharedString, &mut App) + 'static,
+) -> DeferredControl<impl FnOnce(&mut Window, &mut App) -> AnyElement> {
+    let key = SharedString::from(format!("card-string-{}", id.into()));
+    let label: SharedString = label.into();
+    DeferredControl {
+        construct: move |window, cx| {
+            let state_entity = window.use_keyed_state(key.clone(), cx, {
+                let value = value.clone();
+                let on_change = Rc::new(on_change);
+                move |window, cx| {
+                    let input =
+                        cx.new(|cx| InputState::new(window, cx).default_value(value.clone()));
+                    let _subscription = cx.subscribe(&input, {
+                        move |_, input, event: &InputEvent, cx| match event {
+                            InputEvent::Change => {
+                                let value = input.read(cx).value();
+                                on_change(value.into(), cx);
+                            }
+                            _ => {}
+                        }
+                    });
+                    StringFieldState {
+                        input,
+                        _subscription,
+                    }
+                }
+            });
+            state_entity.update(cx, |state, cx| {
+                if state.input.read(cx).value() != value {
+                    state.input.update(cx, |input, cx| {
+                        input.set_value(value.clone(), window, cx);
+                    });
+                }
+            });
+            let state = state_entity.read(cx);
+            Input::new(&state.input)
+                .aria_label(label)
+                .w_64()
+                .into_any_element()
+        },
+    }
+}
+
+struct NumberFieldState {
+    input: Entity<InputState>,
+    initial_value: f64,
+    _subscriptions: Vec<Subscription>,
+}
+
+/// A number input wired to the row's value — the component pipeline's number
+/// field semantics: unparsable intermediates (`-`, ``, `1.`) stay so the next
+/// keystroke can complete them, and the setting only ever receives a value
+/// inside `min..=max`.
+fn number_input_control(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    value: f64,
+    range: NumberRange,
+    on_change: impl Fn(f64, &mut App) + 'static,
+    disabled: bool,
+) -> DeferredControl<impl FnOnce(&mut Window, &mut App) -> AnyElement> {
+    let key = SharedString::from(format!("card-number-{}", id.into()));
+    let label: SharedString = label.into();
+    DeferredControl {
+        construct: move |window, cx| {
+            let state_entity = window.use_keyed_state(key.clone(), cx, {
+                move |window, cx| {
+                    let input = cx.new(|cx| {
+                        InputState::new(window, cx)
+                            .default_value(value.to_string())
+                            .step(range.step)
+                            .min(range.min)
+                            .max(range.max)
+                    });
+                    let _subscriptions = vec![cx.subscribe_in(&input, window, {
+                        move |state: &mut NumberFieldState,
+                              input,
+                              event: &InputEvent,
+                              _window,
+                              cx| {
+                            match event {
+                                InputEvent::Change => {
+                                    input.update(cx, |input, cx| {
+                                        let text = input.value();
+                                        if text == state.initial_value.to_string() {
+                                            return;
+                                        }
+                                        // Out-of-range text stays too (the engine
+                                        // clamps it on blur), but the setting only
+                                        // ever receives a value inside min..=max.
+                                        if let Ok(parsed) = text.parse::<f64>() {
+                                            let clamped = parsed.clamp(range.min, range.max);
+                                            on_change(clamped, cx);
+                                            state.initial_value = clamped;
+                                        }
+                                    });
+                                }
+                                _ => {}
+                            }
+                        }
+                    })];
+                    NumberFieldState {
+                        input,
+                        initial_value: value,
+                        _subscriptions,
+                    }
+                }
+            });
+            // Sync engine config and displayed value when options or the
+            // underlying setting changed externally.
+            state_entity.update(cx, |state, cx| {
+                state.input.update(cx, |input, cx| {
+                    input.set_step(Some(range.step.into()), window, cx);
+                    input.set_min(Some(range.min), window, cx);
+                    input.set_max(Some(range.max), window, cx);
+                });
+                if state.initial_value != value {
+                    state.initial_value = value;
+                    state.input.update(cx, |input, cx| {
+                        input.set_value(SharedString::from(value.to_string()), window, cx);
+                    });
+                }
+            });
+            let state = state_entity.read(cx);
+            NumberInput::new(&state.input)
+                .accessibility_label(label)
+                .disabled(disabled)
+                .w_32()
+                .into_any_element()
+        },
+    }
 }
 
 /// The 通用 page's cards. Content 1:1 with the migrated component group — the
@@ -437,6 +660,7 @@ fn general_cards(
                     "general-launch-login-switch",
                     autostart_checked,
                     |value, cx| set_autostart(value, cx),
+                    false,
                 )),
         )
         .row(
@@ -450,6 +674,7 @@ fn general_cards(
                 close_label,
                 close_options,
                 on_close_select,
+                false,
             )),
         )
         .row(
@@ -469,6 +694,7 @@ fn general_cards(
                     );
                     cx.refresh_windows();
                 },
+                false,
             )),
         )
         .row(
@@ -478,6 +704,7 @@ fn general_cards(
                     "general-prevent-sleep-switch",
                     prevent_sleep_checked,
                     |value, cx| set_prevent_sleep(value, cx),
+                    false,
                 )),
         )
         .row(
@@ -494,6 +721,7 @@ fn general_cards(
                         );
                         cx.refresh_windows();
                     },
+                    false,
                 )),
         )
         .row(
@@ -506,8 +734,519 @@ fn general_cards(
                     construct: {
                         let view = view.clone();
                         let text = text.clone();
-                        move |cx| crate::settings::update_check_field(view, &text, cx)
+                        move |_, cx| crate::settings::update_check_field(view, &text, cx)
                     },
                 }),
         )]
+}
+
+/// The 外观 page's cards, one per web `ConfigPageSection` the shell covers:
+/// 界面 (language), 外观 (theme), 字体大小 (size level plus the conditional
+/// custom size). The web page's session-panel section and the font preview
+/// row are registered E3 gaps (design README §2.2).
+fn appearance_cards(text: &ShellText, cx: &mut App) -> Vec<SettingsCard> {
+    // 语言：the three shell locales, then the persisted id verbatim when it
+    // is outside that domain — the same menu the component page renders.
+    let current_language = ShellConfig::current(cx).language.as_str().to_string();
+    let choices = language_choices();
+    let language_label = choices
+        .iter()
+        .find(|(value, _)| *value == current_language)
+        .map(|(_, label)| label.clone())
+        .unwrap_or_else(|| current_language.clone().into());
+    let on_language_select: Rc<dyn Fn(SharedString, &mut App)> =
+        Rc::new(|value: SharedString, cx| set_language(&value, cx));
+
+    // 字体大小：the shared levels, then the custom entry, then a stored id
+    // outside the list so the menu shows what is persisted.
+    let current_level = ShellConfig::current(cx).ui_font_level.clone();
+    let level_options = ui_font_level_options(&current_level, text);
+    let level_label = level_options
+        .iter()
+        .find(|(value, _)| *value == current_level)
+        .map(|(_, label)| label.clone())
+        .unwrap_or_else(|| current_level.clone().into());
+    let on_level_select: Rc<dyn Fn(SharedString, &mut App)> =
+        Rc::new(|value: SharedString, cx| set_ui_font_level(&value, cx));
+
+    let mut font_card = SettingsCard::new("appearance-font")
+        .title(text.settings_appearance_font_title.clone())
+        .row(
+            SettingsCardRow::new("appearance-font-level", text.settings_ui_font.clone())
+                .description(text.settings_ui_font_description.clone())
+                .control(dropdown_control(
+                    "appearance-font-level-menu",
+                    level_label,
+                    Rc::new(level_options),
+                    on_level_select,
+                    false,
+                )),
+        );
+    // The custom size row is the web page's conditional second row: only the
+    // custom level reads it.
+    if ShellConfig::current(cx).ui_font_level == UI_FONT_CUSTOM_LEVEL {
+        font_card = font_card.row(
+            SettingsCardRow::new(
+                "appearance-font-custom",
+                text.settings_ui_font_custom.clone(),
+            )
+            .description(text.settings_ui_font_custom_description.clone())
+            .control(number_input_control(
+                "appearance-font-custom-input",
+                text.settings_ui_font_custom.clone(),
+                f64::from(ui_font_base_px(
+                    &ShellConfig::current(cx).ui_font_level,
+                    ShellConfig::current(cx).ui_font_custom_px,
+                )),
+                NumberRange {
+                    min: f64::from(MIN_UI_FONT_PX),
+                    max: f64::from(MAX_UI_FONT_PX),
+                    step: 1.,
+                },
+                set_ui_font_custom_px,
+                false,
+            )),
+        );
+    }
+
+    vec![
+        SettingsCard::new("appearance-language")
+            .title(text.settings_appearance_interface_title.clone())
+            .description(text.settings_appearance_interface_description.clone())
+            .row(
+                SettingsCardRow::new("appearance-language", text.language.clone()).control(
+                    dropdown_control(
+                        "appearance-language-menu",
+                        language_label,
+                        Rc::new(choices),
+                        on_language_select,
+                        false,
+                    ),
+                ),
+            ),
+        SettingsCard::new("appearance-theme")
+            .title(text.settings_appearance.clone())
+            .row(
+                SettingsCardRow::new("appearance-theme", text.theme.clone())
+                    .control(theme_button(text, cx)),
+            ),
+        font_card,
+    ]
+}
+
+/// The 终端 page's card: the web page has a single `ConfigPageSection` (终端，
+/// the same string as the page header), so the card stays untitled like the
+/// General page's — and holds the web row (default shell) plus the shell-only
+/// rows the component page carries: font size, family, scrollback, and the
+/// launch-profile collection (design README §2.2).
+fn terminal_cards(
+    text: &ShellText,
+    view: gpui_kit::WeakEntity<ShellWindow>,
+    cx: &mut App,
+) -> Vec<SettingsCard> {
+    let font_size = f64::from(ShellConfig::current(cx).terminal.font_size);
+    let scrollback = f64::from(ShellConfig::current(cx).terminal.scrollback);
+    let font_family = SharedString::from(ShellConfig::current(cx).terminal.font_family.clone());
+    let default_shell = SharedString::from(ShellConfig::current(cx).terminal.default_shell.clone());
+    vec![SettingsCard::new("terminal")
+        .row(
+            SettingsCardRow::new(
+                "terminal-font-size",
+                text.settings_terminal_font_size.clone(),
+            )
+            .description(text.settings_terminal_font_size_description.clone())
+            .control(number_input_control(
+                "terminal-font-size-input",
+                text.settings_terminal_font_size.clone(),
+                font_size,
+                NumberRange {
+                    min: f64::from(MIN_FONT_SIZE),
+                    max: f64::from(MAX_FONT_SIZE),
+                    step: 1.,
+                },
+                set_terminal_font_size,
+                false,
+            )),
+        )
+        .row(
+            SettingsCardRow::new(
+                "terminal-font-family",
+                text.settings_terminal_font_family.clone(),
+            )
+            .description(text.settings_terminal_font_family_description.clone())
+            .control(text_input_control(
+                "terminal-font-family-input",
+                text.settings_terminal_font_family.clone(),
+                font_family,
+                |value, cx| set_terminal_font_family(&value, cx),
+            )),
+        )
+        .row(
+            SettingsCardRow::new(
+                "terminal-scrollback",
+                text.settings_terminal_scrollback.clone(),
+            )
+            .description(text.settings_terminal_scrollback_description.clone())
+            .control(number_input_control(
+                "terminal-scrollback-input",
+                text.settings_terminal_scrollback.clone(),
+                scrollback,
+                NumberRange {
+                    min: f64::from(MIN_SCROLLBACK),
+                    max: f64::from(MAX_SCROLLBACK),
+                    step: 1000.,
+                },
+                set_terminal_scrollback,
+                false,
+            )),
+        )
+        .row(
+            SettingsCardRow::new("terminal-shell", text.settings_terminal_shell.clone())
+                .description(text.settings_terminal_shell_description.clone())
+                .control(text_input_control(
+                    "terminal-shell-input",
+                    text.settings_terminal_shell.clone(),
+                    default_shell,
+                    |value, cx| set_terminal_default_shell(&value, cx),
+                )),
+        )
+        .row(
+            SettingsCardRow::new("terminal-profiles", text.settings_terminal_profiles.clone())
+                .description(text.settings_terminal_profiles_description.clone())
+                .multiline()
+                .control(DeferredControl {
+                    construct: {
+                        let view = view.clone();
+                        let text = text.clone();
+                        move |window, cx| terminal_profiles_field(view, &text, window, cx)
+                    },
+                }),
+        )]
+}
+
+/// The 会话搜索 page's cards, one per web section: the default-Harness card,
+/// the session-title card, and the headless jump row that opens the shell's
+/// search overlay — this shell's session-search owner (design README §2.2).
+fn session_search_cards(
+    text: &ShellText,
+    view: gpui_kit::WeakEntity<ShellWindow>,
+    cx: &mut App,
+) -> Vec<SettingsCard> {
+    let facts = default_harness_facts(text, cx);
+    let strategy_options = Rc::new(vec![
+        (
+            SharedString::from("follow_last"),
+            SharedString::from(text.settings_default_harness_follow_last.clone()),
+        ),
+        (
+            SharedString::from("fixed"),
+            SharedString::from(text.settings_default_harness_fixed.clone()),
+        ),
+    ]);
+    let current_strategy = flow_chat_strategy(&ShellConfig::current(cx).flow_chat);
+    let on_strategy_select: Rc<dyn Fn(SharedString, &mut App)> =
+        Rc::new(|value: SharedString, cx| set_flow_chat_strategy(&value, cx));
+
+    let enabled = ShellConfig::current(cx).session_title_enabled;
+    let catalog = cx
+        .try_global::<crate::runtime::ModelCatalog>()
+        .cloned()
+        .unwrap_or_default();
+    let current_model = ShellConfig::current(cx).session_title_model;
+    let model_options = session_title_model_options(&catalog.models, &current_model, text);
+    let model_label = model_options
+        .iter()
+        .find(|(value, _)| value.as_ref() == current_model.as_str())
+        .map(|(_, label)| label.clone())
+        .unwrap_or_else(|| current_model.clone().into());
+    let model_description = if catalog.models.is_empty() {
+        Some(text.settings_session_title_models_empty.clone())
+    } else {
+        None
+    };
+    let on_model_select: Rc<dyn Fn(SharedString, &mut App)> =
+        Rc::new(|value: SharedString, cx| set_session_title_model(&value, cx));
+
+    let mut harness_card = SettingsCard::new("session-search-harness")
+        .title(text.settings_default_harness_section.clone())
+        .description(text.settings_default_harness_section_note.clone())
+        .row(
+            SettingsCardRow::new(
+                "session-search-harness-strategy",
+                text.settings_default_harness_strategy.clone(),
+            )
+            .description(facts.strategy_description)
+            .control(dropdown_control(
+                "session-search-harness-strategy-menu",
+                SharedString::from(current_strategy),
+                strategy_options,
+                on_strategy_select,
+                false,
+            )),
+        );
+    if facts.strategy == "fixed" {
+        let fixed_mode = flow_chat_fixed_mode(&ShellConfig::current(cx).flow_chat);
+        let fixed_label = facts
+            .fixed_options
+            .iter()
+            .find(|(value, _)| value.as_ref() == fixed_mode.as_str())
+            .map(|(_, label)| label.clone())
+            .unwrap_or_else(|| fixed_mode.clone().into());
+        harness_card = harness_card.row(
+            SettingsCardRow::new(
+                "session-search-harness-fixed",
+                text.settings_default_harness_fixed_mode.clone(),
+            )
+            .control(dropdown_control(
+                "session-search-harness-fixed-menu",
+                fixed_label,
+                Rc::new(facts.fixed_options),
+                Rc::new(|value: SharedString, cx| set_flow_chat_fixed_mode(&value, cx)),
+                false,
+            )),
+        );
+    }
+
+    let mut title_card = SettingsCard::new("session-search-title")
+        .title(text.settings_session_title_section.clone())
+        .description(text.settings_session_title_section_note.clone())
+        .row(
+            SettingsCardRow::new(
+                "session-search-title-enable",
+                text.settings_session_title_enable.clone(),
+            )
+            .control(switch_control(
+                "session-search-title-enable-switch",
+                enabled,
+                set_session_title_enabled,
+                false,
+            )),
+        );
+    let mut model_row = SettingsCardRow::new(
+        "session-search-title-model",
+        text.settings_session_title_model.clone(),
+    )
+    .control(dropdown_control(
+        "session-search-title-model-menu",
+        model_label,
+        Rc::new(model_options),
+        on_model_select,
+        !enabled,
+    ))
+    .disabled(!enabled);
+    if let Some(description) = model_description {
+        model_row = model_row.description(description);
+    }
+    title_card = title_card.row(model_row);
+
+    vec![
+        harness_card,
+        title_card,
+        SettingsCard::new("session-search-open").row(
+            SettingsCardRow::new(
+                "session-search-open",
+                text.settings_jump_session_description.clone(),
+            )
+            .control(
+                Button::new("open-session-search")
+                    .label(text.settings_jump_session_action.clone())
+                    .with_variant(ButtonVariant::Ghost)
+                    .on_click({
+                        let view = view.clone();
+                        move |_: &gpui_kit::ClickEvent, window, cx| {
+                            if let Some(shell) = view.upgrade() {
+                                shell.update(cx, |shell, cx| shell.open_search_overlay(window, cx));
+                            }
+                        }
+                    }),
+            ),
+        ),
+    ]
+}
+
+/// The 工作区与 Git page's cards: the web isolation defaults (G-SE16) as one
+/// titled card plus the headless jump row that opens worktree management in
+/// the Git panel, which remains this shell's worktree owner.
+fn worktrees_git_cards(
+    text: &ShellText,
+    view: gpui_kit::WeakEntity<ShellWindow>,
+    cx: &mut App,
+) -> Vec<SettingsCard> {
+    let document = ShellConfig::current(cx).worktrees.clone();
+    let defaults = default_worktree_settings_document();
+    let root_default = object_str(&defaults, "rootPath", "").to_string();
+    let prefix_default = object_str(&defaults, "branchPrefix", "").to_string();
+    let auto_delete_default = object_bool(&defaults, "autoDeleteEnabled", true);
+    let limit_default = object_u64(&defaults, "autoDeleteLimit", 15);
+
+    let root_value =
+        SharedString::from(object_str(&document, "rootPath", &root_default).to_string());
+    let prefix_value =
+        SharedString::from(object_str(&document, "branchPrefix", &prefix_default).to_string());
+    let copy_checked = object_bool(&document, "copyLocalChanges", false);
+    let auto_delete_checked = object_bool(&document, "autoDeleteEnabled", auto_delete_default);
+    let limit_value = object_u64(&document, "autoDeleteLimit", limit_default) as f64;
+
+    vec![
+        SettingsCard::new("worktrees-isolation")
+            .title(text.settings_worktree_section.clone())
+            .description(text.settings_worktree_section_note.clone())
+            .row(
+                SettingsCardRow::new("worktrees-root", text.settings_worktree_root.clone())
+                    .description(text.settings_worktree_root_description.clone())
+                    .control(text_input_control(
+                        "worktrees-root-input",
+                        text.settings_worktree_root.clone(),
+                        root_value,
+                        |value, cx| set_worktree_text("rootPath", &value, cx),
+                    )),
+            )
+            .row(
+                SettingsCardRow::new(
+                    "worktrees-branch-prefix",
+                    text.settings_worktree_branch_prefix.clone(),
+                )
+                .description(text.settings_worktree_branch_prefix_description.clone())
+                .control(text_input_control(
+                    "worktrees-branch-prefix-input",
+                    text.settings_worktree_branch_prefix.clone(),
+                    prefix_value,
+                    |value, cx| set_worktree_text("branchPrefix", &value, cx),
+                )),
+            )
+            .row(
+                SettingsCardRow::new(
+                    "worktrees-copy-changes",
+                    text.settings_worktree_copy_changes.clone(),
+                )
+                .description(text.settings_worktree_copy_changes_description.clone())
+                .control(switch_control(
+                    "worktrees-copy-changes-switch",
+                    copy_checked,
+                    |value, cx| set_worktree_switch("copyLocalChanges", value, cx),
+                    false,
+                )),
+            )
+            .row(
+                SettingsCardRow::new(
+                    "worktrees-auto-delete",
+                    text.settings_worktree_auto_delete.clone(),
+                )
+                .description(text.settings_worktree_auto_delete_description.clone())
+                .control(switch_control(
+                    "worktrees-auto-delete-switch",
+                    auto_delete_checked,
+                    |value, cx| set_worktree_switch("autoDeleteEnabled", value, cx),
+                    false,
+                )),
+            )
+            .row(
+                SettingsCardRow::new(
+                    "worktrees-auto-delete-limit",
+                    text.settings_worktree_auto_delete_limit.clone(),
+                )
+                .description(text.settings_worktree_auto_delete_limit_description.clone())
+                .disabled(!auto_delete_checked)
+                .control(number_input_control(
+                    "worktrees-auto-delete-limit-input",
+                    text.settings_worktree_auto_delete_limit.clone(),
+                    limit_value,
+                    NumberRange {
+                        min: f64::from(crate::settings::WORKTREE_AUTO_DELETE_MIN),
+                        max: f64::from(crate::settings::WORKTREE_AUTO_DELETE_MAX),
+                        step: 1.,
+                    },
+                    set_worktree_auto_delete_limit,
+                    !auto_delete_checked,
+                )),
+            ),
+        SettingsCard::new("worktrees-open").row(
+            SettingsCardRow::new(
+                "worktrees-open",
+                text.settings_jump_worktrees_description.clone(),
+            )
+            .control(
+                Button::new("open-worktrees-git")
+                    .label(text.settings_jump_worktrees_action.clone())
+                    .with_variant(ButtonVariant::Ghost)
+                    .on_click({
+                        let view = view.clone();
+                        move |_: &gpui_kit::ClickEvent, window, cx| {
+                            if let Some(shell) = view.upgrade() {
+                                shell.update(cx, |shell, cx| {
+                                    shell.open_git_panel(window, cx);
+                                    shell.set_git_view(crate::git::GitView::Worktrees, cx);
+                                });
+                            }
+                        }
+                    }),
+            ),
+        ),
+    ]
+}
+
+/// The 快捷键 page's cards, one per web section (global / overlays / terminal
+/// / editing), each a read-only keycap table. The page-level read-only note
+/// renders above the cards via [`page_preamble`].
+fn shortcuts_cards(text: &ShellText, cx: &App) -> Vec<SettingsCard> {
+    let mut global =
+        SettingsCard::new("shortcuts-global").title(text.shortcuts_section_global.clone());
+    for shortcut in GLOBAL_SHORTCUTS {
+        global = global.row(
+            SettingsCardRow::new(
+                format!("shortcut-{}", shortcut.stroke),
+                (shortcut.label)(text),
+            )
+            .control(shortcut_keycaps(&[shortcut.stroke.to_string()], cx)),
+        );
+    }
+
+    let overlays = SettingsCard::new("shortcuts-overlays")
+        .title(text.shortcuts_section_overlays.clone())
+        .row(
+            SettingsCardRow::new("shortcut-escape", text.shortcuts_overlay_dismiss.clone())
+                .control(shortcut_keycaps(&["escape".to_string()], cx)),
+        )
+        .row(
+            SettingsCardRow::new("shortcut-up", text.shortcuts_overlay_move.clone()).control(
+                shortcut_keycaps(&["up".to_string(), "down".to_string()], cx),
+            ),
+        )
+        .row(
+            SettingsCardRow::new("shortcut-enter", text.shortcuts_overlay_confirm.clone())
+                .control(shortcut_keycaps(&["enter".to_string()], cx)),
+        );
+
+    let terminal = SettingsCard::new("shortcuts-terminal")
+        .title(text.shortcuts_section_terminal.clone())
+        .row(
+            SettingsCardRow::new(
+                "shortcut-ctrl-shift-c",
+                text.shortcuts_terminal_copy.clone(),
+            )
+            .control(shortcut_keycaps(&["ctrl-shift-c".to_string()], cx)),
+        )
+        .row(
+            SettingsCardRow::new(
+                "shortcut-ctrl-shift-v",
+                text.shortcuts_terminal_paste.clone(),
+            )
+            .control(shortcut_keycaps(&["ctrl-shift-v".to_string()], cx)),
+        )
+        .row(SettingsCardRow::new(
+            "shortcuts-terminal-note",
+            text.shortcuts_terminal_note.clone(),
+        ));
+
+    vec![
+        global,
+        overlays,
+        terminal,
+        SettingsCard::new("shortcuts-editing")
+            .title(text.shortcuts_section_editing.clone())
+            .row(SettingsCardRow::new(
+                "shortcuts-editing-note",
+                text.shortcuts_editing_note.clone(),
+            )),
+    ]
 }
