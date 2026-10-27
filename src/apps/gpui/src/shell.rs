@@ -12077,9 +12077,9 @@ mod tests {
             (
                 settings::SettingsEntry::Memory,
                 &[
-                    "settings-section-memory-basic",
-                    "settings-section-memory-models",
-                    "settings-section-memory-advanced",
+                    "settings-card-memory-basic",
+                    "settings-card-memory-models",
+                    "settings-card-memory-advanced",
                 ],
             ),
             // The models page is on the card path: its stream and proxy
@@ -14254,19 +14254,17 @@ mod tests {
         // The collapsed page renders its sections and no advanced block.
         draw_page(window, &shell);
         assert!(
-            window
-                .debug_bounds("settings-section-memory-basic")
-                .is_some(),
+            window.debug_bounds("settings-card-memory-basic").is_some(),
             "the page renders its basic section"
         );
         assert!(
-            window
-                .debug_bounds("settings-section-memory-models")
-                .is_some(),
+            window.debug_bounds("settings-card-memory-models").is_some(),
             "the page renders its model section"
         );
         assert!(
-            window.debug_bounds("memory-advanced-block").is_none(),
+            window
+                .debug_bounds("settings-row-memory-advanced-idle-hours")
+                .is_none(),
             "the advanced block starts collapsed"
         );
 
@@ -14303,7 +14301,9 @@ mod tests {
         });
         draw_page(window, &shell);
         assert!(
-            window.debug_bounds("memory-advanced-block").is_some(),
+            window
+                .debug_bounds("settings-row-memory-advanced-idle-hours")
+                .is_some(),
             "the disclosed block is on the page"
         );
 
@@ -14327,7 +14327,9 @@ mod tests {
         });
         draw_page(window, &shell);
         assert!(
-            window.debug_bounds("memory-advanced-block").is_none(),
+            window
+                .debug_bounds("settings-row-memory-advanced-idle-hours")
+                .is_none(),
             "collapsing removes the block"
         );
     }

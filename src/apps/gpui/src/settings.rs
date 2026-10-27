@@ -4205,31 +4205,12 @@ fn memory_group(
             let memories = &ShellConfig::current(cx).memories;
             memories.generate_memories && memories.use_memories
         },
-        |value: bool, cx: &mut App| {
-            {
-                let memories = &mut cx.global_mut::<ShellConfig>().memories;
-                memories.generate_memories = value;
-                memories.use_memories = value;
-            }
-            persist_object_key(MEMORIES_PATH, "generate_memories", serde_json::json!(value));
-            persist_object_key(MEMORIES_PATH, "use_memories", serde_json::json!(value));
-            cx.refresh_windows();
-        },
+        set_memory_enabled,
     );
 
     let btw_field = SettingField::switch(
         move |cx: &App| ShellConfig::current(cx).memories.generate_for_btw_sessions,
-        |value: bool, cx: &mut App| {
-            cx.global_mut::<ShellConfig>()
-                .memories
-                .generate_for_btw_sessions = value;
-            persist_object_key(
-                MEMORIES_PATH,
-                "generate_for_btw_sessions",
-                serde_json::json!(value),
-            );
-            cx.refresh_windows();
-        },
+        set_memory_btw,
     );
 
     let policy_field = SettingField::dropdown(
@@ -4249,34 +4230,12 @@ fn memory_group(
                 ShellConfig::current(cx).memories.external_context_policy,
             ))
         },
-        |value: SharedString, cx: &mut App| {
-            let policy = memory_policy_from_str(value.as_ref());
-            cx.global_mut::<ShellConfig>()
-                .memories
-                .external_context_policy = policy;
-            persist_object_key(
-                MEMORIES_PATH,
-                "external_context_policy",
-                serde_json::json!(memory_policy_value(policy)),
-            );
-            cx.refresh_windows();
-        },
+        |value: SharedString, cx: &mut App| set_memory_policy(&value, cx),
     );
 
     let actions_view = view.clone();
     let actions_field = SettingField::render(move |_options, _window, cx| {
-        let text = crate::i18n::current(cx);
-        let busy = MemoryPageState::current(cx).busy;
-        let menu_view = actions_view.clone();
-        Button::new("memory-actions-menu")
-            .label(text.memory_action_manage.clone())
-            .small()
-            .with_variant(ButtonVariant::Secondary)
-            .disabled(busy)
-            .dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, _window, cx| {
-                memory_actions_menu(menu, menu_view.clone(), cx)
-            })
-            .into_any_element()
+        memory_actions_button(actions_view.clone(), cx)
     });
 
     // 模型：抽取与整理各自跟随（空 = 跟随）或指定目录内启用模型。
@@ -4300,17 +4259,7 @@ fn memory_group(
                     .unwrap_or_default(),
             )
         },
-        |value: SharedString, cx: &mut App| {
-            let value = value.to_string();
-            let stored = (!value.is_empty()).then_some(value.clone());
-            cx.global_mut::<ShellConfig>().memories.extract_model = stored.clone();
-            persist_object_key(
-                MEMORIES_PATH,
-                "extract_model",
-                stored.map_or(serde_json::Value::Null, serde_json::Value::String),
-            );
-            cx.refresh_windows();
-        },
+        |value: SharedString, cx: &mut App| set_memory_extract_model(&value, cx),
     );
 
     let consolidation_field = SettingField::dropdown(
@@ -4329,39 +4278,13 @@ fn memory_group(
                     .unwrap_or_default(),
             )
         },
-        |value: SharedString, cx: &mut App| {
-            let value = value.to_string();
-            let stored = (!value.is_empty()).then_some(value.clone());
-            cx.global_mut::<ShellConfig>().memories.consolidation_model = stored.clone();
-            persist_object_key(
-                MEMORIES_PATH,
-                "consolidation_model",
-                stored.map_or(serde_json::Value::Null, serde_json::Value::String),
-            );
-            cx.refresh_windows();
-        },
+        |value: SharedString, cx: &mut App| set_memory_consolidation_model(&value, cx),
     );
 
     // 高级设置：可折叠（web 的 section extra chevron），默认收起。
     let advanced_view = view.clone();
     let advanced_toggle = SettingField::render(move |_options, _window, cx| {
-        let text = crate::i18n::current(cx);
-        let open = MemoryPageState::current(cx).advanced_open;
-        let click_view = advanced_view.clone();
-        Button::new("memory-advanced-toggle")
-            .label(if open {
-                text.memory_action_collapse_advanced.clone()
-            } else {
-                text.memory_action_expand_advanced.clone()
-            })
-            .small()
-            .with_variant(ButtonVariant::Ghost)
-            .on_click(move |_, _window, cx| {
-                if let Some(shell) = click_view.upgrade() {
-                    shell.update(cx, |this, cx| this.toggle_memory_advanced(cx));
-                }
-            })
-            .into_any_element()
+        memory_advanced_toggle_button(advanced_view.clone(), cx)
     });
 
     let mut items = vec![
@@ -4442,6 +4365,239 @@ fn memory_group(
     SettingGroup::new().items(items)
 }
 
+/// The memory setters both memory renderers share. The toggle writes the
+/// generate/use pair in one stroke (web `updateMemoryEnabled`); every key
+/// write merges into the `memories` document so unknown keys survive.
+
+pub(crate) fn set_memory_enabled(value: bool, cx: &mut App) {
+    {
+        let memories = &mut cx.global_mut::<ShellConfig>().memories;
+        memories.generate_memories = value;
+        memories.use_memories = value;
+    }
+    persist_object_key(MEMORIES_PATH, "generate_memories", serde_json::json!(value));
+    persist_object_key(MEMORIES_PATH, "use_memories", serde_json::json!(value));
+    cx.refresh_windows();
+}
+
+pub(crate) fn set_memory_btw(value: bool, cx: &mut App) {
+    cx.global_mut::<ShellConfig>()
+        .memories
+        .generate_for_btw_sessions = value;
+    persist_object_key(
+        MEMORIES_PATH,
+        "generate_for_btw_sessions",
+        serde_json::json!(value),
+    );
+    cx.refresh_windows();
+}
+
+pub(crate) fn set_memory_policy(value: &str, cx: &mut App) {
+    let policy = memory_policy_from_str(value);
+    cx.global_mut::<ShellConfig>()
+        .memories
+        .external_context_policy = policy;
+    persist_object_key(
+        MEMORIES_PATH,
+        "external_context_policy",
+        serde_json::json!(memory_policy_value(policy)),
+    );
+    cx.refresh_windows();
+}
+
+pub(crate) fn set_memory_extract_model(value: &str, cx: &mut App) {
+    let stored = (!value.is_empty()).then_some(value.to_string());
+    cx.global_mut::<ShellConfig>().memories.extract_model = stored.clone();
+    persist_object_key(
+        MEMORIES_PATH,
+        "extract_model",
+        stored.map_or(serde_json::Value::Null, serde_json::Value::String),
+    );
+    cx.refresh_windows();
+}
+
+pub(crate) fn set_memory_consolidation_model(value: &str, cx: &mut App) {
+    let stored = (!value.is_empty()).then_some(value.to_string());
+    cx.global_mut::<ShellConfig>().memories.consolidation_model = stored.clone();
+    persist_object_key(
+        MEMORIES_PATH,
+        "consolidation_model",
+        stored.map_or(serde_json::Value::Null, serde_json::Value::String),
+    );
+    cx.refresh_windows();
+}
+
+pub(crate) fn set_memory_min_idle_hours(value: f64, cx: &mut App) {
+    if !value.is_finite() {
+        return;
+    }
+    let clamped = (value.round() as i64).clamp(1, 48);
+    cx.global_mut::<ShellConfig>()
+        .memories
+        .min_rollout_idle_hours = clamped;
+    persist_object_key(
+        MEMORIES_PATH,
+        "min_rollout_idle_hours",
+        serde_json::json!(clamped),
+    );
+    cx.refresh_windows();
+}
+
+pub(crate) fn set_memory_max_age_days(value: f64, cx: &mut App) {
+    if !value.is_finite() {
+        return;
+    }
+    let clamped = (value.round() as i64).clamp(0, 3650);
+    let retained = cx.global::<ShellConfig>().memories.max_unused_days;
+    let next = clamped.min(retained);
+    cx.global_mut::<ShellConfig>().memories.max_rollout_age_days = next;
+    persist_object_key(
+        MEMORIES_PATH,
+        "max_rollout_age_days",
+        serde_json::json!(next),
+    );
+    cx.refresh_windows();
+}
+
+pub(crate) fn set_memory_per_startup(value: f64, cx: &mut App) {
+    if !value.is_finite() {
+        return;
+    }
+    let clamped = (value.round() as usize).clamp(1, 128);
+    cx.global_mut::<ShellConfig>()
+        .memories
+        .max_rollouts_per_startup = clamped;
+    persist_object_key(
+        MEMORIES_PATH,
+        "max_rollouts_per_startup",
+        serde_json::json!(clamped),
+    );
+    cx.refresh_windows();
+}
+
+pub(crate) fn set_memory_scan_limit(value: f64, cx: &mut App) {
+    if !value.is_finite() {
+        return;
+    }
+    let clamped = (value.round() as usize).clamp(1, 50_000);
+    cx.global_mut::<ShellConfig>()
+        .memories
+        .max_rollouts_scan_limit = clamped;
+    persist_object_key(
+        MEMORIES_PATH,
+        "max_rollouts_scan_limit",
+        serde_json::json!(clamped),
+    );
+    cx.refresh_windows();
+}
+
+pub(crate) fn set_memory_concurrency(value: f64, cx: &mut App) {
+    if !value.is_finite() {
+        return;
+    }
+    let clamped = (value.round() as usize).clamp(1, 16);
+    cx.global_mut::<ShellConfig>()
+        .memories
+        .phase1_max_concurrency = clamped;
+    persist_object_key(
+        MEMORIES_PATH,
+        "phase1_max_concurrency",
+        serde_json::json!(clamped),
+    );
+    cx.refresh_windows();
+}
+
+pub(crate) fn set_memory_raw_limit(value: f64, cx: &mut App) {
+    if !value.is_finite() {
+        return;
+    }
+    let clamped = (value.round() as usize).clamp(1, 4096);
+    cx.global_mut::<ShellConfig>()
+        .memories
+        .max_raw_memories_for_consolidation = clamped;
+    persist_object_key(
+        MEMORIES_PATH,
+        "max_raw_memories_for_consolidation",
+        serde_json::json!(clamped),
+    );
+    cx.refresh_windows();
+}
+
+pub(crate) fn set_memory_retention_days(value: f64, cx: &mut App) {
+    if !value.is_finite() {
+        return;
+    }
+    let clamped = (value.round() as i64).clamp(0, 365);
+    let age = cx.global::<ShellConfig>().memories.max_rollout_age_days;
+    let next = clamped.max(age);
+    cx.global_mut::<ShellConfig>().memories.max_unused_days = next;
+    persist_object_key(MEMORIES_PATH, "max_unused_days", serde_json::json!(next));
+    cx.refresh_windows();
+}
+
+/// The memory-actions entry (web `actions.manage`): open the memory
+/// directory, reset the settings document, wipe the memory data — the
+/// destructive entries gate on the confirm dialogs. Both renderers share it.
+pub(crate) fn memory_actions_button(
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    cx: &App,
+) -> gpui_kit::AnyElement {
+    let text = crate::i18n::current(cx);
+    let busy = MemoryPageState::current(cx).busy;
+    Button::new("memory-actions-menu")
+        .label(text.memory_action_manage.clone())
+        .small()
+        .with_variant(ButtonVariant::Secondary)
+        .disabled(busy)
+        .dropdown_menu_with_anchor(Anchor::BottomRight, move |menu, _window, cx| {
+            memory_actions_menu(menu, view.clone(), cx)
+        })
+        .into_any_element()
+}
+
+/// The advanced-section disclosure toggle (web's section extra chevron).
+/// Both renderers share it.
+pub(crate) fn memory_advanced_toggle_button(
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    cx: &App,
+) -> gpui_kit::AnyElement {
+    let text = crate::i18n::current(cx);
+    let open = MemoryPageState::current(cx).advanced_open;
+    Button::new("memory-advanced-toggle")
+        .label(if open {
+            text.memory_action_collapse_advanced.clone()
+        } else {
+            text.memory_action_expand_advanced.clone()
+        })
+        .small()
+        .with_variant(ButtonVariant::Ghost)
+        .on_click(move |_, _window, cx| {
+            if let Some(shell) = view.upgrade() {
+                shell.update(cx, |this, cx| this.toggle_memory_advanced(cx));
+            }
+        })
+        .into_any_element()
+}
+
+/// The page's inline receipt (success muted, failure danger) — the memory
+/// renderers' stand-in for the web toasts. `None` while there is nothing
+/// to report.
+pub(crate) fn memory_notice_element(cx: &App) -> Option<gpui_kit::AnyElement> {
+    let (succeeded, message) = MemoryNotice::current(cx)?;
+    Some(
+        div()
+            .w_full()
+            .text_sm()
+            .text_color(if succeeded {
+                cx.theme().muted_foreground
+            } else {
+                cx.theme().danger
+            })
+            .child(message)
+            .into_any_element(),
+    )
+}
+
 /// The advanced numbers (web `sections.advanced`): extraction and
 /// consolidation windows. Each key was validated to live in the `memories`
 /// document; ranges mirror the web `NumberInput` bounds, and the two window
@@ -4457,21 +4613,7 @@ fn memory_advanced_items(
             step: 1.,
         },
         move |cx: &App| ShellConfig::current(cx).memories.min_rollout_idle_hours as f64,
-        |value: f64, cx: &mut App| {
-            if !value.is_finite() {
-                return;
-            }
-            let clamped = (value.round() as i64).clamp(1, 48);
-            cx.global_mut::<ShellConfig>()
-                .memories
-                .min_rollout_idle_hours = clamped;
-            persist_object_key(
-                MEMORIES_PATH,
-                "min_rollout_idle_hours",
-                serde_json::json!(clamped),
-            );
-            cx.refresh_windows();
-        },
+        set_memory_min_idle_hours,
     );
 
     let age_field = SettingField::number_input(
@@ -4481,21 +4623,7 @@ fn memory_advanced_items(
             step: 1.,
         },
         move |cx: &App| ShellConfig::current(cx).memories.max_rollout_age_days as f64,
-        |value: f64, cx: &mut App| {
-            if !value.is_finite() {
-                return;
-            }
-            let clamped = (value.round() as i64).clamp(0, 3650);
-            let retained = cx.global::<ShellConfig>().memories.max_unused_days;
-            let next = clamped.min(retained);
-            cx.global_mut::<ShellConfig>().memories.max_rollout_age_days = next;
-            persist_object_key(
-                MEMORIES_PATH,
-                "max_rollout_age_days",
-                serde_json::json!(next),
-            );
-            cx.refresh_windows();
-        },
+        set_memory_max_age_days,
     );
 
     let per_startup_field = SettingField::number_input(
@@ -4505,21 +4633,7 @@ fn memory_advanced_items(
             step: 1.,
         },
         move |cx: &App| ShellConfig::current(cx).memories.max_rollouts_per_startup as f64,
-        |value: f64, cx: &mut App| {
-            if !value.is_finite() {
-                return;
-            }
-            let clamped = (value.round() as usize).clamp(1, 128);
-            cx.global_mut::<ShellConfig>()
-                .memories
-                .max_rollouts_per_startup = clamped;
-            persist_object_key(
-                MEMORIES_PATH,
-                "max_rollouts_per_startup",
-                serde_json::json!(clamped),
-            );
-            cx.refresh_windows();
-        },
+        set_memory_per_startup,
     );
 
     let scan_field = SettingField::number_input(
@@ -4529,21 +4643,7 @@ fn memory_advanced_items(
             step: 100.,
         },
         move |cx: &App| ShellConfig::current(cx).memories.max_rollouts_scan_limit as f64,
-        |value: f64, cx: &mut App| {
-            if !value.is_finite() {
-                return;
-            }
-            let clamped = (value.round() as usize).clamp(1, 50_000);
-            cx.global_mut::<ShellConfig>()
-                .memories
-                .max_rollouts_scan_limit = clamped;
-            persist_object_key(
-                MEMORIES_PATH,
-                "max_rollouts_scan_limit",
-                serde_json::json!(clamped),
-            );
-            cx.refresh_windows();
-        },
+        set_memory_scan_limit,
     );
 
     let concurrency_field = SettingField::number_input(
@@ -4553,21 +4653,7 @@ fn memory_advanced_items(
             step: 1.,
         },
         move |cx: &App| ShellConfig::current(cx).memories.phase1_max_concurrency as f64,
-        |value: f64, cx: &mut App| {
-            if !value.is_finite() {
-                return;
-            }
-            let clamped = (value.round() as usize).clamp(1, 16);
-            cx.global_mut::<ShellConfig>()
-                .memories
-                .phase1_max_concurrency = clamped;
-            persist_object_key(
-                MEMORIES_PATH,
-                "phase1_max_concurrency",
-                serde_json::json!(clamped),
-            );
-            cx.refresh_windows();
-        },
+        set_memory_concurrency,
     );
 
     let raw_field = SettingField::number_input(
@@ -4581,21 +4667,7 @@ fn memory_advanced_items(
                 .memories
                 .max_raw_memories_for_consolidation as f64
         },
-        |value: f64, cx: &mut App| {
-            if !value.is_finite() {
-                return;
-            }
-            let clamped = (value.round() as usize).clamp(1, 4096);
-            cx.global_mut::<ShellConfig>()
-                .memories
-                .max_raw_memories_for_consolidation = clamped;
-            persist_object_key(
-                MEMORIES_PATH,
-                "max_raw_memories_for_consolidation",
-                serde_json::json!(clamped),
-            );
-            cx.refresh_windows();
-        },
+        set_memory_raw_limit,
     );
 
     let retention_field = SettingField::number_input(
@@ -4605,17 +4677,7 @@ fn memory_advanced_items(
             step: 1.,
         },
         move |cx: &App| ShellConfig::current(cx).memories.max_unused_days as f64,
-        |value: f64, cx: &mut App| {
-            if !value.is_finite() {
-                return;
-            }
-            let clamped = (value.round() as i64).clamp(0, 365);
-            let age = cx.global::<ShellConfig>().memories.max_rollout_age_days;
-            let next = clamped.max(age);
-            cx.global_mut::<ShellConfig>().memories.max_unused_days = next;
-            persist_object_key(MEMORIES_PATH, "max_unused_days", serde_json::json!(next));
-            cx.refresh_windows();
-        },
+        set_memory_retention_days,
     );
 
     vec![

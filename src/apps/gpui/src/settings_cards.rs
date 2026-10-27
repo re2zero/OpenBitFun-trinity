@@ -45,6 +45,13 @@ use crate::settings::{
     MAX_SCROLLBACK, MAX_UI_FONT_PX, MIN_FONT_SIZE, MIN_SCROLLBACK, MIN_UI_FONT_PX,
     UI_FONT_CUSTOM_LEVEL,
 };
+use crate::settings::{
+    memory_actions_button, memory_advanced_toggle_button, memory_model_options,
+    memory_notice_element, memory_policy_value, set_memory_btw, set_memory_concurrency,
+    set_memory_consolidation_model, set_memory_enabled, set_memory_extract_model,
+    set_memory_max_age_days, set_memory_min_idle_hours, set_memory_per_startup, set_memory_policy,
+    set_memory_raw_limit, set_memory_retention_days, set_memory_scan_limit, MemoryPageState,
+};
 use crate::shell::ShellWindow;
 
 /// One setting row: label + optional description on the left, the control in a
@@ -330,6 +337,7 @@ pub(crate) fn render_card_page(
         SettingsEntry::WorktreesGit => worktrees_git_cards(text, view, cx),
         SettingsEntry::Shortcuts => shortcuts_cards(text, cx),
         SettingsEntry::Models => models_cards(text, cx),
+        SettingsEntry::Memory => memory_cards(text, view, cx),
         _ => return None,
     };
     Some(page_frame(
@@ -347,6 +355,15 @@ fn page_preamble(entry: SettingsEntry, text: &ShellText, cx: &App) -> Vec<AnyEle
     match entry {
         SettingsEntry::Shortcuts => {
             vec![crate::settings::info_note(&text.shortcuts_fixed_note, cx)]
+        }
+        // The memory page's scope notice, then the inline receipt standing in
+        // for the web toasts while one is up.
+        SettingsEntry::Memory => {
+            let mut parts = vec![crate::settings::info_note(&text.memory_scope_notice, cx)];
+            if let Some(receipt) = memory_notice_element(cx) {
+                parts.push(receipt);
+            }
+            parts
         }
         _ => Vec::new(),
     }
@@ -1888,4 +1905,303 @@ fn verbatim_pair_options(
         options.push((stored.to_string().into(), stored.to_string().into()));
     }
     options
+}
+
+/// The 会话与记忆 page's cards, one per web section: 基础 (the enable pair,
+/// BTW source, external-context policy, the actions menu), 模型 (the
+/// extraction and consolidation followers), and 高级设置 — head-only while
+/// collapsed, its seven tuned numbers as rows while open. The scope notice
+/// and the inline receipt render above the cards (page preamble).
+fn memory_cards(
+    text: &ShellText,
+    view: gpui_kit::WeakEntity<ShellWindow>,
+    cx: &mut App,
+) -> Vec<SettingsCard> {
+    let memories = ShellConfig::current(cx).memories.clone();
+    let memory_enabled = memories.generate_memories && memories.use_memories;
+    let work_disabled = !memory_enabled;
+    let catalog = cx
+        .try_global::<crate::runtime::ModelCatalog>()
+        .cloned()
+        .unwrap_or_default();
+
+    let policy_options: Vec<(SharedString, SharedString)> = [
+        (
+            "clear_tool_results",
+            text.memory_policy_clear_tool_results.clone(),
+        ),
+        ("allow", text.memory_policy_allow.clone()),
+        ("skip_session", text.memory_policy_skip_session.clone()),
+    ]
+    .into_iter()
+    .map(|(id, label)| (SharedString::from(id), SharedString::from(label)))
+    .collect();
+    let policy_current =
+        memory_policy_value(ShellConfig::current(cx).memories.external_context_policy);
+    let policy_label = policy_options
+        .iter()
+        .find(|(value, _)| value.as_ref() == policy_current)
+        .map(|(_, label)| label.clone())
+        .unwrap_or_else(|| policy_current.into());
+
+    let extract_options = memory_model_options(
+        &catalog,
+        text.memory_model_follow_primary.clone(),
+        memories.extract_model.as_deref(),
+        cx,
+    );
+    let extract_current = memories.extract_model.clone().unwrap_or_default();
+    let extract_label = extract_options
+        .iter()
+        .find(|(value, _)| value.as_ref() == extract_current.as_str())
+        .map(|(_, label)| label.clone())
+        .unwrap_or_else(|| extract_current.clone().into());
+    let consolidation_options = memory_model_options(
+        &catalog,
+        text.memory_model_follow_extraction.clone(),
+        memories.consolidation_model.as_deref(),
+        cx,
+    );
+    let consolidation_current = memories.consolidation_model.clone().unwrap_or_default();
+    let consolidation_label = consolidation_options
+        .iter()
+        .find(|(value, _)| value.as_ref() == consolidation_current.as_str())
+        .map(|(_, label)| label.clone())
+        .unwrap_or_else(|| consolidation_current.clone().into());
+
+    let basic = SettingsCard::new("memory-basic")
+        .title(text.memory_section_basic.clone())
+        .description(text.memory_section_basic_note.clone())
+        .row(
+            SettingsCardRow::new("memory-basic-enabled", text.memory_enabled.clone())
+                .description(text.memory_enabled_description.clone())
+                .control(switch_control(
+                    "memory-basic-enabled-switch",
+                    memory_enabled,
+                    set_memory_enabled,
+                    false,
+                )),
+        )
+        .row(
+            SettingsCardRow::new("memory-basic-btw", text.memory_generate_btw.clone())
+                .description(text.memory_generate_btw_description.clone())
+                .disabled(work_disabled)
+                .control(switch_control(
+                    "memory-basic-btw-switch",
+                    memories.generate_for_btw_sessions,
+                    set_memory_btw,
+                    work_disabled,
+                )),
+        )
+        .row(
+            SettingsCardRow::new("memory-basic-policy", text.memory_external_context.clone())
+                .description(text.memory_external_context_description.clone())
+                .disabled(work_disabled)
+                .control(dropdown_control(
+                    "memory-basic-policy-menu",
+                    policy_label,
+                    Rc::new(policy_options),
+                    Rc::new(|value: SharedString, cx: &mut App| set_memory_policy(&value, cx)),
+                    work_disabled,
+                )),
+        )
+        .row(
+            SettingsCardRow::new("memory-basic-actions", text.memory_actions_label.clone())
+                .description(text.memory_actions_description.clone())
+                .control(DeferredControl {
+                    construct: {
+                        let view = view.clone();
+                        move |_, cx| memory_actions_button(view, cx)
+                    },
+                }),
+        );
+
+    let models = SettingsCard::new("memory-models")
+        .title(text.memory_section_models.clone())
+        .description(text.memory_section_models_note.clone())
+        .row(
+            SettingsCardRow::new("memory-models-extract", text.memory_extract_model.clone())
+                .description(text.memory_extract_model_description.clone())
+                .disabled(work_disabled)
+                .control(dropdown_control(
+                    "memory-models-extract-menu",
+                    extract_label,
+                    Rc::new(extract_options),
+                    Rc::new(|value: SharedString, cx: &mut App| {
+                        set_memory_extract_model(&value, cx)
+                    }),
+                    work_disabled,
+                )),
+        )
+        .row(
+            SettingsCardRow::new(
+                "memory-models-consolidation",
+                text.memory_consolidation_model.clone(),
+            )
+            .description(text.memory_consolidation_model_description.clone())
+            .disabled(work_disabled)
+            .control(dropdown_control(
+                "memory-models-consolidation-menu",
+                consolidation_label,
+                Rc::new(consolidation_options),
+                Rc::new(|value: SharedString, cx: &mut App| {
+                    set_memory_consolidation_model(&value, cx)
+                }),
+                work_disabled,
+            )),
+        );
+
+    let advanced_open = MemoryPageState::current(cx).advanced_open;
+    let advanced = SettingsCard::new("memory-advanced")
+        .title(text.memory_section_advanced.clone())
+        .description(text.memory_section_advanced_note.clone())
+        .extra(DeferredControl {
+            construct: {
+                let view = view.clone();
+                move |_, cx| memory_advanced_toggle_button(view, cx)
+            },
+        });
+    let mut cards = vec![basic, models];
+    if !advanced_open {
+        cards.push(advanced);
+        return cards;
+    }
+
+    let age_max = memories.max_unused_days.max(0) as f64;
+    let retention_min = memories.max_rollout_age_days.max(0) as f64;
+    let idle_value = memories.min_rollout_idle_hours as f64;
+    let age_value = memories.max_rollout_age_days as f64;
+    let per_startup_value = memories.max_rollouts_per_startup as f64;
+    let scan_value = memories.max_rollouts_scan_limit as f64;
+    let concurrency_value = memories.phase1_max_concurrency as f64;
+    let raw_value = memories.max_raw_memories_for_consolidation as f64;
+    let retention_value = memories.max_unused_days as f64;
+
+    let advanced = advanced
+        .row(
+            SettingsCardRow::new(
+                "memory-advanced-idle-hours",
+                text.memory_min_idle_hours.clone(),
+            )
+            .description(text.memory_min_idle_hours_description.clone())
+            .control(number_input_control(
+                "memory-advanced-idle-hours-input",
+                text.memory_min_idle_hours.clone(),
+                idle_value,
+                NumberRange {
+                    min: 1.,
+                    max: 48.,
+                    step: 1.,
+                },
+                set_memory_min_idle_hours,
+                false,
+            )),
+        )
+        .row(
+            SettingsCardRow::new("memory-advanced-age-days", text.memory_max_age_days.clone())
+                .description(text.memory_max_age_days_description.clone())
+                .control(number_input_control(
+                    "memory-advanced-age-days-input",
+                    text.memory_max_age_days.clone(),
+                    age_value,
+                    NumberRange {
+                        min: 0.,
+                        max: age_max,
+                        step: 1.,
+                    },
+                    set_memory_max_age_days,
+                    false,
+                )),
+        )
+        .row(
+            SettingsCardRow::new(
+                "memory-advanced-per-startup",
+                text.memory_per_startup.clone(),
+            )
+            .description(text.memory_per_startup_description.clone())
+            .control(number_input_control(
+                "memory-advanced-per-startup-input",
+                text.memory_per_startup.clone(),
+                per_startup_value,
+                NumberRange {
+                    min: 1.,
+                    max: 128.,
+                    step: 1.,
+                },
+                set_memory_per_startup,
+                false,
+            )),
+        )
+        .row(
+            SettingsCardRow::new("memory-advanced-scan-limit", text.memory_scan_limit.clone())
+                .description(text.memory_scan_limit_description.clone())
+                .control(number_input_control(
+                    "memory-advanced-scan-limit-input",
+                    text.memory_scan_limit.clone(),
+                    scan_value,
+                    NumberRange {
+                        min: 1.,
+                        max: 50_000.,
+                        step: 100.,
+                    },
+                    set_memory_scan_limit,
+                    false,
+                )),
+        )
+        .row(
+            SettingsCardRow::new(
+                "memory-advanced-concurrency",
+                text.memory_concurrency.clone(),
+            )
+            .description(text.memory_concurrency_description.clone())
+            .control(number_input_control(
+                "memory-advanced-concurrency-input",
+                text.memory_concurrency.clone(),
+                concurrency_value,
+                NumberRange {
+                    min: 1.,
+                    max: 16.,
+                    step: 1.,
+                },
+                set_memory_concurrency,
+                false,
+            )),
+        )
+        .row(
+            SettingsCardRow::new("memory-advanced-raw-limit", text.memory_raw_limit.clone())
+                .description(text.memory_raw_limit_description.clone())
+                .control(number_input_control(
+                    "memory-advanced-raw-limit-input",
+                    text.memory_raw_limit.clone(),
+                    raw_value,
+                    NumberRange {
+                        min: 1.,
+                        max: 4096.,
+                        step: 1.,
+                    },
+                    set_memory_raw_limit,
+                    false,
+                )),
+        )
+        .row(
+            SettingsCardRow::new(
+                "memory-advanced-retention",
+                text.memory_retention_days.clone(),
+            )
+            .description(text.memory_retention_days_description.clone())
+            .control(number_input_control(
+                "memory-advanced-retention-input",
+                text.memory_retention_days.clone(),
+                retention_value,
+                NumberRange {
+                    min: retention_min,
+                    max: 365.,
+                    step: 1.,
+                },
+                set_memory_retention_days,
+                false,
+            )),
+        );
+    cards.push(advanced);
+    cards
 }
