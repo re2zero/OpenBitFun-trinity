@@ -924,6 +924,9 @@ pub(crate) struct ShellText {
     pub usage_trend_output: String,
     pub usage_activity_title: String,
     pub usage_activity_description: String,
+    pub settings_usage_overview_title: String,
+    pub settings_usage_distributions_title: String,
+    pub settings_usage_details_title: String,
     pub usage_activity_less: String,
     pub usage_activity_more: String,
     pub usage_activity_mon: String,
@@ -3099,8 +3102,11 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         },
         usage_trend_input: "Input".to_string(),
         usage_trend_output: "Output".to_string(),
-        usage_activity_title: "Daily usage, last six months".to_string(),
+        usage_activity_title: "Daily Usage: Past Six Months".to_string(),
         usage_activity_description: "Fixed last six months (UTC).".to_string(),
+        settings_usage_overview_title: "Selected Period".to_string(),
+        settings_usage_distributions_title: "Usage Sources".to_string(),
+        settings_usage_details_title: "More Details".to_string(),
         usage_activity_less: "Less".to_string(),
         usage_activity_more: "More".to_string(),
         usage_activity_mon: "Mon".to_string(),
@@ -3725,9 +3731,7 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         settings_websearch_provider_title: service
             .t("gpui-shell-settings-websearch-provider-title")
             .await,
-        settings_websearch_http_title: service
-            .t("gpui-shell-settings-websearch-http-title")
-            .await,
+        settings_websearch_http_title: service.t("gpui-shell-settings-websearch-http-title").await,
         settings_websearch_http_description: service
             .t("gpui-shell-settings-websearch-http-desc")
             .await,
@@ -4456,6 +4460,11 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         usage_trend_output: service.t("gpui-shell-usage-trend-output").await,
         usage_activity_title: service.t("gpui-shell-usage-activity-title").await,
         usage_activity_description: service.t("gpui-shell-usage-activity-description").await,
+        settings_usage_overview_title: service.t("gpui-shell-settings-usage-overview-title").await,
+        settings_usage_distributions_title: service
+            .t("gpui-shell-settings-usage-distributions-title")
+            .await,
+        settings_usage_details_title: service.t("gpui-shell-settings-usage-details-title").await,
         usage_activity_less: service.t("gpui-shell-usage-activity-less").await,
         usage_activity_more: service.t("gpui-shell-usage-activity-more").await,
         usage_activity_mon: service.t("gpui-shell-usage-activity-mon").await,

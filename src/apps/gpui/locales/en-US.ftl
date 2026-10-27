@@ -870,8 +870,14 @@ gpui-shell-usage-trend-range = { $start } to { $end }
 gpui-shell-usage-trend-partial = Only the most recent trend is shown; totals still cover the full range.
 gpui-shell-usage-trend-input = Input
 gpui-shell-usage-trend-output = Output
-gpui-shell-usage-activity-title = Daily usage, last six months
+gpui-shell-usage-activity-title = Daily Usage: Past Six Months
 gpui-shell-usage-activity-description = Fixed last six months (UTC).
+
+# Card heads follow the web `settings/usage` section titles (overview,
+# distributions, details).
+gpui-shell-settings-usage-overview-title = Selected Period
+gpui-shell-settings-usage-distributions-title = Usage Sources
+gpui-shell-settings-usage-details-title = More Details
 gpui-shell-usage-activity-total = {$tokens} tokens total
 gpui-shell-usage-activity-less = Less
 gpui-shell-usage-activity-more = More

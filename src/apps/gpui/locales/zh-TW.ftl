@@ -860,6 +860,11 @@ gpui-shell-usage-trend-input = 輸入
 gpui-shell-usage-trend-output = 輸出
 gpui-shell-usage-activity-title = 近半年每日用量
 gpui-shell-usage-activity-description = 固定近半年（UTC）。
+
+# 卡頭沿用網頁 settings/usage 的分節標題（overview/distributions/details）。
+gpui-shell-settings-usage-overview-title = 所選時段用量
+gpui-shell-settings-usage-distributions-title = 用量來源
+gpui-shell-settings-usage-details-title = 更多明細
 gpui-shell-usage-activity-total = 累計 {$tokens} Token
 gpui-shell-usage-activity-less = 少
 gpui-shell-usage-activity-more = 多

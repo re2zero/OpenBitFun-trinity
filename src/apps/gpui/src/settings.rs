@@ -6601,9 +6601,7 @@ fn websearch_http_items(
             |cx: &App| {
                 SharedString::from(ShellConfig::current(cx).web_search_http_header_name.clone())
             },
-            |value: SharedString, cx: &mut App| {
-                set_websearch_http_header_name(&value, cx)
-            },
+            |value: SharedString, cx: &mut App| set_websearch_http_header_name(&value, cx),
         );
         items.push(
             SettingItem::new(text.websearch_http_header_name.clone(), header_name_field)
@@ -6651,9 +6649,8 @@ pub(crate) fn set_websearch_http_auth_mode(
     cx: &mut App,
 ) {
     let value = value.to_string();
-    let previously_required = websearch_http_credential_required(
-        &ShellConfig::current(cx).web_search_http_auth_mode,
-    );
+    let previously_required =
+        websearch_http_credential_required(&ShellConfig::current(cx).web_search_http_auth_mode);
     cx.global_mut::<ShellConfig>().web_search_http_auth_mode = value.clone();
     persist(
         WEB_SEARCH_HTTP_AUTH_MODE_PATH,
@@ -6797,7 +6794,7 @@ fn usage_group(
     let owned_text = text.clone();
     let stats_view = view.clone();
     let range_field = SettingField::render(move |_options, window, cx| {
-        usage_stats_field(stats_view.clone(), &owned_text, window, cx)
+        usage_stats_column(&stats_view, &owned_text, window, cx)
     });
     let activity_view = view;
     let activity_text = text.clone();
@@ -6810,6 +6807,23 @@ fn usage_group(
         SettingItem::new(text.usage_activity_title.clone(), activity_field)
             .description(text.usage_activity_description.clone()),
     ])
+}
+
+/// The component pipeline's stats field: the shared usage bodies composed in
+/// the field's historical order (controls and totals, trend, filtered
+/// distributions, endpoints).
+fn usage_stats_column(
+    view: &gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    text: &ShellText,
+    window: &mut Window,
+    cx: &mut App,
+) -> gpui_kit::AnyElement {
+    let mut column = div().v_flex().gap_2().w_full();
+    column = column.child(usage_overview_body(view.clone(), text, cx));
+    column = column.child(usage_trend_body(view.clone(), text, cx));
+    column = column.child(usage_distributions_body(view.clone(), text, window, cx));
+    column = column.child(usage_endpoint_body(view.clone(), text, cx));
+    column.into_any_element()
 }
 
 /// One selectable time range of the usage page; the values are the shared
@@ -7299,22 +7313,35 @@ fn render_usage_activity(
     column.into_any_element()
 }
 
-fn usage_stats_field(
+/// The shell state the usage bodies render from, or `None` when the window
+/// handle is gone.
+fn usage_snapshot(
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    cx: &App,
+) -> Option<(
+    String,
+    bool,
+    Option<Box<openbitfun_services_core::token_usage::UsageStatistics>>,
+)> {
+    let shell = view.upgrade()?;
+    let shell = shell.read(cx);
+    Some((
+        shell.usage_range.clone(),
+        shell.usage_loading,
+        shell.usage_stats.clone(),
+    ))
+}
+
+/// The usage overview body — the range dropdown and refresh, the loading and
+/// empty states, and the range's totals (web `overview` section). Shared by
+/// the component and card pipelines.
+pub(crate) fn usage_overview_body(
     view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
     text: &ShellText,
-    window: &mut Window,
     cx: &mut App,
 ) -> gpui_kit::AnyElement {
-    let Some(shell) = view.upgrade() else {
+    let Some((range, loading, stats)) = usage_snapshot(view.clone(), cx) else {
         return div().into_any_element();
-    };
-    let (range, loading, stats) = {
-        let shell_ref = shell.read(cx);
-        (
-            shell_ref.usage_range.clone(),
-            shell_ref.usage_loading,
-            shell_ref.usage_stats.clone(),
-        )
     };
     // The menu builder and item closures are `Fn` and outlive this render, so
     // everything they touch is cloned in (D70).
@@ -7443,10 +7470,34 @@ fn usage_stats_field(
         ));
     }
     column = column.child(totals);
-    column = column.child(render_usage_trend(&stats, text, cx));
+    column.into_any_element()
+}
 
-    // G-SE29: the distribution filter is page state, not a persisted
-    // preference — the web resets it when the page mounts.
+/// The usage trend chart alone (the web `details` section's trend row).
+/// Shared by the component and card pipelines.
+pub(crate) fn usage_trend_body(
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    text: &ShellText,
+    cx: &mut App,
+) -> gpui_kit::AnyElement {
+    let Some((_, _, Some(stats))) = usage_snapshot(view, cx) else {
+        return div().into_any_element();
+    };
+    render_usage_trend(&stats, text, cx)
+}
+
+/// The filtered distributions body — the page-local search input (G-SE29)
+/// over the model and provider distributions (web `distributions` section).
+/// Shared by the component and card pipelines.
+pub(crate) fn usage_distributions_body(
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    text: &ShellText,
+    window: &mut Window,
+    cx: &mut App,
+) -> gpui_kit::AnyElement {
+    let Some((_, _, Some(stats))) = usage_snapshot(view, cx) else {
+        return div().into_any_element();
+    };
     let placeholder = text.settings_usage_filter.clone();
     let filter_state = window.use_keyed_state(
         SharedString::from("usage-distribution-filter"),
@@ -7474,8 +7525,8 @@ fn usage_stats_field(
         .try_global::<UsageFilter>()
         .map(|filter| filter.0.trim().to_lowercase())
         .unwrap_or_default();
+    let mut column = div().v_flex().gap_2().w_full();
     column = column.child(div().w(px(260.)).child(Input::new(&filter_entity).small()));
-
     column = column.child(usage_distribution(
         &text.usage_models,
         &stats.by_model,
@@ -7490,14 +7541,31 @@ fn usage_stats_field(
         text,
         cx,
     ));
-    column = column.child(usage_distribution(
+    column.into_any_element()
+}
+
+/// The endpoint distribution — the web `details` section's endpoint rows; the
+/// filter is the distributions search's page-local value. Shared by the
+/// component and card pipelines.
+pub(crate) fn usage_endpoint_body(
+    view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    text: &ShellText,
+    cx: &mut App,
+) -> gpui_kit::AnyElement {
+    let Some((_, _, Some(stats))) = usage_snapshot(view, cx) else {
+        return div().into_any_element();
+    };
+    let filter = cx
+        .try_global::<UsageFilter>()
+        .map(|filter| filter.0.trim().to_lowercase())
+        .unwrap_or_default();
+    usage_distribution(
         &text.settings_usage_endpoints,
         &stats.by_endpoint,
         &filter,
         text,
         cx,
-    ));
-    column.into_any_element()
+    )
 }
 
 /// G-SE29: the distribution filter; the value lives only for the open
@@ -8847,6 +8915,69 @@ fn open_archived_delete_all_dialog(
 /// Diagnostics page (M22): the runtime log level (applied live through the
 /// tracing reload handle) and the shared log directory. The shell logs to
 /// stdout; the desktop's file bundle export is a desktop capability.
+/// The log level dropdown's write path, shared by the component and card
+/// pipelines: applies to the running runtime, then persists for launches.
+pub(crate) fn set_logging_level(value: &str, cx: &mut App) {
+    let value = value.to_string();
+    cx.global_mut::<ShellConfig>().logging_level = value.clone();
+    crate::shell::apply_log_level(&value);
+    persist(LOGGING_LEVEL_PATH, serde_json::Value::String(value));
+    cx.refresh_windows();
+}
+
+/// The log directory line: the display path plus the open action. Reads only
+/// the path manager, so the card pipeline can call it outside the shell's own
+/// render; shared with the component pipeline.
+pub(crate) fn diagnostics_logs_field(text: &ShellText, cx: &App) -> gpui_kit::AnyElement {
+    let Some(manager) = openbitfun_core::infrastructure::try_get_path_manager_arc()
+        .ok()
+        .map(|manager| manager.logs_dir())
+    else {
+        return div()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .child("—")
+            .into_any_element();
+    };
+    let display = manager.display().to_string();
+    div()
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap_2()
+        .w_full()
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(display),
+        )
+        .child(
+            Button::new("diagnostics-open-logs")
+                .label(text.settings_logs_open.clone())
+                .small()
+                .with_variant(ButtonVariant::Ghost)
+                .on_click(move |_, _window, _cx| {
+                    open_logs_directory();
+                }),
+        )
+        .into_any_element()
+}
+
+/// The diagnostics bundle export action, shared by the component and card
+/// pipelines; the destructive step stays behind the confirm dialog.
+pub(crate) fn diagnostics_export_button(text: &ShellText) -> gpui_kit::component::button::Button {
+    Button::new("diagnostics-export")
+        .label(text.settings_diagnostics_export_action.clone())
+        .small()
+        .with_variant(ButtonVariant::Secondary)
+        .on_click(|_, window, cx| {
+            open_export_confirm(window, cx);
+        })
+}
+
 fn diagnostics_group(
     text: &ShellText,
     view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
@@ -8857,57 +8988,16 @@ fn diagnostics_group(
             .map(|level| (SharedString::from(level), SharedString::from(level)))
             .collect::<Vec<(SharedString, SharedString)>>(),
         |cx: &App| SharedString::from(ShellConfig::current(cx).logging_level.clone()),
-        |value: SharedString, cx: &mut App| {
-            let value = value.to_string();
-            cx.global_mut::<ShellConfig>().logging_level = value.clone();
-            crate::shell::apply_log_level(&value);
-            persist(LOGGING_LEVEL_PATH, serde_json::Value::String(value));
-            cx.refresh_windows();
-        },
+        |value: SharedString, cx: &mut App| set_logging_level(&value, cx),
     );
 
     let owned_text = text.clone();
-    let logs_field = SettingField::render(move |_options, _window, cx| {
-        let Some(manager) = openbitfun_core::infrastructure::try_get_path_manager_arc()
-            .ok()
-            .map(|manager| manager.logs_dir())
-        else {
-            return div()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child("—")
-                .into_any_element();
-        };
-        let display = manager.display().to_string();
-        div()
-            .flex()
-            .items_center()
-            .justify_between()
-            .gap_2()
-            .w_full()
-            .child(
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(display),
-            )
-            .child(
-                Button::new("diagnostics-open-logs")
-                    .label(owned_text.settings_logs_open.clone())
-                    .small()
-                    .with_variant(ButtonVariant::Ghost)
-                    .on_click(move |_, _window, _cx| {
-                        open_logs_directory();
-                    }),
-            )
-            .into_any_element()
-    });
+    let logs_field =
+        SettingField::render(move |_options, _window, cx| diagnostics_logs_field(&owned_text, cx));
     // Keep the weak handle alive for future window-bound diagnostics state.
     let _ = view;
 
-    let owned_text = text.clone();
+    let export_text = text.clone();
     let export_field = SettingField::render(move |_options, _window, cx| {
         let mut column = div().flex().flex_col().gap_2().w_full();
         if let Some((succeeded, message)) = DiagnosticsNotice::current(cx) {
@@ -8924,15 +9014,7 @@ fn diagnostics_group(
                     .child(message),
             );
         }
-        column = column.child(
-            Button::new("diagnostics-export")
-                .label(owned_text.settings_diagnostics_export_action.clone())
-                .small()
-                .with_variant(ButtonVariant::Secondary)
-                .on_click(|_, window, cx| {
-                    open_export_confirm(window, cx);
-                }),
-        );
+        column = column.child(diagnostics_export_button(&export_text));
         column.into_any_element()
     });
 
@@ -8997,7 +9079,7 @@ fn previous_exit_description(info: &crate::diagnostics::UnexpectedExitInfo, cx: 
 /// The previous-run banner on the diagnostics page: warning-toned for a crash,
 /// neutral-info for an unclean shutdown. Detected runs only — a clean exit
 /// renders nothing, exactly like the desktop page.
-fn previous_exit_notice(
+pub(crate) fn previous_exit_notice(
     info: &crate::diagnostics::UnexpectedExitInfo,
     cx: &App,
 ) -> gpui_kit::AnyElement {

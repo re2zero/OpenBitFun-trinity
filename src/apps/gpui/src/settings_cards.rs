@@ -23,6 +23,11 @@ use std::rc::Rc;
 
 use crate::i18n::ShellText;
 use crate::settings::{
+    archived_sessions_field, diagnostics_export_button, diagnostics_logs_field,
+    previous_exit_notice, set_logging_level, usage_activity_field, usage_distributions_body,
+    usage_endpoint_body, usage_overview_body, usage_trend_body, DiagnosticsNotice,
+};
+use crate::settings::{
     body_json_valid, headers_json_valid, model_category_values, model_editor_presets_element,
     models_configured_list, proxy_enabled, proxy_text, set_ai_model_body_mode,
     set_ai_model_body_text, set_ai_model_category, set_ai_model_context_window,
@@ -92,6 +97,21 @@ impl SettingsCardRow {
         }
     }
 
+    /// A label-less body row: the card head speaks for the section and the
+    /// content spans the card edge to edge (dashboards and lists — page
+    /// bodies, not labeled controls). Implies [`Self::multiline`].
+    pub(crate) fn body(id: impl Into<SharedString>) -> Self {
+        Self {
+            id: id.into(),
+            label: SharedString::from(""),
+            description: None,
+            control: div().into_any_element(),
+            multiline: true,
+            disabled: false,
+            danger: false,
+        }
+    }
+
     /// The line on what the setting does.
     pub(crate) fn description(mut self, text: impl Into<SharedString>) -> Self {
         self.description = Some(text.into());
@@ -133,6 +153,7 @@ impl SettingsCardRow {
         let divider_color = theme.border.opacity(0.6);
         let radius = theme.radius_lg;
         let label = self.label.clone();
+        let has_label = !label.is_empty() || self.description.is_some();
         let label_block = div()
             .flex_1()
             .min_w_0()
@@ -170,7 +191,7 @@ impl SettingsCardRow {
                 }
                 style.bg(theme.list_hover)
             })
-            .child(label_block);
+            .when(has_label, |row| row.child(label_block));
         if self.multiline {
             row.flex_col()
                 .child(div().w_full().child(self.control))
@@ -343,6 +364,9 @@ pub(crate) fn render_card_page(
         SettingsEntry::Models => models_cards(text, cx),
         SettingsEntry::Memory => memory_cards(text, view, cx),
         SettingsEntry::WebSearch => websearch_cards(text, view, cx),
+        SettingsEntry::Usage => usage_cards(text, view),
+        SettingsEntry::Archived => archived_cards(text, view),
+        SettingsEntry::Diagnostics => diagnostics_cards(text, cx),
         _ => return None,
     };
     Some(page_frame(
@@ -367,6 +391,30 @@ fn page_preamble(entry: SettingsEntry, text: &ShellText, cx: &App) -> Vec<AnyEle
             let mut parts = vec![crate::settings::info_note(&text.memory_scope_notice, cx)];
             if let Some(receipt) = memory_notice_element(cx) {
                 parts.push(receipt);
+            }
+            parts
+        }
+        // The diagnostics page's export receipt (the web toasts it; this
+        // surface shows it above the card), then the previous-run banner when
+        // the last run ended badly — the web's order too (message, alert).
+        SettingsEntry::Diagnostics => {
+            let mut parts: Vec<AnyElement> = Vec::new();
+            if let Some((succeeded, message)) = DiagnosticsNotice::current(cx) {
+                parts.push(
+                    div()
+                        .min_w_0()
+                        .text_sm()
+                        .text_color(if succeeded {
+                            cx.theme().foreground
+                        } else {
+                            cx.theme().danger
+                        })
+                        .child(message)
+                        .into_any_element(),
+                );
+            }
+            if let Some(previous) = crate::diagnostics::previous_unexpected_exit() {
+                parts.push(previous_exit_notice(&previous, cx));
             }
             parts
         }
@@ -2241,28 +2289,24 @@ fn websearch_cards(
     let on_provider_select: Rc<dyn Fn(SharedString, &mut App)> =
         Rc::new(|value: SharedString, cx| set_websearch_provider(&value, cx));
 
-    let mut cards = vec![
-        SettingsCard::new("websearch")
-            .title(text.settings_websearch_provider_title.clone())
-            .row(
-                SettingsCardRow::new(
-                    "websearch-provider",
-                    text.settings_websearch_provider.clone(),
-                )
-                .description(text.settings_websearch_provider_description.clone())
-                .control(dropdown_control(
-                    "websearch-provider-menu",
-                    provider_label,
-                    Rc::new(provider_options),
-                    on_provider_select,
-                    false,
-                )),
+    let mut cards = vec![SettingsCard::new("websearch")
+        .title(text.settings_websearch_provider_title.clone())
+        .row(
+            SettingsCardRow::new(
+                "websearch-provider",
+                text.settings_websearch_provider.clone(),
             )
-            .row(
-                SettingsCardRow::new(
-                    "websearch-credential",
-                    text.websearch_credential.clone(),
-                )
+            .description(text.settings_websearch_provider_description.clone())
+            .control(dropdown_control(
+                "websearch-provider-menu",
+                provider_label,
+                Rc::new(provider_options),
+                on_provider_select,
+                false,
+            )),
+        )
+        .row(
+            SettingsCardRow::new("websearch-credential", text.websearch_credential.clone())
                 .description(text.websearch_credential_description.clone())
                 .control(DeferredControl {
                     construct: {
@@ -2271,14 +2315,12 @@ fn websearch_cards(
                         move |_, cx| websearch_credential_field(view, &text, cx)
                     },
                 }),
-            ),
-    ];
+        )];
 
     // T2-9: the custom HTTP service's endpoint/auth rows follow its provider.
     if ShellConfig::current(cx).web_search_provider == "openbitfun_search_http" {
         let snapshot = ShellConfig::current(cx);
-        let endpoint_value =
-            SharedString::from(snapshot.web_search_http_endpoint.clone());
+        let endpoint_value = SharedString::from(snapshot.web_search_http_endpoint.clone());
         let auth_current = websearch_http_auth_mode_display(&snapshot.web_search_http_auth_mode);
         let auth_options: Vec<(SharedString, SharedString)> = [
             ("none", text.websearch_auth_none.clone()),
@@ -2346,4 +2388,132 @@ fn websearch_cards(
         cards.push(http);
     }
     cards
+}
+
+/// The usage page's cards, one per web section: the activity heatmap
+/// (近半年每日用量), 所选时段用量 (range controls and totals), 用量来源 (the
+/// filtered model/provider distributions), and 更多明细 (trend and endpoint
+/// rows). The bodies are the component pipeline's own; the cards only re-seat
+/// them. While the stats are absent the three data cards render heads only —
+/// the primitive's head-only card shape (the memory page's closed advanced
+/// card), never an empty husk with rows.
+fn usage_cards(text: &ShellText, view: gpui_kit::WeakEntity<ShellWindow>) -> Vec<SettingsCard> {
+    let activity_view = view.clone();
+    let activity_text = text.clone();
+    let activity = SettingsCard::new("usage-activity")
+        .title(text.usage_activity_title.clone())
+        .description(text.usage_activity_description.clone())
+        .row(
+            SettingsCardRow::body("usage-activity-grid").control(DeferredControl {
+                construct: move |_, cx| usage_activity_field(activity_view, &activity_text, cx),
+            }),
+        );
+
+    let overview_view = view.clone();
+    let overview_text = text.clone();
+    let overview = SettingsCard::new("usage-overview")
+        .title(text.settings_usage_overview_title.clone())
+        .row(
+            SettingsCardRow::body("usage-overview-body").control(DeferredControl {
+                construct: move |_, cx| usage_overview_body(overview_view, &overview_text, cx),
+            }),
+        );
+
+    let distributions_view = view.clone();
+    let distributions_text = text.clone();
+    let distributions = SettingsCard::new("usage-distributions")
+        .title(text.settings_usage_distributions_title.clone())
+        .row(
+            SettingsCardRow::body("usage-distributions-body").control(DeferredControl {
+                construct: move |window, cx| {
+                    usage_distributions_body(distributions_view, &distributions_text, window, cx)
+                },
+            }),
+        );
+
+    let details_view = view;
+    let details_text = text.clone();
+    let details = SettingsCard::new("usage-details")
+        .title(text.settings_usage_details_title.clone())
+        .row(
+            SettingsCardRow::body("usage-details-body").control(DeferredControl {
+                construct: move |_, cx| {
+                    let mut column = div().flex().flex_col().gap_2().w_full();
+                    column =
+                        column.child(usage_trend_body(details_view.clone(), &details_text, cx));
+                    column = column.child(usage_endpoint_body(details_view, &details_text, cx));
+                    column.into_any_element()
+                },
+            }),
+        );
+
+    vec![activity, overview, distributions, details]
+}
+
+/// The archived page's single card: the web page has one section whose title
+/// repeats the page title, so the card stays headless and the row carries the
+/// list's own label. The cross-workspace list, its actions, states, and the
+/// inline receipt all come from the shared body.
+fn archived_cards(text: &ShellText, view: gpui_kit::WeakEntity<ShellWindow>) -> Vec<SettingsCard> {
+    let owned_text = text.clone();
+    vec![SettingsCard::new("archived").row(
+        SettingsCardRow::new("archived-list", text.settings_archived_list.clone())
+            .description(text.settings_archived_description.clone())
+            .multiline()
+            .control(DeferredControl {
+                construct: move |window, cx| archived_sessions_field(view, &owned_text, window, cx),
+            }),
+    )]
+}
+
+/// The diagnostics page's single card (web has one logging section, so the
+/// card stays headless): the log level, the log directory line, and the
+/// bundle export. All three controls construct eagerly — none reads the shell
+/// entity; the export receipt and the previous-run banner live in the page
+/// preamble.
+fn diagnostics_cards(text: &ShellText, cx: &mut App) -> Vec<SettingsCard> {
+    let level = ShellConfig::current(cx).logging_level.clone();
+    let options: Rc<Vec<(SharedString, SharedString)>> = Rc::new(
+        ["trace", "debug", "info", "warn", "error", "off"]
+            .iter()
+            .map(|level| {
+                // The web capitalizes the level identifier in every locale.
+                let mut label = (*level).to_string();
+                label[..1].make_ascii_uppercase();
+                (SharedString::from(*level), SharedString::from(label))
+            })
+            .collect(),
+    );
+    let current_label = options
+        .iter()
+        .find(|(value, _)| value.as_ref() == level.as_str())
+        .map(|(_, label)| label.clone())
+        .unwrap_or_else(|| level.clone().into());
+
+    vec![SettingsCard::new("diagnostics")
+        .row(
+            SettingsCardRow::new("diagnostics-level", text.settings_logging_level.clone())
+                .description(text.settings_logging_level_description.clone())
+                .control(dropdown_control(
+                    "diagnostics-level-menu",
+                    current_label,
+                    options,
+                    Rc::new(|value: SharedString, cx: &mut App| set_logging_level(&value, cx)),
+                    false,
+                )),
+        )
+        .row(
+            SettingsCardRow::new("diagnostics-logs", text.settings_logs_dir.clone())
+                .description(text.settings_diagnostics_note.clone())
+                .multiline()
+                .control(diagnostics_logs_field(text, cx)),
+        )
+        .row(
+            SettingsCardRow::new(
+                "diagnostics-export",
+                text.settings_diagnostics_export.clone(),
+            )
+            .description(text.settings_diagnostics_export_description.clone())
+            .control(diagnostics_export_button(text)),
+        )]
 }
