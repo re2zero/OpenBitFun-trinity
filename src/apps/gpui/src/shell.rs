@@ -12082,9 +12082,11 @@ mod tests {
                     "settings-section-memory-advanced",
                 ],
             ),
+            // The models page is on the card path: its stream and proxy
+            // cards carry the anchors now.
             (
                 settings::SettingsEntry::Models,
-                &["settings-section-stream", "settings-section-proxy"],
+                &["settings-card-models-stream", "settings-card-models-proxy"],
             ),
             (
                 settings::SettingsEntry::Permissions,

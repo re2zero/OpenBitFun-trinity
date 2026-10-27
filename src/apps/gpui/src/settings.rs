@@ -2641,6 +2641,107 @@ pub(crate) fn update_check_field(
     column.into_any_element()
 }
 
+/// The default-model setter both model renderers share; it persists to
+/// `ai.default_models.primary`.
+pub(crate) fn set_default_primary_model(value: &str, cx: &mut App) {
+    if value.is_empty() {
+        return;
+    }
+    cx.global_mut::<ShellConfig>().default_primary_model = Some(value.to_string());
+    persist(DEFAULT_MODEL_PATH, serde_json::json!(value));
+    cx.refresh_windows();
+}
+
+/// The configured-models list: loading/empty states, then one row per model
+/// with its provider state plus test/edit actions, the test receipt beneath
+/// the tested row. Both model renderers share it.
+pub(crate) fn models_configured_list(cx: &App) -> gpui_kit::AnyElement {
+    let catalog = cx
+        .try_global::<crate::runtime::ModelCatalog>()
+        .cloned()
+        .unwrap_or_default();
+    let text = crate::i18n::current(cx);
+    if !catalog.loaded {
+        return div()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .child(text.models_loading.clone())
+            .into_any_element();
+    }
+    if catalog.models.is_empty() {
+        return div()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .child(text.models_empty.clone())
+            .into_any_element();
+    }
+    let receipts = ModelTestState::current(cx).receipts;
+    let mut list = div().v_flex().gap_2().w_full();
+    for model in &catalog.models {
+        let (state, state_color) = if model.enabled {
+            (text.models_enabled.clone(), cx.theme().muted_foreground)
+        } else {
+            (text.models_disabled.clone(), cx.theme().danger)
+        };
+        let testing = matches!(receipts.get(&model.id), Some(ModelTestReceipt::Testing));
+        let test_label = if testing {
+            text.models_testing.clone()
+        } else {
+            text.models_test.clone()
+        };
+        let test_id = model.id.clone();
+        let edit_id = model.id.clone();
+        let edit_label = crate::i18n::shared_term("tools.edit", cx);
+        let row = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .child(div().min_w_0().truncate().text_sm().child(model.label()))
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .child(div().text_sm().text_color(state_color).child(state))
+                    .child(
+                        Button::new(SharedString::from(format!("model-test-{}", model.id)))
+                            .label(test_label)
+                            .small()
+                            .with_variant(ButtonVariant::Ghost)
+                            .loading(testing)
+                            .on_click(move |_, _window, cx| {
+                                start_model_test(test_id.clone(), cx);
+                            }),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("model-edit-{}", model.id)))
+                            .label(edit_label)
+                            .small()
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(move |_, _window, cx| {
+                                ModelEditorState::mutate(cx, |state| {
+                                    state.model_id = Some(edit_id.clone());
+                                    state.drafts_ready = false;
+                                    state.headers_text.clear();
+                                    state.body_text.clear();
+                                });
+                                cx.refresh_windows();
+                            }),
+                    ),
+            );
+        let mut card = div().v_flex().gap_1().w_full().child(row);
+        if let Some(ModelTestReceipt::Done(result)) = receipts.get(&model.id) {
+            card = card.child(model_test_receipt(result, &text, cx));
+        }
+        list = list.child(card);
+    }
+    list.into_any_element()
+}
+
 /// Models group (M11 minimal version): the configured models with their
 /// provider and enabled state, plus the default model new sessions start on.
 /// The catalog comes from the same core path the desktop models page uses;
@@ -2665,105 +2766,12 @@ fn models_group(text: &ShellText, cx: &App) -> SettingGroup {
                     .unwrap_or_default(),
             )
         },
-        |value: SharedString, cx: &mut App| {
-            let value = value.to_string();
-            if value.is_empty() {
-                return;
-            }
-            cx.global_mut::<ShellConfig>().default_primary_model = Some(value.clone());
-            persist(DEFAULT_MODEL_PATH, serde_json::json!(value));
-            cx.refresh_windows();
-        },
+        |value: SharedString, cx: &mut App| set_default_primary_model(&value, cx),
     );
 
     let no_models = catalog.models.is_empty();
 
-    let list_field = SettingField::render(|_options, _window, cx| {
-        let catalog = cx
-            .try_global::<crate::runtime::ModelCatalog>()
-            .cloned()
-            .unwrap_or_default();
-        let text = crate::i18n::current(cx);
-        if !catalog.loaded {
-            return div()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child(text.models_loading.clone())
-                .into_any_element();
-        }
-        if catalog.models.is_empty() {
-            return div()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child(text.models_empty.clone())
-                .into_any_element();
-        }
-        let receipts = ModelTestState::current(cx).receipts;
-        let mut list = div().v_flex().gap_2().w_full();
-        for model in &catalog.models {
-            let (state, state_color) = if model.enabled {
-                (text.models_enabled.clone(), cx.theme().muted_foreground)
-            } else {
-                (text.models_disabled.clone(), cx.theme().danger)
-            };
-            let testing = matches!(receipts.get(&model.id), Some(ModelTestReceipt::Testing));
-            let test_label = if testing {
-                text.models_testing.clone()
-            } else {
-                text.models_test.clone()
-            };
-            let test_id = model.id.clone();
-            let edit_id = model.id.clone();
-            let edit_label = crate::i18n::shared_term("tools.edit", cx);
-            let row = div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .gap_2()
-                .child(div().min_w_0().truncate().text_sm().child(model.label()))
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_2()
-                        .child(div().text_sm().text_color(state_color).child(state))
-                        .child(
-                            Button::new(SharedString::from(format!("model-test-{}", model.id)))
-                                .label(test_label)
-                                .small()
-                                .with_variant(ButtonVariant::Ghost)
-                                .loading(testing)
-                                .on_click(move |_, _window, cx| {
-                                    start_model_test(test_id.clone(), cx);
-                                }),
-                        )
-                        .child(
-                            Button::new(SharedString::from(format!("model-edit-{}", model.id)))
-                                .label(edit_label)
-                                .small()
-                                .with_variant(ButtonVariant::Ghost)
-                                .on_click(move |_, _window, cx| {
-                                    ModelEditorState::mutate(cx, |state| {
-                                        state.model_id = Some(edit_id.clone());
-                                        state.drafts_ready = false;
-                                        state.headers_text.clear();
-                                        state.body_text.clear();
-                                    });
-                                    cx.refresh_windows();
-                                }),
-                        ),
-                );
-            let mut card = div().v_flex().gap_1().w_full().child(row);
-            if let Some(ModelTestReceipt::Done(result)) = receipts.get(&model.id) {
-                card = card.child(model_test_receipt(result, &text, cx));
-            }
-            list = list.child(card);
-        }
-        list.into_any_element()
-    });
+    let list_field = SettingField::render(|_options, _window, cx| models_configured_list(cx));
 
     let default_description = if no_models {
         text.models_empty.clone()
@@ -2831,6 +2839,63 @@ fn models_group(text: &ShellText, cx: &App) -> SettingGroup {
         items.extend(editor_items);
     }
     SettingGroup::new().items(items)
+}
+
+/// The read-only preset summary beneath the reasoning selector: what the
+/// row's presets actually do. Selection stays the editable part; authoring
+/// presets belongs to the pages that own the panel. Both renderers share it.
+pub(crate) fn model_editor_presets_element(
+    presets: &[openbitfun_core::service::config::types::ReasoningPreset],
+    cx: &App,
+) -> gpui_kit::AnyElement {
+    let text = crate::i18n::current(cx);
+    let mut column = div()
+        .v_flex()
+        .gap_1()
+        .w_full()
+        .debug_selector(|| "model-editor-presets".to_string())
+        .child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(text.models_reasoning_presets.clone()),
+        );
+    if presets.is_empty() {
+        column = column.child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(text.models_reasoning_empty.clone()),
+        );
+    }
+    for preset in presets {
+        let name = preset
+            .label
+            .clone()
+            .filter(|label| !label.trim().is_empty())
+            .unwrap_or_else(|| preset.id.clone());
+        let summary = if preset.actions.is_empty() {
+            crate::i18n::reasoning_no_actions(cx)
+        } else {
+            preset
+                .actions
+                .iter()
+                .map(|action| crate::i18n::reasoning_action_summary(action, cx))
+                .collect::<Vec<_>>()
+                .join(" · ")
+        };
+        let mut line = format!("{name} · {summary}");
+        if preset.disabled {
+            line = format!("{line} · {}", text.models_disabled);
+        }
+        column = column.child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(line),
+        );
+    }
+    column.into_any_element()
 }
 
 /// G-SE12: the inline editor for the row opened from the model list. It
@@ -3034,57 +3099,8 @@ fn model_editor_items(text: &ShellText, cx: &App) -> Option<Vec<SettingItem>> {
         .as_ref()
         .map(|reasoning| reasoning.presets.clone())
         .unwrap_or_default();
-    let presets_title = text.models_reasoning_presets.clone();
-    let presets_empty = text.models_reasoning_empty.clone();
-    let presets_disabled = text.models_disabled.clone();
     let presets_item = SettingItem::render(move |_options, _window, cx| {
-        let mut column = div()
-            .v_flex()
-            .gap_1()
-            .w_full()
-            .debug_selector(|| "model-editor-presets".to_string())
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(presets_title.clone()),
-            );
-        if presets.is_empty() {
-            column = column.child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(presets_empty.clone()),
-            );
-        }
-        for preset in &presets {
-            let name = preset
-                .label
-                .clone()
-                .filter(|label| !label.trim().is_empty())
-                .unwrap_or_else(|| preset.id.clone());
-            let summary = if preset.actions.is_empty() {
-                crate::i18n::reasoning_no_actions(cx)
-            } else {
-                preset
-                    .actions
-                    .iter()
-                    .map(|action| crate::i18n::reasoning_action_summary(action, cx))
-                    .collect::<Vec<_>>()
-                    .join(" · ")
-            };
-            let mut line = format!("{name} · {summary}");
-            if preset.disabled {
-                line = format!("{line} · {presets_disabled}");
-            }
-            column = column.child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(line),
-            );
-        }
-        column.into_any_element()
+        model_editor_presets_element(&presets, cx)
     })
     .layout(Axis::Vertical);
 
@@ -3577,23 +3593,32 @@ fn stream_timeout_field(
             step: 30.,
         },
         move |cx: &App| read(&ShellConfig::current(cx)).unwrap_or(0) as f64,
-        move |value: f64, cx: &mut App| {
-            if !value.is_finite() {
-                return;
-            }
-            let secs = (value.round() as u64).min(MAX_STREAM_TIMEOUT_SECS as u64);
-            let stored = (secs > 0).then_some(secs);
-            write(cx.global_mut::<ShellConfig>(), stored);
-            persist(
-                path,
-                match stored {
-                    Some(secs) => serde_json::json!(secs),
-                    None => serde_json::Value::Null,
-                },
-            );
-            cx.refresh_windows();
-        },
+        move |value: f64, cx: &mut App| set_stream_timeout_value(path, write, value, cx),
     )
+}
+
+/// The streaming-timeout setter both model renderers share: zero writes the
+/// same `null` the web page's empty input writes.
+pub(crate) fn set_stream_timeout_value(
+    path: &'static str,
+    write: fn(&mut ShellConfig, Option<u64>),
+    value: f64,
+    cx: &mut App,
+) {
+    if !value.is_finite() {
+        return;
+    }
+    let secs = (value.round() as u64).min(MAX_STREAM_TIMEOUT_SECS as u64);
+    let stored = (secs > 0).then_some(secs);
+    write(cx.global_mut::<ShellConfig>(), stored);
+    persist(
+        path,
+        match stored {
+            Some(secs) => serde_json::json!(secs),
+            None => serde_json::Value::Null,
+        },
+    );
+    cx.refresh_windows();
 }
 
 /// G-SE11: one proxy string field, written back as a single key of the stored
@@ -7441,7 +7466,7 @@ pub(crate) enum ModelTestReceipt {
 
 /// G-SE12: starts a probe for one model unless its previous one is still in
 /// flight. The result arrives through the runtime event pump.
-fn start_model_test(model_id: String, cx: &mut App) {
+pub(crate) fn start_model_test(model_id: String, cx: &mut App) {
     if matches!(
         ModelTestState::current(cx).receipts.get(&model_id),
         Some(ModelTestReceipt::Testing)
@@ -7463,7 +7488,7 @@ fn start_model_test(model_id: String, cx: &mut App) {
 /// Formats one finished probe as wrap-friendly lines: the verdict with its
 /// wall-clock time, the localized hint for the runtime's message code, and
 /// the raw details (web `runConfigConnectionTest`).
-fn model_test_receipt(
+pub(crate) fn model_test_receipt(
     result: &Result<openbitfun_core::util::types::ConnectionTestResult, String>,
     text: &ShellText,
     cx: &App,
@@ -7775,9 +7800,9 @@ fn hook_import_state_label(
 
 /// The context window the web editor shows for a model that never stored one
 /// (`config.context_window || 300000`).
-const MODEL_EDITOR_DEFAULT_CONTEXT_WINDOW: u32 = 300_000;
+pub(crate) const MODEL_EDITOR_DEFAULT_CONTEXT_WINDOW: u32 = 300_000;
 /// The shared contract's lower bound (`MIN_MODEL_CONTEXT_WINDOW_TOKENS`).
-const MODEL_EDITOR_MIN_CONTEXT_WINDOW: u32 =
+pub(crate) const MODEL_EDITOR_MIN_CONTEXT_WINDOW: u32 =
     openbitfun_core::service::config::types::MIN_MODEL_CONTEXT_WINDOW_TOKENS;
 
 /// Updates the in-memory mirror of one model row. The page reads this mirror,
@@ -7873,7 +7898,7 @@ pub(crate) fn model_category_values(stored: &str) -> Vec<&'static str> {
 }
 
 /// G-SE12-3: whether a headers draft is empty or an object of string values.
-fn headers_json_valid(text: &str) -> bool {
+pub(crate) fn headers_json_valid(text: &str) -> bool {
     text.trim().is_empty()
         || matches!(
             serde_json::from_str::<serde_json::Value>(text),
@@ -7883,7 +7908,7 @@ fn headers_json_valid(text: &str) -> bool {
 }
 
 /// G-SE12-3: whether a body draft is empty or a JSON object.
-fn body_json_valid(text: &str) -> bool {
+pub(crate) fn body_json_valid(text: &str) -> bool {
     let trimmed = text.trim();
     trimmed.is_empty()
         || matches!(
@@ -7893,7 +7918,7 @@ fn body_json_valid(text: &str) -> bool {
 }
 
 /// G-SE12: one row's write actions, shared by the editor widgets.
-fn set_ai_model_category(model_id: &str, category: String, cx: &mut App) {
+pub(crate) fn set_ai_model_category(model_id: &str, category: String, cx: &mut App) {
     if update_ai_model_mirror(model_id, cx, |model| {
         model.category =
             serde_json::from_value(serde_json::Value::String(category.clone())).unwrap_or_default();
@@ -7906,7 +7931,7 @@ fn set_ai_model_category(model_id: &str, category: String, cx: &mut App) {
     }
 }
 
-fn set_ai_model_context_window(model_id: &str, tokens: u32, cx: &mut App) {
+pub(crate) fn set_ai_model_context_window(model_id: &str, tokens: u32, cx: &mut App) {
     let tokens = tokens.max(MODEL_EDITOR_MIN_CONTEXT_WINDOW);
     let mut cleared_max_tokens = false;
     if update_ai_model_mirror(model_id, cx, |model| {
@@ -7934,7 +7959,7 @@ fn set_ai_model_context_window(model_id: &str, tokens: u32, cx: &mut App) {
     }
 }
 
-fn set_ai_model_max_tokens(model_id: &str, tokens: Option<u32>, cx: &mut App) {
+pub(crate) fn set_ai_model_max_tokens(model_id: &str, tokens: Option<u32>, cx: &mut App) {
     if update_ai_model_mirror(model_id, cx, |model| model.max_tokens = tokens) {
         persist_ai_model_fields(
             model_id,
@@ -7944,7 +7969,7 @@ fn set_ai_model_max_tokens(model_id: &str, tokens: Option<u32>, cx: &mut App) {
     }
 }
 
-fn set_ai_model_reasoning_default(model_id: &str, preset: Option<String>, cx: &mut App) {
+pub(crate) fn set_ai_model_reasoning_default(model_id: &str, preset: Option<String>, cx: &mut App) {
     if update_ai_model_mirror(model_id, cx, |model| {
         let reasoning = model
             .reasoning
@@ -8011,7 +8036,7 @@ fn set_ai_model_reasoning_default(model_id: &str, preset: Option<String>, cx: &m
 /// G-SE12-3: advanced request-shaping values. Each writes one key immediately;
 /// the JSON text fields write only once the text parses, so a half-typed
 /// brace never lands in the shared row.
-fn set_ai_model_skip_ssl(model_id: &str, enabled: bool, cx: &mut App) {
+pub(crate) fn set_ai_model_skip_ssl(model_id: &str, enabled: bool, cx: &mut App) {
     if update_ai_model_mirror(model_id, cx, |model| model.skip_ssl_verify = enabled) {
         persist_ai_model_fields(
             model_id,
@@ -8021,7 +8046,7 @@ fn set_ai_model_skip_ssl(model_id: &str, enabled: bool, cx: &mut App) {
     }
 }
 
-fn set_ai_model_inline_think(model_id: &str, enabled: bool, cx: &mut App) {
+pub(crate) fn set_ai_model_inline_think(model_id: &str, enabled: bool, cx: &mut App) {
     if update_ai_model_mirror(model_id, cx, |model| model.inline_think_in_text = enabled) {
         persist_ai_model_fields(
             model_id,
@@ -8031,7 +8056,7 @@ fn set_ai_model_inline_think(model_id: &str, enabled: bool, cx: &mut App) {
     }
 }
 
-fn set_ai_model_header_mode(model_id: &str, mode: String, cx: &mut App) {
+pub(crate) fn set_ai_model_header_mode(model_id: &str, mode: String, cx: &mut App) {
     if update_ai_model_mirror(model_id, cx, |model| {
         model.custom_headers_mode = Some(mode.clone());
     }) {
@@ -8043,7 +8068,7 @@ fn set_ai_model_header_mode(model_id: &str, mode: String, cx: &mut App) {
     }
 }
 
-fn set_ai_model_body_mode(model_id: &str, mode: String, cx: &mut App) {
+pub(crate) fn set_ai_model_body_mode(model_id: &str, mode: String, cx: &mut App) {
     if update_ai_model_mirror(model_id, cx, |model| {
         model.custom_request_body_mode = Some(mode.clone());
     }) {
@@ -8055,7 +8080,7 @@ fn set_ai_model_body_mode(model_id: &str, mode: String, cx: &mut App) {
     }
 }
 
-fn set_ai_model_headers_text(model_id: &str, text: String, cx: &mut App) {
+pub(crate) fn set_ai_model_headers_text(model_id: &str, text: String, cx: &mut App) {
     ModelEditorState::mutate(cx, |state| {
         state.drafts_ready = true;
         state.headers_text = text.clone();
@@ -8096,7 +8121,7 @@ fn set_ai_model_headers_text(model_id: &str, text: String, cx: &mut App) {
     }
 }
 
-fn set_ai_model_body_text(model_id: &str, text: String, cx: &mut App) {
+pub(crate) fn set_ai_model_body_text(model_id: &str, text: String, cx: &mut App) {
     ModelEditorState::mutate(cx, |state| {
         state.drafts_ready = true;
         state.body_text = text.clone();
