@@ -1373,6 +1373,12 @@ pub(crate) fn render_page(
     entry: SettingsEntry,
     cx: &mut App,
 ) -> gpui_kit::AnyElement {
+    // Card-path pages (gpui-redesign E2) render through the shell-owned card
+    // primitives; the rest still go through the component pipeline below.
+    if let Some(card_page) = crate::settings_cards::render_card_page(text, view.clone(), entry, cx)
+    {
+        return card_page;
+    }
     let header = page_header_style(cx);
     let pages = settings_entries()
         .map(|candidate| {
@@ -2413,7 +2419,7 @@ fn general_group(
 
 /// Flips launch-at-login. The toggle is optimistic; a failed platform write
 /// logs the reason and publishes the real state back through the pump.
-fn set_autostart(enabled: bool, cx: &mut App) {
+pub(crate) fn set_autostart(enabled: bool, cx: &mut App) {
     cx.set_global(AutostartState(enabled));
     // Paint the optimistic state now; the async platform write would
     // otherwise leave the switch stale until the event pump refreshes.
@@ -2436,7 +2442,7 @@ fn set_autostart(enabled: bool, cx: &mut App) {
 /// G-SE1: flips prevent-sleep. The toggle is optimistic; the shared
 /// `app.prevent_sleep` write rolls the runtime inhibitor back when it fails,
 /// and the config listener publishes the resulting state either way.
-fn set_prevent_sleep(enabled: bool, cx: &mut App) {
+pub(crate) fn set_prevent_sleep(enabled: bool, cx: &mut App) {
     cx.set_global(PreventSleepState(enabled));
     // Paint the optimistic state now; the async inhibitor write would
     // otherwise leave the switch stale until the event pump refreshes.
@@ -2455,7 +2461,7 @@ fn set_prevent_sleep(enabled: bool, cx: &mut App) {
 /// The check / install / restart control, projected from the window's update
 /// state machine. Every button publishes the same event the tray menu uses,
 /// so there is exactly one update flow.
-fn update_check_field(
+pub(crate) fn update_check_field(
     view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
     text: &ShellText,
     cx: &mut App,

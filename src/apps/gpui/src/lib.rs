@@ -21,6 +21,7 @@ pub mod plugin_ui;
 pub mod runtime;
 pub mod search;
 pub mod settings;
+pub mod settings_cards;
 pub mod shell;
 pub mod sleep_prevention;
 pub mod storage;
