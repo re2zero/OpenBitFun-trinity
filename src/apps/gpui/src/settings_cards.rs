@@ -52,6 +52,10 @@ use crate::settings::{
     set_memory_max_age_days, set_memory_min_idle_hours, set_memory_per_startup, set_memory_policy,
     set_memory_raw_limit, set_memory_retention_days, set_memory_scan_limit, MemoryPageState,
 };
+use crate::settings::{
+    set_websearch_http_auth_mode, set_websearch_http_endpoint, set_websearch_http_header_name,
+    set_websearch_provider, websearch_credential_field, websearch_http_auth_mode_display,
+};
 use crate::shell::ShellWindow;
 
 /// One setting row: label + optional description on the left, the control in a
@@ -338,6 +342,7 @@ pub(crate) fn render_card_page(
         SettingsEntry::Shortcuts => shortcuts_cards(text, cx),
         SettingsEntry::Models => models_cards(text, cx),
         SettingsEntry::Memory => memory_cards(text, view, cx),
+        SettingsEntry::WebSearch => websearch_cards(text, view, cx),
         _ => return None,
     };
     Some(page_frame(
@@ -2203,5 +2208,142 @@ fn memory_cards(
             )),
         );
     cards.push(advanced);
+    cards
+}
+
+/// The 网页搜索 page's cards, one per web section: 搜索服务 (the active
+/// provider plus its credential), and — while the custom HTTP service is
+/// selected — 自定义搜索服务 (endpoint, auth mode, and the credential header
+/// name for the header mode).
+fn websearch_cards(
+    text: &ShellText,
+    view: gpui_kit::WeakEntity<ShellWindow>,
+    cx: &mut App,
+) -> Vec<SettingsCard> {
+    let provider_options: Vec<(SharedString, SharedString)> = [
+        ("exa_mcp_free", text.websearch_provider_free.clone()),
+        ("exa_search_api", text.websearch_provider_exa.clone()),
+        ("tavily", text.websearch_provider_tavily.clone()),
+        (
+            "openbitfun_search_http",
+            text.websearch_provider_http.clone(),
+        ),
+    ]
+    .into_iter()
+    .map(|(id, label)| (SharedString::from(id), SharedString::from(label)))
+    .collect();
+    let provider_current = ShellConfig::current(cx).web_search_provider.clone();
+    let provider_label = provider_options
+        .iter()
+        .find(|(value, _)| value.as_ref() == provider_current)
+        .map(|(_, label)| label.clone())
+        .unwrap_or_else(|| provider_current.clone().into());
+    let on_provider_select: Rc<dyn Fn(SharedString, &mut App)> =
+        Rc::new(|value: SharedString, cx| set_websearch_provider(&value, cx));
+
+    let mut cards = vec![
+        SettingsCard::new("websearch")
+            .title(text.settings_websearch_provider_title.clone())
+            .row(
+                SettingsCardRow::new(
+                    "websearch-provider",
+                    text.settings_websearch_provider.clone(),
+                )
+                .description(text.settings_websearch_provider_description.clone())
+                .control(dropdown_control(
+                    "websearch-provider-menu",
+                    provider_label,
+                    Rc::new(provider_options),
+                    on_provider_select,
+                    false,
+                )),
+            )
+            .row(
+                SettingsCardRow::new(
+                    "websearch-credential",
+                    text.websearch_credential.clone(),
+                )
+                .description(text.websearch_credential_description.clone())
+                .control(DeferredControl {
+                    construct: {
+                        let view = view.clone();
+                        let text = text.clone();
+                        move |_, cx| websearch_credential_field(view, &text, cx)
+                    },
+                }),
+            ),
+    ];
+
+    // T2-9: the custom HTTP service's endpoint/auth rows follow its provider.
+    if ShellConfig::current(cx).web_search_provider == "openbitfun_search_http" {
+        let snapshot = ShellConfig::current(cx);
+        let endpoint_value =
+            SharedString::from(snapshot.web_search_http_endpoint.clone());
+        let auth_current = websearch_http_auth_mode_display(&snapshot.web_search_http_auth_mode);
+        let auth_options: Vec<(SharedString, SharedString)> = [
+            ("none", text.websearch_auth_none.clone()),
+            ("bearer", text.websearch_auth_bearer.clone()),
+            ("header", text.websearch_auth_header.clone()),
+        ]
+        .into_iter()
+        .map(|(id, label)| (SharedString::from(id), SharedString::from(label)))
+        .collect();
+        let auth_label = auth_options
+            .iter()
+            .find(|(value, _)| *value == auth_current)
+            .map(|(_, label)| label.clone())
+            .unwrap_or_else(|| auth_current.clone());
+
+        let mut http = SettingsCard::new("websearch-http")
+            .title(text.settings_websearch_http_title.clone())
+            .description(text.settings_websearch_http_description.clone())
+            .row(
+                SettingsCardRow::new(
+                    "websearch-http-endpoint",
+                    text.websearch_http_endpoint.clone(),
+                )
+                .description(text.websearch_http_endpoint_description.clone())
+                .control(text_input_control(
+                    "websearch-http-endpoint-input",
+                    text.websearch_http_endpoint.clone(),
+                    endpoint_value,
+                    |value, cx| set_websearch_http_endpoint(&value, cx),
+                )),
+            )
+            .row(
+                SettingsCardRow::new(
+                    "websearch-http-auth-mode",
+                    text.websearch_http_auth_mode.clone(),
+                )
+                .control(dropdown_control(
+                    "websearch-http-auth-mode-menu",
+                    auth_label,
+                    Rc::new(auth_options),
+                    {
+                        let view = view.clone();
+                        Rc::new(move |value: SharedString, cx: &mut App| {
+                            set_websearch_http_auth_mode(&view, &value, cx)
+                        })
+                    },
+                    false,
+                )),
+            );
+        if snapshot.web_search_http_auth_mode.trim() == "header" {
+            http = http.row(
+                SettingsCardRow::new(
+                    "websearch-http-header-name",
+                    text.websearch_http_header_name.clone(),
+                )
+                .description(text.websearch_http_header_name_description.clone())
+                .control(text_input_control(
+                    "websearch-http-header-name-input",
+                    text.websearch_http_header_name.clone(),
+                    SharedString::from(snapshot.web_search_http_header_name.clone()),
+                    |value, cx| set_websearch_http_header_name(&value, cx),
+                )),
+            );
+        }
+        cards.push(http);
+    }
     cards
 }

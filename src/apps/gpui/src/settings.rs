@@ -6505,7 +6505,7 @@ pub(crate) fn websearch_http_credential_required(mode: &str) -> bool {
 /// Dropdown-facing auth mode: the empty string behaves like `none` (the
 /// shared config default), anything else stays verbatim so an unknown mode
 /// shows what is actually persisted.
-fn websearch_http_auth_mode_display(mode: &str) -> SharedString {
+pub(crate) fn websearch_http_auth_mode_display(mode: &str) -> SharedString {
     let trimmed = mode.trim();
     SharedString::from(if trimmed.is_empty() { "none" } else { trimmed })
 }
@@ -6536,25 +6536,7 @@ fn websearch_group(
         .map(|(id, label)| (SharedString::from(id), SharedString::from(label)))
         .collect::<Vec<(SharedString, SharedString)>>(),
         |cx: &App| SharedString::from(ShellConfig::current(cx).web_search_provider.clone()),
-        |value: SharedString, cx: &mut App| {
-            let value = value.to_string();
-            cx.global_mut::<ShellConfig>().web_search_provider = value.clone();
-            persist(
-                WEB_SEARCH_PROVIDER_PATH,
-                serde_json::Value::String(value.clone()),
-            );
-            refresh_web_search_runtime();
-            let http_requires_credential = value == "openbitfun_search_http"
-                && websearch_http_credential_required(
-                    &ShellConfig::current(cx).web_search_http_auth_mode,
-                );
-            if matches!(value.as_str(), "exa_search_api" | "tavily") || http_requires_credential {
-                if let Some(handle) = crate::runtime::runtime_handle() {
-                    handle.load_web_search_credential_status(value);
-                }
-            }
-            cx.refresh_windows();
-        },
+        |value: SharedString, cx: &mut App| set_websearch_provider(&value, cx),
     );
 
     let owned_text = text.clone();
@@ -6588,16 +6570,7 @@ fn websearch_http_items(
 ) -> Vec<SettingItem> {
     let endpoint_field = SettingField::input(
         |cx: &App| SharedString::from(ShellConfig::current(cx).web_search_http_endpoint.clone()),
-        |value: SharedString, cx: &mut App| {
-            let value = value.to_string();
-            cx.global_mut::<ShellConfig>().web_search_http_endpoint = value.clone();
-            persist(
-                WEB_SEARCH_HTTP_ENDPOINT_PATH,
-                serde_json::Value::String(value),
-            );
-            refresh_web_search_runtime();
-            cx.refresh_windows();
-        },
+        |value: SharedString, cx: &mut App| set_websearch_http_endpoint(&value, cx),
     );
 
     let status_view = view.clone();
@@ -6614,32 +6587,7 @@ fn websearch_http_items(
             websearch_http_auth_mode_display(&ShellConfig::current(cx).web_search_http_auth_mode)
         },
         move |value: SharedString, cx: &mut App| {
-            let value = value.to_string();
-            let previously_required = websearch_http_credential_required(
-                &ShellConfig::current(cx).web_search_http_auth_mode,
-            );
-            cx.global_mut::<ShellConfig>().web_search_http_auth_mode = value.clone();
-            persist(
-                WEB_SEARCH_HTTP_AUTH_MODE_PATH,
-                serde_json::Value::String(value.clone()),
-            );
-            refresh_web_search_runtime();
-            if websearch_http_credential_required(&value) {
-                if !previously_required {
-                    if let Some(handle) = crate::runtime::runtime_handle() {
-                        handle.load_web_search_credential_status(
-                            "openbitfun_search_http".to_string(),
-                        );
-                    }
-                }
-            } else {
-                // No credential applies anymore; drop a stale status so the
-                // credential row cannot claim a configured secret.
-                if let Some(shell) = status_view.upgrade() {
-                    shell.update(cx, |shell, _| shell.websearch_status = None);
-                }
-            }
-            cx.refresh_windows();
+            set_websearch_http_auth_mode(&status_view, &value, cx)
         },
     );
 
@@ -6654,14 +6602,7 @@ fn websearch_http_items(
                 SharedString::from(ShellConfig::current(cx).web_search_http_header_name.clone())
             },
             |value: SharedString, cx: &mut App| {
-                let value = value.to_string();
-                cx.global_mut::<ShellConfig>().web_search_http_header_name = value.clone();
-                persist(
-                    WEB_SEARCH_HTTP_HEADER_NAME_PATH,
-                    serde_json::Value::String(value),
-                );
-                refresh_web_search_runtime();
-                cx.refresh_windows();
+                set_websearch_http_header_name(&value, cx)
             },
         );
         items.push(
@@ -6670,6 +6611,79 @@ fn websearch_http_items(
         );
     }
     items
+}
+
+/// The web-search setters both web-search renderers share. Every write
+/// pushes the provider section into the runtime so a change lands without a
+/// restart; the provider and auth-mode writes also manage the credential
+/// status probe (and drop a stale status when no credential applies).
+
+pub(crate) fn set_websearch_provider(value: &str, cx: &mut App) {
+    cx.global_mut::<ShellConfig>().web_search_provider = value.to_string();
+    persist(
+        WEB_SEARCH_PROVIDER_PATH,
+        serde_json::Value::String(value.to_string()),
+    );
+    refresh_web_search_runtime();
+    let http_requires_credential = value == "openbitfun_search_http"
+        && websearch_http_credential_required(&ShellConfig::current(cx).web_search_http_auth_mode);
+    if matches!(value, "exa_search_api" | "tavily") || http_requires_credential {
+        if let Some(handle) = crate::runtime::runtime_handle() {
+            handle.load_web_search_credential_status(value.to_string());
+        }
+    }
+    cx.refresh_windows();
+}
+
+pub(crate) fn set_websearch_http_endpoint(value: &str, cx: &mut App) {
+    cx.global_mut::<ShellConfig>().web_search_http_endpoint = value.to_string();
+    persist(
+        WEB_SEARCH_HTTP_ENDPOINT_PATH,
+        serde_json::Value::String(value.to_string()),
+    );
+    refresh_web_search_runtime();
+    cx.refresh_windows();
+}
+
+pub(crate) fn set_websearch_http_auth_mode(
+    view: &gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    value: &str,
+    cx: &mut App,
+) {
+    let value = value.to_string();
+    let previously_required = websearch_http_credential_required(
+        &ShellConfig::current(cx).web_search_http_auth_mode,
+    );
+    cx.global_mut::<ShellConfig>().web_search_http_auth_mode = value.clone();
+    persist(
+        WEB_SEARCH_HTTP_AUTH_MODE_PATH,
+        serde_json::Value::String(value.clone()),
+    );
+    refresh_web_search_runtime();
+    if websearch_http_credential_required(&value) {
+        if !previously_required {
+            if let Some(handle) = crate::runtime::runtime_handle() {
+                handle.load_web_search_credential_status("openbitfun_search_http".to_string());
+            }
+        }
+    } else {
+        // No credential applies anymore; drop a stale status so the
+        // credential row cannot claim a configured secret.
+        if let Some(shell) = view.upgrade() {
+            shell.update(cx, |shell, _| shell.websearch_status = None);
+        }
+    }
+    cx.refresh_windows();
+}
+
+pub(crate) fn set_websearch_http_header_name(value: &str, cx: &mut App) {
+    cx.global_mut::<ShellConfig>().web_search_http_header_name = value.to_string();
+    persist(
+        WEB_SEARCH_HTTP_HEADER_NAME_PATH,
+        serde_json::Value::String(value.to_string()),
+    );
+    refresh_web_search_runtime();
+    cx.refresh_windows();
 }
 
 /// Re-reads the shared config and pushes the web-search section into the
@@ -6693,7 +6707,7 @@ fn refresh_web_search_runtime() {
 /// The credential row for the selected provider: a status line, an input and
 /// a save button for the key-based providers. The input entity lives on the
 /// window (dialog-builder convention: the render closure runs every frame).
-fn websearch_credential_field(
+pub(crate) fn websearch_credential_field(
     view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
     text: &ShellText,
     cx: &mut App,

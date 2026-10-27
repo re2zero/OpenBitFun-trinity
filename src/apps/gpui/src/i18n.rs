@@ -366,6 +366,10 @@ pub(crate) struct ShellText {
     pub settings_appearance_interface_title: String,
     pub settings_appearance_interface_description: String,
     pub settings_appearance_font_title: String,
+    /// The web-search page's card heads (web `sections.provider`/`http`).
+    pub settings_websearch_provider_title: String,
+    pub settings_websearch_http_title: String,
+    pub settings_websearch_http_description: String,
     pub settings_permissions: String,
     pub settings_language_description: String,
     pub settings_theme_description: String,
@@ -2431,6 +2435,10 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
             "Choose the language for menus, buttons, and messages; changes apply immediately"
                 .to_string(),
         settings_appearance_font_title: "Font Size".to_string(),
+        settings_websearch_provider_title: "Search provider".to_string(),
+        settings_websearch_http_title: "Custom search service".to_string(),
+        settings_websearch_http_description:
+            "The service must implement OpenBitFun Search HTTP Protocol v1".to_string(),
         settings_permissions: "Permissions".to_string(),
         settings_language_description: "Interface language for the shell and desktop app."
             .to_string(),
@@ -3713,6 +3721,15 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
             .await,
         settings_appearance_font_title: service
             .t("gpui-shell-settings-appearance-font-title")
+            .await,
+        settings_websearch_provider_title: service
+            .t("gpui-shell-settings-websearch-provider-title")
+            .await,
+        settings_websearch_http_title: service
+            .t("gpui-shell-settings-websearch-http-title")
+            .await,
+        settings_websearch_http_description: service
+            .t("gpui-shell-settings-websearch-http-desc")
             .await,
         settings_permissions: service.t("gpui-shell-settings-permissions").await,
         settings_language_description: service.t("gpui-shell-settings-language-desc").await,
