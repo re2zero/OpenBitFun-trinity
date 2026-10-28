@@ -361,10 +361,15 @@ pub(crate) struct ShellText {
     /// Top tab bar (R1a): close button tooltip.
     pub tab_close: String,
     pub settings_appearance: String,
-    /// The 外观 page's card heads, one per web `ConfigPageSection` (interface
-    /// language / theme / font size).
+    /// The 通用 page's section card heads (web `applicationGroups`): 界面
+    /// (language) / 启动与更新 / 窗口与通知.
     pub settings_appearance_interface_title: String,
     pub settings_appearance_interface_description: String,
+    pub settings_general_startup_title: String,
+    pub settings_general_startup_description: String,
+    pub settings_general_window_title: String,
+    pub settings_general_window_description: String,
+    /// The 外观 page's card heads (web `ConfigPageSection`: theme / font size).
     pub settings_appearance_font_title: String,
     /// The web-search page's card heads (web `sections.provider`/`http`).
     pub settings_websearch_provider_title: String,
@@ -2438,6 +2443,10 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_appearance_interface_description:
             "Choose the language for menus, buttons, and messages; changes apply immediately"
                 .to_string(),
+        settings_general_startup_title: "Startup & updates".to_string(),
+        settings_general_startup_description: "Choose automatic behavior at sign-in and while the app runs; installing updates still requires your confirmation".to_string(),
+        settings_general_window_title: "Window & notifications".to_string(),
+        settings_general_window_description: "Choose whether closing the window quits the app or keeps it running, and which events need your attention".to_string(),
         settings_appearance_font_title: "Font Size".to_string(),
         settings_websearch_provider_title: "Search provider".to_string(),
         settings_websearch_http_title: "Custom search service".to_string(),
@@ -3710,6 +3719,16 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
             .await,
         settings_appearance_interface_description: service
             .t("gpui-shell-settings-appearance-interface-desc")
+            .await,
+        settings_general_startup_title: service
+            .t("gpui-shell-settings-general-startup-title")
+            .await,
+        settings_general_startup_description: service
+            .t("gpui-shell-settings-general-startup-desc")
+            .await,
+        settings_general_window_title: service.t("gpui-shell-settings-general-window-title").await,
+        settings_general_window_description: service
+            .t("gpui-shell-settings-general-window-desc")
             .await,
         settings_appearance_font_title: service
             .t("gpui-shell-settings-appearance-font-title")

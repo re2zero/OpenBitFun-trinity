@@ -738,13 +738,29 @@ fn number_input_control(
     }
 }
 
-/// The 通用 page's cards. Content 1:1 with the migrated component group — the
-/// same seven rows, same order, same setters (web `application.general`).
+/// The 通用 page's cards, one per web `ConfigPageSection` in the web page's
+/// order: 界面 (language), 启动与更新, 窗口与通知 (design README §2.4: card
+/// boundary = section). The permission-request notification row lives on the
+/// permissions page (§2.2). The version and manual update-check rows are shell
+/// capabilities the web general page does not carry (§2.4); they close the
+/// 启动与更新 card.
 fn general_cards(
     text: &ShellText,
     view: gpui_kit::WeakEntity<ShellWindow>,
     cx: &mut App,
 ) -> Vec<SettingsCard> {
+    // 语言：the three shell locales, then the persisted id verbatim when it is
+    // outside that domain — the same menu the web interface section renders.
+    let current_language = ShellConfig::current(cx).language.as_str().to_string();
+    let choices = language_choices();
+    let language_label = choices
+        .iter()
+        .find(|(value, _)| *value == current_language)
+        .map(|(_, label)| label.clone())
+        .unwrap_or_else(|| current_language.clone().into());
+    let on_language_select: Rc<dyn Fn(SharedString, &mut App)> =
+        Rc::new(|value: SharedString, cx| set_language(&value, cx));
+
     // Close behavior: the two values the shell renders, plus the persisted
     // value verbatim when it is outside that domain (the desktop's `ask`).
     let current_close = ShellConfig::current(cx).close_behavior_raw.clone();
@@ -799,119 +815,128 @@ fn general_cards(
     let auto_update_checked = ShellConfig::current(cx).auto_update;
     let notify_checked = ShellConfig::current(cx).dialog_completion_notify;
 
-    vec![SettingsCard::new("general")
-        .row(
-            SettingsCardRow::new("general-version", text.settings_version.clone()).control(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
+    vec![
+        SettingsCard::new("general-interface")
+            .title(text.settings_appearance_interface_title.clone())
+            .description(text.settings_appearance_interface_description.clone())
+            .row(
+                SettingsCardRow::new("general-language", text.language.clone()).control(
+                    dropdown_control(
+                        "general-language-menu",
+                        language_label,
+                        Rc::new(choices),
+                        on_language_select,
+                        false,
+                    ),
+                ),
             ),
-        )
-        .row(
-            SettingsCardRow::new("general-launch-login", text.settings_launch_login.clone())
-                .description(text.settings_launch_login_description.clone())
-                .control(switch_control(
-                    "general-launch-login-switch",
-                    autostart_checked,
-                    |value, cx| set_autostart(value, cx),
+        SettingsCard::new("general-startup")
+            .title(text.settings_general_startup_title.clone())
+            .description(text.settings_general_startup_description.clone())
+            .row(
+                SettingsCardRow::new("general-launch-login", text.settings_launch_login.clone())
+                    .description(text.settings_launch_login_description.clone())
+                    .control(switch_control(
+                        "general-launch-login-switch",
+                        autostart_checked,
+                        |value, cx| set_autostart(value, cx),
+                        false,
+                    )),
+            )
+            .row(
+                SettingsCardRow::new("general-prevent-sleep", text.settings_prevent_sleep.clone())
+                    .description(text.settings_prevent_sleep_description.clone())
+                    .control(switch_control(
+                        "general-prevent-sleep-switch",
+                        prevent_sleep_checked,
+                        |value, cx| set_prevent_sleep(value, cx),
+                        false,
+                    )),
+            )
+            .row(
+                SettingsCardRow::new("general-auto-update", text.settings_auto_update.clone())
+                    .description(text.settings_auto_update_description.clone())
+                    .control(switch_control(
+                        "general-auto-update-switch",
+                        auto_update_checked,
+                        |value, cx| {
+                            cx.global_mut::<ShellConfig>().auto_update = value;
+                            crate::settings::persist(
+                                crate::settings::AUTO_UPDATE_PATH,
+                                serde_json::Value::Bool(value),
+                            );
+                            cx.refresh_windows();
+                        },
+                        false,
+                    )),
+            )
+            .row(
+                SettingsCardRow::new("general-version", text.settings_version.clone()).control(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
+                ),
+            )
+            .row(
+                SettingsCardRow::new("general-check-updates", text.settings_check_updates.clone())
+                    // DeferredControl::render runs after `ShellWindow::render`
+                    // has returned, so reading the shell state there is legal; the
+                    // constructor captures owned clones because the closure is
+                    // `'static` while `text` is only a borrow.
+                    .control(DeferredControl {
+                        construct: {
+                            let view = view.clone();
+                            let text = text.clone();
+                            move |_, cx| crate::settings::update_check_field(view, &text, cx)
+                        },
+                    }),
+            ),
+        SettingsCard::new("general-window")
+            .title(text.settings_general_window_title.clone())
+            .description(text.settings_general_window_description.clone())
+            .row(
+                SettingsCardRow::new(
+                    "general-close-behavior",
+                    text.settings_close_behavior.clone(),
+                )
+                .description(text.settings_close_behavior_description.clone())
+                .control(dropdown_control(
+                    "general-close-behavior-menu",
+                    close_label,
+                    close_options,
+                    on_close_select,
                     false,
                 )),
-        )
-        .row(
-            SettingsCardRow::new(
-                "general-close-behavior",
-                text.settings_close_behavior.clone(),
             )
-            .description(text.settings_close_behavior_description.clone())
-            .control(dropdown_control(
-                "general-close-behavior-menu",
-                close_label,
-                close_options,
-                on_close_select,
-                false,
-            )),
-        )
-        .row(
-            SettingsCardRow::new(
-                "general-notify-turn-done",
-                text.settings_notify_turn_done.clone(),
-            )
-            .description(text.settings_notify_turn_done_description.clone())
-            .control(switch_control(
-                "general-notify-turn-done-switch",
-                notify_checked,
-                |value, cx| {
-                    cx.global_mut::<ShellConfig>().dialog_completion_notify = value;
-                    crate::settings::persist(
-                        crate::settings::NOTIFY_TURN_DONE_PATH,
-                        serde_json::Value::Bool(value),
-                    );
-                    cx.refresh_windows();
-                },
-                false,
-            )),
-        )
-        .row(
-            SettingsCardRow::new("general-prevent-sleep", text.settings_prevent_sleep.clone())
-                .description(text.settings_prevent_sleep_description.clone())
+            .row(
+                SettingsCardRow::new(
+                    "general-notify-turn-done",
+                    text.settings_notify_turn_done.clone(),
+                )
+                .description(text.settings_notify_turn_done_description.clone())
                 .control(switch_control(
-                    "general-prevent-sleep-switch",
-                    prevent_sleep_checked,
-                    |value, cx| set_prevent_sleep(value, cx),
-                    false,
-                )),
-        )
-        .row(
-            SettingsCardRow::new("general-auto-update", text.settings_auto_update.clone())
-                .description(text.settings_auto_update_description.clone())
-                .control(switch_control(
-                    "general-auto-update-switch",
-                    auto_update_checked,
+                    "general-notify-turn-done-switch",
+                    notify_checked,
                     |value, cx| {
-                        cx.global_mut::<ShellConfig>().auto_update = value;
+                        cx.global_mut::<ShellConfig>().dialog_completion_notify = value;
                         crate::settings::persist(
-                            crate::settings::AUTO_UPDATE_PATH,
+                            crate::settings::NOTIFY_TURN_DONE_PATH,
                             serde_json::Value::Bool(value),
                         );
                         cx.refresh_windows();
                     },
                     false,
                 )),
-        )
-        .row(
-            SettingsCardRow::new("general-check-updates", text.settings_check_updates.clone())
-                // DeferredControl::render runs after `ShellWindow::render`
-                // has returned, so reading the shell state there is legal; the
-                // constructor captures owned clones because the closure is
-                // `'static` while `text` is only a borrow.
-                .control(DeferredControl {
-                    construct: {
-                        let view = view.clone();
-                        let text = text.clone();
-                        move |_, cx| crate::settings::update_check_field(view, &text, cx)
-                    },
-                }),
-        )]
+            ),
+    ]
 }
 
 /// The 外观 page's cards, one per web `ConfigPageSection` the shell covers:
-/// 界面 (language), 外观 (theme), 字体大小 (size level plus the conditional
-/// custom size). The web page's session-panel section and the font preview
-/// row are registered E3 gaps (design README §2.2).
+/// 外观 (theme) and 字体大小 (size level plus the conditional custom size). The
+/// web page's interface-language section belongs to 通用; the session-panel
+/// section and the font preview row are registered E3 gaps (§2.2).
 fn appearance_cards(text: &ShellText, cx: &mut App) -> Vec<SettingsCard> {
-    // 语言：the three shell locales, then the persisted id verbatim when it
-    // is outside that domain — the same menu the component page renders.
-    let current_language = ShellConfig::current(cx).language.as_str().to_string();
-    let choices = language_choices();
-    let language_label = choices
-        .iter()
-        .find(|(value, _)| *value == current_language)
-        .map(|(_, label)| label.clone())
-        .unwrap_or_else(|| current_language.clone().into());
-    let on_language_select: Rc<dyn Fn(SharedString, &mut App)> =
-        Rc::new(|value: SharedString, cx| set_language(&value, cx));
-
     // 字体大小：the shared levels, then the custom entry, then a stored id
     // outside the list so the menu shows what is persisted.
     let current_level = ShellConfig::current(cx).ui_font_level.clone();
@@ -965,20 +990,6 @@ fn appearance_cards(text: &ShellText, cx: &mut App) -> Vec<SettingsCard> {
     }
 
     vec![
-        SettingsCard::new("appearance-language")
-            .title(text.settings_appearance_interface_title.clone())
-            .description(text.settings_appearance_interface_description.clone())
-            .row(
-                SettingsCardRow::new("appearance-language", text.language.clone()).control(
-                    dropdown_control(
-                        "appearance-language-menu",
-                        language_label,
-                        Rc::new(choices),
-                        on_language_select,
-                        false,
-                    ),
-                ),
-            ),
         SettingsCard::new("appearance-theme")
             .title(text.settings_appearance.clone())
             .row(

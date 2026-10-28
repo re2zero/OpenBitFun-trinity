@@ -12094,12 +12094,12 @@ mod tests {
         });
 
         let cases: &[(settings::SettingsEntry, &[&str])] = &[
-            // The appearance page renders through the card path: its three
-            // cards carry the anchors now.
+            // The appearance page renders through the card path: its two
+            // cards carry the anchors now (the interface-language card moved
+            // back to 通用, where the web page keeps that section).
             (
                 settings::SettingsEntry::Appearance,
                 &[
-                    "settings-card-appearance-language",
                     "settings-card-appearance-theme",
                     "settings-card-appearance-font",
                 ],
@@ -12180,7 +12180,14 @@ mod tests {
             // their legacy `settings-section-*` assertions went away with the
             // component pipeline. Each list holds the page's unconditional
             // cards (conditional cards keep their own settlement tests).
-            (settings::SettingsEntry::General, &["settings-card-general"]),
+            (
+                settings::SettingsEntry::General,
+                &[
+                    "settings-card-general-interface",
+                    "settings-card-general-startup",
+                    "settings-card-general-window",
+                ],
+            ),
             (
                 settings::SettingsEntry::Terminal,
                 &["settings-card-terminal"],
