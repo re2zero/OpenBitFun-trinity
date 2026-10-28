@@ -4852,4 +4852,66 @@ mod tests {
             }
         }
     }
+
+    /// The three locale files carry the same key set (top-level message ids;
+    /// continuation lines are indented, so column-0 `id =` is the key). A
+    /// locale missing a key falls back silently at runtime — this keeps the
+    /// surface honest instead.
+    #[test]
+    fn shell_ftl_keys_align_across_locales() {
+        fn keys(source: &str) -> Vec<&str> {
+            let mut keys: Vec<&str> = source
+                .lines()
+                .filter_map(|line| line.split_once(" = ").map(|(key, _)| key.trim()))
+                .filter(|key| !key.is_empty())
+                .collect();
+            keys.sort_unstable();
+            keys.dedup();
+            keys
+        }
+        let en = keys(include_str!("../locales/en-US.ftl"));
+        let zh_cn = keys(include_str!("../locales/zh-CN.ftl"));
+        let zh_tw = keys(include_str!("../locales/zh-TW.ftl"));
+        let missing = |label: &str, keys: &[&str], base: &[&str]| {
+            let missing: Vec<&str> = keys
+                .iter()
+                .filter(|key| !base.contains(key))
+                .copied()
+                .collect();
+            assert!(missing.is_empty(), "{label} keys missing: {missing:?}");
+        };
+        missing("zh-CN", &zh_cn, &en);
+        missing("zh-TW", &zh_tw, &en);
+        missing("en-US", &en, &zh_cn);
+    }
+
+    /// The naming discipline (gpui-redesign E2): user-visible shell copy
+    /// carries no third-party library identifiers — no `gpui-kit` /
+    /// `gpui-component` / `gpui-pre`, and no standalone `ely` word.
+    #[test]
+    fn shell_ftl_carries_no_third_party_brand_names() {
+        let forbidden = ["gpui-kit", "gpui-component", "gpui-pre", "gpui-rs"];
+        for (locale, source) in [
+            ("en-US", include_str!("../locales/en-US.ftl")),
+            ("zh-CN", include_str!("../locales/zh-CN.ftl")),
+            ("zh-TW", include_str!("../locales/zh-TW.ftl")),
+        ] {
+            let lowered = source.to_ascii_lowercase();
+            for brand in forbidden {
+                assert!(
+                    !lowered.contains(brand),
+                    "{locale} ftl names {brand}; user-visible copy stays library-free"
+                );
+            }
+            // Word-boundary check for the component library's short name:
+            // `ely` as its own token, not inside ordinary words.
+            for word in lowered.split(|c: char| !c.is_ascii_alphanumeric()) {
+                assert!(
+                    word != "ely",
+                    "{locale} ftl names the component library (ely); \
+                     user-visible copy stays library-free"
+                );
+            }
+        }
+    }
 }
