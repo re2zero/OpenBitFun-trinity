@@ -1201,3 +1201,17 @@ gpui-shell-manage-mcp-import-id-required = 请填写服务 ID。
 gpui-shell-manage-mcp-import-invalid-id = 新 ID 需为 1-128 位字母、数字、点、连字符或下划线。
 gpui-shell-manage-mcp-import-id-conflict = 此 ID 已存在或被重复选择，请使用其他 ID。
 gpui-shell-manage-mcp-import-shape = 此配置包含壳无法安全导入的字段，请继续使用 JSON 编辑器维护。
+
+# 权限页卡片（web `permissions` + `execution` 分节原文）。
+gpui-shell-settings-permissions-policy-title = 工具权限
+gpui-shell-settings-permissions-policy-desc = 决定工具操作是否需要确认，以及哪些操作允许或拒绝
+gpui-shell-settings-permissions-deferred-title = 按需加载工具
+gpui-shell-settings-permissions-deferred-desc = 按需向模型提供工具详情，减少上下文占用
+gpui-shell-settings-permissions-execution-title = 工具运行
+gpui-shell-settings-permissions-execution-desc = 工具运行和等待回答分别计时，设为 0 可取消对应时限
+gpui-shell-settings-permissions-subagents-title = 子智能体
+gpui-shell-settings-permissions-subagents-desc = 普通子智能体与 Swarm 的并发上限分别生效
+gpui-shell-settings-permissions-json-repair-title = 工具参数 JSON 修复
+gpui-shell-settings-permissions-json-repair-desc = 修改将在下一轮模型调用生效
+gpui-shell-settings-permissions-review-title = 审核容量
+gpui-shell-settings-permissions-review-desc = 决定补充审核如何使用模型容量；调整并行数不改变审核范围

@@ -1098,6 +1098,18 @@ pub(crate) struct ShellText {
     pub settings_deferred_tools_section_note: String,
     pub settings_deferred_tools_enable: String,
     pub settings_deferred_tools_warning: String,
+    pub settings_permissions_policy_title: String,
+    pub settings_permissions_policy_desc: String,
+    pub settings_permissions_deferred_title: String,
+    pub settings_permissions_deferred_desc: String,
+    pub settings_permissions_execution_title: String,
+    pub settings_permissions_execution_desc: String,
+    pub settings_permissions_subagents_title: String,
+    pub settings_permissions_subagents_desc: String,
+    pub settings_permissions_json_repair_title: String,
+    pub settings_permissions_json_repair_desc: String,
+    pub settings_permissions_review_title: String,
+    pub settings_permissions_review_desc: String,
     pub settings_json_repair_section: String,
     pub settings_json_repair_section_note: String,
     pub settings_json_repair: String,
@@ -3333,6 +3345,18 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_deferred_tools_section_note: "Provide tool details to the model on demand to reduce context usage.".to_string(),
         settings_deferred_tools_enable: "Enable".to_string(),
         settings_deferred_tools_warning: "Turning this off loads every tool definition and may increase model usage.".to_string(),
+        settings_permissions_policy_title: "Tool permissions".to_string(),
+        settings_permissions_policy_desc: "Choose when tool actions need approval and which actions are allowed or denied".to_string(),
+        settings_permissions_deferred_title: "Load tools as needed".to_string(),
+        settings_permissions_deferred_desc: "Provide tool details to the model on demand to reduce context usage".to_string(),
+        settings_permissions_execution_title: "Tool execution".to_string(),
+        settings_permissions_execution_desc: "Tool execution and waiting for an answer have separate timers; set either to 0 for no timeout".to_string(),
+        settings_permissions_subagents_title: "Subagents".to_string(),
+        settings_permissions_subagents_desc: "Regular subagents and Swarm use separate concurrency limits".to_string(),
+        settings_permissions_json_repair_title: "Tool Argument JSON Repair".to_string(),
+        settings_permissions_json_repair_desc: "Applies to the next model round.".to_string(),
+        settings_permissions_review_title: "Review capacity".to_string(),
+        settings_permissions_review_desc: "Control how supplemental reviews use model capacity; changing concurrency keeps the review scope unchanged".to_string(),
         settings_json_repair_section: "Tool Argument JSON Repair".to_string(),
         settings_json_repair_section_note: "Applies to the next model round.".to_string(),
         settings_json_repair: "Repair malformed tool arguments".to_string(),
@@ -4714,6 +4738,42 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
             .await,
         settings_deferred_tools_warning: service
             .t("gpui-shell-settings-deferred-tools-warning")
+            .await,
+        settings_permissions_policy_title: service
+            .t("gpui-shell-settings-permissions-policy-title")
+            .await,
+        settings_permissions_policy_desc: service
+            .t("gpui-shell-settings-permissions-policy-desc")
+            .await,
+        settings_permissions_deferred_title: service
+            .t("gpui-shell-settings-permissions-deferred-title")
+            .await,
+        settings_permissions_deferred_desc: service
+            .t("gpui-shell-settings-permissions-deferred-desc")
+            .await,
+        settings_permissions_execution_title: service
+            .t("gpui-shell-settings-permissions-execution-title")
+            .await,
+        settings_permissions_execution_desc: service
+            .t("gpui-shell-settings-permissions-execution-desc")
+            .await,
+        settings_permissions_subagents_title: service
+            .t("gpui-shell-settings-permissions-subagents-title")
+            .await,
+        settings_permissions_subagents_desc: service
+            .t("gpui-shell-settings-permissions-subagents-desc")
+            .await,
+        settings_permissions_json_repair_title: service
+            .t("gpui-shell-settings-permissions-json-repair-title")
+            .await,
+        settings_permissions_json_repair_desc: service
+            .t("gpui-shell-settings-permissions-json-repair-desc")
+            .await,
+        settings_permissions_review_title: service
+            .t("gpui-shell-settings-permissions-review-title")
+            .await,
+        settings_permissions_review_desc: service
+            .t("gpui-shell-settings-permissions-review-desc")
             .await,
         settings_json_repair_section: service.t("gpui-shell-settings-json-repair-section").await,
         settings_json_repair_section_note: service

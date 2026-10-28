@@ -12088,14 +12088,17 @@ mod tests {
                 settings::SettingsEntry::Models,
                 &["settings-card-models-stream", "settings-card-models-proxy"],
             ),
+            // The permissions page is on the card path: one card per web
+            // section carries the anchors now.
             (
                 settings::SettingsEntry::Permissions,
                 &[
-                    "settings-section-execution",
-                    "settings-section-subagents",
-                    "settings-section-deferred-tools",
-                    "settings-section-json-repair",
-                    "settings-section-review-capacity",
+                    "settings-card-permissions-policy",
+                    "settings-card-permissions-deferred",
+                    "settings-card-permissions-execution",
+                    "settings-card-permissions-subagents",
+                    "settings-card-permissions-json-repair",
+                    "settings-card-permissions-review",
                 ],
             ),
         ];

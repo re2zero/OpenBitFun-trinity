@@ -58,8 +58,21 @@ use crate::settings::{
     set_memory_raw_limit, set_memory_retention_days, set_memory_scan_limit, MemoryPageState,
 };
 use crate::settings::{
+    permission_preset_options, permission_rules_field, preset_value, set_auto_approve_ask,
+    set_deferred_tool_loading, set_permission_preset, set_review_capacity_value,
+    set_subagent_batch_policy, set_subagent_default_model, set_subagent_max_concurrency,
+    set_swarm_max_concurrency, set_tool_execution_timeout, set_tool_json_repair,
+    set_user_question_timeout, subagent_batch_description, subagent_batch_options,
+    subagent_model_choice, subagent_model_options,
+};
+use crate::settings::{
     set_websearch_http_auth_mode, set_websearch_http_endpoint, set_websearch_http_header_name,
     set_websearch_provider, websearch_credential_field, websearch_http_auth_mode_display,
+};
+use crate::settings::{
+    DEFAULT_REVIEW_PARALLELISM, DEFAULT_REVIEW_QUEUE_WAIT_SECS, MAX_REVIEW_PARALLELISM,
+    MAX_REVIEW_QUEUE_WAIT_SECS, MAX_RUNTIME_TIMEOUT_SECS, MAX_SUBAGENT_CONCURRENCY,
+    MAX_SWARM_CONCURRENCY, MIN_REVIEW_PARALLELISM, MIN_SUBAGENT_CONCURRENCY,
 };
 use crate::shell::ShellWindow;
 
@@ -367,6 +380,7 @@ pub(crate) fn render_card_page(
         SettingsEntry::Usage => usage_cards(text, view),
         SettingsEntry::Archived => archived_cards(text, view),
         SettingsEntry::Diagnostics => diagnostics_cards(text, cx),
+        SettingsEntry::Permissions => permissions_cards(text, cx),
         _ => return None,
     };
     Some(page_frame(
@@ -2516,4 +2530,303 @@ fn diagnostics_cards(text: &ShellText, cx: &mut App) -> Vec<SettingsCard> {
             .description(text.settings_diagnostics_export_description.clone())
             .control(diagnostics_export_button(text)),
         )]
+}
+
+/// The permissions page — the shell entry that carries both web pages'
+/// content (`permissions` policy and `execution` runtime), one card per web
+/// section: tool permissions (policy, auto-approve, and the global rules
+/// block), deferred tool loading, tool execution timers, subagents, tool
+/// argument JSON repair, and review capacity. Row controls are the component
+/// pipeline's own fields re-seated; every write goes through the shared
+/// setters both paths call.
+fn permissions_cards(text: &ShellText, cx: &App) -> Vec<SettingsCard> {
+    let config = ShellConfig::current(cx);
+
+    let preset_options = permission_preset_options(text);
+    let preset_current =
+        SharedString::from(preset_value(ShellConfig::current(cx).permission_preset));
+    let preset_label = preset_options
+        .iter()
+        .find(|(value, _)| *value == preset_current)
+        .map(|(_, label)| label.clone())
+        .unwrap_or_else(|| preset_current.clone());
+    // Auto-approval only changes behavior under the Ask policy; the preset
+    // already resolves every ask when full access is on.
+    let auto_approve_disabled = preset_current.as_ref() == "full_access";
+
+    let policy = SettingsCard::new("permissions-policy")
+        .title(text.settings_permissions_policy_title.clone())
+        .description(text.settings_permissions_policy_desc.clone())
+        .row(
+            SettingsCardRow::new("permissions-preset", text.settings_policy.clone())
+                .description(text.settings_policy_description.clone())
+                .control(dropdown_control(
+                    "permissions-preset-menu",
+                    preset_label,
+                    Rc::new(preset_options),
+                    Rc::new(|value: SharedString, cx: &mut App| set_permission_preset(&value, cx)),
+                    false,
+                )),
+        )
+        .row(
+            SettingsCardRow::new(
+                "permissions-auto-approve",
+                text.settings_auto_approve.clone(),
+            )
+            .description(text.settings_auto_approve_description.clone())
+            .disabled(auto_approve_disabled)
+            .control(switch_control(
+                "permissions-auto-approve-switch",
+                config.auto_approve_ask,
+                |value, cx| set_auto_approve_ask(value, cx),
+                auto_approve_disabled,
+            )),
+        )
+        .row(
+            SettingsCardRow::new(
+                "permissions-rules",
+                text.settings_permission_rules_section.clone(),
+            )
+            .description(text.settings_permission_rules_description.clone())
+            .multiline()
+            .control(DeferredControl {
+                construct: {
+                    let text = text.clone();
+                    move |window, cx| permission_rules_field(&text, window, cx)
+                },
+            }),
+        );
+
+    let mut deferred_enable = SettingsCardRow::new(
+        "permissions-deferred-enable",
+        text.settings_deferred_tools_enable.clone(),
+    )
+    .control(switch_control(
+        "permissions-deferred-switch",
+        config.deferred_tool_loading,
+        |value, cx| set_deferred_tool_loading(value, cx),
+        false,
+    ));
+    if let Some(warning) =
+        (!config.deferred_tool_loading).then(|| text.settings_deferred_tools_warning.clone())
+    {
+        deferred_enable = deferred_enable.description(warning);
+    }
+    let deferred = SettingsCard::new("permissions-deferred")
+        .title(text.settings_permissions_deferred_title.clone())
+        .description(text.settings_permissions_deferred_desc.clone())
+        .row(deferred_enable);
+
+    let execution = SettingsCard::new("permissions-execution")
+        .title(text.settings_permissions_execution_title.clone())
+        .description(text.settings_permissions_execution_desc.clone())
+        .row(
+            SettingsCardRow::new(
+                "permissions-tool-timeout",
+                text.settings_tool_timeout.clone(),
+            )
+            .description(text.settings_tool_timeout_description.clone())
+            .control(number_input_control(
+                "permissions-tool-timeout-input",
+                text.settings_tool_timeout.clone(),
+                config.tool_execution_timeout_secs.unwrap_or(0) as f64,
+                NumberRange {
+                    min: 0.,
+                    max: MAX_RUNTIME_TIMEOUT_SECS,
+                    step: 5.,
+                },
+                |value, cx| set_tool_execution_timeout(value, cx),
+                false,
+            )),
+        )
+        .row(
+            SettingsCardRow::new(
+                "permissions-question-timeout",
+                text.settings_question_timeout.clone(),
+            )
+            .description(text.settings_question_timeout_description.clone())
+            .control(number_input_control(
+                "permissions-question-timeout-input",
+                text.settings_question_timeout.clone(),
+                f64::from(config.user_question_timeout_secs.unwrap_or(0)),
+                NumberRange {
+                    min: 0.,
+                    max: MAX_RUNTIME_TIMEOUT_SECS,
+                    step: 5.,
+                },
+                |value, cx| set_user_question_timeout(value, cx),
+                false,
+            )),
+        );
+
+    let catalog = cx
+        .try_global::<crate::runtime::ModelCatalog>()
+        .cloned()
+        .unwrap_or_default();
+    let current_model = subagent_model_choice(&config.subagent_default_model);
+    let model_options = subagent_model_options(&catalog.models, &current_model, text);
+    let model_label = model_options
+        .iter()
+        .find(|(value, _)| value.as_ref() == current_model.as_str())
+        .map(|(_, label)| label.clone())
+        .unwrap_or_else(|| SharedString::from(current_model.clone()));
+    let batch_policy = config.subagent_batch_policy.clone();
+    let batch_options = subagent_batch_options(&batch_policy, text);
+    let batch_label = batch_options
+        .iter()
+        .find(|(value, _)| value.as_ref() == batch_policy.as_str())
+        .map(|(_, label)| label.clone())
+        .unwrap_or_else(|| SharedString::from(batch_policy.clone()));
+
+    let subagents = SettingsCard::new("permissions-subagents")
+        .title(text.settings_permissions_subagents_title.clone())
+        .description(text.settings_permissions_subagents_desc.clone())
+        .row(
+            SettingsCardRow::new(
+                "permissions-subagent-model",
+                text.settings_subagent_model.clone(),
+            )
+            .description(text.settings_subagent_model_description.clone())
+            .control(dropdown_control(
+                "permissions-subagent-model-menu",
+                model_label,
+                Rc::new(model_options),
+                Rc::new(|value: SharedString, cx: &mut App| set_subagent_default_model(&value, cx)),
+                false,
+            )),
+        )
+        .row(
+            SettingsCardRow::new(
+                "permissions-subagent-batch",
+                text.settings_subagent_batch.clone(),
+            )
+            .description(subagent_batch_description(text, cx))
+            .control(dropdown_control(
+                "permissions-subagent-batch-menu",
+                batch_label,
+                Rc::new(batch_options),
+                Rc::new(|value: SharedString, cx: &mut App| set_subagent_batch_policy(&value, cx)),
+                false,
+            )),
+        )
+        .row(
+            SettingsCardRow::new(
+                "permissions-subagent-concurrency",
+                text.settings_subagent_concurrency.clone(),
+            )
+            .description(text.settings_subagent_concurrency_description.clone())
+            .control(number_input_control(
+                "permissions-subagent-concurrency-input",
+                text.settings_subagent_concurrency.clone(),
+                f64::from(config.subagent_max_concurrency),
+                NumberRange {
+                    min: f64::from(MIN_SUBAGENT_CONCURRENCY),
+                    max: f64::from(MAX_SUBAGENT_CONCURRENCY),
+                    step: 1.,
+                },
+                |value, cx| set_subagent_max_concurrency(value, cx),
+                false,
+            )),
+        )
+        .row(
+            SettingsCardRow::new(
+                "permissions-swarm-concurrency",
+                text.settings_swarm_concurrency.clone(),
+            )
+            .description(text.settings_swarm_concurrency_description.clone())
+            .control(number_input_control(
+                "permissions-swarm-concurrency-input",
+                text.settings_swarm_concurrency.clone(),
+                f64::from(config.swarm_max_concurrency),
+                NumberRange {
+                    min: f64::from(MIN_SUBAGENT_CONCURRENCY),
+                    max: f64::from(MAX_SWARM_CONCURRENCY),
+                    step: 1.,
+                },
+                |value, cx| set_swarm_max_concurrency(value, cx),
+                false,
+            )),
+        );
+
+    let json_repair = SettingsCard::new("permissions-json-repair")
+        .title(text.settings_permissions_json_repair_title.clone())
+        .description(text.settings_permissions_json_repair_desc.clone())
+        .row(
+            SettingsCardRow::new("permissions-json-repair", text.settings_json_repair.clone())
+                .description(text.settings_json_repair_description.clone())
+                .control(switch_control(
+                    "permissions-json-repair-switch",
+                    config.allow_tool_json_repair,
+                    |value, cx| set_tool_json_repair(value, cx),
+                    false,
+                )),
+        );
+
+    let review = SettingsCard::new("permissions-review")
+        .title(text.settings_permissions_review_title.clone())
+        .description(text.settings_permissions_review_desc.clone())
+        .row(
+            SettingsCardRow::new(
+                "permissions-review-parallelism",
+                text.settings_review_parallelism.clone(),
+            )
+            .description(text.settings_review_parallelism_description.clone())
+            .control(number_input_control(
+                "permissions-review-parallelism-input",
+                text.settings_review_parallelism.clone(),
+                object_u64(
+                    &config.review_team,
+                    "max_parallel_reviewers",
+                    DEFAULT_REVIEW_PARALLELISM,
+                ) as f64,
+                NumberRange {
+                    min: f64::from(MIN_REVIEW_PARALLELISM),
+                    max: f64::from(MAX_REVIEW_PARALLELISM),
+                    step: 1.,
+                },
+                |value, cx| {
+                    set_review_capacity_value(
+                        "max_parallel_reviewers",
+                        value,
+                        MIN_REVIEW_PARALLELISM,
+                        MAX_REVIEW_PARALLELISM,
+                        cx,
+                    )
+                },
+                false,
+            )),
+        )
+        .row(
+            SettingsCardRow::new(
+                "permissions-review-queue",
+                text.settings_review_queue_wait.clone(),
+            )
+            .description(text.settings_review_queue_wait_description.clone())
+            .control(number_input_control(
+                "permissions-review-queue-input",
+                text.settings_review_queue_wait.clone(),
+                object_u64(
+                    &config.review_team,
+                    "max_queue_wait_seconds",
+                    DEFAULT_REVIEW_QUEUE_WAIT_SECS,
+                ) as f64,
+                NumberRange {
+                    min: 0.,
+                    max: f64::from(MAX_REVIEW_QUEUE_WAIT_SECS),
+                    step: 60.,
+                },
+                |value, cx| {
+                    set_review_capacity_value(
+                        "max_queue_wait_seconds",
+                        value,
+                        0,
+                        MAX_REVIEW_QUEUE_WAIT_SECS,
+                        cx,
+                    )
+                },
+                false,
+            )),
+        );
+
+    vec![policy, deferred, execution, subagents, json_repair, review]
 }

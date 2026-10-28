@@ -1216,3 +1216,17 @@ gpui-shell-manage-mcp-import-id-required = Enter a service ID.
 gpui-shell-manage-mcp-import-invalid-id = Use 1-128 letters, digits, dots, hyphens, or underscores for a new ID.
 gpui-shell-manage-mcp-import-id-conflict = This ID already exists or is selected twice. Choose a different ID.
 gpui-shell-manage-mcp-import-shape = This configuration uses fields the shell cannot import safely. Keep it in the JSON editor.
+
+# Permissions page cards (web `permissions` + `execution` section heads).
+gpui-shell-settings-permissions-policy-title = Tool permissions
+gpui-shell-settings-permissions-policy-desc = Choose when tool actions need approval and which actions are allowed or denied
+gpui-shell-settings-permissions-deferred-title = Load tools as needed
+gpui-shell-settings-permissions-deferred-desc = Provide tool details to the model on demand to reduce context usage
+gpui-shell-settings-permissions-execution-title = Tool execution
+gpui-shell-settings-permissions-execution-desc = Tool execution and waiting for an answer have separate timers; set either to 0 for no timeout
+gpui-shell-settings-permissions-subagents-title = Subagents
+gpui-shell-settings-permissions-subagents-desc = Regular subagents and Swarm use separate concurrency limits
+gpui-shell-settings-permissions-json-repair-title = Tool Argument JSON Repair
+gpui-shell-settings-permissions-json-repair-desc = Applies to the next model round.
+gpui-shell-settings-permissions-review-title = Review capacity
+gpui-shell-settings-permissions-review-desc = Control how supplemental reviews use model capacity; changing concurrency keeps the review scope unchanged

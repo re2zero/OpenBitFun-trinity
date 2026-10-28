@@ -4034,6 +4034,189 @@ pub(crate) const MAX_STREAM_TIMEOUT_SECS: f64 = 86_400.;
 /// A2 (G-SE18): the runtime-timeout rows, the web `NumberInput` range.
 pub(crate) const MAX_RUNTIME_TIMEOUT_SECS: f64 = 3_600.;
 
+/// The policy preset menu's two options in stored-value order.
+pub(crate) fn permission_preset_options(text: &ShellText) -> Vec<(SharedString, SharedString)> {
+    vec![
+        (
+            SharedString::from("ask"),
+            SharedString::from(text.settings_policy_ask.clone()),
+        ),
+        (
+            SharedString::from("full_access"),
+            SharedString::from(text.settings_policy_full_access.clone()),
+        ),
+    ]
+}
+
+/// Writes the policy preset behind the permissions page's dropdown.
+pub(crate) fn set_permission_preset(value: &str, cx: &mut App) {
+    let Some(preset) = preset_from_value(value) else {
+        tracing::warn!("Ignoring unsupported permission policy: {value}");
+        return;
+    };
+    cx.global_mut::<ShellConfig>().permission_preset = preset;
+    persist(
+        PERMISSION_PRESET_PATH,
+        serde_json::Value::String(preset_value(preset).to_string()),
+    );
+    cx.refresh_windows();
+}
+
+/// The auto-approve switch under the Ask policy.
+pub(crate) fn set_auto_approve_ask(value: bool, cx: &mut App) {
+    cx.global_mut::<ShellConfig>().auto_approve_ask = value;
+    persist(AUTO_APPROVE_ASK_PATH, serde_json::Value::Bool(value));
+    cx.refresh_windows();
+}
+
+/// The deferred tool loading switch.
+pub(crate) fn set_deferred_tool_loading(value: bool, cx: &mut App) {
+    cx.global_mut::<ShellConfig>().deferred_tool_loading = value;
+    persist(DEFERRED_TOOL_LOADING_PATH, serde_json::json!(value));
+    cx.refresh_windows();
+}
+
+/// The tool argument JSON repair switch.
+pub(crate) fn set_tool_json_repair(value: bool, cx: &mut App) {
+    cx.global_mut::<ShellConfig>().allow_tool_json_repair = value;
+    persist(TOOL_JSON_REPAIR_PATH, serde_json::json!(value));
+    cx.refresh_windows();
+}
+
+/// The default subagent model menu.
+pub(crate) fn set_subagent_default_model(value: &str, cx: &mut App) {
+    if value.is_empty() {
+        return;
+    }
+    let selection = subagent_model_selection(value);
+    cx.global_mut::<ShellConfig>().subagent_default_model = selection.clone();
+    match serde_json::to_value(&selection) {
+        Ok(document) => persist(SUBAGENT_DEFAULT_MODEL_PATH, document),
+        Err(error) => tracing::error!("Failed to serialize the subagent model: {error}"),
+    }
+    cx.refresh_windows();
+}
+
+/// The batch policy menu.
+pub(crate) fn set_subagent_batch_policy(value: &str, cx: &mut App) {
+    if !SUBAGENT_BATCH_POLICIES.contains(&value) {
+        tracing::warn!("Ignoring unsupported subagent batch policy: {value}");
+        return;
+    }
+    cx.global_mut::<ShellConfig>().subagent_batch_policy = value.to_string();
+    persist(SUBAGENT_BATCH_POLICY_PATH, serde_json::json!(value));
+    cx.refresh_windows();
+}
+
+/// The batch row's description follows the stored policy, matching the web
+/// page's per-option helper text.
+pub(crate) fn subagent_batch_description(text: &ShellText, cx: &App) -> String {
+    if ShellConfig::current(cx).subagent_batch_policy == SUBAGENT_BATCH_POLICIES[1] {
+        text.settings_subagent_batch_parallel_description.clone()
+    } else {
+        text.settings_subagent_batch_safe_description.clone()
+    }
+}
+
+/// One runtime timeout write shared by the component field and the card row.
+fn apply_runtime_timeout(
+    value: f64,
+    null_when_zero: bool,
+    write: fn(&mut ShellConfig, Option<u64>),
+    path: &'static str,
+    cx: &mut App,
+) {
+    if !value.is_finite() {
+        return;
+    }
+    let secs = (value.round() as u64).min(MAX_RUNTIME_TIMEOUT_SECS as u64);
+    let stored = if null_when_zero && secs == 0 {
+        None
+    } else {
+        Some(secs)
+    };
+    write(cx.global_mut::<ShellConfig>(), stored);
+    let value = match stored {
+        Some(secs) => serde_json::json!(secs),
+        None => serde_json::Value::Null,
+    };
+    persist(path, value);
+    cx.refresh_windows();
+}
+
+pub(crate) fn set_tool_execution_timeout(value: f64, cx: &mut App) {
+    apply_runtime_timeout(
+        value,
+        true,
+        |config, stored| config.tool_execution_timeout_secs = stored,
+        TOOL_EXECUTION_TIMEOUT_PATH,
+        cx,
+    );
+}
+
+pub(crate) fn set_user_question_timeout(value: f64, cx: &mut App) {
+    apply_runtime_timeout(
+        value,
+        false,
+        |config, stored| config.user_question_timeout_secs = stored.map(|secs| secs as u32),
+        USER_QUESTION_TIMEOUT_PATH,
+        cx,
+    );
+}
+
+/// One concurrency write shared by the component field and the card row.
+fn apply_concurrency_value(
+    value: f64,
+    max: u32,
+    write: fn(&mut ShellConfig, u32),
+    path: &'static str,
+    cx: &mut App,
+) {
+    let Some(limit) = clamp_concurrency(value, max) else {
+        tracing::warn!("Ignoring out-of-range concurrency value: {}", value);
+        return;
+    };
+    write(cx.global_mut::<ShellConfig>(), limit as u32);
+    persist(path, serde_json::json!(limit));
+    cx.refresh_windows();
+}
+
+pub(crate) fn set_subagent_max_concurrency(value: f64, cx: &mut App) {
+    apply_concurrency_value(
+        value,
+        MAX_SUBAGENT_CONCURRENCY,
+        |config, limit| config.subagent_max_concurrency = limit,
+        SUBAGENT_MAX_CONCURRENCY_PATH,
+        cx,
+    );
+}
+
+pub(crate) fn set_swarm_max_concurrency(value: f64, cx: &mut App) {
+    apply_concurrency_value(
+        value,
+        MAX_SWARM_CONCURRENCY,
+        |config, limit| config.swarm_max_concurrency = limit,
+        SWARM_MAX_CONCURRENCY_PATH,
+        cx,
+    );
+}
+
+/// One review-capacity write over the stored team document; every other key
+/// of the document is kept.
+pub(crate) fn set_review_capacity_value(
+    key: &'static str,
+    value: f64,
+    min: u32,
+    max: u32,
+    cx: &mut App,
+) {
+    if !value.is_finite() {
+        return;
+    }
+    let clamped = (value.round() as u64).clamp(u64::from(min), u64::from(max));
+    set_review_capacity(key, serde_json::json!(clamped), cx);
+}
+
 /// A2 (G-SE18): one runtime timeout field. `null_when_zero` distinguishes the
 /// two shared contracts: the tool timeout stores `null` for "never", the
 /// unattended-question timeout stores the zero the web page writes.
@@ -4051,22 +4234,7 @@ fn runtime_timeout_field(
         },
         move |cx: &App| read(&ShellConfig::current(cx)).unwrap_or(0) as f64,
         move |value: f64, cx: &mut App| {
-            if !value.is_finite() {
-                return;
-            }
-            let secs = (value.round() as u64).min(MAX_RUNTIME_TIMEOUT_SECS as u64);
-            let stored = if null_when_zero && secs == 0 {
-                None
-            } else {
-                Some(secs)
-            };
-            write(cx.global_mut::<ShellConfig>(), stored);
-            let value = match stored {
-                Some(secs) => serde_json::json!(secs),
-                None => serde_json::Value::Null,
-            };
-            persist(path, value);
-            cx.refresh_windows();
+            apply_runtime_timeout(value, null_when_zero, write, path, cx);
         },
     )
 }
@@ -4087,13 +4255,7 @@ fn concurrency_field(
         },
         move |cx: &App| f64::from(read(&ShellConfig::current(cx))),
         move |value: f64, cx: &mut App| {
-            let Some(limit) = clamp_concurrency(value, max) else {
-                tracing::warn!("Ignoring out-of-range concurrency value: {}", value);
-                return;
-            };
-            write(cx.global_mut::<ShellConfig>(), limit as u32);
-            persist(path, serde_json::json!(limit));
-            cx.refresh_windows();
+            apply_concurrency_value(value, max, write, path, cx);
         },
     )
 }
@@ -4101,7 +4263,7 @@ fn concurrency_field(
 /// A2 (G-SE19): the subagent-model menu — the two shared aliases first, then
 /// every enabled configured model, then the stored id when it is unavailable
 /// (the web combobox appends the same entry).
-fn subagent_model_options(
+pub(crate) fn subagent_model_options(
     catalog: &[crate::runtime::ModelChoice],
     current: &str,
     text: &ShellText,
@@ -4134,7 +4296,10 @@ fn subagent_model_options(
 
 /// The batch-policy menu: the two shared policies, then a stored policy this
 /// build does not render so the row shows what is actually persisted.
-fn subagent_batch_options(current: &str, text: &ShellText) -> Vec<(SharedString, SharedString)> {
+pub(crate) fn subagent_batch_options(
+    current: &str,
+    text: &ShellText,
+) -> Vec<(SharedString, SharedString)> {
     let mut options: Vec<(SharedString, SharedString)> = SUBAGENT_BATCH_POLICIES
         .iter()
         .map(|policy| {
@@ -4174,11 +4339,7 @@ fn review_capacity_field(
         },
         move |cx: &App| object_u64(&ShellConfig::current(cx).review_team, key, fallback) as f64,
         move |value: f64, cx: &mut App| {
-            if !value.is_finite() {
-                return;
-            }
-            let clamped = (value.round() as u64).clamp(u64::from(min), u64::from(max));
-            set_review_capacity(key, serde_json::json!(clamped), cx);
+            set_review_capacity_value(key, value, min, max, cx);
         },
     )
 }
@@ -5024,169 +5185,192 @@ fn save_permission_rules(cx: &mut App) {
     cx.refresh_windows();
 }
 
-fn permission_rules_readonly_item(text: &ShellText, _cx: &App) -> SettingItem {
-    let text = text.clone();
-    SettingItem::render(move |_options, _window, cx| {
-        let stored = ShellConfig::current(cx).permission_rules.clone();
-        let mut column = div().v_flex().gap_1().w_full();
-        if stored.is_empty() {
-            column = column.child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(text.settings_permission_rules_empty.clone()),
-            );
-        } else {
-            for rule in &stored {
-                column = column.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_2()
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .text_sm()
-                                .text_color(cx.theme().foreground)
-                                .child(format!("{} · {}", rule.action, rule.resource)),
-                        )
-                        .child(
-                            div()
-                                .flex_shrink_0()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(permission_effect_label(
-                                    permission_effect_value(rule.effect),
-                                    &text,
-                                )),
-                        ),
-                );
-            }
+/// The rules block shared by the component pipeline and the card row: the
+/// stored list with its manage button, or the draft editor rows plus their
+/// action bar while an edit is active.
+pub(crate) fn permission_rules_field(
+    text: &ShellText,
+    window: &mut Window,
+    cx: &mut App,
+) -> gpui_kit::AnyElement {
+    let draft = PermissionRulesDraft::current(cx);
+    let mut column = div().v_flex().gap_2().w_full();
+    if draft.active {
+        let count = draft.rules.len();
+        for (index, rule) in draft.rules.iter().enumerate() {
+            column = column.child(permission_rule_row(rule.id, index, count, text, window, cx));
         }
-        column = column.child(
-            Button::new("permission-rules-manage")
-                .label(text.settings_permission_rules_manage.clone())
-                .small()
-                .outline()
-                .on_click(move |_, _window, cx| start_permission_rules_draft(cx)),
-        );
-        column.into_any_element()
-    })
+        column = column.child(permission_rules_actions_row(text, cx));
+    } else {
+        column = column.child(permission_rules_readonly_row(text, cx));
+    }
+    column.into_any_element()
 }
 
-/// One editor row: action input, resource input and the effect menu.
-fn permission_rule_item(rule_id: u64, index: usize, count: usize, text: &ShellText) -> SettingItem {
-    let row_text = text.clone();
-    SettingItem::render(move |_options, window, cx| {
-        let draft = PermissionRulesDraft::current(cx);
-        let Some(rule) = draft.rules.iter().find(|rule| rule.id == rule_id).cloned() else {
-            return div().into_any_element();
-        };
-        let action = permission_rule_input(
-            rule_id,
-            "action",
-            &rule.action,
-            &row_text.settings_permission_rules_action,
-            window,
-            cx,
+/// The stored list and its manage button.
+fn permission_rules_readonly_row(text: &ShellText, cx: &App) -> gpui_kit::AnyElement {
+    let stored = ShellConfig::current(cx).permission_rules.clone();
+    let mut column = div().v_flex().gap_1().w_full();
+    if stored.is_empty() {
+        column = column.child(
+            div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(text.settings_permission_rules_empty.clone()),
         );
-        let resource = permission_rule_input(
-            rule_id,
-            "resource",
-            &rule.resource,
-            &row_text.settings_permission_rules_resource,
-            window,
-            cx,
-        );
-
-        let effect_value = rule.effect.clone();
-        let effect_text = row_text.clone();
-        let effect_button = Button::new(SharedString::from(format!(
-            "permission-rule-{rule_id}-effect"
-        )))
-        .label(permission_effect_label(&rule.effect, &row_text))
-        .tooltip(row_text.settings_permission_rules_effect.clone())
-        .small()
-        .outline()
-        .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _window, _cx| {
-            let mut menu = menu;
-            for effect in ["allow", "ask", "deny"] {
-                let selected = effect == effect_value;
-                let label = permission_effect_label(effect, &effect_text);
-                let value = effect.to_string();
-                menu = menu.item(PopupMenuItem::new(label).checked(selected).on_click(
-                    move |_, _window, cx| {
-                        let value = value.clone();
-                        PermissionRulesDraft::mutate(cx, |draft| {
-                            if let Some(rule) =
-                                draft.rules.iter_mut().find(|rule| rule.id == rule_id)
-                            {
-                                rule.effect = value;
-                            }
-                        });
-                        cx.refresh_windows();
-                    },
-                ));
-            }
-            menu
-        });
-
-        let up = Button::new(SharedString::from(format!("permission-rule-{rule_id}-up")))
-            .label("↑")
+    } else {
+        for rule in &stored {
+            column = column.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_sm()
+                            .text_color(cx.theme().foreground)
+                            .child(format!("{} · {}", rule.action, rule.resource)),
+                    )
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(permission_effect_label(
+                                permission_effect_value(rule.effect),
+                                text,
+                            )),
+                    ),
+            );
+        }
+    }
+    column = column.child(
+        Button::new("permission-rules-manage")
+            .label(text.settings_permission_rules_manage.clone())
             .small()
-            .with_variant(ButtonVariant::Ghost)
-            .disabled(index == 0)
-            .on_click(move |_, _window, cx| {
-                PermissionRulesDraft::mutate(cx, |draft| {
-                    if index > 0 {
-                        draft.rules.swap(index - 1, index);
-                    }
-                });
-                cx.refresh_windows();
-            });
-        let down = Button::new(SharedString::from(format!(
-            "permission-rule-{rule_id}-down"
-        )))
-        .label("↓")
+            .outline()
+            .on_click(move |_, _window, cx| start_permission_rules_draft(cx)),
+    );
+    column.into_any_element()
+}
+
+/// One editor row: action input, resource input, the effect menu and the
+/// reorder/remove buttons.
+fn permission_rule_row(
+    rule_id: u64,
+    index: usize,
+    count: usize,
+    text: &ShellText,
+    window: &mut Window,
+    cx: &mut App,
+) -> gpui_kit::AnyElement {
+    let draft = PermissionRulesDraft::current(cx);
+    let Some(rule) = draft.rules.iter().find(|rule| rule.id == rule_id).cloned() else {
+        return div().into_any_element();
+    };
+    let action = permission_rule_input(
+        rule_id,
+        "action",
+        &rule.action,
+        &text.settings_permission_rules_action,
+        window,
+        cx,
+    );
+    let resource = permission_rule_input(
+        rule_id,
+        "resource",
+        &rule.resource,
+        &text.settings_permission_rules_resource,
+        window,
+        cx,
+    );
+
+    let effect_value = rule.effect.clone();
+    let effect_text = text.clone();
+    let effect_button = Button::new(SharedString::from(format!(
+        "permission-rule-{rule_id}-effect"
+    )))
+    .label(permission_effect_label(&rule.effect, text))
+    .tooltip(text.settings_permission_rules_effect.clone())
+    .small()
+    .outline()
+    .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _window, _cx| {
+        let mut menu = menu;
+        for effect in ["allow", "ask", "deny"] {
+            let selected = effect == effect_value;
+            let label = permission_effect_label(effect, &effect_text);
+            let value = effect.to_string();
+            menu = menu.item(PopupMenuItem::new(label).checked(selected).on_click(
+                move |_, _window, cx| {
+                    let value = value.clone();
+                    PermissionRulesDraft::mutate(cx, |draft| {
+                        if let Some(rule) = draft.rules.iter_mut().find(|rule| rule.id == rule_id) {
+                            rule.effect = value;
+                        }
+                    });
+                    cx.refresh_windows();
+                },
+            ));
+        }
+        menu
+    });
+
+    let up = Button::new(SharedString::from(format!("permission-rule-{rule_id}-up")))
+        .label("↑")
         .small()
         .with_variant(ButtonVariant::Ghost)
-        .disabled(index + 1 >= count)
+        .disabled(index == 0)
         .on_click(move |_, _window, cx| {
             PermissionRulesDraft::mutate(cx, |draft| {
-                if index + 1 < draft.rules.len() {
-                    draft.rules.swap(index, index + 1);
+                if index > 0 {
+                    draft.rules.swap(index - 1, index);
                 }
             });
             cx.refresh_windows();
         });
-        let remove = Button::new(SharedString::from(format!(
-            "permission-rule-{rule_id}-remove"
-        )))
-        .label("×")
-        .small()
-        .with_variant(ButtonVariant::Ghost)
-        .on_click(move |_, _window, cx| {
-            PermissionRulesDraft::mutate(cx, |draft| {
-                draft.rules.retain(|rule| rule.id != rule_id);
-            });
-            cx.refresh_windows();
+    let down = Button::new(SharedString::from(format!(
+        "permission-rule-{rule_id}-down"
+    )))
+    .label("↓")
+    .small()
+    .with_variant(ButtonVariant::Ghost)
+    .disabled(index + 1 >= count)
+    .on_click(move |_, _window, cx| {
+        PermissionRulesDraft::mutate(cx, |draft| {
+            if index + 1 < draft.rules.len() {
+                draft.rules.swap(index, index + 1);
+            }
         });
+        cx.refresh_windows();
+    });
+    let remove = Button::new(SharedString::from(format!(
+        "permission-rule-{rule_id}-remove"
+    )))
+    .label("×")
+    .small()
+    .with_variant(ButtonVariant::Ghost)
+    .on_click(move |_, _window, cx| {
+        PermissionRulesDraft::mutate(cx, |draft| {
+            draft.rules.retain(|rule| rule.id != rule_id);
+        });
+        cx.refresh_windows();
+    });
 
-        div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .w_full()
-            .child(div().w(px(120.)).child(action))
-            .child(div().flex_1().min_w_0().child(resource))
-            .child(effect_button)
-            .child(up)
-            .child(down)
-            .child(remove)
-            .into_any_element()
-    })
+    div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .w_full()
+        .child(div().w(px(120.)).child(action))
+        .child(div().flex_1().min_w_0().child(resource))
+        .child(effect_button)
+        .child(up)
+        .child(down)
+        .child(remove)
+        .into_any_element()
 }
 
 /// One text input of an editor row, keyed by the stable row id so the text
@@ -5238,100 +5422,72 @@ fn permission_rule_input(
 }
 
 /// Add / Save / Discard under the editor rows.
-fn permission_rules_actions_item(text: &ShellText) -> SettingItem {
-    let text = text.clone();
-    SettingItem::render(move |_options, _window, cx| {
-        let draft = PermissionRulesDraft::current(cx);
-        let valid = draft
-            .rules
-            .iter()
-            .all(|rule| !rule.action.trim().is_empty() && !rule.resource.trim().is_empty());
-        let mut row = div().flex().items_center().gap_2().w_full();
-        if !valid {
-            row = row.child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().danger)
-                    .child(text.settings_permission_rules_invalid.clone()),
-            );
-        }
-        row = row
-            .child(
-                Button::new("permission-rules-add")
-                    .label(text.settings_permission_rules_add.clone())
-                    .small()
-                    .outline()
-                    .on_click(move |_, _window, cx| {
-                        PermissionRulesDraft::mutate(cx, |draft| {
-                            let id = draft.next_id;
-                            draft.next_id += 1;
-                            draft.rules.push(PermissionRuleDraft {
-                                id,
-                                action: "*".to_string(),
-                                resource: String::new(),
-                                effect: "ask".to_string(),
-                            });
+fn permission_rules_actions_row(text: &ShellText, cx: &App) -> gpui_kit::AnyElement {
+    let draft = PermissionRulesDraft::current(cx);
+    let valid = draft
+        .rules
+        .iter()
+        .all(|rule| !rule.action.trim().is_empty() && !rule.resource.trim().is_empty());
+    let mut row = div().flex().items_center().gap_2().w_full();
+    if !valid {
+        row = row.child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().danger)
+                .child(text.settings_permission_rules_invalid.clone()),
+        );
+    }
+    row = row
+        .child(
+            Button::new("permission-rules-add")
+                .label(text.settings_permission_rules_add.clone())
+                .small()
+                .outline()
+                .on_click(move |_, _window, cx| {
+                    PermissionRulesDraft::mutate(cx, |draft| {
+                        let id = draft.next_id;
+                        draft.next_id += 1;
+                        draft.rules.push(PermissionRuleDraft {
+                            id,
+                            action: "*".to_string(),
+                            resource: String::new(),
+                            effect: "ask".to_string(),
                         });
-                        cx.refresh_windows();
-                    }),
-            )
-            .child(
-                Button::new("permission-rules-save")
-                    .label(text.settings_permission_rules_save.clone())
-                    .small()
-                    .with_variant(ButtonVariant::Primary)
-                    .disabled(!valid)
-                    .on_click(move |_, _window, cx| save_permission_rules(cx)),
-            )
-            .child(
-                Button::new("permission-rules-discard")
-                    .label(text.settings_permission_rules_discard.clone())
-                    .small()
-                    .with_variant(ButtonVariant::Ghost)
-                    .on_click(move |_, _window, cx| {
-                        PermissionRulesDraft::mutate(cx, |draft| draft.active = false);
-                        cx.refresh_windows();
-                    }),
-            );
-        row.into_any_element()
-    })
+                    });
+                    cx.refresh_windows();
+                }),
+        )
+        .child(
+            Button::new("permission-rules-save")
+                .label(text.settings_permission_rules_save.clone())
+                .small()
+                .with_variant(ButtonVariant::Primary)
+                .disabled(!valid)
+                .on_click(move |_, _window, cx| save_permission_rules(cx)),
+        )
+        .child(
+            Button::new("permission-rules-discard")
+                .label(text.settings_permission_rules_discard.clone())
+                .small()
+                .with_variant(ButtonVariant::Ghost)
+                .on_click(move |_, _window, cx| {
+                    PermissionRulesDraft::mutate(cx, |draft| draft.active = false);
+                    cx.refresh_windows();
+                }),
+        );
+    row.into_any_element()
 }
 
 fn permissions_group(text: &ShellText, cx: &App) -> SettingGroup {
-    let preset_options = vec![
-        (
-            SharedString::from("ask"),
-            SharedString::from(text.settings_policy_ask.clone()),
-        ),
-        (
-            SharedString::from("full_access"),
-            SharedString::from(text.settings_policy_full_access.clone()),
-        ),
-    ];
     let preset_field = SettingField::dropdown(
-        preset_options,
+        permission_preset_options(text),
         |cx: &App| SharedString::from(preset_value(ShellConfig::current(cx).permission_preset)),
-        |value: SharedString, cx: &mut App| {
-            let Some(preset) = preset_from_value(&value) else {
-                tracing::warn!("Ignoring unsupported permission policy: {}", value);
-                return;
-            };
-            cx.global_mut::<ShellConfig>().permission_preset = preset;
-            persist(
-                PERMISSION_PRESET_PATH,
-                serde_json::Value::String(preset_value(preset).to_string()),
-            );
-            cx.refresh_windows();
-        },
+        |value: SharedString, cx: &mut App| set_permission_preset(&value, cx),
     );
 
     let auto_approve_field = SettingField::switch(
         |cx: &App| ShellConfig::current(cx).auto_approve_ask,
-        |value: bool, cx: &mut App| {
-            cx.global_mut::<ShellConfig>().auto_approve_ask = value;
-            persist(AUTO_APPROVE_ASK_PATH, serde_json::Value::Bool(value));
-            cx.refresh_windows();
-        },
+        |value: bool, cx: &mut App| set_auto_approve_ask(value, cx),
     );
 
     // Auto-approval only changes behavior under the Ask policy; the preset
@@ -5476,16 +5632,10 @@ fn permissions_group(text: &ShellText, cx: &App) -> SettingGroup {
             text.settings_permission_rules_description.clone(),
         ),
     ];
-    let draft = PermissionRulesDraft::current(cx);
-    if draft.active {
-        let count = draft.rules.len();
-        for (index, rule) in draft.rules.iter().enumerate() {
-            items.push(permission_rule_item(rule.id, index, count, text));
-        }
-        items.push(permission_rules_actions_item(text));
-    } else {
-        items.push(permission_rules_readonly_item(text, cx));
-    }
+    items.push(SettingItem::render({
+        let text = text.clone();
+        move |_options, window, cx| permission_rules_field(&text, window, cx)
+    }));
     items.extend(vec![
         section_heading_item(
             "execution",
