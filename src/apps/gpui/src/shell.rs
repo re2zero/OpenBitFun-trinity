@@ -12101,6 +12101,23 @@ mod tests {
                     "settings-card-permissions-review",
                 ],
             ),
+            // The MCP page is on the card path: the server-list section is
+            // one card with the collection rows under it.
+            (settings::SettingsEntry::Mcp, &["settings-card-manage-mcp"]),
+            // The automation page is on the card path: the hooks activation
+            // switches, the two quick-action collections, the declaration
+            // locations, the imported-hook manager, and the Codex reference.
+            (
+                settings::SettingsEntry::Automation,
+                &[
+                    "settings-card-automation-hooks",
+                    "settings-card-automation-qa-builtin",
+                    "settings-card-automation-qa-custom",
+                    "settings-card-automation-hook-locations",
+                    "settings-card-automation-hook-imports",
+                    "settings-card-automation-hooks-compat",
+                ],
+            ),
         ];
         for (page, sections) in cases {
             let window = cx.add_empty_window();

@@ -5712,11 +5712,11 @@ pub(crate) struct QuickActionsEditorState {
 impl Global for QuickActionsEditorState {}
 
 impl QuickActionsEditorState {
-    fn current(cx: &App) -> Self {
+    pub(crate) fn current(cx: &App) -> Self {
         cx.try_global::<Self>().cloned().unwrap_or_default()
     }
 
-    fn mutate<R>(cx: &mut App, change: impl FnOnce(&mut Self) -> R) -> R {
+    pub(crate) fn mutate<R>(cx: &mut App, change: impl FnOnce(&mut Self) -> R) -> R {
         if cx.try_global::<Self>().is_none() {
             cx.set_global(Self::default());
         }
@@ -5725,7 +5725,7 @@ impl QuickActionsEditorState {
 }
 
 /// The canonical English text of a built-in action, when this is one.
-fn quick_action_builtin_default(id: &str) -> Option<(&'static str, &'static str)> {
+pub(crate) fn quick_action_builtin_default(id: &str) -> Option<(&'static str, &'static str)> {
     match id {
         "commit" => Some(crate::shell::QUICK_ACTION_COMMIT_DEFAULTS),
         "create_pr" => Some(crate::shell::QUICK_ACTION_CREATE_PR_DEFAULTS),
@@ -5747,7 +5747,7 @@ fn persist_quick_actions(
     cx.refresh_windows();
 }
 
-fn start_quick_action_edit(index: usize, cx: &mut App) {
+pub(crate) fn start_quick_action_edit(index: usize, cx: &mut App) {
     let Some(action) = ShellConfig::current(cx).quick_actions.get(index).cloned() else {
         return;
     };
@@ -5790,7 +5790,7 @@ pub(crate) fn normalized_quick_action_text(
     (label, prompt)
 }
 
-fn save_quick_action_edit(cx: &mut App) {
+pub(crate) fn save_quick_action_edit(cx: &mut App) {
     let state = QuickActionsEditorState::current(cx);
     let Some(index) = state.index else {
         return;
@@ -5823,7 +5823,7 @@ fn save_quick_action_edit(cx: &mut App) {
     cx.refresh_windows();
 }
 
-fn add_quick_action(cx: &mut App) {
+pub(crate) fn add_quick_action(cx: &mut App) {
     let mut actions = ShellConfig::current(cx).quick_actions;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -5847,7 +5847,7 @@ fn add_quick_action(cx: &mut App) {
     cx.refresh_windows();
 }
 
-fn delete_quick_action(index: usize, cx: &mut App) {
+pub(crate) fn delete_quick_action(index: usize, cx: &mut App) {
     let mut actions = ShellConfig::current(cx).quick_actions;
     let Some(action) = actions.get(index) else {
         return;
@@ -5865,7 +5865,7 @@ fn delete_quick_action(index: usize, cx: &mut App) {
     });
 }
 
-fn toggle_quick_action(index: usize, enabled: bool, cx: &mut App) {
+pub(crate) fn toggle_quick_action(index: usize, enabled: bool, cx: &mut App) {
     let mut actions = ShellConfig::current(cx).quick_actions;
     if let Some(action) = actions.get_mut(index) {
         action.enabled = enabled;
@@ -6047,33 +6047,42 @@ fn quick_actions_items(text: &ShellText, cx: &App) -> Vec<SettingItem> {
     items
 }
 
+/// The automation page's native-hooks master switch (web `app.hooks.enabled`).
+pub(crate) fn set_hooks_enabled(value: bool, cx: &mut App) {
+    cx.global_mut::<ShellConfig>().hooks_enabled = value;
+    persist(HOOKS_ENABLED_PATH, serde_json::Value::Bool(value));
+    cx.refresh_windows();
+}
+
+/// Whether project hook files may load (web `app.hooks.project_hooks_enabled`).
+pub(crate) fn set_project_hooks_enabled(value: bool, cx: &mut App) {
+    cx.global_mut::<ShellConfig>().project_hooks_enabled = value;
+    persist(HOOKS_PROJECT_PATH, serde_json::Value::Bool(value));
+    cx.refresh_windows();
+}
+
+/// Whether the built-in commit workflows add OpenBitFun as a co-author.
+pub(crate) fn set_git_commit_coauthor(value: bool, cx: &mut App) {
+    cx.global_mut::<ShellConfig>().git_commit_coauthor = value;
+    persist(GIT_COAUTHOR_PATH, serde_json::Value::Bool(value));
+    cx.refresh_windows();
+}
+
 /// Automation group (M22): the native-hooks master switches and the commit
 /// co-author preference. The toggles are the same shared values the desktop
 /// automation page writes; hook declarations themselves stay in hooks.json.
 fn automation_group(text: &ShellText, cx: &App) -> SettingGroup {
     let hooks_field = SettingField::switch(
         |cx: &App| ShellConfig::current(cx).hooks_enabled,
-        |value: bool, cx: &mut App| {
-            cx.global_mut::<ShellConfig>().hooks_enabled = value;
-            persist(HOOKS_ENABLED_PATH, serde_json::Value::Bool(value));
-            cx.refresh_windows();
-        },
+        |value: bool, cx: &mut App| set_hooks_enabled(value, cx),
     );
     let project_hooks_field = SettingField::switch(
         |cx: &App| ShellConfig::current(cx).project_hooks_enabled,
-        |value: bool, cx: &mut App| {
-            cx.global_mut::<ShellConfig>().project_hooks_enabled = value;
-            persist(HOOKS_PROJECT_PATH, serde_json::Value::Bool(value));
-            cx.refresh_windows();
-        },
+        |value: bool, cx: &mut App| set_project_hooks_enabled(value, cx),
     );
     let coauthor_field = SettingField::switch(
         |cx: &App| ShellConfig::current(cx).git_commit_coauthor,
-        |value: bool, cx: &mut App| {
-            cx.global_mut::<ShellConfig>().git_commit_coauthor = value;
-            persist(GIT_COAUTHOR_PATH, serde_json::Value::Bool(value));
-            cx.refresh_windows();
-        },
+        |value: bool, cx: &mut App| set_git_commit_coauthor(value, cx),
     );
 
     let mut items = vec![
@@ -8074,7 +8083,7 @@ pub(crate) fn dismiss_hook_import_plan(cx: &mut App) {
 }
 
 /// G-SE25: one import state's row copy (web `imports.state.*`).
-fn hook_import_state_label(
+pub(crate) fn hook_import_state_label(
     state: &openbitfun_product_domains::external_hook_import::ImportedHookSourceStateV1,
     location: &str,
     text: &ShellText,

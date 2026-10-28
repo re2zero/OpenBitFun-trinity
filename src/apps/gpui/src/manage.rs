@@ -26,6 +26,7 @@ use gpui_kit::{
 };
 
 use crate::i18n::{self, ShellText};
+use crate::settings_cards::{SettingsCard, SettingsCardRow};
 use crate::shell::ShellWindow;
 
 /// Longest MCP-server target string rendered on a row before truncation.
@@ -4994,6 +4995,86 @@ pub(crate) fn mcp_group(text: &ShellText, view: WeakEntity<ShellWindow>) -> Sett
     ])
 }
 
+/// The MCP page's card (web `McpToolsConfig`: one section of collection
+/// items). The import and raw-JSON editors sit in the card head, and each
+/// server becomes a full-width collection row beneath it.
+pub(crate) fn mcp_cards(
+    text: &ShellText,
+    view: WeakEntity<ShellWindow>,
+    cx: &mut App,
+) -> Vec<SettingsCard> {
+    let mut card = SettingsCard::new("manage-mcp")
+        .title(text.settings_mcp_servers_title.clone())
+        .description(text.settings_mcp_servers_desc.clone())
+        .extra(mcp_card_actions(text, view.clone()));
+
+    if let Some(message) = ManageNotice::current(cx) {
+        return vec![card
+            .row(SettingsCardRow::body("mcp-notice").control(notice_banner(text, &message, cx)))];
+    }
+    let Some(catalog) = McpCatalog::try_current(cx) else {
+        return vec![card.row(
+            SettingsCardRow::body("mcp-loading").control(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(text.manage_mcp_loading.clone()),
+            ),
+        )];
+    };
+    if catalog.servers.is_empty() {
+        return vec![card.row(SettingsCardRow::body("mcp-empty").control(
+            crate::shell::brand_empty(
+                IconName::Plug,
+                &text.manage_mcp_empty_title,
+                &text.manage_mcp_empty,
+            ),
+        ))];
+    }
+    for server in catalog.servers {
+        let facts = mcp_server_facts(&server, text);
+        card = card.row(
+            SettingsCardRow::new(format!("mcp-server-{}", server.id), server.name.clone())
+                .description(facts.join(" · "))
+                .multiline()
+                .control(mcp_server_actions(&server, text, view.clone())),
+        );
+    }
+    vec![card]
+}
+
+/// The MCP card head's actions: import a configuration and open the raw JSON
+/// editor — the two dialog entries the component page carries as its own rows.
+fn mcp_card_actions(text: &ShellText, view: WeakEntity<ShellWindow>) -> gpui_kit::AnyElement {
+    let import_view = view.clone();
+    let import_label = text.manage_mcp_import.clone();
+    let json_view = view;
+    let json_label = text.manage_mcp_json_edit.clone();
+    div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(
+            Button::new("mcp-import")
+                .label(import_label)
+                .small()
+                .outline()
+                .on_click(move |_, window, cx| {
+                    open_mcp_import_dialog(import_view.clone(), window, cx)
+                }),
+        )
+        .child(
+            Button::new("mcp-json-edit")
+                .label(json_label)
+                .small()
+                .outline()
+                .on_click(move |_, window, cx| {
+                    open_json_editor_dialog(json_view.clone(), window, cx)
+                }),
+        )
+        .into_any_element()
+}
+
 fn mcp_server_list(
     text: &ShellText,
     view: WeakEntity<ShellWindow>,
@@ -5024,12 +5105,9 @@ fn mcp_server_list(
     column.into_any_element()
 }
 
-fn mcp_server_row(
-    server: &McpServerRow,
-    text: &ShellText,
-    view: WeakEntity<ShellWindow>,
-    cx: &mut App,
-) -> gpui_kit::AnyElement {
+/// The facts line of an MCP server row (target, state, enablement, level,
+/// auth summary) — shared by the component-pipeline row and the card row.
+fn mcp_server_facts(server: &McpServerRow, text: &ShellText) -> Vec<String> {
     let mut target = server.target.clone();
     if target.chars().count() > MCP_TARGET_LIMIT {
         target = format!(
@@ -5059,6 +5137,16 @@ fn mcp_server_row(
         ));
     }
 
+    facts
+}
+
+/// The per-server action buttons (auth / start / stop / restart / enable /
+/// browse / delete) — shared by the component-pipeline row and the card row.
+fn mcp_server_actions(
+    server: &McpServerRow,
+    text: &ShellText,
+    view: WeakEntity<ShellWindow>,
+) -> gpui_kit::Div {
     let mut actions = div().flex().items_center().gap_1().flex_shrink_0();
     if server.remote {
         let auth_view = view.clone();
@@ -5153,6 +5241,18 @@ fn mcp_server_row(
                 }),
         );
     }
+
+    actions
+}
+
+fn mcp_server_row(
+    server: &McpServerRow,
+    text: &ShellText,
+    view: WeakEntity<ShellWindow>,
+    cx: &mut App,
+) -> gpui_kit::AnyElement {
+    let facts = mcp_server_facts(server, text);
+    let actions = mcp_server_actions(server, text, view);
 
     div()
         .flex()

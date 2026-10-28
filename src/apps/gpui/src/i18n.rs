@@ -846,6 +846,23 @@ pub(crate) struct ShellText {
     pub settings_hooks_compat_note: String,
     pub settings_hooks_compat_reference: String,
     pub settings_hooks_compat_open: String,
+    /// The automation page's card heads (web `quick-actions` + `hooks`
+    /// section titles and descriptions).
+    pub settings_automation_hooks_title: String,
+    pub settings_automation_hooks_desc: String,
+    pub settings_automation_qa_builtin_title: String,
+    pub settings_automation_qa_builtin_desc: String,
+    pub settings_automation_qa_custom_title: String,
+    pub settings_automation_qa_custom_desc: String,
+    pub settings_automation_hook_locations_title: String,
+    pub settings_automation_hook_locations_desc: String,
+    pub settings_automation_hook_imports_title: String,
+    pub settings_automation_hook_imports_desc: String,
+    pub settings_automation_hooks_compat_title: String,
+    pub settings_automation_hooks_compat_desc: String,
+    /// The MCP page's card head (web `McpToolsConfig` section).
+    pub settings_mcp_servers_title: String,
+    pub settings_mcp_servers_desc: String,
     pub settings_websearch: String,
     pub settings_websearch_provider: String,
     pub settings_websearch_provider_description: String,
@@ -3017,6 +3034,20 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         },
         settings_hooks_compat_reference: "Event and payload reference".to_string(),
         settings_hooks_compat_open: "Open docs".to_string(),
+        settings_automation_hooks_title: "Agent Hooks".to_string(),
+        settings_automation_hooks_desc: "Commands run as the user running OpenBitFun; enable hooks only from trusted sources".to_string(),
+        settings_automation_qa_builtin_title: "Built-in actions".to_string(),
+        settings_automation_qa_builtin_desc: "Edit the names and prompts of built-in actions, or turn off actions you do not need".to_string(),
+        settings_automation_qa_custom_title: "Custom actions".to_string(),
+        settings_automation_qa_custom_desc: "Save your own prompts for recurring tasks; triggering an action sends its prompt to the current session".to_string(),
+        settings_automation_hook_locations_title: "Where hooks are declared".to_string(),
+        settings_automation_hook_locations_desc: "Changes to hooks.json take effect without restarting OpenBitFun.".to_string(),
+        settings_automation_hook_imports_title: "Imported hooks".to_string(),
+        settings_automation_hook_imports_desc: "Review and manage hooks imported from Claude Code or Codex.".to_string(),
+        settings_automation_hooks_compat_title: "Codex compatibility".to_string(),
+        settings_automation_hooks_compat_desc: "OpenBitFun uses the Codex Hooks contract and can run compatible hook scripts directly.".to_string(),
+        settings_mcp_servers_title: "MCP Server List".to_string(),
+        settings_mcp_servers_desc: "A server must be enabled and connected before its tools are available to agents".to_string(),
         settings_websearch: "Web search".to_string(),
         settings_websearch_provider: "Provider".to_string(),
         settings_websearch_provider_description: {
@@ -4365,6 +4396,44 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
             .t("gpui-shell-settings-hooks-compat-reference")
             .await,
         settings_hooks_compat_open: service.t("gpui-shell-settings-hooks-compat-open").await,
+        settings_automation_hooks_title: service
+            .t("gpui-shell-settings-automation-hooks-title")
+            .await,
+        settings_automation_hooks_desc: service
+            .t("gpui-shell-settings-automation-hooks-desc")
+            .await,
+        settings_automation_qa_builtin_title: service
+            .t("gpui-shell-settings-automation-qa-builtin-title")
+            .await,
+        settings_automation_qa_builtin_desc: service
+            .t("gpui-shell-settings-automation-qa-builtin-desc")
+            .await,
+        settings_automation_qa_custom_title: service
+            .t("gpui-shell-settings-automation-qa-custom-title")
+            .await,
+        settings_automation_qa_custom_desc: service
+            .t("gpui-shell-settings-automation-qa-custom-desc")
+            .await,
+        settings_automation_hook_locations_title: service
+            .t("gpui-shell-settings-automation-hook-locations-title")
+            .await,
+        settings_automation_hook_locations_desc: service
+            .t("gpui-shell-settings-automation-hook-locations-desc")
+            .await,
+        settings_automation_hook_imports_title: service
+            .t("gpui-shell-settings-automation-hook-imports-title")
+            .await,
+        settings_automation_hook_imports_desc: service
+            .t("gpui-shell-settings-automation-hook-imports-desc")
+            .await,
+        settings_automation_hooks_compat_title: service
+            .t("gpui-shell-settings-automation-hooks-compat-title")
+            .await,
+        settings_automation_hooks_compat_desc: service
+            .t("gpui-shell-settings-automation-hooks-compat-desc")
+            .await,
+        settings_mcp_servers_title: service.t("gpui-shell-settings-mcp-servers-title").await,
+        settings_mcp_servers_desc: service.t("gpui-shell-settings-mcp-servers-desc").await,
         settings_websearch: service.t("gpui-shell-settings-websearch").await,
         settings_websearch_provider: service.t("gpui-shell-settings-websearch-provider").await,
         settings_websearch_provider_description: service

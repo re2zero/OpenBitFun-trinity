@@ -1230,3 +1230,21 @@ gpui-shell-settings-permissions-json-repair-title = Tool Argument JSON Repair
 gpui-shell-settings-permissions-json-repair-desc = Applies to the next model round.
 gpui-shell-settings-permissions-review-title = Review capacity
 gpui-shell-settings-permissions-review-desc = Control how supplemental reviews use model capacity; changing concurrency keeps the review scope unchanged
+
+# Automation page cards (web `quick-actions` + `hooks` section heads).
+gpui-shell-settings-automation-hooks-title = Agent Hooks
+gpui-shell-settings-automation-hooks-desc = Commands run as the user running OpenBitFun; enable hooks only from trusted sources
+gpui-shell-settings-automation-qa-builtin-title = Built-in actions
+gpui-shell-settings-automation-qa-builtin-desc = Edit the names and prompts of built-in actions, or turn off actions you do not need
+gpui-shell-settings-automation-qa-custom-title = Custom actions
+gpui-shell-settings-automation-qa-custom-desc = Save your own prompts for recurring tasks; triggering an action sends its prompt to the current session
+gpui-shell-settings-automation-hook-locations-title = Where hooks are declared
+gpui-shell-settings-automation-hook-locations-desc = Changes to hooks.json take effect without restarting OpenBitFun.
+gpui-shell-settings-automation-hook-imports-title = Imported hooks
+gpui-shell-settings-automation-hook-imports-desc = Review and manage hooks imported from Claude Code or Codex.
+gpui-shell-settings-automation-hooks-compat-title = Codex compatibility
+gpui-shell-settings-automation-hooks-compat-desc = OpenBitFun uses the Codex Hooks contract and can run compatible hook scripts directly.
+
+# MCP page card (web `McpToolsConfig` server-list section).
+gpui-shell-settings-mcp-servers-title = MCP Server List
+gpui-shell-settings-mcp-servers-desc = A server must be enabled and connected before its tools are available to agents

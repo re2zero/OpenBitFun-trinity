@@ -1215,3 +1215,21 @@ gpui-shell-settings-permissions-json-repair-title = 工具參數 JSON 修復
 gpui-shell-settings-permissions-json-repair-desc = 修改將在下一輪模型呼叫生效
 gpui-shell-settings-permissions-review-title = 審核容量
 gpui-shell-settings-permissions-review-desc = 決定補充審核如何使用模型容量；調整並行數不改變審核範圍
+
+# 自動化頁卡片（web `quick-actions` + `hooks` 分節原文）。
+gpui-shell-settings-automation-hooks-title = 智慧體 Hooks
+gpui-shell-settings-automation-hooks-desc = 命令以執行 OpenBitFun 的使用者權限執行，僅啟用可信來源的 Hooks
+gpui-shell-settings-automation-qa-builtin-title = 內建動作
+gpui-shell-settings-automation-qa-builtin-desc = 可修改預設動作的名稱與指令，不需要的動作可以關閉
+gpui-shell-settings-automation-qa-custom-title = 自訂動作
+gpui-shell-settings-automation-qa-custom-desc = 為重複任務儲存自己的指令，觸發時傳送到目前會話
+gpui-shell-settings-automation-hook-locations-title = Hook 宣告位置
+gpui-shell-settings-automation-hook-locations-desc = 修改 hooks.json 後立即生效，無需重新啟動 OpenBitFun
+gpui-shell-settings-automation-hook-imports-title = 已匯入的 Hooks
+gpui-shell-settings-automation-hook-imports-desc = 檢閱並管理從 Claude Code 或 Codex 匯入的 Hooks
+gpui-shell-settings-automation-hooks-compat-title = Codex 相容
+gpui-shell-settings-automation-hooks-compat-desc = OpenBitFun 使用 Codex Hooks 合約，可直接執行相容的 Hook 指令碼
+
+# MCP 頁卡片（web `McpToolsConfig` 服務列表分節原文）。
+gpui-shell-settings-mcp-servers-title = MCP 服務列表
+gpui-shell-settings-mcp-servers-desc = 啟用並連線服務後，其工具才可供智慧體呼叫

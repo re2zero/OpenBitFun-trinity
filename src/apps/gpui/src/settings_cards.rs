@@ -23,6 +23,13 @@ use std::rc::Rc;
 
 use crate::i18n::ShellText;
 use crate::settings::{
+    add_quick_action, apply_hook_import_plan, delete_quick_action, dismiss_hook_import_plan,
+    fetch_hook_imports, hook_import_state_label, quick_action_builtin_default, remove_hook_import,
+    reset_hook_import_store, review_hook_import, save_quick_action_edit, set_git_commit_coauthor,
+    set_hook_import_enabled, set_hooks_enabled, set_project_hooks_enabled, start_quick_action_edit,
+    toggle_quick_action, HookImportState, QuickActionsEditorState,
+};
+use crate::settings::{
     archived_sessions_field, diagnostics_export_button, diagnostics_logs_field,
     previous_exit_notice, set_logging_level, usage_activity_field, usage_distributions_body,
     usage_endpoint_body, usage_overview_body, usage_trend_body, DiagnosticsNotice,
@@ -74,7 +81,7 @@ use crate::settings::{
     MAX_REVIEW_QUEUE_WAIT_SECS, MAX_RUNTIME_TIMEOUT_SECS, MAX_SUBAGENT_CONCURRENCY,
     MAX_SWARM_CONCURRENCY, MIN_REVIEW_PARALLELISM, MIN_SUBAGENT_CONCURRENCY,
 };
-use crate::shell::ShellWindow;
+use crate::shell::{resolve_quick_action_text, ShellWindow};
 
 /// One setting row: label + optional description on the left, the control in a
 /// fixed trailing lane. The owning card supplies the divider above every row
@@ -381,6 +388,8 @@ pub(crate) fn render_card_page(
         SettingsEntry::Archived => archived_cards(text, view),
         SettingsEntry::Diagnostics => diagnostics_cards(text, cx),
         SettingsEntry::Permissions => permissions_cards(text, cx),
+        SettingsEntry::Automation => automation_cards(text, cx),
+        SettingsEntry::Mcp => crate::manage::mcp_cards(text, view, cx),
         _ => return None,
     };
     Some(page_frame(
@@ -2829,4 +2838,700 @@ fn permissions_cards(text: &ShellText, cx: &App) -> Vec<SettingsCard> {
         );
 
     vec![policy, deferred, execution, subagents, json_repair, review]
+}
+
+/// The 自动化 page's cards, one per web `ConfigPageSection`: the hooks
+/// activation switches, the built-in and custom quick-action collections, the
+/// hook declaration locations, the imported-hook manager, and the Codex
+/// contract reference. The quick-action editor and the import-review block
+/// stay inline (the shell has no dialog host here; registered divergence from
+/// the web modals).
+fn automation_cards(text: &ShellText, cx: &App) -> Vec<SettingsCard> {
+    let config = ShellConfig::current(cx);
+    let editor = QuickActionsEditorState::current(cx);
+    let actions = config.quick_actions.clone();
+
+    let activation = SettingsCard::new("automation-hooks")
+        .title(text.settings_automation_hooks_title.clone())
+        .description(text.settings_automation_hooks_desc.clone())
+        .row(
+            SettingsCardRow::new("automation-hooks-enabled", text.settings_hooks.clone())
+                .description(text.settings_hooks_description.clone())
+                .control(switch_control(
+                    "automation-hooks-enabled-switch",
+                    config.hooks_enabled,
+                    set_hooks_enabled,
+                    false,
+                )),
+        )
+        .row(
+            SettingsCardRow::new(
+                "automation-project-hooks",
+                text.settings_hooks_project.clone(),
+            )
+            .description(text.settings_hooks_project_description.clone())
+            .disabled(!config.hooks_enabled)
+            .control(switch_control(
+                "automation-project-hooks-switch",
+                config.project_hooks_enabled,
+                set_project_hooks_enabled,
+                !config.hooks_enabled,
+            )),
+        )
+        .row(
+            SettingsCardRow::new(
+                "automation-git-coauthor",
+                text.settings_git_coauthor.clone(),
+            )
+            .description(text.settings_git_coauthor_description.clone())
+            .control(switch_control(
+                "automation-git-coauthor-switch",
+                config.git_commit_coauthor,
+                set_git_commit_coauthor,
+                false,
+            )),
+        );
+
+    let add_label = text.settings_quick_actions_add.clone();
+    let mut builtin_card = SettingsCard::new("automation-qa-builtin")
+        .title(text.settings_automation_qa_builtin_title.clone())
+        .description(text.settings_automation_qa_builtin_desc.clone());
+    let mut custom_card = SettingsCard::new("automation-qa-custom")
+        .title(text.settings_automation_qa_custom_title.clone())
+        .description(text.settings_automation_qa_custom_desc.clone())
+        .extra(
+            Button::new("quick-action-add")
+                .label(add_label)
+                .small()
+                .outline()
+                .on_click(|_, _, cx| add_quick_action(cx)),
+        );
+
+    // The inline editor follows the action it edits, so it lands in the card
+    // that owns the row.
+    let edited_builtin = editor.index.and_then(|index| {
+        actions
+            .get(index)
+            .map(|action| quick_action_builtin_default(&action.id).is_some())
+    });
+
+    for (index, action) in actions.iter().enumerate() {
+        let builtin = quick_action_builtin_default(&action.id).is_some();
+        let row = quick_action_row(
+            text,
+            action,
+            index,
+            !builtin,
+            editor.confirm_delete == Some(index),
+            cx,
+        );
+        if builtin {
+            builtin_card = builtin_card.row(row);
+        } else {
+            custom_card = custom_card.row(row);
+        }
+    }
+
+    let editor_rows = quick_action_editor_rows(text, &editor, cx);
+    match edited_builtin {
+        Some(true) => {
+            for row in editor_rows {
+                builtin_card = builtin_card.row(row);
+            }
+        }
+        Some(false) => {
+            for row in editor_rows {
+                custom_card = custom_card.row(row);
+            }
+        }
+        None => {}
+    }
+
+    let locations = SettingsCard::new("automation-hook-locations")
+        .title(text.settings_automation_hook_locations_title.clone())
+        .description(text.settings_automation_hook_locations_desc.clone())
+        .row(
+            SettingsCardRow::new(
+                "automation-hook-user-file",
+                text.settings_hooks_user_file.clone(),
+            )
+            .description(text.settings_hooks_user_file_desc.clone()),
+        )
+        .row(
+            SettingsCardRow::new(
+                "automation-hook-project-file",
+                text.settings_hooks_project_file.clone(),
+            )
+            .description(text.settings_hooks_project_file_desc.clone()),
+        );
+
+    let imports = automation_imports_card(text, cx);
+
+    let compat = SettingsCard::new("automation-hooks-compat")
+        .title(text.settings_automation_hooks_compat_title.clone())
+        .description(text.settings_automation_hooks_compat_desc.clone())
+        .row(
+            SettingsCardRow::new(
+                "automation-hooks-compat-reference",
+                text.settings_hooks_compat_reference.clone(),
+            )
+            .control(
+                Button::new("hooks-compat-open")
+                    .label(text.settings_hooks_compat_open.clone())
+                    .small()
+                    .with_variant(ButtonVariant::Ghost)
+                    .on_click(|_, _, _| {
+                        crate::markdown::open_external("https://learn.chatgpt.com/docs/hooks");
+                    }),
+            ),
+        );
+
+    vec![
+        activation,
+        builtin_card,
+        custom_card,
+        locations,
+        imports,
+        compat,
+    ]
+}
+
+/// One quick-action row: label and prompt on the left, the switch plus the
+/// edit (and, for custom actions, delete) buttons in the trailing lane — the
+/// web `ActionRow`. Deleting an action takes the legacy two-click confirm
+/// (the web opens a dialog).
+fn quick_action_row(
+    text: &ShellText,
+    action: &openbitfun_core::service::config::types::AiExperienceQuickAction,
+    index: usize,
+    deletable: bool,
+    confirm_delete: bool,
+    cx: &App,
+) -> SettingsCardRow {
+    let (label, prompt) = resolve_quick_action_text(action, text);
+    let row_id = format!("quick-action-{}", action.id);
+    let mut controls = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .child(switch_control(
+            format!("{row_id}-switch"),
+            action.enabled,
+            move |value, cx| toggle_quick_action(index, value, cx),
+            false,
+        ))
+        .child(
+            Button::new(SharedString::from(format!("{row_id}-edit")))
+                .label(crate::i18n::shared_term("tools.edit", cx))
+                .small()
+                .outline()
+                .on_click(move |_, _, cx| start_quick_action_edit(index, cx)),
+        );
+    if deletable {
+        let delete_label = if confirm_delete {
+            text.settings_quick_actions_delete_confirm.clone()
+        } else {
+            text.settings_quick_actions_delete.clone()
+        };
+        controls = controls.child(
+            Button::new(SharedString::from(format!("{row_id}-delete")))
+                .label(delete_label)
+                .small()
+                .with_variant(ButtonVariant::Danger)
+                .on_click(move |_, _, cx| {
+                    if QuickActionsEditorState::current(cx).confirm_delete == Some(index) {
+                        delete_quick_action(index, cx);
+                    } else {
+                        QuickActionsEditorState::mutate(cx, |state| {
+                            state.confirm_delete = Some(index)
+                        });
+                        cx.refresh_windows();
+                    }
+                }),
+        );
+    }
+    SettingsCardRow::new(row_id, label)
+        .description(prompt)
+        .control(controls)
+}
+
+/// The inline quick-action editor (web `ActionFormModal`): name and prompt
+/// inputs over the save/cancel line, appended to the edited action's card.
+fn quick_action_editor_rows(
+    text: &ShellText,
+    editor: &QuickActionsEditorState,
+    cx: &App,
+) -> Vec<SettingsCardRow> {
+    if editor.index.is_none() {
+        return Vec::new();
+    }
+    let label_title = text.settings_quick_actions_label.clone();
+    let prompt_title = text.settings_quick_actions_prompt.clone();
+    let label_value = SharedString::from(editor.label.clone());
+    let prompt_value = SharedString::from(editor.prompt.clone());
+    let valid = !editor.label.trim().is_empty() && !editor.prompt.trim().is_empty();
+    let invalid_label = text.settings_quick_actions_invalid.clone();
+    let save_label = text.settings_quick_actions_save.clone();
+    let cancel_label = text.settings_quick_actions_cancel.clone();
+
+    let actions_row = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .w_full()
+        .when(!valid, |row| {
+            row.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().danger)
+                    .child(invalid_label),
+            )
+        })
+        .child(
+            Button::new("quick-action-save")
+                .label(save_label)
+                .small()
+                .with_variant(ButtonVariant::Primary)
+                .disabled(!valid)
+                .on_click(|_, _, cx| save_quick_action_edit(cx)),
+        )
+        .child(
+            Button::new("quick-action-cancel")
+                .label(cancel_label)
+                .small()
+                .with_variant(ButtonVariant::Ghost)
+                .on_click(|_, _, cx| {
+                    QuickActionsEditorState::mutate(cx, |state| state.index = None);
+                    cx.refresh_windows();
+                }),
+        );
+
+    vec![
+        SettingsCardRow::new("quick-action-editor-label", label_title.clone())
+            .multiline()
+            .control(text_input_control(
+                "quick-action-editor-label-input",
+                label_title,
+                label_value,
+                |value: SharedString, cx| {
+                    QuickActionsEditorState::mutate(cx, |state| state.label = value.to_string());
+                    cx.refresh_windows();
+                },
+            )),
+        SettingsCardRow::new("quick-action-editor-prompt", prompt_title.clone())
+            .multiline()
+            .control(text_input_control(
+                "quick-action-editor-prompt-input",
+                prompt_title,
+                prompt_value,
+                |value: SharedString, cx| {
+                    QuickActionsEditorState::mutate(cx, |state| state.prompt = value.to_string());
+                    cx.refresh_windows();
+                },
+            )),
+        SettingsCardRow::body("quick-action-editor-actions").control(actions_row),
+    ]
+}
+
+/// The imported-hook manager (web `HooksSettingsSection` imports section):
+/// refresh in the card head, one row per imported source, the corrupt-store
+/// diagnostics with their reset action, the empty state, and the inline
+/// review block that stands in for the web dialog.
+fn automation_imports_card(text: &ShellText, cx: &App) -> SettingsCard {
+    use openbitfun_product_domains::external_sources::ExternalSourceScope;
+
+    let master_on = ShellConfig::current(cx).hooks_enabled;
+    let page = HookImportState::current(cx);
+    let snapshot = page.snapshot.clone();
+    let imports = snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.imports.clone())
+        .unwrap_or_default();
+    let diagnostics = snapshot
+        .as_ref()
+        .map(|snapshot| {
+            snapshot
+                .diagnostics
+                .iter()
+                .filter(|diagnostic| {
+                    diagnostic
+                        .code
+                        .starts_with("external_hook.import_store_corrupt.")
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let mut card = SettingsCard::new("automation-hook-imports")
+        .title(text.settings_automation_hook_imports_title.clone())
+        .description(if master_on {
+            text.settings_automation_hook_imports_desc.clone()
+        } else {
+            text.settings_hooks_imports_master_disabled.clone()
+        })
+        .extra(
+            Button::new("hook-imports-refresh")
+                .label(text.settings_hooks_imports_refresh.clone())
+                .small()
+                .with_variant(ButtonVariant::Ghost)
+                .loading(page.loading)
+                .on_click(|_, _, cx| fetch_hook_imports(true, cx)),
+        );
+
+    if let Some(error) = page.error.clone() {
+        card = card.row(
+            SettingsCardRow::body("hook-imports-status").control(
+                div()
+                    .min_w_0()
+                    .text_xs()
+                    .text_color(cx.theme().danger)
+                    .child(error),
+            ),
+        );
+    } else if page.loading {
+        card = card.row(
+            SettingsCardRow::body("hook-imports-status").control(
+                div()
+                    .min_w_0()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(text.settings_hooks_imports_loading.clone()),
+            ),
+        );
+    }
+
+    let imports_empty = imports.is_empty();
+    let diagnostics_empty = diagnostics.is_empty();
+    let busy = page.busy || page.loading;
+    for import in imports {
+        let import_id = import.import_id.clone();
+        let name = import.source.display_name.clone();
+        let state_label =
+            hook_import_state_label(&import.state, &import.source.location_hint, text);
+        let enabled = import.enabled;
+        let can_update = !matches!(
+            import.state,
+            openbitfun_product_domains::external_hook_import::ImportedHookSourceStateV1::SourceMissing
+        );
+        let armed = page.confirm.as_deref() == Some(&format!("remove:{import_id}"));
+        let update_label = text.settings_hooks_imports_update.clone();
+        let remove_label = text.settings_hooks_imports_remove.clone();
+        let toggle_label = text.settings_hooks_import_toggle.clone();
+        let cancel_label = text.settings_quick_actions_cancel.clone();
+        let confirm_title = text.settings_hooks_import_remove_title.clone();
+        let confirm_note = text.settings_hooks_import_remove_confirm_note.clone();
+        let confirm_label = text.settings_hooks_import_remove_confirm.clone();
+        let update_source = import.source.key.clone();
+        let click_id = import_id.clone();
+        let update_id = import_id.clone();
+        let remove_id = import_id.clone();
+        let confirm_id = import_id.clone();
+        let cancel_id = import_id.clone();
+
+        let mut column = div().flex().flex_col().gap_2().w_full().child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_end()
+                .gap_2()
+                .w_full()
+                .child(
+                    Switch::new(SharedString::from(format!("hook-import-toggle-{click_id}")))
+                        .checked(enabled)
+                        .disabled(busy || !master_on)
+                        .accessibility_label(toggle_label)
+                        .on_click({
+                            let id = click_id.clone();
+                            move |checked: &bool, _, cx| {
+                                set_hook_import_enabled(id.clone(), *checked, cx);
+                            }
+                        }),
+                )
+                .child(
+                    Button::new(SharedString::from(format!(
+                        "hook-import-update-{update_id}"
+                    )))
+                    .label(update_label)
+                    .small()
+                    .with_variant(ButtonVariant::Ghost)
+                    .disabled(busy || !can_update)
+                    .on_click({
+                        let source = update_source.clone();
+                        move |_, _, cx| review_hook_import(source.clone(), cx)
+                    }),
+                )
+                .child(
+                    Button::new(SharedString::from(format!(
+                        "hook-import-remove-{remove_id}"
+                    )))
+                    .label(remove_label)
+                    .small()
+                    .with_variant(ButtonVariant::Ghost)
+                    .disabled(busy)
+                    .on_click({
+                        let id = remove_id.clone();
+                        move |_, _, cx| {
+                            HookImportState::mutate(cx, |state| {
+                                state.confirm = Some(format!("remove:{id}"))
+                            });
+                            cx.refresh_windows();
+                        }
+                    }),
+                ),
+        );
+        if armed {
+            column = column
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().danger)
+                        .child(format!("{confirm_title} {confirm_note}")),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap_2()
+                        .child(
+                            Button::new(SharedString::from(format!(
+                                "hook-import-remove-confirm-{confirm_id}"
+                            )))
+                            .label(confirm_label)
+                            .small()
+                            .with_variant(ButtonVariant::Primary)
+                            .on_click({
+                                let id = confirm_id.clone();
+                                move |_, _, cx| remove_hook_import(id.clone(), cx)
+                            }),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!(
+                                "hook-import-remove-cancel-{cancel_id}"
+                            )))
+                            .label(cancel_label)
+                            .small()
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(|_, _, cx| {
+                                HookImportState::mutate(cx, |state| state.confirm = None);
+                                cx.refresh_windows();
+                            }),
+                        ),
+                );
+        }
+        card = card.row(
+            SettingsCardRow::new(format!("hook-import-{import_id}"), name)
+                .description(state_label)
+                .multiline()
+                .control(column),
+        );
+    }
+
+    for diagnostic in diagnostics {
+        let scope = if diagnostic.code.ends_with(".user_global") {
+            ExternalSourceScope::UserGlobal
+        } else {
+            ExternalSourceScope::Project
+        };
+        let message = diagnostic.message.clone();
+        let code = diagnostic.code.clone();
+        let invalid_text = text.settings_hooks_import_store_invalid.clone();
+        let reset_label = text.settings_hooks_import_reset.clone();
+        let reset_title = text.settings_hooks_import_reset_title.clone();
+        let reset_note = text.settings_hooks_import_reset_note.clone();
+        let reset_confirm = text.settings_hooks_import_reset_confirm.clone();
+        let cancel_label = text.settings_quick_actions_cancel.clone();
+        let armed_key = format!("reset:{code}");
+        let armed = page.confirm.as_deref() == Some(armed_key.as_str());
+        let arm_code = code.clone();
+        let run_code = code.clone();
+        let cancel_code = code.clone();
+
+        let mut column = div().flex().flex_col().gap_2().w_full().child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_end()
+                .gap_2()
+                .w_full()
+                .child(
+                    Button::new(SharedString::from(format!("hook-import-reset-{arm_code}")))
+                        .label(reset_label)
+                        .small()
+                        .with_variant(ButtonVariant::Primary)
+                        .on_click({
+                            let key = format!("reset:{arm_code}");
+                            move |_, _, cx| {
+                                HookImportState::mutate(cx, |state| {
+                                    state.confirm = Some(key.clone())
+                                });
+                                cx.refresh_windows();
+                            }
+                        }),
+                ),
+        );
+        if armed {
+            column = column
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().danger)
+                        .child(format!("{reset_title} {reset_note}")),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap_2()
+                        .child(
+                            Button::new(SharedString::from(format!(
+                                "hook-import-reset-confirm-{run_code}"
+                            )))
+                            .label(reset_confirm)
+                            .small()
+                            .with_variant(ButtonVariant::Primary)
+                            .on_click(move |_, _, cx| reset_hook_import_store(scope, cx)),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!(
+                                "hook-import-reset-cancel-{cancel_code}"
+                            )))
+                            .label(cancel_label)
+                            .small()
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(|_, _, cx| {
+                                HookImportState::mutate(cx, |state| state.confirm = None);
+                                cx.refresh_windows();
+                            }),
+                        ),
+                );
+        }
+        card = card.row(
+            SettingsCardRow::new(format!("hook-import-reset-{code}"), invalid_text)
+                .description(message)
+                .danger(true)
+                .multiline()
+                .control(column),
+        );
+    }
+
+    if page.loaded && imports_empty && diagnostics_empty {
+        card = card.row(
+            SettingsCardRow::body("hook-imports-empty").control(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(text.settings_hooks_imports_empty.clone()),
+            ),
+        );
+    }
+
+    if let Some(plan) = page.plan.clone() {
+        let is_update = snapshot
+            .as_ref()
+            .map(|snapshot| {
+                snapshot.imports.iter().any(|import| {
+                    import.source.key.provider_id == plan.source.key.provider_id
+                        && import.source.key.source_id == plan.source.key.source_id
+                })
+            })
+            .unwrap_or(false);
+        let title = format!(
+            "{} · {}",
+            text.settings_hooks_import_review_title, plan.source.display_name
+        );
+        let warning = text.settings_hooks_import_review_warning.clone();
+        let stale = page
+            .plan_stale
+            .then(|| text.settings_hooks_import_stale.clone());
+        let timeout_label = text.settings_hooks_import_timeout.clone();
+        let skipped_label = text.settings_hooks_import_skipped.clone();
+        let handlers = plan.handlers.clone();
+        let skipped = plan.skipped.clone();
+        let confirm_label = if is_update {
+            text.settings_hooks_import_confirm_update.clone()
+        } else {
+            text.settings_hooks_import_confirm.clone()
+        };
+        let cancel_label = text.settings_quick_actions_cancel.clone();
+        let busy = page.busy;
+
+        let mut column = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .w_full()
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(title),
+            )
+            .child(div().text_xs().text_color(cx.theme().danger).child(warning));
+        if let Some(stale) = stale {
+            column = column.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(stale),
+            );
+        }
+        for handler in &handlers {
+            let matcher = handler
+                .matcher
+                .as_deref()
+                .map(|matcher| format!(" · {matcher}"))
+                .unwrap_or_default();
+            let mut line = format!("{} · {}{}", handler.event, handler.command, matcher);
+            if let Some(timeout) = handler.timeout_seconds {
+                line.push_str(&format!(" · {timeout_label} {timeout}"));
+            }
+            column = column.child(
+                div()
+                    .min_w_0()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(line),
+            );
+        }
+        for skipped in &skipped {
+            column = column.child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!(
+                        "{skipped_label} {} · {}",
+                        skipped.count, skipped.reason_code
+                    )),
+            );
+        }
+        column = column.child(
+            div()
+                .flex()
+                .flex_row()
+                .gap_2()
+                .child(
+                    Button::new("hook-import-review-confirm")
+                        .label(confirm_label)
+                        .small()
+                        .with_variant(ButtonVariant::Primary)
+                        .loading(busy)
+                        .on_click(|_, _, cx| apply_hook_import_plan(cx)),
+                )
+                .child(
+                    Button::new("hook-import-review-cancel")
+                        .label(cancel_label)
+                        .small()
+                        .with_variant(ButtonVariant::Ghost)
+                        .on_click(|_, _, cx| dismiss_hook_import_plan(cx)),
+                ),
+        );
+        card = card.row(SettingsCardRow::body("hook-import-review").control(column));
+    }
+
+    card
 }
