@@ -12176,6 +12176,51 @@ mod tests {
                     "settings-card-manage-agents-subagents",
                 ],
             ),
+            // The pages below migrated before the anchor cases grew a slot;
+            // their legacy `settings-section-*` assertions went away with the
+            // component pipeline. Each list holds the page's unconditional
+            // cards (conditional cards keep their own settlement tests).
+            (settings::SettingsEntry::General, &["settings-card-general"]),
+            (
+                settings::SettingsEntry::Terminal,
+                &["settings-card-terminal"],
+            ),
+            (
+                settings::SettingsEntry::SessionSearch,
+                &[
+                    "settings-card-session-search-harness",
+                    "settings-card-session-search-title",
+                    "settings-card-session-search-open",
+                ],
+            ),
+            (
+                settings::SettingsEntry::WorktreesGit,
+                &[
+                    "settings-card-worktrees-isolation",
+                    "settings-card-worktrees-open",
+                ],
+            ),
+            (
+                settings::SettingsEntry::WebSearch,
+                &["settings-card-websearch"],
+            ),
+            (
+                settings::SettingsEntry::Usage,
+                &[
+                    "settings-card-usage-activity",
+                    "settings-card-usage-overview",
+                    "settings-card-usage-distributions",
+                    "settings-card-usage-details",
+                ],
+            ),
+            (
+                settings::SettingsEntry::Archived,
+                &["settings-card-archived"],
+            ),
+            (
+                settings::SettingsEntry::Diagnostics,
+                &["settings-card-diagnostics"],
+            ),
         ];
         for (page, sections) in cases {
             let window = cx.add_empty_window();
