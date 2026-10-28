@@ -1941,8 +1941,13 @@ fn skills_filter_row(
 }
 
 /// The agents page's control row (G-A5): search plus the source and type
-/// menus, rendered once above both lists.
-fn agents_controls(text: &ShellText, cx: &App) -> gpui_kit::AnyElement {
+/// menus, then the create entry (web's catalog header action) — rendered once
+/// above both lists; on the card path it is the page preamble.
+pub(crate) fn agents_controls(
+    text: &ShellText,
+    view: WeakEntity<ShellWindow>,
+    cx: &App,
+) -> gpui_kit::AnyElement {
     let state = cx.try_global::<AgentsFilterState>();
     let input = state.and_then(|state| state.input.clone());
     let source = state.map(|state| state.source).unwrap_or_default();
@@ -1967,6 +1972,16 @@ fn agents_controls(text: &ShellText, cx: &App) -> gpui_kit::AnyElement {
     row = row
         .child(agents_source_menu(text, source))
         .child(agents_kind_menu(text, kind));
+    let create_view = view;
+    row = row.child(
+        Button::new("agent-create")
+            .label(text.manage_agents_create.clone())
+            .small()
+            .with_variant(ButtonVariant::Secondary)
+            .on_click(move |_, window, cx| {
+                open_agent_create_dialog(create_view.clone(), window, cx);
+            }),
+    );
     row.into_any_element()
 }
 
@@ -2157,10 +2172,88 @@ fn skills_page(text: &ShellText, view: WeakEntity<ShellWindow>, cx: &mut App) ->
         .try_global::<SkillsFacetState>()
         .map(|state| state.0.clone())
         .unwrap_or_default();
-    let facets = skill_facets(&catalog.skills);
+    let rail = skills_facet_rail(text, &catalog.skills, cx);
 
-    // The facet rail: three fixed groups (library / explore) plus the
-    // derived group and source sections when the scan produced any.
+    let mut content = div().v_flex().gap_2().flex_1().min_w_0();
+    if facet == SkillFacet::Market {
+        content = content.child(crate::shell::brand_empty(
+            IconName::Globe,
+            &text.skills_market_title,
+            &text.skills_market_degraded,
+        ));
+        return div()
+            .flex()
+            .gap_3()
+            .w_full()
+            .min_w_0()
+            .child(rail)
+            .child(content);
+    }
+
+    if facet == SkillFacet::GroupManager {
+        return div()
+            .flex()
+            .gap_3()
+            .w_full()
+            .min_w_0()
+            .child(rail)
+            .child(skill_groups_page(text, view, cx));
+    }
+
+    // G-K5: the local filter row sits above the list, so the facet rail and
+    // the search box narrow the same rows.
+    content = content.child(skills_filter_row(text, view.clone(), cx));
+    let filter = cx
+        .try_global::<SkillsFilterState>()
+        .map(|state| (state.query.clone(), state.hide_shadowed))
+        .unwrap_or_default();
+    let filtered = !filter.0.trim().is_empty() || filter.1;
+    let rows: Vec<&SkillRow> = catalog
+        .skills
+        .iter()
+        .filter(|row| skill_matches(row, &facet))
+        .filter(|row| skill_matches_filter(row, &filter.0, filter.1))
+        .collect();
+    if rows.is_empty() {
+        let (title, body) = if filtered {
+            (text.manage_skills_no_match.clone(), String::new())
+        } else {
+            (
+                text.manage_skills_empty_title.clone(),
+                text.manage_skills_empty.clone(),
+            )
+        };
+        content = content.child(crate::shell::brand_empty(IconName::BookOpen, &title, &body));
+        return div()
+            .flex()
+            .gap_3()
+            .w_full()
+            .min_w_0()
+            .child(rail)
+            .child(content);
+    }
+
+    for skill in rows {
+        content = content.child(render_skill_card(skill, view.clone(), text, cx));
+    }
+    div()
+        .flex()
+        .gap_3()
+        .w_full()
+        .min_w_0()
+        .child(rail)
+        .child(content)
+}
+
+/// The facet rail: three fixed groups (library / explore) plus the derived
+/// group and source sections when the scan produced any. Shared by the
+/// component-pipeline page and the card-path body.
+fn skills_facet_rail(text: &ShellText, skills: &[SkillRow], cx: &App) -> gpui_kit::Div {
+    let facet = cx
+        .try_global::<SkillsFacetState>()
+        .map(|state| state.0.clone())
+        .unwrap_or_default();
+    let facets = skill_facets(skills);
     let mut rail = div()
         .v_flex()
         .gap_0p5()
@@ -2248,13 +2341,45 @@ fn skills_page(text: &ShellText, view: WeakEntity<ShellWindow>, cx: &mut App) ->
         set(SkillFacet::Market),
         cx,
     ));
+    rail
+}
 
+/// The skills page body on the card path: the same facet rail beside a list
+/// card whose rows are the filtered skills (web's installed region has no
+/// visible section heading, so the card head stays empty); the loading,
+/// no-match, market-degrade, and group-manager states keep their page shapes.
+pub(crate) fn skills_body(
+    text: &ShellText,
+    view: WeakEntity<ShellWindow>,
+    cx: &mut App,
+) -> gpui_kit::AnyElement {
+    if let Some(message) = ManageNotice::current(cx) {
+        let mut column = div().w_full();
+        column = column.child(notice_banner(text, &message, cx));
+        return column.into_any_element();
+    }
+    let Some(catalog) = SkillCatalog::try_current(cx) else {
+        return div()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .child(text.manage_skills_loading.clone())
+            .into_any_element();
+    };
+
+    let facet = cx
+        .try_global::<SkillsFacetState>()
+        .map(|state| state.0.clone())
+        .unwrap_or_default();
+    let rail = skills_facet_rail(text, &catalog.skills, cx);
     let mut content = div().v_flex().gap_2().flex_1().min_w_0();
+
     if facet == SkillFacet::Market {
-        content = content.child(crate::shell::brand_empty(
-            IconName::Globe,
-            &text.skills_market_title,
-            &text.skills_market_degraded,
+        content = content.child(SettingsCard::new("manage-skills").row(
+            SettingsCardRow::body("skills-market").control(crate::shell::brand_empty(
+                IconName::Globe,
+                &text.skills_market_title,
+                &text.skills_market_degraded,
+            )),
         ));
         return div()
             .flex()
@@ -2262,7 +2387,8 @@ fn skills_page(text: &ShellText, view: WeakEntity<ShellWindow>, cx: &mut App) ->
             .w_full()
             .min_w_0()
             .child(rail)
-            .child(content);
+            .child(content)
+            .into_any_element();
     }
 
     if facet == SkillFacet::GroupManager {
@@ -2272,11 +2398,12 @@ fn skills_page(text: &ShellText, view: WeakEntity<ShellWindow>, cx: &mut App) ->
             .w_full()
             .min_w_0()
             .child(rail)
-            .child(skill_groups_page(text, view, cx));
+            .child(skill_groups_page(text, view, cx))
+            .into_any_element();
     }
 
-    // G-K5: the local filter row sits above the list, so the facet rail and
-    // the search box narrow the same rows.
+    // G-K5: the local filter row sits above the list card, so the facet rail
+    // and the search box narrow the same rows.
     content = content.child(skills_filter_row(text, view.clone(), cx));
     let filter = cx
         .try_global::<SkillsFilterState>()
@@ -2289,6 +2416,7 @@ fn skills_page(text: &ShellText, view: WeakEntity<ShellWindow>, cx: &mut App) ->
         .filter(|row| skill_matches(row, &facet))
         .filter(|row| skill_matches_filter(row, &filter.0, filter.1))
         .collect();
+    let mut card = SettingsCard::new("manage-skills");
     if rows.is_empty() {
         let (title, body) = if filtered {
             (text.manage_skills_no_match.clone(), String::new())
@@ -2298,19 +2426,19 @@ fn skills_page(text: &ShellText, view: WeakEntity<ShellWindow>, cx: &mut App) ->
                 text.manage_skills_empty.clone(),
             )
         };
-        content = content.child(crate::shell::brand_empty(IconName::BookOpen, &title, &body));
-        return div()
-            .flex()
-            .gap_3()
-            .w_full()
-            .min_w_0()
-            .child(rail)
-            .child(content);
+        card = card.row(
+            SettingsCardRow::body("skills-empty").control(crate::shell::brand_empty(
+                IconName::BookOpen,
+                &title,
+                &body,
+            )),
+        );
+    } else {
+        for skill in rows {
+            card = card.row(skill_entry_row(skill, view.clone(), text));
+        }
     }
-
-    for skill in rows {
-        content = content.child(render_skill_card(skill, view.clone(), text, cx));
-    }
+    content = content.child(card);
     div()
         .flex()
         .gap_3()
@@ -2318,6 +2446,7 @@ fn skills_page(text: &ShellText, view: WeakEntity<ShellWindow>, cx: &mut App) ->
         .min_w_0()
         .child(rail)
         .child(content)
+        .into_any_element()
 }
 
 /// Stable element id fragment per facet (source ids are ecosystem slugs).
@@ -2410,9 +2539,22 @@ fn render_skill_card(
             )
         });
     let mut footer = div().flex().flex_row().items_center().justify_end().gap_2();
+    footer = footer.child(skill_row_actions(row, view, text));
+    card.child(footer)
+}
+
+/// The per-skill actions — the detail dialog entry and the global enablement
+/// switch (built-ins stay on) — shared by the legacy skill card footer and
+/// the card-path entry row.
+fn skill_row_actions(
+    row: &SkillRow,
+    view: WeakEntity<ShellWindow>,
+    text: &ShellText,
+) -> gpui_kit::Div {
+    let mut actions = div().flex().flex_row().items_center().gap_2();
     let detail_view = view;
     let detail_key = row.key.clone();
-    footer = footer.child(
+    actions = actions.child(
         Button::new(SharedString::from(format!("skill-detail-{}", row.key)))
             .label(text.manage_skill_detail.clone())
             .small()
@@ -2429,7 +2571,7 @@ fn render_skill_card(
     if !row.builtin {
         let key = row.key.clone();
         let user_level = !row.project_level;
-        footer = footer.child(
+        actions = actions.child(
             Switch::new(SharedString::from(format!("skill-toggle-{}", row.key)))
                 .checked(!row.disabled)
                 .on_click(move |checked: &bool, _window, _cx| {
@@ -2438,7 +2580,48 @@ fn render_skill_card(
                 .flex_shrink_0(),
         );
     }
-    card.child(footer)
+    actions
+}
+
+/// The badge facts of one skill — level, the non-native source label, and the
+/// shadowed mark — as row description parts (the card row has no badge lane).
+fn skill_row_facts(row: &SkillRow, text: &ShellText) -> Vec<String> {
+    let level_label = if row.builtin {
+        text.manage_skill_builtin.clone()
+    } else if row.project_level {
+        text.manage_skill_project.clone()
+    } else {
+        text.manage_skill_user.clone()
+    };
+    let mut facts = vec![level_label];
+    if !is_native_source(&row.source_id) {
+        let label = if row.source_label.trim().is_empty() {
+            row.source_id.clone()
+        } else {
+            row.source_label.clone()
+        };
+        facts.push(label);
+    }
+    if row.shadowed {
+        facts.push(text.manage_skill_shadowed.to_string());
+    }
+    facts
+}
+
+/// One skill as a card-path collection row: name, the badge facts with the
+/// description, and the shared detail/enablement actions.
+fn skill_entry_row(
+    row: &SkillRow,
+    view: WeakEntity<ShellWindow>,
+    text: &ShellText,
+) -> SettingsCardRow {
+    let mut parts = skill_row_facts(row, text);
+    if !row.description.is_empty() {
+        parts.push(row.description.clone());
+    }
+    SettingsCardRow::new(format!("skills-row-{}", row.key), row.name.clone())
+        .description(parts.join(" · "))
+        .control(skill_row_actions(row, view, text))
 }
 
 /// G-K2/G-K3: opens (or retargets) the one skill dialog. Detail and delete
@@ -3570,7 +3753,7 @@ pub(crate) fn agents_group(
             cx,
         )
     });
-    let create_view = view;
+    let create_view = view.clone();
     let create_text = text.clone();
     let create_field = SettingField::render(move |_options, _window, _cx| {
         let view = create_view.clone();
@@ -3588,8 +3771,10 @@ pub(crate) fn agents_group(
     // type filter drops the section it excludes — the same shape the web
     // gallery takes when its kind filter is set.
     let controls_text = text.clone();
-    let controls_item =
-        SettingItem::render(move |_options, _window, cx| agents_controls(&controls_text, cx));
+    let controls_view = view.clone();
+    let controls_item = SettingItem::render(move |_options, _window, cx| {
+        agents_controls(&controls_text, controls_view.clone(), cx)
+    });
     let kind = cx
         .try_global::<AgentsFilterState>()
         .map(|state| state.kind)
@@ -3782,26 +3967,37 @@ fn harness_zone(
                 .text_color(cx.theme().muted_foreground)
                 .child(text.manage_harness_subtitle.clone()),
         );
-    let mut grid = div()
-        .grid()
-        .grid_cols(HARNESS_IDS.len() as u16)
-        .gap_2()
-        .w_full();
-    for profile in HARNESS_IDS {
-        let row = catalog
-            .modes
-            .iter()
-            .find(|row| harness_profile_of(row) == Some(profile));
-        grid = grid.child(harness_card(profile, row, text, view.clone(), cx));
-    }
     div()
         .debug_selector(|| "manage-harness-zone".to_string())
         .v_flex()
         .w_full()
         .gap_3()
         .child(heading)
-        .child(grid)
+        .child(harness_grid(&catalog.modes, text, view, cx))
         .into_any_element()
+}
+
+/// The four harness profile cards in their shared grid row — the body of the
+/// card-path harness card (the component-pipeline zone wraps it under its
+/// heading).
+fn harness_grid(
+    modes: &[AgentCardRow],
+    text: &ShellText,
+    view: WeakEntity<ShellWindow>,
+    cx: &App,
+) -> gpui_kit::Div {
+    let mut grid = div()
+        .grid()
+        .grid_cols(HARNESS_IDS.len() as u16)
+        .gap_2()
+        .w_full();
+    for profile in HARNESS_IDS {
+        let row = modes
+            .iter()
+            .find(|row| harness_profile_of(row) == Some(profile));
+        grid = grid.child(harness_card(profile, row, text, view.clone(), cx));
+    }
+    grid
 }
 
 /// G-A6: one harness profile card — glyph, localized name, purpose, and the
@@ -3936,117 +4132,8 @@ fn agent_cards(
 
     let mut column = div().v_flex().gap_2().w_full();
     for card in rows {
-        let source_label = match card.source {
-            AgentSourceKind::Builtin => text.manage_agent_source_builtin.clone(),
-            AgentSourceKind::User => text.manage_agent_source_user.clone(),
-            AgentSourceKind::Project => text.manage_agent_source_project.clone(),
-            AgentSourceKind::External => text.manage_agent_source_external.clone(),
-        };
-        let mut facts = format!("{} · {}", card.tool_count, source_label);
-        if let Some(enabled) = card.enabled {
-            facts.push_str(" · ");
-            facts.push_str(if enabled {
-                &text.manage_agent_enabled
-            } else {
-                &text.manage_agent_disabled
-            });
-        }
-        let mut badges = div().flex().items_center().gap_2().flex_shrink_0();
-        if card.readonly {
-            badges = badges.child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(text.manage_agent_readonly.clone()),
-            );
-        }
-        if card.review {
-            badges = badges.child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(text.manage_agent_review.clone()),
-            );
-        }
-        let detail_view = view.clone();
-        let detail_id = card.id.clone();
-        let detail_mode_kind = kind == AgentListKind::Modes;
-        badges = badges.child(
-            Button::new(SharedString::from(format!("agent-detail-{}", card.id)))
-                .label(text.agent_detail_open.clone())
-                .small()
-                .with_variant(ButtonVariant::Ghost)
-                .on_click(move |_, window, cx| {
-                    open_agent_detail(
-                        detail_view.clone(),
-                        detail_id.clone(),
-                        detail_mode_kind,
-                        window,
-                        cx,
-                    );
-                }),
-        );
-        if card.skills_manageable {
-            let mode_id = card.skills_mode_id.clone();
-            let mode_name = card.name.clone();
-            let skills_view = view.clone();
-            badges = badges.child(
-                Button::new(SharedString::from(format!("agent-skills-{}", card.id)))
-                    .label(text.mode_skills_open.clone())
-                    .small()
-                    .with_variant(ButtonVariant::Secondary)
-                    .on_click(move |_, window, cx| {
-                        open_mode_skills_dialog(
-                            skills_view.clone(),
-                            mode_id.clone(),
-                            mode_name.clone(),
-                            window,
-                            cx,
-                        );
-                    }),
-            );
-        }
-        // G-A3: every non-external subagent gets the model-override menu
-        // (web shows it on the detail dialog's model tab).
-        if kind == AgentListKind::Subagents && card.source != AgentSourceKind::External {
-            let anchor = SharedString::from(format!("agent-model-{}", card.id));
-            badges = badges.child(
-                div()
-                    .debug_selector(move || anchor.to_string())
-                    .child(agent_model_menu(&card, text, cx)),
-            );
-        }
-        if agent_card_manageable(card.source) {
-            let edit_view = view.clone();
-            let edit_id = card.id.clone();
-            badges = badges.child(
-                Button::new(SharedString::from(format!("agent-edit-{}", card.id)))
-                    .label(text.agent_card_edit.clone())
-                    .small()
-                    .with_variant(ButtonVariant::Ghost)
-                    .on_click(move |_, window, cx| {
-                        open_agent_edit_dialog(edit_view.clone(), edit_id.clone(), window, cx);
-                    }),
-            );
-            let delete_view = view.clone();
-            let delete_id = card.id.clone();
-            let delete_name = card.name.clone();
-            badges = badges.child(
-                Button::new(SharedString::from(format!("agent-delete-{}", card.id)))
-                    .label(text.manage_agent_delete.clone())
-                    .small()
-                    .with_variant(ButtonVariant::Ghost)
-                    .on_click(move |_, window, cx| {
-                        open_agent_delete_confirm(
-                            delete_view.clone(),
-                            delete_id.clone(),
-                            delete_name.clone(),
-                            window,
-                            cx,
-                        );
-                    }),
-            );
-        }
+        let facts = agent_card_facts(&card, text);
+        let badges = agent_row_actions(&card, kind, text, view.clone(), cx);
         column = column.child(
             div()
                 .flex()
@@ -4096,6 +4183,253 @@ fn agent_cards(
         );
     }
     column.into_any_element()
+}
+
+/// The facts line of one agent entry (tool count, source, enablement) —
+/// shared by the component-pipeline list and the card-path row.
+fn agent_card_facts(card: &AgentCardRow, text: &ShellText) -> String {
+    let source_label = match card.source {
+        AgentSourceKind::Builtin => text.manage_agent_source_builtin.clone(),
+        AgentSourceKind::User => text.manage_agent_source_user.clone(),
+        AgentSourceKind::Project => text.manage_agent_source_project.clone(),
+        AgentSourceKind::External => text.manage_agent_source_external.clone(),
+    };
+    let mut facts = format!("{} · {}", card.tool_count, source_label);
+    if let Some(enabled) = card.enabled {
+        facts.push_str(" · ");
+        facts.push_str(if enabled {
+            &text.manage_agent_enabled
+        } else {
+            &text.manage_agent_disabled
+        });
+    }
+    facts
+}
+
+/// The marks and row actions of one agent entry — the readonly/review labels,
+/// then the detail / skills / model-override / edit / delete buttons — shared
+/// by the component-pipeline list and the card-path row.
+fn agent_row_actions(
+    card: &AgentCardRow,
+    kind: AgentListKind,
+    text: &ShellText,
+    view: WeakEntity<ShellWindow>,
+    cx: &App,
+) -> gpui_kit::Div {
+    let mut badges = div().flex().items_center().gap_2().flex_shrink_0();
+    if card.readonly {
+        badges = badges.child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(text.manage_agent_readonly.clone()),
+        );
+    }
+    if card.review {
+        badges = badges.child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(text.manage_agent_review.clone()),
+        );
+    }
+    let detail_view = view.clone();
+    let detail_id = card.id.clone();
+    let detail_mode_kind = kind == AgentListKind::Modes;
+    badges = badges.child(
+        Button::new(SharedString::from(format!("agent-detail-{}", card.id)))
+            .label(text.agent_detail_open.clone())
+            .small()
+            .with_variant(ButtonVariant::Ghost)
+            .on_click(move |_, window, cx| {
+                open_agent_detail(
+                    detail_view.clone(),
+                    detail_id.clone(),
+                    detail_mode_kind,
+                    window,
+                    cx,
+                );
+            }),
+    );
+    if card.skills_manageable {
+        let mode_id = card.skills_mode_id.clone();
+        let mode_name = card.name.clone();
+        let skills_view = view.clone();
+        badges = badges.child(
+            Button::new(SharedString::from(format!("agent-skills-{}", card.id)))
+                .label(text.mode_skills_open.clone())
+                .small()
+                .with_variant(ButtonVariant::Secondary)
+                .on_click(move |_, window, cx| {
+                    open_mode_skills_dialog(
+                        skills_view.clone(),
+                        mode_id.clone(),
+                        mode_name.clone(),
+                        window,
+                        cx,
+                    );
+                }),
+        );
+    }
+    // G-A3: every non-external subagent gets the model-override menu
+    // (web shows it on the detail dialog's model tab).
+    if kind == AgentListKind::Subagents && card.source != AgentSourceKind::External {
+        let anchor = SharedString::from(format!("agent-model-{}", card.id));
+        badges = badges.child(
+            div()
+                .debug_selector(move || anchor.to_string())
+                .child(agent_model_menu(card, text, cx)),
+        );
+    }
+    if agent_card_manageable(card.source) {
+        let edit_view = view.clone();
+        let edit_id = card.id.clone();
+        badges = badges.child(
+            Button::new(SharedString::from(format!("agent-edit-{}", card.id)))
+                .label(text.agent_card_edit.clone())
+                .small()
+                .with_variant(ButtonVariant::Ghost)
+                .on_click(move |_, window, cx| {
+                    open_agent_edit_dialog(edit_view.clone(), edit_id.clone(), window, cx);
+                }),
+        );
+        let delete_view = view.clone();
+        let delete_id = card.id.clone();
+        let delete_name = card.name.clone();
+        badges = badges.child(
+            Button::new(SharedString::from(format!("agent-delete-{}", card.id)))
+                .label(text.manage_agent_delete.clone())
+                .small()
+                .with_variant(ButtonVariant::Ghost)
+                .on_click(move |_, window, cx| {
+                    open_agent_delete_confirm(
+                        delete_view.clone(),
+                        delete_id.clone(),
+                        delete_name.clone(),
+                        window,
+                        cx,
+                    );
+                }),
+        );
+    }
+    badges
+}
+
+/// One agent entry as a card-path collection row: name over the description
+/// and facts, marks and actions in the trailing lane.
+fn agent_entry_row(
+    card: &AgentCardRow,
+    kind: AgentListKind,
+    text: &ShellText,
+    view: WeakEntity<ShellWindow>,
+    cx: &App,
+) -> SettingsCardRow {
+    let facts = agent_card_facts(card, text);
+    let mut description = card.description.clone();
+    if description.is_empty() {
+        description = facts;
+    } else {
+        description.push_str(" · ");
+        description.push_str(&facts);
+    }
+    SettingsCardRow::new(format!("agent-row-{}", card.id), card.name.clone())
+        .description(description)
+        .control(agent_row_actions(card, kind, text, view, cx))
+}
+
+/// The agents page's cards (web `AgentsScene`): the harness overview, then
+/// the modes and subagents collections — one collection-row card per list,
+/// narrowed by the page's search and source filters; the type menu drops the
+/// list it excludes. The control row is the page preamble.
+pub(crate) fn agents_cards(
+    text: &ShellText,
+    view: WeakEntity<ShellWindow>,
+    cx: &mut App,
+) -> Vec<SettingsCard> {
+    if let Some(message) = ManageNotice::current(cx) {
+        return vec![SettingsCard::new("manage-agents").row(
+            SettingsCardRow::body("agents-notice").control(notice_banner(text, &message, cx)),
+        )];
+    }
+    let Some(catalog) = AgentCatalog::try_current(cx) else {
+        return vec![SettingsCard::new("manage-agents").row(
+            SettingsCardRow::body("agents-loading").control(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(text.manage_agents_loading.clone()),
+            ),
+        )];
+    };
+    // G-A5: the search and source filters narrow whichever list is showing;
+    // the type filter drops the section it excludes.
+    let state = cx
+        .try_global::<AgentsFilterState>()
+        .map(|state| (state.query.clone(), state.source, state.kind))
+        .unwrap_or_default();
+    let mut cards = vec![SettingsCard::new("manage-agents-harness")
+        .title(text.manage_harness_title.clone())
+        .description(text.manage_harness_subtitle.clone())
+        .row(
+            SettingsCardRow::body("manage-agents-harness-body").control(
+                div()
+                    .debug_selector(|| "manage-harness-zone".to_string())
+                    .w_full()
+                    .child(harness_grid(&catalog.modes, text, view.clone(), cx)),
+            ),
+        )];
+    for list_kind in [AgentListKind::Modes, AgentListKind::Subagents] {
+        if !state.2.matches(list_kind) {
+            continue;
+        }
+        let (anchor, title) = match list_kind {
+            AgentListKind::Modes => ("manage-agents-modes", text.manage_agents_modes.clone()),
+            AgentListKind::Subagents => (
+                "manage-agents-subagents",
+                text.manage_agents_subagents.clone(),
+            ),
+        };
+        let rows: Vec<AgentCardRow> = match list_kind {
+            // G-A6: the four builtin harness profiles render in the harness
+            // card, not in the catalog list (web `isAgentInOverviewZone`).
+            AgentListKind::Modes => catalog
+                .modes
+                .iter()
+                .filter(|row| harness_profile_of(row).is_none())
+                .cloned()
+                .collect(),
+            AgentListKind::Subagents => catalog.subagents.clone(),
+        };
+        let rows: Vec<AgentCardRow> = rows
+            .into_iter()
+            .filter(|card| agent_matches_filter(card, &state.0, state.1))
+            .collect();
+        let filtered = !state.0.trim().is_empty() || state.1 != AgentSourceFilter::All;
+        let mut card = SettingsCard::new(anchor).title(title);
+        if rows.is_empty() {
+            let (title, body) = if filtered {
+                (text.manage_agents_no_match.clone(), String::new())
+            } else {
+                (
+                    text.manage_agents_empty_title.clone(),
+                    text.manage_agents_empty.clone(),
+                )
+            };
+            card = card.row(
+                SettingsCardRow::body("agents-empty").control(crate::shell::brand_empty(
+                    IconName::Bot,
+                    &title,
+                    &body,
+                )),
+            );
+        } else {
+            for entry in rows {
+                card = card.row(agent_entry_row(&entry, list_kind, text, view.clone(), cx));
+            }
+        }
+        cards.push(card);
+    }
+    cards
 }
 
 // ---------------------------------------------------------------------------

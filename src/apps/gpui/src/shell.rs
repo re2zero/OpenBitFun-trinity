@@ -12051,6 +12051,65 @@ mod tests {
                 .downgrade()
         });
 
+        // The manage pages read their catalogs as globals; seed the minimum
+        // the skills rail and the agents cards render from (the four builtin
+        // harness profiles plus one regular mode and one subagent).
+        cx.update(|cx| {
+            cx.set_global(crate::manage::SkillCatalog {
+                loaded: true,
+                skills: vec![crate::manage::SkillRow {
+                    key: "user::demo".into(),
+                    name: "Demo".into(),
+                    description: "demo skill".into(),
+                    project_level: false,
+                    builtin: false,
+                    shadowed: false,
+                    disabled: false,
+                    group_key: None,
+                    source_id: String::new(),
+                    source_label: String::new(),
+                    path: String::new(),
+                    deletable: false,
+                }],
+            });
+            let card = |id: &str, source: crate::manage::AgentSourceKind, subagent: bool| {
+                crate::manage::AgentCardRow {
+                    id: id.to_string(),
+                    name: id.to_string(),
+                    description: String::new(),
+                    tool_count: 1,
+                    readonly: false,
+                    review: false,
+                    source,
+                    enabled: subagent.then_some(true),
+                    skills_manageable: false,
+                    skills_mode_id: id.to_string(),
+                    model_override: None,
+                    supports_follow_up: true,
+                    external_provider_label: None,
+                    default_tools: Vec::new(),
+                    profile_id: id.to_string(),
+                    profile_label: None,
+                    profile_member_ids: vec![id.to_string()],
+                }
+            };
+            cx.set_global(crate::manage::AgentCatalog {
+                loaded: true,
+                modes: vec![
+                    card("Minimal", crate::manage::AgentSourceKind::Builtin, false),
+                    card("Standard", crate::manage::AgentSourceKind::Builtin, false),
+                    card("Ultimate", crate::manage::AgentSourceKind::Builtin, false),
+                    card("Creative", crate::manage::AgentSourceKind::Builtin, false),
+                    card("Coder", crate::manage::AgentSourceKind::Builtin, false),
+                ],
+                subagents: vec![card("Explorer", crate::manage::AgentSourceKind::User, true)],
+            });
+            cx.set_global(crate::runtime::ModelCatalog {
+                loaded: true,
+                models: Vec::new(),
+            });
+        });
+
         let cases: &[(settings::SettingsEntry, &[&str])] = &[
             // The appearance page renders through the card path: its three
             // cards carry the anchors now.
@@ -12116,6 +12175,22 @@ mod tests {
                     "settings-card-automation-hook-locations",
                     "settings-card-automation-hook-imports",
                     "settings-card-automation-hooks-compat",
+                ],
+            ),
+            // The skills page is on the card path: the facet rail sits beside
+            // the one list card, and the card carries the anchor now.
+            (
+                settings::SettingsEntry::Skills,
+                &["settings-card-manage-skills"],
+            ),
+            // The agents page is on the card path: the harness overview and
+            // the two collection lists carry the anchors now.
+            (
+                settings::SettingsEntry::Agents,
+                &[
+                    "settings-card-manage-agents-harness",
+                    "settings-card-manage-agents-modes",
+                    "settings-card-manage-agents-subagents",
                 ],
             ),
         ];

@@ -374,6 +374,7 @@ pub(crate) fn render_card_page(
     entry: SettingsEntry,
     cx: &mut App,
 ) -> Option<AnyElement> {
+    let preamble = page_preamble(entry, text, view.clone(), cx);
     let cards = match entry {
         SettingsEntry::General => general_cards(text, view, cx),
         SettingsEntry::Appearance => appearance_cards(text, cx),
@@ -390,20 +391,27 @@ pub(crate) fn render_card_page(
         SettingsEntry::Permissions => permissions_cards(text, cx),
         SettingsEntry::Automation => automation_cards(text, cx),
         SettingsEntry::Mcp => crate::manage::mcp_cards(text, view, cx),
-        _ => return None,
+        // The manage pages keep their scene layouts: skills renders the facet
+        // rail beside its list card under the shared header; agents keeps the
+        // standard card column with its controls row as the preamble.
+        SettingsEntry::Skills => {
+            let body = crate::manage::skills_body(text, view, cx);
+            return Some(page_frame_body(entry, text, preamble, body, cx));
+        }
+        SettingsEntry::Agents => crate::manage::agents_cards(text, view, cx),
     };
-    Some(page_frame(
-        entry,
-        text,
-        page_preamble(entry, text, cx),
-        cards,
-        cx,
-    ))
+    Some(page_frame(entry, text, preamble, cards, cx))
 }
 
 /// Elements rendered between the page header and the first card — the
-/// shortcuts page's read-only note is the only consumer so far.
-fn page_preamble(entry: SettingsEntry, text: &ShellText, cx: &App) -> Vec<AnyElement> {
+/// shortcuts page's read-only note, the memory scope notice, the diagnostics
+/// receipts, and the agents page's control row.
+fn page_preamble(
+    entry: SettingsEntry,
+    text: &ShellText,
+    view: gpui_kit::WeakEntity<ShellWindow>,
+    cx: &App,
+) -> Vec<AnyElement> {
     match entry {
         SettingsEntry::Shortcuts => {
             vec![crate::settings::info_note(&text.shortcuts_fixed_note, cx)]
@@ -441,6 +449,9 @@ fn page_preamble(entry: SettingsEntry, text: &ShellText, cx: &App) -> Vec<AnyEle
             }
             parts
         }
+        // The agents page's search / source / type / create controls (web's
+        // catalog toolbar sits in the same position).
+        SettingsEntry::Agents => vec![crate::manage::agents_controls(text, view, cx)],
         _ => Vec::new(),
     }
 }
@@ -452,6 +463,29 @@ fn page_frame(
     text: &ShellText,
     preamble: Vec<AnyElement>,
     cards: Vec<SettingsCard>,
+    cx: &App,
+) -> AnyElement {
+    page_frame_body(
+        entry,
+        text,
+        preamble,
+        div()
+            .flex()
+            .flex_col()
+            .gap_4()
+            .children(cards)
+            .into_any_element(),
+        cx,
+    )
+}
+
+/// The page frame over a custom body — the skills page lays out its facet
+/// rail beside the list card under the shared header.
+fn page_frame_body(
+    entry: SettingsEntry,
+    text: &ShellText,
+    preamble: Vec<AnyElement>,
+    body: AnyElement,
     cx: &App,
 ) -> AnyElement {
     let theme = cx.theme();
@@ -495,7 +529,7 @@ fn page_frame(
                 .px_4()
                 .pb_8()
                 .children(preamble)
-                .children(cards),
+                .child(body),
         )
         .into_any_element()
 }
