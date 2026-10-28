@@ -48,7 +48,7 @@ use crate::transcript::{self, ToolKind};
 pub(crate) const SESSION_PANE_WIDTH: f32 = 300.;
 /// The settings content column (web `$config-page-content-max-width`): the
 /// page centers on this measure inside whatever the scene column gives it.
-const SETTINGS_CONTENT_WIDTH: f32 = 680.;
+const SETTINGS_CONTENT_WIDTH: f32 = 760.;
 /// Height of the two top chrome bars (nav top bar over the sidebar column,
 /// scene top bar over the scene face). Web parity: the 45px
 /// `--openbitfun-layout-toolbar-md-height` both `NavBar` and `SceneTopBar`
@@ -9197,9 +9197,9 @@ impl Render for ShellWindow {
                 .flex()
                 .flex_col()
                 // The desktop settings content is one bounded column centered
-                // in the scene (web `ConfigPageLayout`: `min(100% - 2 *
-                // inline-padding, 680px)` with `margin-inline: auto`); a
-                // maximized window otherwise stretches every row edge to edge.
+                // in the scene (the card path's own 760px reading column with
+                // `margin-inline: auto`); a maximized window otherwise
+                // stretches every row edge to edge.
                 .child(
                     div()
                         .debug_selector(|| "settings-column".to_string())
@@ -9216,24 +9216,7 @@ impl Render for ShellWindow {
                             cx.entity().downgrade(),
                             self.settings_page,
                             cx,
-                        ))
-                        // The settings component keeps its own sidebar (at zero
-                        // width) and whatever edge rule that sidebar or its
-                        // resize handle paints lands on this column's first
-                        // pixel. One hairline-width strip in the scene's own
-                        // colour keeps the column's edge clean without
-                        // clipping the page (a clip would cut the row menus
-                        // that open past the column).
-                        .child(
-                            div()
-                                .debug_selector(|| "settings-column-edge".to_string())
-                                .absolute()
-                                .left_0()
-                                .top_0()
-                                .bottom_0()
-                                .w(px(1.))
-                                .bg(cx.theme().background),
-                        ),
+                        )),
                 )
                 .into_any_element(),
             Some(TabKind::Scene(SceneId::Git)) => match self.git.clone() {

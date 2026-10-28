@@ -371,8 +371,6 @@ pub(crate) struct ShellText {
     pub settings_websearch_http_title: String,
     pub settings_websearch_http_description: String,
     pub settings_permissions: String,
-    pub settings_language_description: String,
-    pub settings_theme_description: String,
     pub settings_theme_system: String,
     pub settings_theme_unsupported: String,
     pub settings_policy: String,
@@ -398,12 +396,6 @@ pub(crate) struct ShellText {
     pub settings_permission_effect_deny: String,
     // G-SE24: quick-actions management.
     pub settings_quick_actions_section: String,
-    pub settings_quick_actions_note: String,
-    pub settings_quick_actions_builtin_section: String,
-    pub settings_quick_actions_builtin_note: String,
-    pub settings_quick_actions_custom_section: String,
-    pub settings_quick_actions_custom_note: String,
-    pub settings_quick_actions_custom_empty: String,
     pub settings_quick_actions_add: String,
     pub settings_quick_actions_delete: String,
     pub settings_quick_actions_delete_confirm: String,
@@ -680,8 +672,6 @@ pub(crate) struct ShellText {
     pub mode_skills_reset: String,
     pub mode_skills_source_other: String,
     pub manage_mcp_title: String,
-    pub manage_mcp_servers: String,
-    pub manage_mcp_description: String,
     pub manage_mcp_loading: String,
     pub manage_mcp_empty_title: String,
     pub manage_mcp_empty: String,
@@ -716,7 +706,6 @@ pub(crate) struct ShellText {
     pub manage_interaction_reject: String,
     pub manage_mcp_json_item: String,
     pub manage_mcp_json_edit: String,
-    pub manage_mcp_json_description: String,
     pub manage_mcp_json_loading: String,
     pub manage_mcp_json_save: String,
     pub manage_mcp_json_saved: String,
@@ -807,14 +796,10 @@ pub(crate) struct ShellText {
     pub settings_git_coauthor_description: String,
     /// G-SE25: Hook declaration locations, the imported-source manager and the
     /// Codex contract reference on the automation page.
-    pub settings_hooks_locations_section: String,
-    pub settings_hooks_locations_note: String,
     pub settings_hooks_user_file: String,
     pub settings_hooks_user_file_desc: String,
     pub settings_hooks_project_file: String,
     pub settings_hooks_project_file_desc: String,
-    pub settings_hooks_imports_section: String,
-    pub settings_hooks_imports_note: String,
     pub settings_hooks_imports_master_disabled: String,
     pub settings_hooks_imports_refresh: String,
     pub settings_hooks_imports_loading: String,
@@ -842,8 +827,6 @@ pub(crate) struct ShellText {
     pub settings_hooks_import_reset_title: String,
     pub settings_hooks_import_reset_note: String,
     pub settings_hooks_import_reset_confirm: String,
-    pub settings_hooks_compat_section: String,
-    pub settings_hooks_compat_note: String,
     pub settings_hooks_compat_reference: String,
     pub settings_hooks_compat_open: String,
     /// The automation page's card heads (web `quick-actions` + `hooks`
@@ -920,7 +903,6 @@ pub(crate) struct ShellText {
     pub quick_action_create_pr_label: String,
     pub quick_action_create_pr_prompt: String,
     pub settings_usage: String,
-    pub settings_usage_range: String,
     pub settings_usage_today: String,
     pub settings_usage_week: String,
     pub settings_usage_month: String,
@@ -1089,14 +1071,10 @@ pub(crate) struct ShellText {
     pub settings_proxy_username: String,
     pub settings_proxy_password: String,
     pub settings_proxy_password_description: String,
-    pub settings_execution_section: String,
-    pub settings_execution_section_note: String,
     pub settings_tool_timeout: String,
     pub settings_tool_timeout_description: String,
     pub settings_question_timeout: String,
     pub settings_question_timeout_description: String,
-    pub settings_subagents_section: String,
-    pub settings_subagents_section_note: String,
     pub settings_subagent_model: String,
     pub settings_subagent_model_description: String,
     pub settings_subagent_model_inherit: String,
@@ -1111,8 +1089,6 @@ pub(crate) struct ShellText {
     pub settings_subagent_concurrency_description: String,
     pub settings_swarm_concurrency: String,
     pub settings_swarm_concurrency_description: String,
-    pub settings_deferred_tools_section: String,
-    pub settings_deferred_tools_section_note: String,
     pub settings_deferred_tools_enable: String,
     pub settings_deferred_tools_warning: String,
     pub settings_permissions_policy_title: String,
@@ -1127,12 +1103,8 @@ pub(crate) struct ShellText {
     pub settings_permissions_json_repair_desc: String,
     pub settings_permissions_review_title: String,
     pub settings_permissions_review_desc: String,
-    pub settings_json_repair_section: String,
-    pub settings_json_repair_section_note: String,
     pub settings_json_repair: String,
     pub settings_json_repair_description: String,
-    pub settings_review_capacity_section: String,
-    pub settings_review_capacity_section_note: String,
     pub settings_review_parallelism: String,
     pub settings_review_parallelism_description: String,
     pub settings_review_queue_wait: String,
@@ -2472,10 +2444,6 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_websearch_http_description:
             "The service must implement OpenBitFun Search HTTP Protocol v1".to_string(),
         settings_permissions: "Permissions".to_string(),
-        settings_language_description: "Interface language for the shell and desktop app."
-            .to_string(),
-        settings_theme_description: "Color palette, shared with the desktop appearance setting."
-            .to_string(),
         settings_theme_system: "Follow system".to_string(),
         settings_theme_unsupported: "unsupported".to_string(),
         settings_policy: "Permission policy".to_string(),
@@ -2501,12 +2469,6 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_permission_effect_ask: "Ask".to_string(),
         settings_permission_effect_deny: "Deny".to_string(),
         settings_quick_actions_section: "Quick actions".to_string(),
-        settings_quick_actions_note: "Run common AI prompts quickly from chat.".to_string(),
-        settings_quick_actions_builtin_section: "Built-in actions".to_string(),
-        settings_quick_actions_builtin_note: "Edit the names and prompts of built-in actions, or turn off actions you do not need".to_string(),
-        settings_quick_actions_custom_section: "Custom actions".to_string(),
-        settings_quick_actions_custom_note: "Save your own prompts for recurring tasks; triggering an action sends its prompt to the current session".to_string(),
-        settings_quick_actions_custom_empty: "No custom actions yet.".to_string(),
         settings_quick_actions_add: "Add action".to_string(),
         settings_quick_actions_delete: "Delete".to_string(),
         settings_quick_actions_delete_confirm: "Click again to delete".to_string(),
@@ -2775,8 +2737,6 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         mode_skills_reset: "Reset".to_string(),
         mode_skills_source_other: "Other source".to_string(),
         manage_mcp_title: "MCP servers".to_string(),
-        manage_mcp_servers: "Configured servers".to_string(),
-        manage_mcp_description: "Lifecycle, enablement, and the resources and prompts catalog of this machine's MCP servers.".to_string(),
         manage_mcp_loading: "Loading MCP servers…".to_string(),
         manage_mcp_empty_title: "No MCP servers".to_string(),
         manage_mcp_empty: "No MCP servers configured. Add one through the desktop or CLI JSON config.".to_string(),
@@ -2811,11 +2771,6 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         manage_interaction_reject: "Reject".to_string(),
         manage_mcp_json_item: "Configuration JSON".to_string(),
         manage_mcp_json_edit: "Edit JSON".to_string(),
-        manage_mcp_json_description: {
-            "Edit the raw MCP server configuration (the same app.json the \
-             desktop and CLI read)."
-                .to_string()
-        },
         manage_mcp_json_loading: "Loading configuration…".to_string(),
         manage_mcp_json_save: "Save".to_string(),
         manage_mcp_json_saved: "MCP configuration saved.".to_string(),
@@ -2957,10 +2912,6 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_git_coauthor_description: {
             "Add OpenBitFun as a co-author in built-in commit workflows.".to_string()
         },
-        settings_hooks_locations_section: "Where hooks are declared".to_string(),
-        settings_hooks_locations_note: {
-            "Changes to hooks.json take effect without restarting OpenBitFun.".to_string()
-        },
         settings_hooks_user_file: "User hook file".to_string(),
         settings_hooks_user_file_desc: {
             "config/hooks.json in the OpenBitFun user config directory.".to_string()
@@ -2969,10 +2920,6 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_hooks_project_file_desc: {
             ".openbitfun/config/hooks.json in the current workspace. Requires \"Enable project hook file\"."
                 .to_string()
-        },
-        settings_hooks_imports_section: "Imported hooks".to_string(),
-        settings_hooks_imports_note: {
-            "Review and manage hooks imported from Claude Code or Codex.".to_string()
         },
         settings_hooks_imports_master_disabled: {
             "Imported hooks are preserved, but the master switch prevents them from running."
@@ -3027,11 +2974,6 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
                 .to_string()
         },
         settings_hooks_import_reset_confirm: "Reset managed state".to_string(),
-        settings_hooks_compat_section: "Codex compatibility".to_string(),
-        settings_hooks_compat_note: {
-            "OpenBitFun uses the Codex Hooks contract and can run compatible hook scripts directly."
-                .to_string()
-        },
         settings_hooks_compat_reference: "Event and payload reference".to_string(),
         settings_hooks_compat_open: "Open docs".to_string(),
         settings_automation_hooks_title: "Agent Hooks".to_string(),
@@ -3123,7 +3065,6 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         quick_action_create_pr_label: "Create PR".to_string(),
         quick_action_create_pr_prompt: "Create a Pull Request for the current branch".to_string(),
         settings_usage: "Usage statistics".to_string(),
-        settings_usage_range: "Time range".to_string(),
         settings_usage_today: "Today".to_string(),
         settings_usage_week: "This week".to_string(),
         settings_usage_month: "This month".to_string(),
@@ -3350,14 +3291,10 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_proxy_username: "Username (optional)".to_string(),
         settings_proxy_password: "Password (optional)".to_string(),
         settings_proxy_password_description: "Proxy authentication password, stored in the shared config file and shown here in clear text.".to_string(),
-        settings_execution_section: "Tool execution".to_string(),
-        settings_execution_section_note: "Tool execution and waiting for an answer have separate timers; 0 removes that limit.".to_string(),
         settings_tool_timeout: "Tool timeout (seconds)".to_string(),
         settings_tool_timeout_description: "Longest a single tool operation may run; 0 waits indefinitely.".to_string(),
         settings_question_timeout: "Question timeout (seconds)".to_string(),
         settings_question_timeout_description: "Longest wait for you to start answering a question; 0 waits indefinitely.".to_string(),
-        settings_subagents_section: "Subagents".to_string(),
-        settings_subagents_section_note: "Regular subagents and Swarm use separate concurrency limits.".to_string(),
         settings_subagent_model: "Default subagent model".to_string(),
         settings_subagent_model_description: "Used by subagents without an individual model override.".to_string(),
         settings_subagent_model_inherit: "Inherit parent session".to_string(),
@@ -3372,8 +3309,6 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_subagent_concurrency_description: "Maximum number of regular subagent tasks running at once.".to_string(),
         settings_swarm_concurrency: "Swarm worker concurrency".to_string(),
         settings_swarm_concurrency_description: "Concurrency limit for worker and reviewer agents in Swarm.".to_string(),
-        settings_deferred_tools_section: "Load tools as needed".to_string(),
-        settings_deferred_tools_section_note: "Provide tool details to the model on demand to reduce context usage.".to_string(),
         settings_deferred_tools_enable: "Enable".to_string(),
         settings_deferred_tools_warning: "Turning this off loads every tool definition and may increase model usage.".to_string(),
         settings_permissions_policy_title: "Tool permissions".to_string(),
@@ -3388,12 +3323,8 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_permissions_json_repair_desc: "Applies to the next model round.".to_string(),
         settings_permissions_review_title: "Review capacity".to_string(),
         settings_permissions_review_desc: "Control how supplemental reviews use model capacity; changing concurrency keeps the review scope unchanged".to_string(),
-        settings_json_repair_section: "Tool Argument JSON Repair".to_string(),
-        settings_json_repair_section_note: "Applies to the next model round.".to_string(),
         settings_json_repair: "Repair malformed tool arguments".to_string(),
         settings_json_repair_description: "Attempt to repair argument JSON only after the provider reports a completed tool call; repair runs before normal tool validation.".to_string(),
-        settings_review_capacity_section: "Review capacity".to_string(),
-        settings_review_capacity_section_note: "Control how supplemental reviews use model capacity; changing concurrency keeps the review scope unchanged.".to_string(),
         settings_review_parallelism: "Review parallelism".to_string(),
         settings_review_parallelism_description: "Run supplemental review tasks one at a time or two at once.".to_string(),
         settings_review_queue_wait: "Capacity wait time".to_string(),
@@ -3791,8 +3722,6 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
             .t("gpui-shell-settings-websearch-http-desc")
             .await,
         settings_permissions: service.t("gpui-shell-settings-permissions").await,
-        settings_language_description: service.t("gpui-shell-settings-language-desc").await,
-        settings_theme_description: service.t("gpui-shell-settings-theme-desc").await,
         settings_theme_system: service.t("gpui-shell-settings-theme-system").await,
         settings_theme_unsupported: service.t("gpui-shell-settings-theme-unsupported").await,
         settings_policy: service.t("gpui-shell-settings-policy").await,
@@ -3843,22 +3772,6 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
             .await,
         settings_quick_actions_section: service
             .t("gpui-shell-settings-quick-actions-section")
-            .await,
-        settings_quick_actions_note: service.t("gpui-shell-settings-quick-actions-note").await,
-        settings_quick_actions_builtin_section: service
-            .t("gpui-shell-settings-quick-actions-builtin-section")
-            .await,
-        settings_quick_actions_builtin_note: service
-            .t("gpui-shell-settings-quick-actions-builtin-note")
-            .await,
-        settings_quick_actions_custom_section: service
-            .t("gpui-shell-settings-quick-actions-custom-section")
-            .await,
-        settings_quick_actions_custom_note: service
-            .t("gpui-shell-settings-quick-actions-custom-note")
-            .await,
-        settings_quick_actions_custom_empty: service
-            .t("gpui-shell-settings-quick-actions-custom-empty")
             .await,
         settings_quick_actions_add: service.t("gpui-shell-settings-quick-actions-add").await,
         settings_quick_actions_delete: service.t("gpui-shell-settings-quick-actions-delete").await,
@@ -4161,8 +4074,6 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         mode_skills_reset: service.t("gpui-shell-mode-skills-reset").await,
         mode_skills_source_other: service.t("gpui-shell-mode-skills-source-other").await,
         manage_mcp_title: service.t("gpui-shell-manage-mcp-title").await,
-        manage_mcp_servers: service.t("gpui-shell-manage-mcp-servers").await,
-        manage_mcp_description: service.t("gpui-shell-manage-mcp-description").await,
         manage_mcp_loading: service.t("gpui-shell-manage-mcp-loading").await,
         manage_mcp_empty_title: service.t("gpui-shell-manage-mcp-empty-title").await,
         manage_mcp_empty: service.t("gpui-shell-manage-mcp-empty").await,
@@ -4201,7 +4112,6 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         manage_interaction_reject: service.t("gpui-shell-manage-interaction-reject").await,
         manage_mcp_json_item: service.t("gpui-shell-manage-mcp-json-item").await,
         manage_mcp_json_edit: service.t("gpui-shell-manage-mcp-json-edit").await,
-        manage_mcp_json_description: service.t("gpui-shell-manage-mcp-json-description").await,
         manage_mcp_json_loading: service.t("gpui-shell-manage-mcp-json-loading").await,
         manage_mcp_json_save: service.t("gpui-shell-manage-mcp-json-save").await,
         manage_mcp_json_saved: service.t("gpui-shell-manage-mcp-json-saved").await,
@@ -4313,20 +4223,12 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         settings_git_coauthor_description: service
             .t("gpui-shell-settings-git-coauthor-description")
             .await,
-        settings_hooks_locations_section: service
-            .t("gpui-shell-settings-hooks-locations-section")
-            .await,
-        settings_hooks_locations_note: service.t("gpui-shell-settings-hooks-locations-note").await,
         settings_hooks_user_file: service.t("gpui-shell-settings-hooks-user-file").await,
         settings_hooks_user_file_desc: service.t("gpui-shell-settings-hooks-user-file-desc").await,
         settings_hooks_project_file: service.t("gpui-shell-settings-hooks-project-file").await,
         settings_hooks_project_file_desc: service
             .t("gpui-shell-settings-hooks-project-file-desc")
             .await,
-        settings_hooks_imports_section: service
-            .t("gpui-shell-settings-hooks-imports-section")
-            .await,
-        settings_hooks_imports_note: service.t("gpui-shell-settings-hooks-imports-note").await,
         settings_hooks_imports_master_disabled: service
             .t("gpui-shell-settings-hooks-imports-master-disabled")
             .await,
@@ -4390,8 +4292,6 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         settings_hooks_import_reset_confirm: service
             .t("gpui-shell-settings-hooks-import-reset-confirm")
             .await,
-        settings_hooks_compat_section: service.t("gpui-shell-settings-hooks-compat-section").await,
-        settings_hooks_compat_note: service.t("gpui-shell-settings-hooks-compat-note").await,
         settings_hooks_compat_reference: service
             .t("gpui-shell-settings-hooks-compat-reference")
             .await,
@@ -4533,7 +4433,6 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         quick_action_create_pr_label: service.t("gpui-shell-quick-action-create-pr-label").await,
         quick_action_create_pr_prompt: service.t("gpui-shell-quick-action-create-pr-prompt").await,
         settings_usage: service.t("gpui-shell-settings-usage").await,
-        settings_usage_range: service.t("gpui-shell-settings-usage-range").await,
         settings_usage_today: service.t("gpui-shell-settings-usage-today").await,
         settings_usage_week: service.t("gpui-shell-settings-usage-week").await,
         settings_usage_month: service.t("gpui-shell-settings-usage-month").await,
@@ -4752,19 +4651,11 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         settings_proxy_password_description: service
             .t("gpui-shell-settings-proxy-password-desc")
             .await,
-        settings_execution_section: service.t("gpui-shell-settings-execution-section").await,
-        settings_execution_section_note: service
-            .t("gpui-shell-settings-execution-section-note")
-            .await,
         settings_tool_timeout: service.t("gpui-shell-settings-tool-timeout").await,
         settings_tool_timeout_description: service.t("gpui-shell-settings-tool-timeout-desc").await,
         settings_question_timeout: service.t("gpui-shell-settings-question-timeout").await,
         settings_question_timeout_description: service
             .t("gpui-shell-settings-question-timeout-desc")
-            .await,
-        settings_subagents_section: service.t("gpui-shell-settings-subagents-section").await,
-        settings_subagents_section_note: service
-            .t("gpui-shell-settings-subagents-section-note")
             .await,
         settings_subagent_model: service.t("gpui-shell-settings-subagent-model").await,
         settings_subagent_model_description: service
@@ -4795,12 +4686,6 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         settings_swarm_concurrency: service.t("gpui-shell-settings-swarm-concurrency").await,
         settings_swarm_concurrency_description: service
             .t("gpui-shell-settings-swarm-concurrency-desc")
-            .await,
-        settings_deferred_tools_section: service
-            .t("gpui-shell-settings-deferred-tools-section")
-            .await,
-        settings_deferred_tools_section_note: service
-            .t("gpui-shell-settings-deferred-tools-section-note")
             .await,
         settings_deferred_tools_enable: service
             .t("gpui-shell-settings-deferred-tools-enable")
@@ -4844,18 +4729,8 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         settings_permissions_review_desc: service
             .t("gpui-shell-settings-permissions-review-desc")
             .await,
-        settings_json_repair_section: service.t("gpui-shell-settings-json-repair-section").await,
-        settings_json_repair_section_note: service
-            .t("gpui-shell-settings-json-repair-section-note")
-            .await,
         settings_json_repair: service.t("gpui-shell-settings-json-repair").await,
         settings_json_repair_description: service.t("gpui-shell-settings-json-repair-desc").await,
-        settings_review_capacity_section: service
-            .t("gpui-shell-settings-review-capacity-section")
-            .await,
-        settings_review_capacity_section_note: service
-            .t("gpui-shell-settings-review-capacity-section-note")
-            .await,
         settings_review_parallelism: service.t("gpui-shell-settings-review-parallelism").await,
         settings_review_parallelism_description: service
             .t("gpui-shell-settings-review-parallelism-desc")

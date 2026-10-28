@@ -173,6 +173,7 @@ impl SettingsCardRow {
         let divider_color = theme.border.opacity(0.6);
         let radius = theme.radius_lg;
         let label = self.label.clone();
+        let row_id = self.id.clone();
         let has_label = !label.is_empty() || self.description.is_some();
         let label_block = div()
             .flex_1()
@@ -187,6 +188,7 @@ impl SettingsCardRow {
             )
             .children(self.description.map(|text| {
                 div()
+                    .debug_selector(move || format!("settings-row-{row_id}-desc"))
                     .text_sm()
                     .text_color(theme.muted_foreground)
                     .child(text)
@@ -366,14 +368,14 @@ where
     }
 }
 
-/// The card-path renderer: `Some` once the entry migrated, `None` while it
-/// still renders through the component `Settings` pipeline.
+/// The card-path renderer: every settings entry renders through the shell
+/// card primitives (the component `Settings` pipeline is retired).
 pub(crate) fn render_card_page(
     text: &ShellText,
     view: gpui_kit::WeakEntity<ShellWindow>,
     entry: SettingsEntry,
     cx: &mut App,
-) -> Option<AnyElement> {
+) -> AnyElement {
     let preamble = page_preamble(entry, text, view.clone(), cx);
     let cards = match entry {
         SettingsEntry::General => general_cards(text, view, cx),
@@ -396,11 +398,11 @@ pub(crate) fn render_card_page(
         // standard card column with its controls row as the preamble.
         SettingsEntry::Skills => {
             let body = crate::manage::skills_body(text, view, cx);
-            return Some(page_frame_body(entry, text, preamble, body, cx));
+            return page_frame_body(entry, text, preamble, body, cx);
         }
         SettingsEntry::Agents => crate::manage::agents_cards(text, view, cx),
     };
-    Some(page_frame(entry, text, preamble, cards, cx))
+    page_frame(entry, text, preamble, cards, cx)
 }
 
 /// Elements rendered between the page header and the first card — the

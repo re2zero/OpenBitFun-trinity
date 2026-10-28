@@ -16,7 +16,6 @@ use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::scroll::ScrollableElement;
-use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme, Disableable, Sizable, StyledExt, WindowExt};
 use gpui_kit::{
@@ -2078,18 +2077,6 @@ fn agents_kind_menu(text: &ShellText, selected: AgentKindFilter) -> gpui_kit::An
         .into_any_element()
 }
 
-/// The skills page: a facet sidebar (library / groups / sources / explore)
-/// beside the filtered skill list. The market entry renders an explicit
-/// degrade card (T3-17) instead of a dead-end.
-pub(crate) fn skills_group(text: &ShellText, view: WeakEntity<ShellWindow>) -> SettingGroup {
-    let page_text = text.clone();
-    let page_field = SettingItem::render(move |_options, _window, cx| {
-        skills_page(&page_text, view.clone(), cx).into_any_element()
-    });
-
-    SettingGroup::new().items(vec![page_field])
-}
-
 fn facet_row(
     id: String,
     label: String,
@@ -2153,96 +2140,6 @@ fn facet_group_title(label: String, cx: &App) -> gpui_kit::Div {
         .px_2()
         .pt_1()
         .child(label)
-}
-
-fn skills_page(text: &ShellText, view: WeakEntity<ShellWindow>, cx: &mut App) -> gpui_kit::Div {
-    if let Some(message) = ManageNotice::current(cx) {
-        let mut column = div().w_full();
-        column = column.child(notice_banner(text, &message, cx));
-        return column;
-    }
-    let Some(catalog) = SkillCatalog::try_current(cx) else {
-        return div()
-            .text_sm()
-            .text_color(cx.theme().muted_foreground)
-            .child(text.manage_skills_loading.clone());
-    };
-
-    let facet = cx
-        .try_global::<SkillsFacetState>()
-        .map(|state| state.0.clone())
-        .unwrap_or_default();
-    let rail = skills_facet_rail(text, &catalog.skills, cx);
-
-    let mut content = div().v_flex().gap_2().flex_1().min_w_0();
-    if facet == SkillFacet::Market {
-        content = content.child(crate::shell::brand_empty(
-            IconName::Globe,
-            &text.skills_market_title,
-            &text.skills_market_degraded,
-        ));
-        return div()
-            .flex()
-            .gap_3()
-            .w_full()
-            .min_w_0()
-            .child(rail)
-            .child(content);
-    }
-
-    if facet == SkillFacet::GroupManager {
-        return div()
-            .flex()
-            .gap_3()
-            .w_full()
-            .min_w_0()
-            .child(rail)
-            .child(skill_groups_page(text, view, cx));
-    }
-
-    // G-K5: the local filter row sits above the list, so the facet rail and
-    // the search box narrow the same rows.
-    content = content.child(skills_filter_row(text, view.clone(), cx));
-    let filter = cx
-        .try_global::<SkillsFilterState>()
-        .map(|state| (state.query.clone(), state.hide_shadowed))
-        .unwrap_or_default();
-    let filtered = !filter.0.trim().is_empty() || filter.1;
-    let rows: Vec<&SkillRow> = catalog
-        .skills
-        .iter()
-        .filter(|row| skill_matches(row, &facet))
-        .filter(|row| skill_matches_filter(row, &filter.0, filter.1))
-        .collect();
-    if rows.is_empty() {
-        let (title, body) = if filtered {
-            (text.manage_skills_no_match.clone(), String::new())
-        } else {
-            (
-                text.manage_skills_empty_title.clone(),
-                text.manage_skills_empty.clone(),
-            )
-        };
-        content = content.child(crate::shell::brand_empty(IconName::BookOpen, &title, &body));
-        return div()
-            .flex()
-            .gap_3()
-            .w_full()
-            .min_w_0()
-            .child(rail)
-            .child(content);
-    }
-
-    for skill in rows {
-        content = content.child(render_skill_card(skill, view.clone(), text, cx));
-    }
-    div()
-        .flex()
-        .gap_3()
-        .w_full()
-        .min_w_0()
-        .child(rail)
-        .child(content)
 }
 
 /// The facet rail: three fixed groups (library / explore) plus the derived
@@ -2461,86 +2358,6 @@ fn facet_key(facet: &SkillFacet) -> String {
         SkillFacet::Market => "market".to_string(),
         SkillFacet::GroupManager => "group-manager".to_string(),
     }
-}
-
-/// One skill card on the right side: name, level/source/shadowed badges,
-/// description, and the global enablement switch (built-ins stay on).
-fn render_skill_card(
-    row: &SkillRow,
-    view: WeakEntity<ShellWindow>,
-    text: &ShellText,
-    cx: &App,
-) -> gpui_kit::Div {
-    let level_label = if row.builtin {
-        text.manage_skill_builtin.clone()
-    } else if row.project_level {
-        text.manage_skill_project.clone()
-    } else {
-        text.manage_skill_user.clone()
-    };
-    let card = div()
-        .v_flex()
-        .gap_1()
-        .p_3()
-        .rounded(cx.theme().radius)
-        .border_1()
-        .border_color(cx.theme().border)
-        .flex_1()
-        .min_w_0()
-        .debug_selector(|| "skills-card".to_string())
-        .child(
-            div().flex().items_center().justify_between().gap_2().child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().foreground)
-                            .min_w_0()
-                            .truncate()
-                            .child(row.name.clone()),
-                    )
-                    .child(badge(level_label, cx))
-                    .when(!is_native_source(&row.source_id), |card| {
-                        let label = if row.source_label.trim().is_empty() {
-                            row.source_id.clone()
-                        } else {
-                            row.source_label.clone()
-                        };
-                        card.child(badge(label, cx))
-                    })
-                    .when(row.shadowed, |card| {
-                        card.child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().danger)
-                                .flex_shrink_0()
-                                .child(text.manage_skill_shadowed.clone()),
-                        )
-                    }),
-            ),
-        )
-        .when(!row.description.is_empty(), |card| {
-            card.child(
-                // min_w_0 + line_clamp over a bare truncate: the wrappable
-                // line keeps min-content small so the card's shrink chain
-                // constrains the text (same recipe as the agent cards).
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .min_w_0()
-                    .whitespace_normal()
-                    .line_clamp(2)
-                    .debug_selector(|| "skills-card-desc".to_string())
-                    .child(row.description.clone()),
-            )
-        });
-    let mut footer = div().flex().flex_row().items_center().justify_end().gap_2();
-    footer = footer.child(skill_row_actions(row, view, text));
-    card.child(footer)
 }
 
 /// The per-skill actions — the detail dialog entry and the global enablement
@@ -3728,83 +3545,6 @@ fn set_skill_disabled(key: String, user_level: bool, disabled: bool) {
     handle.set_skill_disabled(key, user_level, disabled);
 }
 
-/// The agents page: mode cards, subagent cards, and the create dialog entry.
-pub(crate) fn agents_group(
-    text: &ShellText,
-    view: WeakEntity<ShellWindow>,
-    cx: &App,
-) -> SettingGroup {
-    let modes_text = text.clone();
-    let modes_view = view.clone();
-    let modes_field = SettingField::render(move |_options, _window, cx| {
-        agent_cards(AgentListKind::Modes, &modes_text, modes_view.clone(), cx)
-    });
-    // G-A6: the harness profile zone (cloned here — `view` moves into the
-    // create field below).
-    let harness_text = text.clone();
-    let harness_view = view.clone();
-    let subagents_text = text.clone();
-    let subagents_view = view.clone();
-    let subagents_field = SettingField::render(move |_options, _window, cx| {
-        agent_cards(
-            AgentListKind::Subagents,
-            &subagents_text,
-            subagents_view.clone(),
-            cx,
-        )
-    });
-    let create_view = view.clone();
-    let create_text = text.clone();
-    let create_field = SettingField::render(move |_options, _window, _cx| {
-        let view = create_view.clone();
-        Button::new("agent-create")
-            .label(create_text.manage_agents_create.clone())
-            .small()
-            .with_variant(ButtonVariant::Secondary)
-            .on_click(move |_, window, cx| {
-                open_agent_create_dialog(view.clone(), window, cx);
-            })
-            .into_any_element()
-    });
-
-    // G-A5: the search / source / type controls sit above both lists, and the
-    // type filter drops the section it excludes — the same shape the web
-    // gallery takes when its kind filter is set.
-    let controls_text = text.clone();
-    let controls_view = view.clone();
-    let controls_item = SettingItem::render(move |_options, _window, cx| {
-        agents_controls(&controls_text, controls_view.clone(), cx)
-    });
-    let kind = cx
-        .try_global::<AgentsFilterState>()
-        .map(|state| state.kind)
-        .unwrap_or_default();
-
-    let mut items = vec![controls_item];
-    // G-A6: the harness profile zone leads the page (web renders
-    // `AgentHarnessOverview` above the catalog zone, outside its filters).
-    items.push(SettingItem::render(move |_options, _window, cx| {
-        harness_zone(&harness_text, harness_view.clone(), cx)
-    }));
-    if kind.matches(AgentListKind::Modes) {
-        items.push(SettingItem::new(
-            text.manage_agents_modes.clone(),
-            modes_field,
-        ));
-    }
-    if kind.matches(AgentListKind::Subagents) {
-        items.push(SettingItem::new(
-            text.manage_agents_subagents.clone(),
-            subagents_field,
-        ));
-    }
-    items.push(SettingItem::new(
-        text.manage_agents_create.clone(),
-        create_field,
-    ));
-    SettingGroup::new().items(items)
-}
-
 /// Which of the agents page's two lists a field renders.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AgentListKind {
@@ -3930,53 +3670,6 @@ fn agent_model_menu(row: &AgentCardRow, text: &ShellText, cx: &App) -> gpui_kit:
         .into_any_element()
 }
 
-/// G-A6: the harness zone heading plus one card per builtin harness profile.
-/// Web opens the agent detail dialog from a profile card; the shell has no
-/// detail dialog, so a card keeps the shell's row action (the skills dialog)
-/// and stays display-only otherwise.
-fn harness_zone(
-    text: &ShellText,
-    view: WeakEntity<ShellWindow>,
-    cx: &mut App,
-) -> gpui_kit::AnyElement {
-    if let Some(message) = ManageNotice::current(cx) {
-        return notice_banner(text, &message, cx);
-    }
-    let Some(catalog) = AgentCatalog::try_current(cx) else {
-        return div()
-            .text_sm()
-            .text_color(cx.theme().muted_foreground)
-            .child(text.manage_agents_loading.clone())
-            .into_any_element();
-    };
-    let heading = div()
-        .debug_selector(|| "manage-harness-heading".to_string())
-        .v_flex()
-        .w_full()
-        .gap_0p5()
-        .child(
-            div()
-                .text_sm()
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(cx.theme().foreground)
-                .child(text.manage_harness_title.clone()),
-        )
-        .child(
-            div()
-                .text_xs()
-                .text_color(cx.theme().muted_foreground)
-                .child(text.manage_harness_subtitle.clone()),
-        );
-    div()
-        .debug_selector(|| "manage-harness-zone".to_string())
-        .v_flex()
-        .w_full()
-        .gap_3()
-        .child(heading)
-        .child(harness_grid(&catalog.modes, text, view, cx))
-        .into_any_element()
-}
-
 /// The four harness profile cards in their shared grid row — the body of the
 /// card-path harness card (the component-pipeline zone wraps it under its
 /// heading).
@@ -4080,109 +3773,6 @@ fn harness_card(
         }
     }
     card.into_any_element()
-}
-
-fn agent_cards(
-    kind: AgentListKind,
-    text: &ShellText,
-    view: WeakEntity<ShellWindow>,
-    cx: &mut App,
-) -> gpui_kit::AnyElement {
-    if let Some(message) = ManageNotice::current(cx) {
-        return notice_banner(text, &message, cx);
-    }
-    let Some(catalog) = AgentCatalog::try_current(cx) else {
-        return div()
-            .text_sm()
-            .text_color(cx.theme().muted_foreground)
-            .child(text.manage_agents_loading.clone())
-            .into_any_element();
-    };
-    let rows = match kind {
-        // G-A6: the four builtin harness profiles render in the harness zone,
-        // not in the catalog list (web `isAgentInOverviewZone`).
-        AgentListKind::Modes => catalog
-            .modes
-            .into_iter()
-            .filter(|row| harness_profile_of(row).is_none())
-            .collect(),
-        AgentListKind::Subagents => catalog.subagents,
-    };
-    // G-A5: the search and source filters narrow whichever list is showing.
-    let filter = cx
-        .try_global::<AgentsFilterState>()
-        .map(|state| (state.query.clone(), state.source))
-        .unwrap_or_default();
-    let filtered = !filter.0.trim().is_empty() || filter.1 != AgentSourceFilter::All;
-    let rows: Vec<AgentCardRow> = rows
-        .into_iter()
-        .filter(|card| agent_matches_filter(card, &filter.0, filter.1))
-        .collect();
-    if rows.is_empty() {
-        let (title, body) = if filtered {
-            (text.manage_agents_no_match.clone(), String::new())
-        } else {
-            (
-                text.manage_agents_empty_title.clone(),
-                text.manage_agents_empty.clone(),
-            )
-        };
-        return crate::shell::brand_empty(IconName::Bot, &title, &body);
-    }
-
-    let mut column = div().v_flex().gap_2().w_full();
-    for card in rows {
-        let facts = agent_card_facts(&card, text);
-        let badges = agent_row_actions(&card, kind, text, view.clone(), cx);
-        column = column.child(
-            div()
-                .flex()
-                .w_full()
-                .min_w_0()
-                .items_start()
-                .justify_between()
-                .gap_2()
-                .child(
-                    // line_clamp over truncate: a nowrap text's intrinsic
-                    // min-content keeps the settings field container at full
-                    // text width (it pokes past the pane and pushes the badges
-                    // column out of the clip); a wrappable line keeps the
-                    // min-content small so the flex shrink chain actually
-                    // constrains the row.
-                    div()
-                        .v_flex()
-                        .min_w_0()
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().foreground)
-                                .min_w_0()
-                                .line_clamp(1)
-                                .child(card.name.clone()),
-                        )
-                        .when(!card.description.is_empty(), |row| {
-                            row.child(
-                                div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .min_w_0()
-                                    .line_clamp(1)
-                                    .child(card.description.clone()),
-                            )
-                        })
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .min_w_0()
-                                .line_clamp(1)
-                                .child(facts),
-                        ),
-                )
-                .child(badges),
-        );
-    }
-    column.into_any_element()
 }
 
 /// The facts line of one agent entry (tool count, source, enablement) —
@@ -5279,56 +4869,6 @@ pub(crate) fn open_mcp_auth_dialog(
     });
 }
 
-pub(crate) fn mcp_group(text: &ShellText, view: WeakEntity<ShellWindow>) -> SettingGroup {
-    let list_view = view.clone();
-    let list_text = text.clone();
-    let servers_field = SettingField::render(move |_options, _window, cx| {
-        mcp_server_list(&list_text, list_view.clone(), cx)
-    });
-    // G-M2: the paste/file import entry (web `MCPServerConfigDialog`'s import
-    // mode; the shell types the file path instead of using a native picker).
-    let import_view = view.clone();
-    let import_text = text.clone();
-    let import_field = SettingField::render(move |_options, _window, _cx| {
-        Button::new("mcp-import")
-            .label(import_text.manage_mcp_import.clone())
-            .small()
-            .with_variant(ButtonVariant::Secondary)
-            .on_click({
-                let view = import_view.clone();
-                move |_, window, cx| open_mcp_import_dialog(view.clone(), window, cx)
-            })
-            .into_any_element()
-    });
-    let json_view = view;
-    let json_text = text.clone();
-    let json_field = SettingField::render(move |_options, _window, _cx| {
-        Button::new("mcp-json-edit")
-            .label(json_text.manage_mcp_json_edit.clone())
-            .small()
-            .with_variant(ButtonVariant::Secondary)
-            .on_click({
-                let view = json_view.clone();
-                move |_, window, cx| open_json_editor_dialog(view.clone(), window, cx)
-            })
-            .into_any_element()
-    });
-
-    SettingGroup::new().items(vec![
-        // The server rows (URL + auth summary + up to five actions) overflow
-        // the horizontal item's control slot and get clipped at the card
-        // edge — the list needs the full page width (same fix as the
-        // archived-sessions page).
-        SettingItem::new(text.manage_mcp_servers.clone(), servers_field)
-            .description(text.manage_mcp_description.clone())
-            .layout(gpui_kit::Axis::Vertical),
-        SettingItem::new(text.manage_mcp_import.clone(), import_field)
-            .description(text.manage_mcp_import_hint.clone()),
-        SettingItem::new(text.manage_mcp_json_item.clone(), json_field)
-            .description(text.manage_mcp_json_description.clone()),
-    ])
-}
-
 /// The MCP page's card (web `McpToolsConfig`: one section of collection
 /// items). The import and raw-JSON editors sit in the card head, and each
 /// server becomes a full-width collection row beneath it.
@@ -5407,36 +4947,6 @@ fn mcp_card_actions(text: &ShellText, view: WeakEntity<ShellWindow>) -> gpui_kit
                 }),
         )
         .into_any_element()
-}
-
-fn mcp_server_list(
-    text: &ShellText,
-    view: WeakEntity<ShellWindow>,
-    cx: &mut App,
-) -> gpui_kit::AnyElement {
-    if let Some(message) = ManageNotice::current(cx) {
-        return notice_banner(text, &message, cx);
-    }
-    let Some(catalog) = McpCatalog::try_current(cx) else {
-        return div()
-            .text_sm()
-            .text_color(cx.theme().muted_foreground)
-            .child(text.manage_mcp_loading.clone())
-            .into_any_element();
-    };
-    if catalog.servers.is_empty() {
-        return crate::shell::brand_empty(
-            IconName::Plug,
-            &text.manage_mcp_empty_title,
-            &text.manage_mcp_empty,
-        );
-    }
-
-    let mut column = div().v_flex().gap_3().w_full();
-    for server in catalog.servers {
-        column = column.child(mcp_server_row(&server, text, view.clone(), cx));
-    }
-    column.into_any_element()
 }
 
 /// The facts line of an MCP server row (target, state, enablement, level,
@@ -5577,56 +5087,6 @@ fn mcp_server_actions(
     }
 
     actions
-}
-
-fn mcp_server_row(
-    server: &McpServerRow,
-    text: &ShellText,
-    view: WeakEntity<ShellWindow>,
-    cx: &mut App,
-) -> gpui_kit::AnyElement {
-    let facts = mcp_server_facts(server, text);
-    let actions = mcp_server_actions(server, text, view);
-
-    div()
-        .flex()
-        .items_center()
-        .justify_between()
-        .gap_2()
-        .child(
-            div()
-                .v_flex()
-                .min_w_0()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            div()
-                                .text_sm()
-                                .text_color(cx.theme().foreground)
-                                .truncate()
-                                .child(server.name.clone()),
-                        )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .flex_shrink_0()
-                                .child(if server.remote { "remote" } else { "local" }),
-                        ),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .truncate()
-                        .child(facts.join(" · ")),
-                ),
-        )
-        .child(actions)
-        .into_any_element()
 }
 
 fn run_mcp_action(action: McpAction, server_id: String) {
@@ -8566,16 +8026,16 @@ mod tests {
                 _window: &mut gpui_kit::Window,
                 cx: &mut gpui_kit::Context<Self>,
             ) -> impl gpui_kit::IntoElement {
-                use gpui_kit::component::setting::{SettingPage, Settings};
                 let text = crate::i18n::current(cx);
-                // The real container: Settings drives h_resizable +
-                // container_query + the virtualized group list around the
-                // facet page; that environment is where the wrap broke.
-                Settings::new("skills-wrap-probe")
-                    .sidebar_width(gpui_kit::px(180.))
-                    .pages(vec![SettingPage::new("Tools")
-                        .group(skills_group(&text, WeakEntity::new_invalid()))])
-                    .into_any_element()
+                // The real container: the card path's facet rail beside the
+                // list card under the shell page frame — the description
+                // wrap lives in the collection row now.
+                crate::settings_cards::render_card_page(
+                    &text,
+                    WeakEntity::new_invalid(),
+                    crate::settings::SettingsEntry::Skills,
+                    cx,
+                )
             }
         }
         let view = window.update(|_, cx| cx.new(|_| Probe));
@@ -8588,16 +8048,18 @@ mod tests {
             },
         );
         window.run_until_parked();
-        let card = window.debug_bounds("skills-card").expect("card laid out");
+        let card = window
+            .debug_bounds("settings-card-manage-skills")
+            .expect("card laid out");
         let desc = window
-            .debug_bounds("skills-card-desc")
+            .debug_bounds("settings-row-skills-row-user::probe-desc")
             .expect("description laid out");
-        // The probe description exceeds one line at any pane width: the clamp
-        // must wrap it (two text_xs lines tall) and keep it inside the card,
-        // not poke a single long line past the settings column.
+        // The probe description exceeds one line at any pane width: the row
+        // must wrap it (several text_sm lines tall) and keep it inside the
+        // card, not poke a single long line past the settings column.
         assert!(
-            desc.size.height > gpui::px(24.),
-            "description wraps to two lines: desc {:?}",
+            desc.size.height > gpui::px(40.),
+            "description wraps to several lines: desc {:?}",
             desc
         );
         assert!(
