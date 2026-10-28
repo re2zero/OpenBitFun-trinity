@@ -242,6 +242,8 @@ pub(crate) struct ShellText {
     pub composer_local: String,
     pub permission_ask: String,
     pub permission_ask_desc: String,
+    pub permission_auto: String,
+    pub permission_auto_desc: String,
     pub permission_full_access: String,
     pub permission_full_access_desc: String,
     pub models_title: String,
@@ -378,12 +380,6 @@ pub(crate) struct ShellText {
     pub settings_permissions: String,
     pub settings_theme_system: String,
     pub settings_theme_unsupported: String,
-    pub settings_policy: String,
-    pub settings_policy_description: String,
-    pub settings_policy_ask: String,
-    pub settings_policy_full_access: String,
-    pub settings_auto_approve: String,
-    pub settings_auto_approve_description: String,
     // G-SE17: the global permission rules editor.
     pub settings_permission_rules_section: String,
     pub settings_permission_rules_description: String,
@@ -1082,6 +1078,7 @@ pub(crate) struct ShellText {
     pub settings_question_timeout_description: String,
     pub settings_subagent_model: String,
     pub settings_subagent_model_description: String,
+    pub settings_subagent_model_settings: String,
     pub settings_subagent_model_inherit: String,
     pub settings_subagent_model_fast: String,
     pub settings_subagent_model_primary: String,
@@ -1100,6 +1097,26 @@ pub(crate) struct ShellText {
     pub settings_permissions_policy_desc: String,
     pub settings_permissions_deferred_title: String,
     pub settings_permissions_deferred_desc: String,
+    pub settings_permissions_tool_presentation_title: String,
+    pub settings_permissions_tool_presentation_desc: String,
+    pub settings_tool_presentation_mode: String,
+    pub settings_tool_presentation_description: String,
+    pub settings_tool_presentation_native: String,
+    pub settings_tool_presentation_ptc: String,
+    pub settings_tool_presentation_ptc_hint: String,
+    pub settings_permissions_mode: String,
+    pub settings_permissions_mode_description: String,
+    pub settings_permissions_mode_ask: String,
+    pub settings_permissions_mode_ask_description: String,
+    pub settings_permissions_mode_auto: String,
+    pub settings_permissions_mode_auto_description: String,
+    pub settings_permissions_mode_full: String,
+    pub settings_permissions_mode_full_description: String,
+    pub settings_permissions_show_in_chat_input: String,
+    pub settings_permissions_show_in_chat_input_description: String,
+    pub settings_permissions_full_access_title: String,
+    pub settings_permissions_full_access_message: String,
+    pub settings_permissions_full_access_confirm: String,
     pub settings_permissions_execution_title: String,
     pub settings_permissions_execution_desc: String,
     pub settings_permissions_subagents_title: String,
@@ -2313,6 +2330,9 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         permission_ask_desc:
             "External access, file changes, and command execution require confirmation."
                 .to_string(),
+        permission_auto: "Auto approve".to_string(),
+        permission_auto_desc:
+            "Automatically approve requests that require confirmation.".to_string(),
         permission_full_access: "Full access".to_string(),
         permission_full_access_desc: "Tools are allowed by default without confirmation."
             .to_string(),
@@ -2455,14 +2475,6 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_permissions: "Permissions".to_string(),
         settings_theme_system: "Follow system".to_string(),
         settings_theme_unsupported: "unsupported".to_string(),
-        settings_policy: "Permission policy".to_string(),
-        settings_policy_description: "Ask prompts before tools run; full access allows every call."
-            .to_string(),
-        settings_policy_ask: "Ask".to_string(),
-        settings_policy_full_access: "Full access".to_string(),
-        settings_auto_approve: "Auto-approve requests".to_string(),
-        settings_auto_approve_description:
-            "Answer interactive approval requests automatically (Ask policy only).".to_string(),
         settings_permission_rules_section: "Global rules".to_string(),
         settings_permission_rules_description: "Applies to all workspaces; project and agent rules can override these, while mandatory product restrictions always take precedence".to_string(),
         settings_permission_rules_manage: "Manage rules".to_string(),
@@ -3306,6 +3318,8 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_question_timeout_description: "Longest wait for you to start answering a question; 0 waits indefinitely.".to_string(),
         settings_subagent_model: "Default subagent model".to_string(),
         settings_subagent_model_description: "Used by subagents without an individual model override.".to_string(),
+        settings_subagent_model_settings:
+            "Go to the Agents page to set models for individual subagents".to_string(),
         settings_subagent_model_inherit: "Inherit parent session".to_string(),
         settings_subagent_model_fast: "Fast model".to_string(),
         settings_subagent_model_primary: "Primary model".to_string(),
@@ -3324,6 +3338,36 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_permissions_policy_desc: "Choose when tool actions need approval and which actions are allowed or denied".to_string(),
         settings_permissions_deferred_title: "Load tools as needed".to_string(),
         settings_permissions_deferred_desc: "Provide tool details to the model on demand to reduce context usage".to_string(),
+        settings_permissions_tool_presentation_title: "Tool presentation".to_string(),
+        settings_permissions_tool_presentation_desc: "Choose how the model accesses tools."
+            .to_string(),
+        settings_tool_presentation_mode: "Tool presentation".to_string(),
+        settings_tool_presentation_description: "Choose how tools are exposed to the model. This setting applies only to sessions created after it changes.".to_string(),
+        settings_tool_presentation_native: "Native tools".to_string(),
+        settings_tool_presentation_ptc: "PTC (TypeScript)".to_string(),
+        settings_tool_presentation_ptc_hint: "PTC executes TypeScript through RunCode."
+            .to_string(),
+        settings_permissions_mode: "Default permission mode".to_string(),
+        settings_permissions_mode_description:
+            "Used for new sessions and can be changed temporarily from the chat input."
+                .to_string(),
+        settings_permissions_mode_ask: "Ask for confirmation".to_string(),
+        settings_permissions_mode_ask_description:
+            "Confirm before files change, commands run, or external services are accessed."
+                .to_string(),
+        settings_permissions_mode_auto: "Auto approve".to_string(),
+        settings_permissions_mode_auto_description:
+            "Automatically allow actions that would normally need confirmation.".to_string(),
+        settings_permissions_mode_full: "Full access".to_string(),
+        settings_permissions_mode_full_description:
+            "Do not confirm each tool action.".to_string(),
+        settings_permissions_show_in_chat_input: "Show permission mode selector".to_string(),
+        settings_permissions_show_in_chat_input_description:
+            "Show the permission mode below the chat input so it can be changed for the current session.".to_string(),
+        settings_permissions_full_access_title: "Enable full access?".to_string(),
+        settings_permissions_full_access_message:
+            "Full access allows tools by default without asking each time.".to_string(),
+        settings_permissions_full_access_confirm: "Enable full access".to_string(),
         settings_permissions_execution_title: "Tool execution".to_string(),
         settings_permissions_execution_desc: "Tool execution and waiting for an answer have separate timers; set either to 0 for no timeout".to_string(),
         settings_permissions_subagents_title: "Subagents".to_string(),
@@ -3601,6 +3645,8 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         composer_local: service.t("gpui-shell-composer-local").await,
         permission_ask: service.t("gpui-shell-permission-ask").await,
         permission_ask_desc: service.t("gpui-shell-permission-ask-desc").await,
+        permission_auto: service.t("gpui-shell-permission-auto").await,
+        permission_auto_desc: service.t("gpui-shell-permission-auto-desc").await,
         permission_full_access: service.t("gpui-shell-permission-full-access").await,
         permission_full_access_desc: service.t("gpui-shell-permission-full-access-desc").await,
         models_title: service.t("gpui-shell-models-title").await,
@@ -3743,12 +3789,6 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         settings_permissions: service.t("gpui-shell-settings-permissions").await,
         settings_theme_system: service.t("gpui-shell-settings-theme-system").await,
         settings_theme_unsupported: service.t("gpui-shell-settings-theme-unsupported").await,
-        settings_policy: service.t("gpui-shell-settings-policy").await,
-        settings_policy_description: service.t("gpui-shell-settings-policy-desc").await,
-        settings_policy_ask: service.t("gpui-shell-settings-policy-ask").await,
-        settings_policy_full_access: service.t("gpui-shell-settings-policy-full-access").await,
-        settings_auto_approve: service.t("gpui-shell-settings-auto-approve").await,
-        settings_auto_approve_description: service.t("gpui-shell-settings-auto-approve-desc").await,
         settings_permission_rules_section: service
             .t("gpui-shell-settings-permission-rules-section")
             .await,
@@ -4680,6 +4720,9 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         settings_subagent_model_description: service
             .t("gpui-shell-settings-subagent-model-desc")
             .await,
+        settings_subagent_model_settings: service
+            .t("gpui-shell-settings-subagent-model-settings")
+            .await,
         settings_subagent_model_inherit: service
             .t("gpui-shell-settings-subagent-model-inherit")
             .await,
@@ -4723,6 +4766,62 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
             .await,
         settings_permissions_deferred_desc: service
             .t("gpui-shell-settings-permissions-deferred-desc")
+            .await,
+        settings_permissions_tool_presentation_title: service
+            .t("gpui-shell-settings-permissions-tool-presentation-title")
+            .await,
+        settings_permissions_tool_presentation_desc: service
+            .t("gpui-shell-settings-permissions-tool-presentation-desc")
+            .await,
+        settings_tool_presentation_mode: service
+            .t("gpui-shell-settings-tool-presentation-mode")
+            .await,
+        settings_tool_presentation_description: service
+            .t("gpui-shell-settings-tool-presentation-desc")
+            .await,
+        settings_tool_presentation_native: service
+            .t("gpui-shell-settings-tool-presentation-native")
+            .await,
+        settings_tool_presentation_ptc: service
+            .t("gpui-shell-settings-tool-presentation-ptc")
+            .await,
+        settings_tool_presentation_ptc_hint: service
+            .t("gpui-shell-settings-tool-presentation-ptc-hint")
+            .await,
+        settings_permissions_mode: service.t("gpui-shell-settings-permissions-mode").await,
+        settings_permissions_mode_description: service
+            .t("gpui-shell-settings-permissions-mode-desc")
+            .await,
+        settings_permissions_mode_ask: service.t("gpui-shell-settings-permissions-mode-ask").await,
+        settings_permissions_mode_ask_description: service
+            .t("gpui-shell-settings-permissions-mode-ask-desc")
+            .await,
+        settings_permissions_mode_auto: service
+            .t("gpui-shell-settings-permissions-mode-auto")
+            .await,
+        settings_permissions_mode_auto_description: service
+            .t("gpui-shell-settings-permissions-mode-auto-desc")
+            .await,
+        settings_permissions_mode_full: service
+            .t("gpui-shell-settings-permissions-mode-full")
+            .await,
+        settings_permissions_mode_full_description: service
+            .t("gpui-shell-settings-permissions-mode-full-desc")
+            .await,
+        settings_permissions_show_in_chat_input: service
+            .t("gpui-shell-settings-permissions-show-in-chat-input")
+            .await,
+        settings_permissions_show_in_chat_input_description: service
+            .t("gpui-shell-settings-permissions-show-in-chat-input-desc")
+            .await,
+        settings_permissions_full_access_title: service
+            .t("gpui-shell-settings-permissions-full-access-title")
+            .await,
+        settings_permissions_full_access_message: service
+            .t("gpui-shell-settings-permissions-full-access-message")
+            .await,
+        settings_permissions_full_access_confirm: service
+            .t("gpui-shell-settings-permissions-full-access-confirm")
             .await,
         settings_permissions_execution_title: service
             .t("gpui-shell-settings-permissions-execution-title")

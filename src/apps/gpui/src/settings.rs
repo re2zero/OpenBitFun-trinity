@@ -110,6 +110,9 @@ pub(crate) const SWARM_MAX_CONCURRENCY_PATH: &str = "ai.swarm_max_concurrency";
 /// A2: the deferred tool loading switch and the argument-JSON repair switch.
 pub(crate) const DEFERRED_TOOL_LOADING_PATH: &str = "ai.enable_deferred_tool_loading";
 pub(crate) const TOOL_JSON_REPAIR_PATH: &str = "ai.allow_tool_json_repair";
+/// A2: how tools are presented to the model (`native` | `ptc`); stored as the
+/// same snake_case string the shared enum serializes to.
+pub(crate) const TOOL_PRESENTATION_MODE_PATH: &str = "ai.tool_presentation_mode";
 /// A2: the default review team (`ai.review_teams.default`); the page edits two
 /// of its keys and round-trips the rest verbatim.
 pub(crate) const REVIEW_TEAM_PATH: &str = "ai.review_teams.default";
@@ -342,6 +345,9 @@ pub(crate) struct ShellConfig {
     pub(crate) swarm_max_concurrency: u32,
     /// A2 (G-SE20): `ai.enable_deferred_tool_loading`.
     pub(crate) deferred_tool_loading: bool,
+    /// A2 (G-SE20): `ai.tool_presentation_mode`, verbatim; unknown ids follow
+    /// the shared contract and render as the native presentation.
+    pub(crate) tool_presentation_mode: String,
     /// A2 (G-SE21): `ai.allow_tool_json_repair`.
     pub(crate) allow_tool_json_repair: bool,
     /// A2 (G-SE22): `ai.review_teams.default` as the stored document; read for
@@ -436,6 +442,10 @@ impl ShellConfig {
             subagent_max_concurrency: config.ai.subagent_max_concurrency as u32,
             swarm_max_concurrency: config.ai.swarm_max_concurrency as u32,
             deferred_tool_loading: config.ai.enable_deferred_tool_loading,
+            tool_presentation_mode: serde_json::to_value(config.ai.tool_presentation_mode)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_string))
+                .unwrap_or_else(|| "native".to_string()),
             allow_tool_json_repair: config.ai.allow_tool_json_repair,
             review_team: serde_json::to_value(
                 config
@@ -506,6 +516,7 @@ impl ShellConfig {
             subagent_max_concurrency: DEFAULT_SUBAGENT_CONCURRENCY,
             swarm_max_concurrency: DEFAULT_SWARM_CONCURRENCY,
             deferred_tool_loading: true,
+            tool_presentation_mode: "native".to_string(),
             allow_tool_json_repair: true,
             review_team: serde_json::Value::Null,
             memories: openbitfun_core::service::config::types::MemoriesConfig::default(),
@@ -2713,21 +2724,60 @@ pub(crate) const MAX_STREAM_TIMEOUT_SECS: f64 = 86_400.;
 /// A2 (G-SE18): the runtime-timeout rows, the web `NumberInput` range.
 pub(crate) const MAX_RUNTIME_TIMEOUT_SECS: f64 = 3_600.;
 
-/// The policy preset menu's two options in stored-value order.
-pub(crate) fn permission_preset_options(text: &ShellText) -> Vec<(SharedString, SharedString)> {
+/// The three-state default permission mode the web page exposes: the full
+/// access preset wins, then the auto-approve flag under the Ask preset.
+pub(crate) fn permission_mode_value(config: &ShellConfig) -> &'static str {
+    if config.permission_preset == PermissionPolicyPreset::FullAccess {
+        "full_access"
+    } else if config.auto_approve_ask {
+        "auto"
+    } else {
+        "ask"
+    }
+}
+
+/// The permission mode menu's three options in stored-value order.
+pub(crate) fn permission_mode_options(text: &ShellText) -> Vec<(SharedString, SharedString)> {
     vec![
         (
             SharedString::from("ask"),
-            SharedString::from(text.settings_policy_ask.clone()),
+            SharedString::from(text.settings_permissions_mode_ask.clone()),
+        ),
+        (
+            SharedString::from("auto"),
+            SharedString::from(text.settings_permissions_mode_auto.clone()),
         ),
         (
             SharedString::from("full_access"),
-            SharedString::from(text.settings_policy_full_access.clone()),
+            SharedString::from(text.settings_permissions_mode_full.clone()),
         ),
     ]
 }
 
-/// Writes the policy preset behind the permissions page's dropdown.
+/// The mode-specific sentence under the row label (web
+/// `permissionPolicy.mode`), followed by the shared mode note.
+pub(crate) fn permission_mode_description(value: &str, text: &ShellText) -> String {
+    let mode = match value {
+        "full_access" => &text.settings_permissions_mode_full_description,
+        "auto" => &text.settings_permissions_mode_auto_description,
+        _ => &text.settings_permissions_mode_ask_description,
+    };
+    format!("{} {}", mode, text.settings_permissions_mode_description)
+}
+
+/// Writes the merged permission mode: the preset plus the auto-approve flag.
+/// The two stored keys stay separate, exactly as the web service writes them.
+pub(crate) fn set_permission_mode(value: &str, cx: &mut App) {
+    let (preset, auto_approve) = match value {
+        "full_access" => (PermissionPolicyPreset::FullAccess, false),
+        "auto" => (PermissionPolicyPreset::Ask, true),
+        _ => (PermissionPolicyPreset::Ask, false),
+    };
+    set_permission_preset(preset_value(preset), cx);
+    set_auto_approve_ask(auto_approve, cx);
+}
+
+/// Writes the policy preset behind the permission mode row.
 pub(crate) fn set_permission_preset(value: &str, cx: &mut App) {
     let Some(preset) = preset_from_value(value) else {
         tracing::warn!("Ignoring unsupported permission policy: {value}");
@@ -2741,10 +2791,38 @@ pub(crate) fn set_permission_preset(value: &str, cx: &mut App) {
     cx.refresh_windows();
 }
 
-/// The auto-approve switch under the Ask policy.
+/// The auto-approve half of the merged permission mode row.
 pub(crate) fn set_auto_approve_ask(value: bool, cx: &mut App) {
     cx.global_mut::<ShellConfig>().auto_approve_ask = value;
     persist(AUTO_APPROVE_ASK_PATH, serde_json::Value::Bool(value));
+    cx.refresh_windows();
+}
+
+/// The chat-input permission-mode selector visibility
+/// (`app.flow_chat.show_permission_mode_control`); a sibling of the default
+/// mode keys, so the rest of the document survives the write.
+pub(crate) fn set_show_permission_mode_control(value: bool, cx: &mut App) {
+    let mut document = ShellConfig::current(cx).flow_chat.clone();
+    document = merged_object_value(
+        &document,
+        "show_permission_mode_control",
+        serde_json::json!(value),
+    );
+    cx.global_mut::<ShellConfig>().flow_chat = document;
+    persist_object_key(
+        FLOW_CHAT_PATH,
+        "show_permission_mode_control",
+        serde_json::json!(value),
+    );
+    cx.refresh_windows();
+}
+
+/// The tool presentation menu (web `toolPresentation`): only `ptc` leaves the
+/// native presentation; unknown values fail closed to native.
+pub(crate) fn set_tool_presentation_mode(value: &str, cx: &mut App) {
+    let mode = if value == "ptc" { "ptc" } else { "native" };
+    cx.global_mut::<ShellConfig>().tool_presentation_mode = mode.to_string();
+    persist(TOOL_PRESENTATION_MODE_PATH, serde_json::json!(mode));
     cx.refresh_windows();
 }
 
@@ -6808,6 +6886,19 @@ mod tests {
     }
 
     #[test]
+    fn permission_mode_covers_the_three_web_states() {
+        let mut config = ShellConfig::startup_default(LocaleId::ZhCN);
+        config.permission_preset = PermissionPolicyPreset::Ask;
+        config.auto_approve_ask = false;
+        assert_eq!(permission_mode_value(&config), "ask");
+        config.auto_approve_ask = true;
+        assert_eq!(permission_mode_value(&config), "auto");
+        // The preset wins over the Ask-side flag, as the web resolver does.
+        config.permission_preset = PermissionPolicyPreset::FullAccess;
+        assert_eq!(permission_mode_value(&config), "full_access");
+    }
+
+    #[test]
     fn close_behavior_follows_the_desktop_domain() {
         // `quit` quits; everything else (the shared default `minimize_to_tray`,
         // the desktop-only `ask`, or any unknown value) minimizes.
@@ -6907,6 +6998,7 @@ mod tests {
         config.ai.subagent_max_concurrency = 7;
         config.ai.swarm_max_concurrency = 20;
         config.ai.enable_deferred_tool_loading = false;
+        config.ai.tool_presentation_mode = openbitfun_core_types::ToolPresentationMode::Ptc;
         config.ai.allow_tool_json_repair = false;
         if let Some(team) = config.ai.review_teams.get_mut("default") {
             team.max_parallel_reviewers = 1;
@@ -6962,6 +7054,7 @@ mod tests {
         assert_eq!(snapshot.subagent_max_concurrency, 7);
         assert_eq!(snapshot.swarm_max_concurrency, 20);
         assert!(!snapshot.deferred_tool_loading);
+        assert_eq!(snapshot.tool_presentation_mode, "ptc");
         assert!(!snapshot.allow_tool_json_repair);
         assert_eq!(
             object_u64(

@@ -14,7 +14,7 @@ use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState, NumberInput};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::switch::Switch;
-use gpui_kit::component::{ActiveTheme, Disableable, Sizable};
+use gpui_kit::component::{ActiveTheme, Disableable, Sizable, WindowExt};
 use gpui_kit::{
     div, prelude::*, px, Anchor, AnyElement, App, Entity, FontWeight, IntoElement, ParentElement,
     RenderOnce, SharedString, Styled, Subscription, Window,
@@ -65,10 +65,11 @@ use crate::settings::{
     set_memory_raw_limit, set_memory_retention_days, set_memory_scan_limit, MemoryPageState,
 };
 use crate::settings::{
-    permission_preset_options, permission_rules_field, preset_value, set_auto_approve_ask,
-    set_deferred_tool_loading, set_permission_preset, set_review_capacity_value,
-    set_subagent_batch_policy, set_subagent_default_model, set_subagent_max_concurrency,
-    set_swarm_max_concurrency, set_tool_execution_timeout, set_tool_json_repair,
+    permission_mode_description, permission_mode_options, permission_mode_value,
+    permission_rules_field, set_deferred_tool_loading, set_permission_mode,
+    set_review_capacity_value, set_show_permission_mode_control, set_subagent_batch_policy,
+    set_subagent_default_model, set_subagent_max_concurrency, set_swarm_max_concurrency,
+    set_tool_execution_timeout, set_tool_json_repair, set_tool_presentation_mode,
     set_user_question_timeout, subagent_batch_description, subagent_batch_options,
     subagent_model_choice, subagent_model_options,
 };
@@ -91,6 +92,9 @@ pub(crate) struct SettingsCardRow {
     label: SharedString,
     description: Option<SharedString>,
     control: AnyElement,
+    /// An inline affordance after the label text (web `ConfigPageRow`'s
+    /// label-adjacent icon button, e.g. the subagent-model settings jump).
+    label_action: Option<AnyElement>,
     /// Web `ConfigPageRow`'s multiline mode: the label block sits above and
     /// the content spans the full width below (collection rows — lists with
     /// their own actions — read better than a crushed trailing lane).
@@ -111,6 +115,7 @@ impl SettingsCardRow {
             label: label.into(),
             description: None,
             control: div().into_any_element(),
+            label_action: None,
             multiline: false,
             disabled: false,
             danger: false,
@@ -126,6 +131,7 @@ impl SettingsCardRow {
             label: SharedString::from(""),
             description: None,
             control: div().into_any_element(),
+            label_action: None,
             multiline: true,
             disabled: false,
             danger: false,
@@ -141,6 +147,12 @@ impl SettingsCardRow {
     /// The control in the trailing lane.
     pub(crate) fn control(mut self, control: impl IntoElement) -> Self {
         self.control = control.into_any_element();
+        self
+    }
+
+    /// An inline affordance after the label text (web label-adjacent icon).
+    pub(crate) fn label_action(mut self, action: impl IntoElement) -> Self {
+        self.label_action = Some(action.into_any_element());
         self
     }
 
@@ -175,6 +187,7 @@ impl SettingsCardRow {
         let label = self.label.clone();
         let row_id = self.id.clone();
         let has_label = !label.is_empty() || self.description.is_some();
+        let label_action = self.label_action;
         let label_block = div()
             .flex_1()
             .min_w_0()
@@ -183,8 +196,12 @@ impl SettingsCardRow {
             .gap_0p5()
             .child(
                 div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
                     .when(self.danger, |label| label.text_color(theme.danger))
-                    .child(label),
+                    .child(label)
+                    .children(label_action),
             )
             .children(self.description.map(|text| {
                 div()
@@ -390,7 +407,7 @@ pub(crate) fn render_card_page(
         SettingsEntry::Usage => usage_cards(text, view),
         SettingsEntry::Archived => archived_cards(text, view),
         SettingsEntry::Diagnostics => diagnostics_cards(text, cx),
-        SettingsEntry::Permissions => permissions_cards(text, cx),
+        SettingsEntry::Permissions => permissions_cards(text, view, cx),
         SettingsEntry::Automation => automation_cards(text, cx),
         SettingsEntry::Mcp => crate::manage::mcp_cards(text, view, cx),
         // The manage pages keep their scene layouts: skills renders the facet
@@ -561,6 +578,24 @@ fn dropdown_control(
     on_select: Rc<dyn Fn(SharedString, &mut App)>,
     disabled: bool,
 ) -> AnyElement {
+    dropdown_control_windowed(
+        id,
+        label,
+        options,
+        Rc::new(move |value, _window, cx| on_select(value, cx)),
+        disabled,
+    )
+}
+
+/// [`dropdown_control`] with the window handed to the selection callback, for
+/// choices that open a confirmation dialog (the full-access permission mode).
+fn dropdown_control_windowed(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    options: Rc<Vec<(SharedString, SharedString)>>,
+    on_select: Rc<dyn Fn(SharedString, &mut Window, &mut App)>,
+    disabled: bool,
+) -> AnyElement {
     Button::new(id.into())
         .label(label)
         .dropdown_caret(true)
@@ -572,8 +607,8 @@ fn dropdown_control(
                 let value = value.clone();
                 let on_select = on_select.clone();
                 menu = menu.item(PopupMenuItem::new(option_label.clone()).on_click(
-                    move |_, _, cx| {
-                        on_select(value.clone(), cx);
+                    move |_, window, cx| {
+                        on_select(value.clone(), window, cx);
                     },
                 ));
             }
@@ -2590,54 +2625,63 @@ fn diagnostics_cards(text: &ShellText, cx: &mut App) -> Vec<SettingsCard> {
 
 /// The permissions page — the shell entry that carries both web pages'
 /// content (`permissions` policy and `execution` runtime), one card per web
-/// section: tool permissions (policy, auto-approve, and the global rules
-/// block), deferred tool loading, tool execution timers, subagents, tool
-/// argument JSON repair, and review capacity. Row controls are the component
-/// pipeline's own fields re-seated; every write goes through the shared
-/// setters both paths call.
-fn permissions_cards(text: &ShellText, cx: &App) -> Vec<SettingsCard> {
+/// section: tool permissions (the three-state mode, the chat-input selector
+/// switch, and the global rules block), deferred tool loading, tool
+/// presentation, tool execution timers, subagents, tool argument JSON repair,
+/// and review capacity. Row controls are the component pipeline's own fields
+/// re-seated; every write goes through the shared setters both paths call.
+fn permissions_cards(
+    text: &ShellText,
+    view: gpui_kit::WeakEntity<ShellWindow>,
+    cx: &App,
+) -> Vec<SettingsCard> {
     let config = ShellConfig::current(cx);
 
-    let preset_options = permission_preset_options(text);
-    let preset_current =
-        SharedString::from(preset_value(ShellConfig::current(cx).permission_preset));
-    let preset_label = preset_options
+    let mode_current = permission_mode_value(&config);
+    let mode_options = permission_mode_options(text);
+    let mode_label = mode_options
         .iter()
-        .find(|(value, _)| *value == preset_current)
+        .find(|(value, _)| value.as_ref() == mode_current)
         .map(|(_, label)| label.clone())
-        .unwrap_or_else(|| preset_current.clone());
-    // Auto-approval only changes behavior under the Ask policy; the preset
-    // already resolves every ask when full access is on.
-    let auto_approve_disabled = preset_current.as_ref() == "full_access";
-
+        .unwrap_or_else(|| SharedString::from(mode_current));
+    let mode_row = SettingsCardRow::new("permissions-mode", text.settings_permissions_mode.clone())
+        .description(permission_mode_description(mode_current, text))
+        .control(dropdown_control_windowed(
+            "permissions-mode-menu",
+            mode_label,
+            Rc::new(mode_options),
+            Rc::new(
+                move |value: SharedString, window: &mut Window, cx: &mut App| {
+                    if value.as_ref() == "full_access"
+                        && permission_mode_value(&ShellConfig::current(cx)) != "full_access"
+                    {
+                        open_full_access_confirm(window, cx);
+                    } else {
+                        set_permission_mode(&value, cx);
+                    }
+                },
+            ),
+            false,
+        ));
+    let show_in_chat_input = SettingsCardRow::new(
+        "permissions-show-in-chat-input",
+        text.settings_permissions_show_in_chat_input.clone(),
+    )
+    .description(
+        text.settings_permissions_show_in_chat_input_description
+            .clone(),
+    )
+    .control(switch_control(
+        "permissions-show-in-chat-input-switch",
+        object_bool(&config.flow_chat, "show_permission_mode_control", true),
+        set_show_permission_mode_control,
+        false,
+    ));
     let policy = SettingsCard::new("permissions-policy")
         .title(text.settings_permissions_policy_title.clone())
         .description(text.settings_permissions_policy_desc.clone())
-        .row(
-            SettingsCardRow::new("permissions-preset", text.settings_policy.clone())
-                .description(text.settings_policy_description.clone())
-                .control(dropdown_control(
-                    "permissions-preset-menu",
-                    preset_label,
-                    Rc::new(preset_options),
-                    Rc::new(|value: SharedString, cx: &mut App| set_permission_preset(&value, cx)),
-                    false,
-                )),
-        )
-        .row(
-            SettingsCardRow::new(
-                "permissions-auto-approve",
-                text.settings_auto_approve.clone(),
-            )
-            .description(text.settings_auto_approve_description.clone())
-            .disabled(auto_approve_disabled)
-            .control(switch_control(
-                "permissions-auto-approve-switch",
-                config.auto_approve_ask,
-                |value, cx| set_auto_approve_ask(value, cx),
-                auto_approve_disabled,
-            )),
-        )
+        .row(mode_row)
+        .row(show_in_chat_input)
         .row(
             SettingsCardRow::new(
                 "permissions-rules",
@@ -2672,6 +2716,51 @@ fn permissions_cards(text: &ShellText, cx: &App) -> Vec<SettingsCard> {
         .title(text.settings_permissions_deferred_title.clone())
         .description(text.settings_permissions_deferred_desc.clone())
         .row(deferred_enable);
+
+    let presentation_options = vec![
+        (
+            SharedString::from("native"),
+            SharedString::from(text.settings_tool_presentation_native.clone()),
+        ),
+        (
+            SharedString::from("ptc"),
+            SharedString::from(text.settings_tool_presentation_ptc.clone()),
+        ),
+    ];
+    let presentation_current = config.tool_presentation_mode.as_str();
+    let presentation_label = presentation_options
+        .iter()
+        .find(|(value, _)| value.as_ref() == presentation_current)
+        .map(|(_, label)| label.clone())
+        .unwrap_or_else(|| presentation_options[0].1.clone());
+    // The web explains PTC through the option tooltip; the shell's menu items
+    // carry no tooltip, so the hint joins the row description while PTC is
+    // the selected mode.
+    let presentation_description = if presentation_current == "ptc" {
+        format!(
+            "{} {}",
+            text.settings_tool_presentation_description, text.settings_tool_presentation_ptc_hint
+        )
+    } else {
+        text.settings_tool_presentation_description.clone()
+    };
+    let tool_presentation = SettingsCard::new("permissions-tool-presentation")
+        .title(text.settings_permissions_tool_presentation_title.clone())
+        .description(text.settings_permissions_tool_presentation_desc.clone())
+        .row(
+            SettingsCardRow::new(
+                "permissions-tool-presentation-mode",
+                text.settings_tool_presentation_mode.clone(),
+            )
+            .description(presentation_description)
+            .control(dropdown_control(
+                "permissions-tool-presentation-menu",
+                presentation_label,
+                Rc::new(presentation_options),
+                Rc::new(|value: SharedString, cx: &mut App| set_tool_presentation_mode(&value, cx)),
+                false,
+            )),
+        );
 
     let execution = SettingsCard::new("permissions-execution")
         .title(text.settings_permissions_execution_title.clone())
@@ -2734,6 +2823,20 @@ fn permissions_cards(text: &ShellText, cx: &App) -> Vec<SettingsCard> {
         .map(|(_, label)| label.clone())
         .unwrap_or_else(|| SharedString::from(batch_policy.clone()));
 
+    let agents_view = view;
+    let subagent_model_settings = Button::new("permissions-subagent-model-settings")
+        .icon(gpui_kit::assets::IconName::Settings)
+        .small()
+        .with_variant(ButtonVariant::Ghost)
+        .tooltip(text.settings_subagent_model_settings.clone())
+        .on_click(move |_, _, cx| {
+            if let Some(shell) = agents_view.upgrade() {
+                shell.update(cx, |shell, cx| {
+                    shell.set_settings_page(SettingsEntry::Agents, cx);
+                });
+            }
+        });
+
     let subagents = SettingsCard::new("permissions-subagents")
         .title(text.settings_permissions_subagents_title.clone())
         .description(text.settings_permissions_subagents_desc.clone())
@@ -2743,6 +2846,7 @@ fn permissions_cards(text: &ShellText, cx: &App) -> Vec<SettingsCard> {
                 text.settings_subagent_model.clone(),
             )
             .description(text.settings_subagent_model_description.clone())
+            .label_action(subagent_model_settings)
             .control(dropdown_control(
                 "permissions-subagent-model-menu",
                 model_label,
@@ -2884,7 +2988,55 @@ fn permissions_cards(text: &ShellText, cx: &App) -> Vec<SettingsCard> {
             )),
         );
 
-    vec![policy, deferred, execution, subagents, json_repair, review]
+    vec![
+        policy,
+        deferred,
+        tool_presentation,
+        execution,
+        subagents,
+        json_repair,
+        review,
+    ]
+}
+
+/// Opens the full-access confirmation dialog (web `confirmDanger` on the
+/// permission-mode select). Only the confirm path writes the mode; dismissing
+/// the dialog leaves the stored mode untouched.
+fn open_full_access_confirm(window: &mut Window, cx: &mut App) {
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let text = crate::i18n::current(cx);
+        dialog
+            .title(div().child(text.settings_permissions_full_access_title.clone()))
+            .child(
+                div()
+                    .w(px(380.))
+                    .text_sm()
+                    .text_color(cx.theme().foreground)
+                    .child(text.settings_permissions_full_access_message.clone()),
+            )
+            .footer(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("permissions-full-access-cancel")
+                            .label(text.session_action_cancel.clone())
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                    )
+                    .child(
+                        Button::new("permissions-full-access-confirm")
+                            .label(text.settings_permissions_full_access_confirm.clone())
+                            .with_variant(ButtonVariant::Primary)
+                            .on_click(|_, window, cx| {
+                                set_permission_mode("full_access", cx);
+                                window.close_dialog(cx);
+                            }),
+                    ),
+            )
+    });
 }
 
 /// The 自动化 page's cards, one per web `ConfigPageSection`: the hooks

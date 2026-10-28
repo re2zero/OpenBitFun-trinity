@@ -7541,10 +7541,27 @@ impl ShellWindow {
             .active_chat()
             .map(|chat| chat.agent_type.clone())
             .unwrap_or_default();
-        let (permission_icon, permission_label, permission_full_access) =
-            match settings::ShellConfig::try_current(cx).map(|config| config.permission_preset) {
-                Some(preset) => Self::permission_badge(preset, text),
-                None => (IconName::Shield, text.permission_ask.clone(), false),
+        let permission_config = settings::ShellConfig::try_current(cx);
+        // The web `show_permission_mode_control` preference hides the pill;
+        // the settings page owns the switch, so the strip reads the same
+        // document rather than inventing a second source.
+        let show_permission_badge = permission_config
+            .as_ref()
+            .map(|config| {
+                settings::object_bool(&config.flow_chat, "show_permission_mode_control", true)
+            })
+            .unwrap_or(true);
+        let (permission_icon, permission_label, permission_full_access, permission_tooltip) =
+            match permission_config.as_ref() {
+                Some(config) => {
+                    Self::permission_badge(settings::permission_mode_value(config), text)
+                }
+                None => (
+                    IconName::Shield,
+                    text.permission_ask.clone(),
+                    false,
+                    text.permission_ask_desc.clone(),
+                ),
             };
 
         // Built before the `fact`/`divider` closures borrow `cx`: the pill
@@ -7606,63 +7623,69 @@ impl ShellWindow {
                             .child(Icon::new(IconName::Laptop).small())
                             .child(text.composer_local.clone()),
                     )
-                    .child(
-                        // A pill button, not a bare fact: the web trigger
-                        // carries the mode description as its tooltip and its
-                        // menu ends in "open default settings" — the click
-                        // opens the settings scene that owns the preset. No
-                        // mode switching here: the shell's preset surface
-                        // stays on the settings permission page.
-                        div()
-                            .debug_selector(|| "composer-permission-badge".to_string())
-                            .child(
-                                Button::new("composer-permission-badge-btn")
-                                    .xsmall()
-                                    .custom(
-                                        ButtonCustomVariant::new(cx)
-                                            .color(cx.theme().sidebar_accent)
-                                            .foreground(cx.theme().muted_foreground),
-                                    )
-                                    .rounded(ButtonRounded::Size(px(999.)))
-                                    .font_medium()
-                                    .icon(Icon::new(permission_icon).small().text_color(
-                                        if permission_full_access {
-                                            cx.theme().danger
-                                        } else {
-                                            cx.theme().success
-                                        },
-                                    ))
-                                    .label(permission_label)
-                                    .tooltip(if permission_full_access {
-                                        text.permission_full_access_desc.clone()
-                                    } else {
-                                        text.permission_ask_desc.clone()
-                                    })
-                                    .on_click(
-                                        cx.listener(|this, _, _, cx| this.open_settings_view(cx)),
-                                    ),
-                            ),
-                    ),
+                    .when(show_permission_badge, |this| {
+                        this.child(
+                            // A pill button, not a bare fact: the web trigger
+                            // carries the mode description as its tooltip and
+                            // its menu ends in "open default settings" — the
+                            // click opens the settings scene that owns the
+                            // preset. No mode switching here: the shell's
+                            // preset surface stays on the settings permission
+                            // page.
+                            div()
+                                .debug_selector(|| "composer-permission-badge".to_string())
+                                .child(
+                                    Button::new("composer-permission-badge-btn")
+                                        .xsmall()
+                                        .custom(
+                                            ButtonCustomVariant::new(cx)
+                                                .color(cx.theme().sidebar_accent)
+                                                .foreground(cx.theme().muted_foreground),
+                                        )
+                                        .rounded(ButtonRounded::Size(px(999.)))
+                                        .font_medium()
+                                        .icon(Icon::new(permission_icon).small().text_color(
+                                            if permission_full_access {
+                                                cx.theme().danger
+                                            } else {
+                                                cx.theme().success
+                                            },
+                                        ))
+                                        .label(permission_label)
+                                        .tooltip(permission_tooltip)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.open_settings_view(cx)
+                                        })),
+                                ),
+                        )
+                    }),
             )
             .into_any_element()
     }
 
-    /// Maps the settings permission preset onto the strip badge: icon ramp
-    /// (web `PERMISSION_MODE_ICONS` — the shield gains a mark as
-    /// confirmation is given up), label, and whether the icon takes the
-    /// danger ink of the full-access step (`false` = the success ink of ask).
-    fn permission_badge(
-        preset: openbitfun_runtime_ports::PermissionPolicyPreset,
-        text: &ShellText,
-    ) -> (IconName, String, bool) {
-        match preset {
-            openbitfun_runtime_ports::PermissionPolicyPreset::Ask => {
-                (IconName::Shield, text.permission_ask.clone(), false)
-            }
-            openbitfun_runtime_ports::PermissionPolicyPreset::FullAccess => (
+    /// Maps the stored permission mode onto the strip badge: icon ramp (web
+    /// `PERMISSION_MODE_ICONS` — the shield gains a mark as confirmation is
+    /// given up), label, whether the icon takes the danger ink of the
+    /// full-access step, and the mode description the trigger shows.
+    fn permission_badge(mode: &str, text: &ShellText) -> (IconName, String, bool, String) {
+        match mode {
+            "full_access" => (
                 IconName::ShieldAlert,
                 text.permission_full_access.clone(),
                 true,
+                text.permission_full_access_desc.clone(),
+            ),
+            "auto" => (
+                IconName::ShieldCheck,
+                text.permission_auto.clone(),
+                false,
+                text.permission_auto_desc.clone(),
+            ),
+            _ => (
+                IconName::Shield,
+                text.permission_ask.clone(),
+                false,
+                text.permission_ask_desc.clone(),
             ),
         }
     }
@@ -12137,6 +12160,7 @@ mod tests {
                 &[
                     "settings-card-permissions-policy",
                     "settings-card-permissions-deferred",
+                    "settings-card-permissions-tool-presentation",
                     "settings-card-permissions-execution",
                     "settings-card-permissions-subagents",
                     "settings-card-permissions-json-repair",
@@ -12601,23 +12625,34 @@ mod tests {
         );
     }
 
-    /// The permission badge (R2a) projects the settings preset: ask keeps the
-    /// plain shield on success ink, full access raises the alert shield on
-    /// danger ink — the web icon ramp, one step per given-up confirmation.
+    /// The permission badge (R2a) projects the stored mode: ask keeps the
+    /// plain shield on success ink, auto raises the check shield, and full
+    /// access raises the alert shield on danger ink — the web icon ramp, one
+    /// step per given-up confirmation.
     #[test]
     fn permission_badge_maps_the_settings_preset() {
         let text = crate::i18n::fallback_text(LocaleId::EnUS);
-        use openbitfun_runtime_ports::PermissionPolicyPreset;
-        let (icon, label, full_access) =
-            ShellWindow::permission_badge(PermissionPolicyPreset::Ask, &text);
+        let (icon, label, full_access, tooltip) = ShellWindow::permission_badge("ask", &text);
         assert_eq!(icon, IconName::Shield);
         assert_eq!(label, text.permission_ask);
         assert!(!full_access);
-        let (icon, label, full_access) =
-            ShellWindow::permission_badge(PermissionPolicyPreset::FullAccess, &text);
+        assert_eq!(tooltip, text.permission_ask_desc);
+        let (icon, label, full_access, tooltip) = ShellWindow::permission_badge("auto", &text);
+        assert_eq!(icon, IconName::ShieldCheck);
+        assert_eq!(label, text.permission_auto);
+        assert!(!full_access);
+        assert_eq!(tooltip, text.permission_auto_desc);
+        let (icon, label, full_access, tooltip) =
+            ShellWindow::permission_badge("full_access", &text);
         assert_eq!(icon, IconName::ShieldAlert);
         assert_eq!(label, text.permission_full_access);
         assert!(full_access);
+        assert_eq!(tooltip, text.permission_full_access_desc);
+        // An unknown stored mode fails closed to the ask presentation.
+        assert_eq!(
+            ShellWindow::permission_badge("future-mode", &text),
+            ShellWindow::permission_badge("ask", &text)
+        );
     }
 
     /// The composer (R2a) carries the context strip above the card and the
