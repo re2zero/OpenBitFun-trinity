@@ -967,14 +967,14 @@ gpui-shell-settings-diagnostics-export-failed = 导出诊断包失败
 gpui-shell-settings-diagnostics-previous-crash = 上次会话异常结束
 gpui-shell-settings-diagnostics-previous-crash-description = 上次会话日志位于 { $path }。
 gpui-shell-settings-diagnostics-previous-unclean = 上次会话未记录到正常关闭
-gpui-shell-settings-memory-label = 记忆
-gpui-shell-settings-page-memory-description = 控制智能体如何从会话中生成和使用记忆
+gpui-shell-settings-memory-label = 会话与记忆
+gpui-shell-settings-page-memory-description = 设置新会话的执行模式、标题生成与记忆策略
 gpui-shell-memory-scope-notice = 设置、候选会话和记忆文件均属于当前执行主机；其他设备的记忆独立保存
-gpui-shell-memory-section-basic = 基础
+gpui-shell-memory-section-basic = 记忆
 gpui-shell-memory-section-basic-note = 关闭记忆会保留已有数据；如需清空，请在“记忆操作”中单独执行
-gpui-shell-memory-section-models = 模型
+gpui-shell-memory-section-models = 记忆模型
 gpui-shell-memory-section-models-note = 未单独指定时，抽取跟随主模型，整理跟随抽取模型
-gpui-shell-memory-section-advanced = 高级设置
+gpui-shell-memory-section-advanced = 记忆处理
 gpui-shell-memory-section-advanced-note = 限制记忆处理的会话范围和工作量；通常无需修改
 gpui-shell-memory-enabled = 记忆
 gpui-shell-memory-enabled-description = 从已完成会话中自动生成记忆，供后续会话参考
@@ -1113,7 +1113,7 @@ gpui-shell-settings-page-general-description = 调整界面语言、启动、更
 gpui-shell-settings-page-appearance-description = 调整主题与字体大小
 gpui-shell-settings-page-terminal-description = 选择新建终端和本地工作区命令使用的 Shell
 gpui-shell-settings-page-models-description = 连接模型服务，并选择各类任务使用的模型
-gpui-shell-settings-page-session-description = 设置新会话的执行框架、标题生成与工作区搜索
+gpui-shell-settings-page-session-description = 在命令栏中搜索会话与工作区内容
 gpui-shell-settings-worktrees-page = 工作区与 Git
 gpui-shell-settings-page-worktrees-description = 设置文件搜索、Git 提交署名与 Worktree，管理隔离工作目录
 gpui-shell-settings-page-execution-description = 设置工具确认规则、运行时限与任务并行方式
@@ -1193,16 +1193,16 @@ gpui-shell-settings-review-queue-wait-desc = 可选审核任务等待供应商�
 
 # ==================== G-SE15/G-SE16: session and workspace settings ====================
 
-# 默认智能体执行框架（对齐 web settings/runtime defaultHarness）
-gpui-shell-settings-default-harness-section = 默认智能体执行框架
+# 默认智能体执行模式（对齐 web settings/runtime defaultHarness）
+gpui-shell-settings-default-harness-section = 默认智能体执行模式
 gpui-shell-settings-default-harness-section-note = 用于普通新会话；助理、ACP 和已指定模式的会话不受影响
 gpui-shell-settings-default-harness-strategy = 默认方式
 gpui-shell-settings-default-harness-follow-last = 跟随上一次选择
 gpui-shell-settings-default-harness-fixed = 固定默认模式
-gpui-shell-settings-default-harness-follow-last-desc = 新会话沿用你最近在输入框中选择的执行框架：{ $name }
-gpui-shell-settings-default-harness-follow-last-empty-desc = 尚未记录选择；在输入框中选择执行框架前，新会话使用 { $name }
-gpui-shell-settings-default-harness-fixed-desc = 新会话始终使用指定执行框架；当前会话不会改变。
-gpui-shell-settings-default-harness-fixed-mode = 默认执行框架
+gpui-shell-settings-default-harness-follow-last-desc = 新会话沿用你最近在输入框中选择的执行模式：{ $name }
+gpui-shell-settings-default-harness-follow-last-empty-desc = 尚未记录选择；在输入框中选择执行模式前，新会话使用 { $name }
+gpui-shell-settings-default-harness-fixed-desc = 新会话始终使用指定执行模式；当前会话不会改变。
+gpui-shell-settings-default-harness-fixed-mode = 默认执行模式
 gpui-shell-value-compatibility = 兼容配置
 
 # 会话标题自动生成（对齐 web settings/models sessionTitle）

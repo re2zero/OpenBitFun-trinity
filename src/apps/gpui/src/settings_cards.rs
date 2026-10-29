@@ -407,7 +407,7 @@ pub(crate) fn render_card_page(
         SettingsEntry::General => general_cards(text, view, cx),
         SettingsEntry::Appearance => appearance_cards(text, cx),
         SettingsEntry::Terminal => terminal_cards(text, view, cx),
-        SettingsEntry::SessionSearch => session_search_cards(text, view, cx),
+        SettingsEntry::SessionSearch => session_search_cards(text, view),
         SettingsEntry::WorktreesGit => worktrees_git_cards(text, cx),
         SettingsEntry::Shortcuts => shortcuts_cards(text, cx),
         SettingsEntry::Models => models_cards(text, cx),
@@ -1203,144 +1203,33 @@ fn terminal_cards(
         )]
 }
 
-/// The 会话搜索 page's cards, one per web section: the default-Harness card,
-/// the session-title card, and the headless jump row that opens the shell's
-/// search overlay — this shell's session-search owner (design README §2.2).
+/// The 会话与工作区 page's single card: the headless jump row that opens the
+/// shell's search overlay — this shell's session-search owner (design README
+/// §2.2). The default-execution-mode and session-title sections live on the
+/// 会话与记忆 page, where the web `ai.session-memory` page keeps them.
 fn session_search_cards(
     text: &ShellText,
     view: gpui_kit::WeakEntity<ShellWindow>,
-    cx: &mut App,
 ) -> Vec<SettingsCard> {
-    let facts = default_harness_facts(text, cx);
-    let strategy_options = Rc::new(vec![
-        (
-            SharedString::from("follow_last"),
-            SharedString::from(text.settings_default_harness_follow_last.clone()),
-        ),
-        (
-            SharedString::from("fixed"),
-            SharedString::from(text.settings_default_harness_fixed.clone()),
-        ),
-    ]);
-    let current_strategy = flow_chat_strategy(&ShellConfig::current(cx).flow_chat);
-    let on_strategy_select: Rc<dyn Fn(SharedString, &mut App)> =
-        Rc::new(|value: SharedString, cx| set_flow_chat_strategy(&value, cx));
-
-    let enabled = ShellConfig::current(cx).session_title_enabled;
-    let catalog = cx
-        .try_global::<crate::runtime::ModelCatalog>()
-        .cloned()
-        .unwrap_or_default();
-    let current_model = ShellConfig::current(cx).session_title_model;
-    let model_options = session_title_model_options(&catalog.models, &current_model, text);
-    let model_label = model_options
-        .iter()
-        .find(|(value, _)| value.as_ref() == current_model.as_str())
-        .map(|(_, label)| label.clone())
-        .unwrap_or_else(|| current_model.clone().into());
-    let model_description = if catalog.models.is_empty() {
-        Some(text.settings_session_title_models_empty.clone())
-    } else {
-        None
-    };
-    let on_model_select: Rc<dyn Fn(SharedString, &mut App)> =
-        Rc::new(|value: SharedString, cx| set_session_title_model(&value, cx));
-
-    let mut harness_card = SettingsCard::new("session-search-harness")
-        .title(text.settings_default_harness_section.clone())
-        .description(text.settings_default_harness_section_note.clone())
-        .row(
-            SettingsCardRow::new(
-                "session-search-harness-strategy",
-                text.settings_default_harness_strategy.clone(),
-            )
-            .description(facts.strategy_description)
-            .control(dropdown_control(
-                "session-search-harness-strategy-menu",
-                SharedString::from(current_strategy),
-                strategy_options,
-                on_strategy_select,
-                false,
-            )),
-        );
-    if facts.strategy == "fixed" {
-        let fixed_mode = flow_chat_fixed_mode(&ShellConfig::current(cx).flow_chat);
-        let fixed_label = facts
-            .fixed_options
-            .iter()
-            .find(|(value, _)| value.as_ref() == fixed_mode.as_str())
-            .map(|(_, label)| label.clone())
-            .unwrap_or_else(|| fixed_mode.clone().into());
-        harness_card = harness_card.row(
-            SettingsCardRow::new(
-                "session-search-harness-fixed",
-                text.settings_default_harness_fixed_mode.clone(),
-            )
-            .control(dropdown_control(
-                "session-search-harness-fixed-menu",
-                fixed_label,
-                Rc::new(facts.fixed_options),
-                Rc::new(|value: SharedString, cx| set_flow_chat_fixed_mode(&value, cx)),
-                false,
-            )),
-        );
-    }
-
-    let mut title_card = SettingsCard::new("session-search-title")
-        .title(text.settings_session_title_section.clone())
-        .description(text.settings_session_title_section_note.clone())
-        .row(
-            SettingsCardRow::new(
-                "session-search-title-enable",
-                text.settings_session_title_enable.clone(),
-            )
-            .control(switch_control(
-                "session-search-title-enable-switch",
-                enabled,
-                set_session_title_enabled,
-                false,
-            )),
-        );
-    let mut model_row = SettingsCardRow::new(
-        "session-search-title-model",
-        text.settings_session_title_model.clone(),
-    )
-    .control(dropdown_control(
-        "session-search-title-model-menu",
-        model_label,
-        Rc::new(model_options),
-        on_model_select,
-        !enabled,
-    ))
-    .disabled(!enabled);
-    if let Some(description) = model_description {
-        model_row = model_row.description(description);
-    }
-    title_card = title_card.row(model_row);
-
-    vec![
-        harness_card,
-        title_card,
-        SettingsCard::new("session-search-open").row(
-            SettingsCardRow::new(
-                "session-search-open",
-                text.settings_jump_session_description.clone(),
-            )
-            .control(
-                Button::new("open-session-search")
-                    .label(text.settings_jump_session_action.clone())
-                    .with_variant(ButtonVariant::Ghost)
-                    .on_click({
-                        let view = view.clone();
-                        move |_: &gpui_kit::ClickEvent, window, cx| {
-                            if let Some(shell) = view.upgrade() {
-                                shell.update(cx, |shell, cx| shell.open_search_overlay(window, cx));
-                            }
+    vec![SettingsCard::new("session-search-open").row(
+        SettingsCardRow::new(
+            "session-search-open",
+            text.settings_jump_session_description.clone(),
+        )
+        .control(
+            Button::new("open-session-search")
+                .label(text.settings_jump_session_action.clone())
+                .with_variant(ButtonVariant::Ghost)
+                .on_click({
+                    let view = view.clone();
+                    move |_: &gpui_kit::ClickEvent, window, cx| {
+                        if let Some(shell) = view.upgrade() {
+                            shell.update(cx, |shell, cx| shell.open_search_overlay(window, cx));
                         }
-                    }),
-            ),
+                    }
+                }),
         ),
-    ]
+    )]
 }
 
 /// The 工作区与 Git page's cards, one per web section
@@ -3547,11 +3436,13 @@ fn verbatim_pair_options(
     options
 }
 
-/// The 会话与记忆 page's cards, one per web section: 基础 (the enable pair,
-/// BTW source, external-context policy, the actions menu), 模型 (the
-/// extraction and consolidation followers), and 高级设置 — head-only while
-/// collapsed, its seven tuned numbers as rows while open. The scope notice
-/// and the inline receipt render above the cards (page preamble).
+/// The 会话与记忆 page's cards, one per web section: 默认执行模式 (the
+/// strategy and its conditional fixed-mode row), 会话标题自动生成 (the enable
+/// switch and, while enabled, the model selector), 记忆 (the enable pair, BTW
+/// source, external-context policy, the actions menu), 记忆模型 (the extraction
+/// and consolidation followers), and 记忆处理 — head-only while collapsed, its
+/// seven tuned numbers as rows while open. The scope notice and the inline
+/// receipt render above the cards (page preamble).
 fn memory_cards(
     text: &ShellText,
     view: gpui_kit::WeakEntity<ShellWindow>,
@@ -3608,6 +3499,112 @@ fn memory_cards(
         .find(|(value, _)| value.as_ref() == consolidation_current.as_str())
         .map(|(_, label)| label.clone())
         .unwrap_or_else(|| consolidation_current.clone().into());
+
+    // The web page opens with its default-execution-mode and session-title
+    // sections; E3-B4 moved both off the shell's search page.
+    let facts = default_harness_facts(text, cx);
+    let strategy_options = Rc::new(vec![
+        (
+            SharedString::from("follow_last"),
+            SharedString::from(text.settings_default_harness_follow_last.clone()),
+        ),
+        (
+            SharedString::from("fixed"),
+            SharedString::from(text.settings_default_harness_fixed.clone()),
+        ),
+    ]);
+    let current_strategy = flow_chat_strategy(&ShellConfig::current(cx).flow_chat);
+    // The closed control shows the localized option label, never the stored id.
+    let strategy_label = strategy_options
+        .iter()
+        .find(|(value, _)| value.as_ref() == current_strategy)
+        .map(|(_, label)| label.clone())
+        .unwrap_or_else(|| SharedString::from(current_strategy));
+    let on_strategy_select: Rc<dyn Fn(SharedString, &mut App)> =
+        Rc::new(|value: SharedString, cx| set_flow_chat_strategy(&value, cx));
+
+    let mut harness_card = SettingsCard::new("memory-harness")
+        .title(text.settings_default_harness_section.clone())
+        .description(text.settings_default_harness_section_note.clone())
+        .row(
+            SettingsCardRow::new(
+                "memory-harness-strategy",
+                text.settings_default_harness_strategy.clone(),
+            )
+            .description(facts.strategy_description)
+            .control(dropdown_control(
+                "memory-harness-strategy-menu",
+                strategy_label,
+                strategy_options,
+                on_strategy_select,
+                false,
+            )),
+        );
+    if facts.strategy == "fixed" {
+        let fixed_mode = flow_chat_fixed_mode(&ShellConfig::current(cx).flow_chat);
+        let fixed_label = facts
+            .fixed_options
+            .iter()
+            .find(|(value, _)| value.as_ref() == fixed_mode.as_str())
+            .map(|(_, label)| label.clone())
+            .unwrap_or_else(|| fixed_mode.clone().into());
+        harness_card = harness_card.row(
+            SettingsCardRow::new(
+                "memory-harness-fixed",
+                text.settings_default_harness_fixed_mode.clone(),
+            )
+            .control(dropdown_control(
+                "memory-harness-fixed-menu",
+                fixed_label,
+                Rc::new(facts.fixed_options),
+                Rc::new(|value: SharedString, cx| set_flow_chat_fixed_mode(&value, cx)),
+                false,
+            )),
+        );
+    }
+
+    let title_enabled = ShellConfig::current(cx).session_title_enabled;
+    let title_model_current = ShellConfig::current(cx).session_title_model;
+    let title_model_options =
+        session_title_model_options(&catalog.models, &title_model_current, text);
+    let title_model_label = title_model_options
+        .iter()
+        .find(|(value, _)| value.as_ref() == title_model_current.as_str())
+        .map(|(_, label)| label.clone())
+        .unwrap_or_else(|| title_model_current.clone().into());
+    let mut title_card = SettingsCard::new("memory-session-title")
+        .title(text.settings_session_title_section.clone())
+        .description(text.settings_session_title_section_note.clone())
+        .row(
+            SettingsCardRow::new(
+                "memory-session-title-enable",
+                text.settings_session_title_enable.clone(),
+            )
+            .control(switch_control(
+                "memory-session-title-enable-switch",
+                title_enabled,
+                set_session_title_enabled,
+                false,
+            )),
+        );
+    // The web page renders the model row only while generation is on.
+    if title_enabled {
+        let mut model_row = SettingsCardRow::new(
+            "memory-session-title-model",
+            text.settings_session_title_model.clone(),
+        )
+        .control(dropdown_control(
+            "memory-session-title-model-menu",
+            title_model_label,
+            Rc::new(title_model_options),
+            Rc::new(|value: SharedString, cx| set_session_title_model(&value, cx)),
+            false,
+        ));
+        if !catalog.models.iter().any(|model| model.enabled) {
+            model_row = model_row.description(text.settings_session_title_models_empty.clone());
+        }
+        title_card = title_card.row(model_row);
+    }
 
     let basic = SettingsCard::new("memory-basic")
         .title(text.memory_section_basic.clone())
@@ -3701,7 +3698,7 @@ fn memory_cards(
                 move |_, cx| memory_advanced_toggle_button(view, cx)
             },
         });
-    let mut cards = vec![basic, models];
+    let mut cards = vec![harness_card, title_card, basic, models];
     if !advanced_open {
         cards.push(advanced);
         return cards;

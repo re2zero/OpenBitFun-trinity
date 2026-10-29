@@ -981,14 +981,14 @@ gpui-shell-settings-diagnostics-export-failed = Failed to export diagnostics bun
 gpui-shell-settings-diagnostics-previous-crash = Previous session ended unexpectedly
 gpui-shell-settings-diagnostics-previous-crash-description = Last session logs are available at { $path }.
 gpui-shell-settings-diagnostics-previous-unclean = Previous session did not record a normal shutdown
-gpui-shell-settings-memory-label = Memory
-gpui-shell-settings-page-memory-description = Control how agents create and use memories from sessions
+gpui-shell-settings-memory-label = Sessions & Memory
+gpui-shell-settings-page-memory-description = Configure default execution modes, session titles, and memory behavior
 gpui-shell-memory-scope-notice = Settings, candidate sessions, and memory files belong to the current execution host; other devices keep separate memories
-gpui-shell-memory-section-basic = Basics
+gpui-shell-memory-section-basic = Memory
 gpui-shell-memory-section-basic-note = Turning memory off keeps existing data; use Memory actions to clear it separately
-gpui-shell-memory-section-models = Models
+gpui-shell-memory-section-models = Memory models
 gpui-shell-memory-section-models-note = Unless set separately, extraction uses the primary model and consolidation uses the extraction model
-gpui-shell-memory-section-advanced = Advanced settings
+gpui-shell-memory-section-advanced = Memory processing
 gpui-shell-memory-section-advanced-note = Limit which sessions are processed and how much memory work runs; defaults usually suffice
 gpui-shell-memory-enabled = Memory
 gpui-shell-memory-enabled-description = Generate memories from completed sessions for use in later sessions
@@ -1127,7 +1127,7 @@ gpui-shell-settings-page-general-description = Configure language, startup, upda
 gpui-shell-settings-page-appearance-description = Adjust themes and font size
 gpui-shell-settings-page-terminal-description = Choose the shell for new terminals and commands in local workspaces
 gpui-shell-settings-page-models-description = Connect model providers and choose models for each type of task
-gpui-shell-settings-page-session-description = Set the runtime for new sessions, title generation, and workspace search
+gpui-shell-settings-page-session-description = Search sessions and workspace content from the command bar in this shell
 gpui-shell-settings-worktrees-page = Workspace & Git
 gpui-shell-settings-page-worktrees-description = Configure file search, commit attribution, and worktrees, and manage isolated working directories
 gpui-shell-settings-page-execution-description = Set tool approval rules, timeouts, and task concurrency
@@ -1207,16 +1207,16 @@ gpui-shell-settings-review-queue-wait-desc = How long optional reviews wait for 
 
 # ==================== G-SE15/G-SE16: session and workspace settings ====================
 
-# Default Agent Harness (web settings/runtime defaultHarness).
-gpui-shell-settings-default-harness-section = Default Agent Harness
+# Default agent execution mode (web settings/runtime defaultHarness).
+gpui-shell-settings-default-harness-section = Default agent execution mode
 gpui-shell-settings-default-harness-section-note = Applies to new standard sessions; assistants, ACP, and sessions with an explicit mode are unaffected
 gpui-shell-settings-default-harness-strategy = Default behavior
 gpui-shell-settings-default-harness-follow-last = Follow last selection
 gpui-shell-settings-default-harness-fixed = Use a fixed default
-gpui-shell-settings-default-harness-follow-last-desc = New sessions use the runtime last selected in the message input: { $name }
-gpui-shell-settings-default-harness-follow-last-empty-desc = No selection recorded yet; new sessions use { $name } until you choose a runtime in the message input
-gpui-shell-settings-default-harness-fixed-desc = New sessions always use the selected Harness; existing sessions are unchanged.
-gpui-shell-settings-default-harness-fixed-mode = Default Harness
+gpui-shell-settings-default-harness-follow-last-desc = New sessions use the execution mode last selected in the message input: { $name }
+gpui-shell-settings-default-harness-follow-last-empty-desc = No selection recorded yet; new sessions use { $name } until you choose an execution mode in the message input
+gpui-shell-settings-default-harness-fixed-desc = New sessions always use the selected execution mode; existing sessions are unchanged.
+gpui-shell-settings-default-harness-fixed-mode = Default execution mode
 gpui-shell-value-compatibility = compatibility setting
 
 # Auto session title (web settings/models sessionTitle).

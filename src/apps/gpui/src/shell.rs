@@ -12177,11 +12177,14 @@ mod tests {
                     "settings-card-shortcuts-terminal",
                 ],
             ),
-            // G-SE13: the three memory sections render collapsed; the
-            // advanced block's disclosure has its own settlement test.
+            // E3-B4: the page opens with the default-execution-mode and
+            // session-title sections (the web `ai.session-memory` composition)
+            // and keeps the three memory sections below, advanced collapsed.
             (
                 settings::SettingsEntry::Memory,
                 &[
+                    "settings-card-memory-harness",
+                    "settings-card-memory-session-title",
                     "settings-card-memory-basic",
                     "settings-card-memory-models",
                     "settings-card-memory-advanced",
@@ -12262,13 +12265,11 @@ mod tests {
                 settings::SettingsEntry::Terminal,
                 &["settings-card-terminal"],
             ),
+            // The search page keeps only its jump card: the two session
+            // sections moved to the memory page (web composition, E3-B4).
             (
                 settings::SettingsEntry::SessionSearch,
-                &[
-                    "settings-card-session-search-harness",
-                    "settings-card-session-search-title",
-                    "settings-card-session-search-open",
-                ],
+                &["settings-card-session-search-open"],
             ),
             (
                 settings::SettingsEntry::WorktreesGit,
@@ -14544,6 +14545,118 @@ mod tests {
                 .debug_bounds("settings-row-memory-advanced-idle-hours")
                 .is_none(),
             "collapsing removes the block"
+        );
+    }
+
+    /// E3-B4: the memory page carries the web page's session sections above
+    /// the memory cards. The fixed-mode row follows the strategy and the
+    /// session-title model row follows its enable switch, exactly as the web
+    /// page renders them; the search page keeps only its jump card.
+    #[gpui_kit::test]
+    fn memory_page_renders_the_session_sections_in_web_order(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+        let text = sample_shell_text();
+
+        let draw_page = |window: &mut gpui_kit::VisualTestContext,
+                         shell: &Entity<ShellWindow>,
+                         page: settings::SettingsEntry| {
+            let view = shell.downgrade();
+            let text = text.clone();
+            window.draw(
+                point(px(0.), px(0.)),
+                size(px(900.), px(600.)),
+                move |_, cx| {
+                    div()
+                        .w(px(640.))
+                        .h_full()
+                        .child(
+                            cx.new(|_| SettingsHarness {
+                                text: text.clone(),
+                                view: view.clone(),
+                                page,
+                            })
+                            .into_any_element(),
+                        )
+                        .into_any_element()
+                },
+            );
+            window.run_until_parked();
+        };
+
+        // The startup default: follow-last strategy, titles enabled on the
+        // fast model — so the fixed-mode row is absent and the model row is up.
+        draw_page(window, &shell, settings::SettingsEntry::Memory);
+        assert!(
+            window
+                .debug_bounds("settings-card-memory-harness")
+                .is_some(),
+            "the page opens with the default execution mode card"
+        );
+        assert!(
+            window
+                .debug_bounds("settings-card-memory-session-title")
+                .is_some(),
+            "the session title card follows it"
+        );
+        assert!(
+            window
+                .debug_bounds("settings-row-memory-harness-fixed")
+                .is_none(),
+            "follow-last keeps the fixed-mode row hidden"
+        );
+        assert!(
+            window
+                .debug_bounds("settings-row-memory-session-title-model")
+                .is_some(),
+            "enabled titles show their model row"
+        );
+
+        // Disabling titles removes the model row; a fixed strategy adds the
+        // mode row — both conditional rows follow the web page.
+        window.update(|_, cx| {
+            cx.global_mut::<settings::ShellConfig>()
+                .session_title_enabled = false;
+        });
+        draw_page(window, &shell, settings::SettingsEntry::Memory);
+        assert!(
+            window
+                .debug_bounds("settings-row-memory-session-title-model")
+                .is_none(),
+            "a disabled title section hides its model row"
+        );
+
+        window.update(|_, cx| {
+            let config = cx.global_mut::<settings::ShellConfig>();
+            config.session_title_enabled = true;
+            config.flow_chat = serde_json::json!({
+                "default_mode_strategy": "fixed",
+                "default_mode_id": "Standard",
+            });
+        });
+        draw_page(window, &shell, settings::SettingsEntry::Memory);
+        assert!(
+            window
+                .debug_bounds("settings-row-memory-harness-fixed")
+                .is_some(),
+            "a fixed strategy adds its mode row"
+        );
+
+        // The moved sections are gone from the search page.
+        draw_page(window, &shell, settings::SettingsEntry::SessionSearch);
+        assert!(
+            window
+                .debug_bounds("settings-card-session-search-open")
+                .is_some(),
+            "the search page keeps its jump card"
+        );
+        assert!(
+            window
+                .debug_bounds("settings-card-session-search-harness")
+                .is_none(),
+            "the harness card left the search page"
         );
     }
 

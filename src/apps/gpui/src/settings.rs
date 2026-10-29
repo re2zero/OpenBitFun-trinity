@@ -1712,7 +1712,8 @@ fn nav_item_row(id: SharedString, active: bool, cx: &App) -> gpui_kit::Stateful<
         })
 }
 
-/// G-SE15 setters both session-search renderers share. The strategy and
+/// G-SE15 setters the session sections share (the default-execution-mode and
+/// session-title cards on the 会话与记忆 page). The strategy and
 /// fixed-mode writes are one merged document write each so an interleaved
 /// older shell cannot drop the sibling key.
 pub(crate) fn set_flow_chat_strategy(value: &str, cx: &mut App) {
@@ -1790,7 +1791,7 @@ pub(crate) fn set_session_title_model(value: &str, cx: &mut App) {
     cx.refresh_windows();
 }
 
-/// What both default-Harness renderers display: the active strategy, the
+/// What the default-execution-mode card displays: the active strategy, the
 /// strategy row's description, and the fixed-mode menu (the harness ids, then
 /// a stored id outside the catalog so the menu shows what is persisted).
 pub(crate) struct DefaultHarnessFacts {
