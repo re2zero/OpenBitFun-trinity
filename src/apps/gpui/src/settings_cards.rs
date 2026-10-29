@@ -37,13 +37,18 @@ use crate::settings::{
 };
 use crate::settings::{
     body_json_valid, headers_json_valid, model_category_values, model_editor_presets_element,
-    models_configured_list, proxy_enabled, proxy_text, set_ai_model_body_mode,
-    set_ai_model_body_text, set_ai_model_category, set_ai_model_context_window,
-    set_ai_model_header_mode, set_ai_model_headers_text, set_ai_model_inline_think,
-    set_ai_model_max_tokens, set_ai_model_reasoning_default, set_ai_model_skip_ssl,
-    set_default_primary_model, set_proxy_key, set_stream_timeout_value, ModelEditorState,
-    MAX_STREAM_TIMEOUT_SECS, MODEL_EDITOR_DEFAULT_CONTEXT_WINDOW, MODEL_EDITOR_MIN_CONTEXT_WINDOW,
-    STREAM_IDLE_TIMEOUT_PATH, STREAM_TTFT_TIMEOUT_PATH,
+    model_effective_capabilities, model_provider_groups, model_provider_key,
+    model_supports_capability, model_test_receipt, proxy_enabled, proxy_text,
+    set_ai_model_body_mode, set_ai_model_body_text, set_ai_model_category,
+    set_ai_model_connection_text, set_ai_model_context_window, set_ai_model_header_mode,
+    set_ai_model_headers_text, set_ai_model_inline_think, set_ai_model_max_tokens,
+    set_ai_model_provider, set_ai_model_reasoning_default, set_ai_model_skip_ssl,
+    set_default_model_slot, set_default_primary_model, set_proxy_key, set_stream_timeout_value,
+    start_model_test, ModelEditorState, ModelProviderGroup, ModelTestReceipt, ModelTestState,
+    ModelsPageState, DEFAULT_MODEL_FAST_SLOT, DEFAULT_MODEL_IMAGE_SLOT, DEFAULT_MODEL_SPEECH_SLOT,
+    MAX_STREAM_TIMEOUT_SECS, MODEL_CREATE_MIN_CONTEXT_WINDOW, MODEL_EDITOR_DEFAULT_CONTEXT_WINDOW,
+    MODEL_EDITOR_MIN_CONTEXT_WINDOW, MODEL_PROVIDER_FORMATS, STREAM_IDLE_TIMEOUT_PATH,
+    STREAM_TTFT_TIMEOUT_PATH,
 };
 use crate::settings::{
     default_harness_facts, default_worktree_settings_document, entry_description, entry_label,
@@ -640,6 +645,60 @@ struct StringFieldState {
 /// field semantics: the engine state is keyed by the row id, every change
 /// reports, and the displayed text follows the setting when it changes
 /// elsewhere. The row label doubles as the input's accessible name.
+/// [`text_input_control`] with a visible placeholder (the web search field).
+fn search_input_control(
+    id: impl Into<SharedString>,
+    label: impl Into<SharedString>,
+    placeholder: impl Into<SharedString>,
+    value: SharedString,
+    on_change: impl Fn(SharedString, &mut App) + 'static,
+) -> DeferredControl<impl FnOnce(&mut Window, &mut App) -> AnyElement> {
+    let key = SharedString::from(format!("card-string-{}", id.into()));
+    let label: SharedString = label.into();
+    let placeholder: SharedString = placeholder.into();
+    DeferredControl {
+        construct: move |window, cx| {
+            let state_entity = window.use_keyed_state(key.clone(), cx, {
+                let value = value.clone();
+                let placeholder = placeholder.clone();
+                let on_change = Rc::new(on_change);
+                move |window, cx| {
+                    let input = cx.new(|cx| {
+                        InputState::new(window, cx)
+                            .default_value(value.clone())
+                            .placeholder(placeholder.clone())
+                    });
+                    let _subscription = cx.subscribe(&input, {
+                        move |_, input, event: &InputEvent, cx| match event {
+                            InputEvent::Change => {
+                                let value = input.read(cx).value();
+                                on_change(value.into(), cx);
+                            }
+                            _ => {}
+                        }
+                    });
+                    StringFieldState {
+                        input,
+                        _subscription,
+                    }
+                }
+            });
+            state_entity.update(cx, |state, cx| {
+                if state.input.read(cx).value() != value {
+                    state.input.update(cx, |input, cx| {
+                        input.set_value(value.clone(), window, cx);
+                    });
+                }
+            });
+            let state = state_entity.read(cx);
+            Input::new(&state.input)
+                .aria_label(label)
+                .w_64()
+                .into_any_element()
+        },
+    }
+}
+
 fn text_input_control(
     id: impl Into<SharedString>,
     label: impl Into<SharedString>,
@@ -698,12 +757,27 @@ struct NumberFieldState {
 /// keystroke can complete them, and the setting only ever receives a value
 /// inside `min..=max`.
 fn number_input_control(
-    id: impl Into<SharedString>,
-    label: impl Into<SharedString>,
+    id: impl Into<SharedString> + 'static,
+    label: impl Into<SharedString> + 'static,
     value: f64,
     range: NumberRange,
     on_change: impl Fn(f64, &mut App) + 'static,
     disabled: bool,
+) -> DeferredControl<impl FnOnce(&mut Window, &mut App) -> AnyElement> {
+    number_input_control_with_width(id, label, value, range, on_change, disabled, 128.)
+}
+
+/// [`number_input_control`] at a stated width. Six-digit context windows and
+/// output caps do not fit the default lane: the field clips the head of the
+/// value, so the row would show `30000` for a stored `300000`.
+fn number_input_control_with_width(
+    id: impl Into<SharedString> + 'static,
+    label: impl Into<SharedString> + 'static,
+    value: f64,
+    range: NumberRange,
+    on_change: impl Fn(f64, &mut App) + 'static,
+    disabled: bool,
+    width: f32,
 ) -> DeferredControl<impl FnOnce(&mut Window, &mut App) -> AnyElement> {
     let key = SharedString::from(format!("card-number-{}", id.into()));
     let label: SharedString = label.into();
@@ -771,7 +845,7 @@ fn number_input_control(
             NumberInput::new(&state.input)
                 .accessibility_label(label)
                 .disabled(disabled)
-                .w_32()
+                .w(px(width))
                 .into_any_element()
         },
     }
@@ -1863,604 +1937,1601 @@ fn shortcuts_cards(text: &ShellText, cx: &App) -> Vec<SettingsCard> {
     ]
 }
 
-/// The 模型 page's cards: the untitled primary card (default model + the
-/// configured list, the web page's top block), the stream and proxy cards
-/// (the web page's same-named sections), and — while a row is opened — the
-/// editor and advanced cards standing in for the web page's model editor.
+/// The 模型 page's cards, one per web `ConfigPageSection` (README §2.4):
+/// 添加或导入模型 / 模型选用模式 / 全部模型 / 更多设置, plus the inline editor
+/// (the web opens a modal) and the new-model form. The web `ModelPoolsSection`
+/// (routing pools) and the subscription manager have no shell capability yet;
+/// `checklist-models.md` §3 registers both.
 fn models_cards(text: &ShellText, cx: &mut App) -> Vec<SettingsCard> {
-    let catalog = cx
-        .try_global::<crate::runtime::ModelCatalog>()
-        .cloned()
-        .unwrap_or_default();
-    let current_default = SharedString::from(
-        ShellConfig::current(cx)
-            .default_primary_model
-            .unwrap_or_default(),
-    );
-    let default_options: Vec<(SharedString, SharedString)> = catalog
-        .models
-        .iter()
-        .filter(|model| model.enabled)
-        .map(|model| (model.id.clone().into(), model.label().into()))
-        .collect();
-    let default_label = default_options
-        .iter()
-        .find(|(value, _)| value.as_ref() == current_default.as_str())
-        .map(|(_, label)| label.clone())
-        .unwrap_or_else(|| current_default.clone().into());
-    let on_default_select: Rc<dyn Fn(SharedString, &mut App)> =
-        Rc::new(|value: SharedString, cx| set_default_primary_model(&value, cx));
+    let config = ShellConfig::current(cx);
+    let models = config.ai_models.clone();
+    let state = ModelsPageState::current(cx);
 
-    let mut cards = vec![SettingsCard::new("models")
+    let mut cards = vec![
+        models_acquisition_card(text, &models, cx),
+        models_selection_modes_card(text, cx),
+        models_pool_card(text, &models, &state, cx),
+    ];
+
+    if state.create.is_some() {
+        cards.push(models_create_card(text, &state));
+    }
+    cards.extend(models_editor_cards(text, &models, cx));
+
+    cards.push(models_more_card(text, &state));
+    if state.more_open {
+        cards.push(models_stream_card(text, cx));
+        cards.push(models_proxy_card(text, cx));
+    }
+    cards
+}
+
+/// The row title the web builds for a model (`getModelDisplayName`): the
+/// provider's config name over the model slug, falling back to whichever half
+/// exists.
+fn model_display_label(model: &openbitfun_core::service::config::types::AIModelConfig) -> String {
+    let name = model.name.trim();
+    let model_name = model.model_name.trim();
+    match (name.is_empty(), model_name.is_empty()) {
+        (false, false) => format!("{name}/{model_name}"),
+        (false, true) => name.to_string(),
+        (true, false) => model_name.to_string(),
+        (true, true) => model.id.clone(),
+    }
+}
+
+/// The category badge text (web `category.*`).
+fn model_category_label(
+    model: &openbitfun_core::service::config::types::AIModelConfig,
+    text: &ShellText,
+) -> String {
+    let category = serde_json::to_value(&model.category)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_default();
+    match category.as_str() {
+        "multimodal" => text.models_category_multimodal.clone(),
+        "image_generation" => text.models_category_image_generation.clone(),
+        "speech_recognition" => text.models_category_speech_recognition.clone(),
+        "general_chat" => text.models_category_general_chat.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// A trailing-lane neutral badge (the web's `StatusPill` for 「尚未开放」).
+fn models_muted_badge(label: SharedString, cx: &App) -> AnyElement {
+    div()
+        .flex_shrink_0()
+        .rounded_md()
+        .border_1()
+        .border_color(cx.theme().border)
+        .px_2()
+        .py_0p5()
+        .text_xs()
+        .text_color(cx.theme().muted_foreground)
+        .child(label)
+        .into_any_element()
+}
+
+/// Opens the inline editor on one model row.
+fn open_model_editor(model_id: String, cx: &mut App) {
+    ModelEditorState::mutate(cx, |state| {
+        state.model_id = Some(model_id);
+        state.drafts_ready = false;
+        state.headers_text.clear();
+        state.body_text.clear();
+    });
+    cx.refresh_windows();
+}
+
+/// The 添加或导入模型 section: the API connection pills (click opens the
+/// service's first model, the trailing icon deletes the whole service) with
+/// the add button, and the subscriptions row. Subscription sign-in and quotas
+/// have no shell manager yet, so that row says so instead of faking an import.
+fn models_acquisition_card(
+    text: &ShellText,
+    models: &[openbitfun_core::service::config::types::AIModelConfig],
+    cx: &App,
+) -> SettingsCard {
+    let groups = model_provider_groups(models);
+    let summary = if groups.is_empty() {
+        text.models_acquisition_none.clone()
+    } else {
+        crate::i18n::models_acquisition_summary(groups.len(), models.len(), cx)
+    };
+
+    let mut body = div().flex().flex_col().items_start().gap_2().w_full();
+    if !groups.is_empty() {
+        let mut pills = div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .items_center()
+            .gap_2()
+            .w_full();
+        for group in &groups {
+            pills = pills.child(models_provider_pill(group, text, cx));
+        }
+        body = body.child(pills);
+    }
+    body = body.child(
+        Button::new("models-add-model")
+            .label(text.models_add.clone())
+            .icon(IconName::Plus)
+            .small()
+            .with_variant(ButtonVariant::Secondary)
+            .on_click(|_, _, cx| crate::settings::open_model_create(cx)),
+    );
+
+    SettingsCard::new("models-acquisition")
+        .title(text.models_acquisition_title.clone())
         .row(
-            SettingsCardRow::new("models-default", text.models_default.clone())
-                .description(if catalog.models.is_empty() {
-                    text.models_empty.clone()
-                } else {
-                    text.models_default_description.clone()
-                })
-                .control(dropdown_control(
-                    "models-default-menu",
-                    default_label,
-                    Rc::new(default_options),
-                    on_default_select,
+            SettingsCardRow::new(
+                "models-acquisition-api",
+                text.models_acquisition_api.clone(),
+            )
+            .description(summary)
+            .multiline()
+            .control(body),
+        )
+        .row(
+            SettingsCardRow::new(
+                "models-acquisition-subscriptions",
+                text.models_acquisition_subscriptions.clone(),
+            )
+            .description(text.models_subscriptions_unavailable.clone()),
+        )
+}
+
+/// One configured service: name button + delete icon (web
+/// `openbitfun-model-settings__source-pill`).
+fn models_provider_pill(group: &ModelProviderGroup, text: &ShellText, cx: &App) -> AnyElement {
+    let open_id = group.model_ids.first().cloned();
+    let delete_group = group.clone();
+    let delete_tooltip = text.models_delete_provider.clone();
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_1()
+        .rounded_md()
+        .border_1()
+        .border_color(cx.theme().border)
+        .pl_2()
+        .pr_1()
+        .py_0p5()
+        .child(
+            Button::new(SharedString::from(format!(
+                "models-provider-open-{}",
+                group.key
+            )))
+            .label(group.name.clone())
+            .small()
+            .with_variant(ButtonVariant::Ghost)
+            .tooltip(group.base_url.clone())
+            .on_click(move |_, _, cx| {
+                if let Some(model_id) = open_id.clone() {
+                    open_model_editor(model_id, cx);
+                }
+            }),
+        )
+        .child(
+            Button::new(SharedString::from(format!(
+                "models-provider-delete-{}",
+                group.key
+            )))
+            .icon(IconName::Trash)
+            .small()
+            .with_variant(ButtonVariant::Ghost)
+            .tooltip(delete_tooltip)
+            .on_click(move |_, window, cx| {
+                open_provider_delete_confirm(window, cx, delete_group.clone());
+            }),
+        )
+        .into_any_element()
+}
+
+/// The web `requestFormatOptions` labels for the provider picker, plus a
+/// stored value this build does not know (kept verbatim).
+fn model_provider_options(stored: &str) -> Vec<(SharedString, SharedString)> {
+    let mut options: Vec<(SharedString, SharedString)> = MODEL_PROVIDER_FORMATS
+        .iter()
+        .map(|(value, label)| (SharedString::from(*value), SharedString::from(*label)))
+        .collect();
+    if !stored.is_empty() && !options.iter().any(|(value, _)| value.as_ref() == stored) {
+        options.push((
+            SharedString::from(stored.to_string()),
+            SharedString::from(stored.to_string()),
+        ));
+    }
+    options
+}
+
+/// The 模型选用模式 section: the web renders only the smart-mode row, with a
+/// neutral 「尚未开放」 pill (battery copy exists but is not rendered).
+fn models_selection_modes_card(text: &ShellText, cx: &App) -> SettingsCard {
+    SettingsCard::new("models-selection-modes")
+        .title(text.models_selection_modes_title.clone())
+        .row(
+            SettingsCardRow::new(
+                "models-selection-modes-smart",
+                text.models_mode_smart.clone(),
+            )
+            .description(text.models_mode_smart_hint.clone())
+            .control(models_muted_badge(
+                text.models_mode_unavailable.clone().into(),
+                cx,
+            )),
+        )
+}
+
+/// One default-model slot (web `DefaultModelConfig`): enabled models with the
+/// slot's capability; the optional slots carry a 「未设置」 entry.
+fn model_default_slot_row(
+    id: &'static str,
+    label: String,
+    description: String,
+    clear_label: Option<String>,
+    capability: openbitfun_core::service::config::types::ModelCapability,
+    stored: Option<String>,
+    models: &[openbitfun_core::service::config::types::AIModelConfig],
+) -> SettingsCardRow {
+    let current = stored.unwrap_or_default();
+    let mut options: Vec<(SharedString, SharedString)> = Vec::new();
+    if let Some(clear_label) = clear_label {
+        options.push((SharedString::from(""), clear_label.into()));
+    }
+    for model in models
+        .iter()
+        .filter(|model| model_supports_capability(model, capability.clone()))
+    {
+        options.push((
+            SharedString::from(model.id.clone()),
+            SharedString::from(model_display_label(model)),
+        ));
+    }
+    if !current.is_empty() && !options.iter().any(|(value, _)| value.as_ref() == current) {
+        options.push((
+            SharedString::from(current.clone()),
+            SharedString::from(current.clone()),
+        ));
+    }
+    let shown = options
+        .iter()
+        .find(|(value, _)| value.as_ref() == current)
+        .map(|(_, label)| label.clone())
+        .unwrap_or_else(|| current.clone().into());
+    let on_select: Rc<dyn Fn(SharedString, &mut App)> = match id {
+        "models-pool-primary" => {
+            Rc::new(|value: SharedString, cx: &mut App| set_default_primary_model(&value, cx))
+        }
+        "models-pool-fast" => Rc::new(|value: SharedString, cx: &mut App| {
+            set_default_model_slot(DEFAULT_MODEL_FAST_SLOT, &value, cx)
+        }),
+        "models-pool-image" => Rc::new(|value: SharedString, cx: &mut App| {
+            set_default_model_slot(DEFAULT_MODEL_IMAGE_SLOT, &value, cx)
+        }),
+        _ => Rc::new(|value: SharedString, cx: &mut App| {
+            set_default_model_slot(DEFAULT_MODEL_SPEECH_SLOT, &value, cx)
+        }),
+    };
+    SettingsCardRow::new(id, label.clone())
+        .description(description)
+        .control(dropdown_control(
+            SharedString::from(format!("{id}-menu")),
+            shown,
+            Rc::new(options),
+            on_select,
+            false,
+        ))
+}
+
+/// The 全部模型 section: the four default slots, the search/filter toolbar,
+/// and the model rows (web `sections.pool` + `DefaultModelConfig`).
+fn models_pool_card(
+    text: &ShellText,
+    models: &[openbitfun_core::service::config::types::AIModelConfig],
+    state: &ModelsPageState,
+    cx: &App,
+) -> SettingsCard {
+    let config = ShellConfig::current(cx);
+    SettingsCard::new("models-pool")
+        .title(text.models_pool_title.clone())
+        .row(model_default_slot_row(
+            "models-pool-primary",
+            text.models_default_primary.clone(),
+            text.models_default_primary_desc.clone(),
+            None,
+            openbitfun_core::service::config::types::ModelCapability::TextChat,
+            config.default_primary_model.clone(),
+            models,
+        ))
+        .row(model_default_slot_row(
+            "models-pool-fast",
+            text.models_default_fast.clone(),
+            text.models_default_fast_desc.clone(),
+            Some(text.models_default_not_set.clone()),
+            openbitfun_core::service::config::types::ModelCapability::TextChat,
+            config.default_fast_model.clone(),
+            models,
+        ))
+        .row(model_default_slot_row(
+            "models-pool-image",
+            text.models_default_image.clone(),
+            text.models_default_image_desc.clone(),
+            Some(text.models_default_not_set.clone()),
+            openbitfun_core::service::config::types::ModelCapability::ImageUnderstanding,
+            config.default_image_model.clone(),
+            models,
+        ))
+        .row(model_default_slot_row(
+            "models-pool-speech",
+            text.models_default_speech.clone(),
+            text.models_default_speech_desc.clone(),
+            Some(text.models_default_not_set.clone()),
+            openbitfun_core::service::config::types::ModelCapability::SpeechRecognition,
+            config.default_speech_model.clone(),
+            models,
+        ))
+        .row(
+            SettingsCardRow::body("models-pool-toolbar")
+                .control(models_pool_toolbar(text, models, state)),
+        )
+        .row(
+            SettingsCardRow::body("models-pool-list")
+                .control(models_pool_list(text, models, state, cx)),
+        )
+}
+
+/// The capability filter value → the shared capability enum.
+fn model_capability_filter(
+    value: &str,
+) -> Option<openbitfun_core::service::config::types::ModelCapability> {
+    use openbitfun_core::service::config::types::ModelCapability as Capability;
+    match value {
+        "text_chat" => Some(Capability::TextChat),
+        "image_understanding" => Some(Capability::ImageUnderstanding),
+        "speech_recognition" => Some(Capability::SpeechRecognition),
+        "function_calling" => Some(Capability::FunctionCalling),
+        _ => None,
+    }
+}
+
+/// The web pool filter: capability, provider group, then the query over the
+/// model name, provider name, request format, and endpoint.
+fn model_matches_pool_filter(
+    model: &openbitfun_core::service::config::types::AIModelConfig,
+    query: &str,
+    capability: &str,
+    provider: &str,
+) -> bool {
+    if let Some(wanted) = model_capability_filter(capability) {
+        if !model_effective_capabilities(model).contains(&wanted) {
+            return false;
+        }
+    }
+    if !provider.is_empty() && model_provider_key(model) != provider {
+        return false;
+    }
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return true;
+    }
+    [
+        model.name.as_str(),
+        model.model_name.as_str(),
+        model.provider.as_str(),
+        model.base_url.as_str(),
+    ]
+    .join(" ")
+    .to_lowercase()
+    .contains(&query)
+}
+
+/// The `pool` section's toolbar: search field, capability filter, provider
+/// filter (web `pool.search` / `pool.capabilityFilter` / `pool.providerFilter`).
+fn models_pool_toolbar(
+    text: &ShellText,
+    models: &[openbitfun_core::service::config::types::AIModelConfig],
+    state: &ModelsPageState,
+) -> AnyElement {
+    let capability_options: Vec<(SharedString, SharedString)> = vec![
+        ("", text.models_filter_all_capabilities.clone()),
+        ("text_chat", text.models_capability_text.clone()),
+        ("image_understanding", text.models_capability_image.clone()),
+        ("speech_recognition", text.models_capability_speech.clone()),
+        ("function_calling", text.models_capability_tools.clone()),
+    ]
+    .into_iter()
+    .map(|(value, label)| (SharedString::from(value), SharedString::from(label)))
+    .collect();
+    let capability_shown = capability_options
+        .iter()
+        .find(|(value, _)| value.as_ref() == state.capability)
+        .map(|(_, label)| label.clone())
+        .unwrap_or_else(|| text.models_filter_all_capabilities.clone().into());
+
+    let mut provider_options: Vec<(SharedString, SharedString)> = vec![(
+        SharedString::from(""),
+        SharedString::from(text.models_filter_all_providers.clone()),
+    )];
+    for group in model_provider_groups(models) {
+        provider_options.push((
+            SharedString::from(group.key),
+            SharedString::from(group.name),
+        ));
+    }
+    let provider_shown = provider_options
+        .iter()
+        .find(|(value, _)| value.as_ref() == state.provider)
+        .map(|(_, label)| label.clone())
+        .unwrap_or_else(|| text.models_filter_all_providers.clone().into());
+
+    let query_value = SharedString::from(state.query.clone());
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .flex_wrap()
+        .w_full()
+        .child(search_input_control(
+            "models-pool-search",
+            text.models_search.clone(),
+            text.models_search.clone(),
+            query_value,
+            |value: SharedString, cx: &mut App| {
+                ModelsPageState::mutate(cx, |state| state.query = value.to_string());
+                cx.refresh_windows();
+            },
+        ))
+        .child(dropdown_control(
+            "models-pool-capability-menu",
+            capability_shown,
+            Rc::new(capability_options),
+            Rc::new(|value: SharedString, cx: &mut App| {
+                ModelsPageState::mutate(cx, |state| state.capability = value.to_string());
+                cx.refresh_windows();
+            }),
+            false,
+        ))
+        .child(dropdown_control(
+            "models-pool-provider-menu",
+            provider_shown,
+            Rc::new(provider_options),
+            Rc::new(|value: SharedString, cx: &mut App| {
+                ModelsPageState::mutate(cx, |state| state.provider = value.to_string());
+                cx.refresh_windows();
+            }),
+            false,
+        ))
+        .into_any_element()
+}
+
+/// The filtered model collection: loading / empty / no-match states, then one
+/// row per model with its enable switch, test, edit, and delete actions (the
+/// web pool card). Default primary and fast rows sort first, like the web.
+fn models_pool_list(
+    text: &ShellText,
+    models: &[openbitfun_core::service::config::types::AIModelConfig],
+    state: &ModelsPageState,
+    cx: &App,
+) -> AnyElement {
+    let config = ShellConfig::current(cx);
+    let catalog_loaded = cx
+        .try_global::<crate::runtime::ModelCatalog>()
+        .map(|catalog| catalog.loaded)
+        .unwrap_or(false);
+    if models.is_empty() {
+        let message = if catalog_loaded {
+            text.models_empty.clone()
+        } else {
+            text.models_loading.clone()
+        };
+        return div()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .child(message)
+            .into_any_element();
+    }
+
+    let mut visible: Vec<&openbitfun_core::service::config::types::AIModelConfig> = models
+        .iter()
+        .filter(|model| {
+            model_matches_pool_filter(model, &state.query, &state.capability, &state.provider)
+        })
+        .collect();
+    visible.sort_by_key(|model| {
+        if config.default_primary_model.as_deref() == Some(model.id.as_str()) {
+            0
+        } else if config.default_fast_model.as_deref() == Some(model.id.as_str()) {
+            1
+        } else {
+            2
+        }
+    });
+
+    if visible.is_empty() {
+        return div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .w_full()
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(text.models_no_matches.clone()),
+            )
+            .child(
+                Button::new("models-pool-clear-filter")
+                    .label(text.models_clear_filter.clone())
+                    .small()
+                    .with_variant(ButtonVariant::Ghost)
+                    .on_click(|_, _, cx| {
+                        ModelsPageState::mutate(cx, |state| {
+                            state.query.clear();
+                            state.capability.clear();
+                            state.provider.clear();
+                        });
+                        cx.refresh_windows();
+                    }),
+            )
+            .into_any_element();
+    }
+
+    let receipts = ModelTestState::current(cx).receipts;
+    let mut list = div().flex().flex_col().gap_1().w_full();
+    let mut first_row = true;
+    for model in visible {
+        let model_id = model.id.clone();
+        let testing = matches!(receipts.get(&model_id), Some(ModelTestReceipt::Testing));
+        let test_label = if testing {
+            text.models_testing.clone()
+        } else {
+            text.models_test.clone()
+        };
+        let description = format!(
+            "{} · {}",
+            model_category_label(model, text),
+            model.base_url.trim()
+        );
+        let actions = div()
+            .flex_shrink_0()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap_2()
+            .child(switch_control(
+                SharedString::from(format!("models-enable-{model_id}")),
+                model.enabled,
+                {
+                    let model_id = model_id.clone();
+                    move |value, cx| crate::settings::set_ai_model_enabled(&model_id, value, cx)
+                },
+                false,
+            ))
+            .child(
+                Button::new(SharedString::from(format!("models-test-{model_id}")))
+                    .label(test_label)
+                    .small()
+                    .with_variant(ButtonVariant::Ghost)
+                    .loading(testing)
+                    .on_click({
+                        let model_id = model_id.clone();
+                        move |_, _, cx| {
+                            start_model_test(model_id.clone(), cx);
+                        }
+                    }),
+            )
+            .child(
+                Button::new(SharedString::from(format!("models-edit-{model_id}")))
+                    .icon(IconName::Pencil)
+                    .small()
+                    .with_variant(ButtonVariant::Ghost)
+                    .tooltip(crate::i18n::shared_term("tools.edit", cx))
+                    .on_click({
+                        let model_id = model_id.clone();
+                        move |_, _, cx| open_model_editor(model_id.clone(), cx)
+                    }),
+            )
+            .child(
+                Button::new(SharedString::from(format!("models-delete-{model_id}")))
+                    .icon(IconName::Trash)
+                    .small()
+                    .with_variant(ButtonVariant::Ghost)
+                    .tooltip(text.models_delete.clone())
+                    .on_click({
+                        let model_id = model_id.clone();
+                        let label = model_display_label(model);
+                        move |_, window, cx| {
+                            open_model_delete_confirm(window, cx, model_id.clone(), label.clone());
+                        }
+                    }),
+            );
+
+        let line = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap_2()
+            .w_full()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_sm()
+                            .child(model_display_label(model)),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(description),
+                    ),
+            )
+            .child(actions);
+        let mut row = div().flex().flex_col().gap_1().w_full().child(line);
+        if let Some(ModelTestReceipt::Done(result)) = receipts.get(&model_id) {
+            row = row.child(model_test_receipt(result, text, cx));
+        }
+        if !first_row {
+            row = row
+                .border_t_1()
+                .border_color(cx.theme().border.opacity(0.6))
+                .pt_2();
+        }
+        first_row = false;
+        list = list.child(row);
+    }
+    list.into_any_element()
+}
+
+/// Deletes a whole configured service after the danger confirmation; the
+/// dialog names the service and the number of model rows that go with it.
+fn open_provider_delete_confirm(window: &mut Window, cx: &mut App, group: ModelProviderGroup) {
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let text = crate::i18n::current(cx);
+        let title = crate::i18n::models_delete_provider_title(&group.name, cx);
+        let message = crate::i18n::models_delete_provider_message(group.model_ids.len(), cx);
+        let ids = group.model_ids.clone();
+        dialog
+            .title(div().child(title))
+            .child(
+                div()
+                    .w(px(380.))
+                    .text_sm()
+                    .text_color(cx.theme().foreground)
+                    .child(message),
+            )
+            .footer(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("models-provider-delete-cancel")
+                            .label(text.session_action_cancel.clone())
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                    )
+                    .child(
+                        Button::new("models-provider-delete-confirm")
+                            .label(text.models_delete_provider.clone())
+                            .with_variant(ButtonVariant::Danger)
+                            .on_click(move |_, window, cx| {
+                                crate::settings::delete_ai_models(ids.clone(), cx);
+                                window.close_dialog(cx);
+                            }),
+                    ),
+            )
+    });
+}
+
+/// Deletes one model row after the danger confirmation.
+fn open_model_delete_confirm(window: &mut Window, cx: &mut App, model_id: String, label: String) {
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let text = crate::i18n::current(cx);
+        let title = crate::i18n::models_delete_model_title(&label, cx);
+        let ids = vec![model_id.clone()];
+        dialog
+            .title(div().child(title))
+            .child(
+                div()
+                    .w(px(380.))
+                    .text_sm()
+                    .text_color(cx.theme().foreground)
+                    .child(text.models_delete_message.clone()),
+            )
+            .footer(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("models-delete-cancel")
+                            .label(text.session_action_cancel.clone())
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                    )
+                    .child(
+                        Button::new("models-delete-confirm")
+                            .label(text.models_delete_confirm.clone())
+                            .with_variant(ButtonVariant::Danger)
+                            .on_click(move |_, window, cx| {
+                                crate::settings::delete_ai_models(ids.clone(), cx);
+                                window.close_dialog(cx);
+                            }),
+                    ),
+            )
+    });
+}
+
+/// The new-model form (web `handleCreateNew` + `handleSave`'s required
+/// fields). One deliberate draft: nothing is written to `ai.models` until the
+/// whole row validates.
+fn models_create_card(text: &ShellText, state: &ModelsPageState) -> SettingsCard {
+    let draft = state.create.clone().unwrap_or_default();
+    let provider_options = model_provider_options(&draft.provider);
+    let provider_shown = provider_options
+        .iter()
+        .find(|(value, _)| value.as_ref() == draft.provider)
+        .map(|(_, label)| label.clone())
+        .unwrap_or_else(|| draft.provider.clone().into());
+    let category_options: Vec<(SharedString, SharedString)> = vec![
+        ("general_chat", text.models_category_general_chat.clone()),
+        ("multimodal", text.models_category_multimodal.clone()),
+        (
+            "speech_recognition",
+            text.models_category_speech_recognition.clone(),
+        ),
+    ]
+    .into_iter()
+    .map(|(value, label)| (SharedString::from(value), SharedString::from(label)))
+    .collect();
+    let category_shown = category_options
+        .iter()
+        .find(|(value, _)| value.as_ref() == draft.category)
+        .map(|(_, label)| label.clone())
+        .unwrap_or_else(|| draft.category.clone().into());
+
+    let mut card = SettingsCard::new("models-create")
+        .title(text.models_create_title.clone())
+        .extra(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(
+                    Button::new("models-create-cancel")
+                        .label(text.models_create_cancel.clone())
+                        .small()
+                        .with_variant(ButtonVariant::Ghost)
+                        .on_click(|_, _, cx| crate::settings::cancel_model_create(cx)),
+                )
+                .child(
+                    Button::new("models-create-save")
+                        .label(text.models_create_save.clone())
+                        .small()
+                        .with_variant(ButtonVariant::Primary)
+                        .on_click(|_, _, cx| crate::settings::save_model_create(cx)),
+                ),
+        );
+
+    card = card
+        .row(
+            SettingsCardRow::new("models-create-name", text.models_editor_name.clone()).control(
+                text_input_control(
+                    "models-create-name",
+                    text.models_editor_name.clone(),
+                    SharedString::from(draft.name.clone()),
+                    |value: SharedString, cx: &mut App| {
+                        crate::settings::update_model_create_draft(cx, |draft| {
+                            draft.name = value.to_string()
+                        });
+                    },
+                ),
+            ),
+        )
+        .row(
+            SettingsCardRow::new(
+                "models-create-provider",
+                text.models_editor_provider.clone(),
+            )
+            .control(dropdown_control(
+                "models-create-provider-menu",
+                provider_shown,
+                Rc::new(provider_options),
+                Rc::new(|value: SharedString, cx: &mut App| {
+                    crate::settings::update_model_create_draft(cx, |draft| {
+                        draft.provider = value.to_string()
+                    });
+                }),
+                false,
+            )),
+        )
+        .row(
+            SettingsCardRow::new(
+                "models-create-model-name",
+                text.models_editor_model_name.clone(),
+            )
+            .control(text_input_control(
+                "models-create-model-name",
+                text.models_editor_model_name.clone(),
+                SharedString::from(draft.model_name.clone()),
+                |value: SharedString, cx: &mut App| {
+                    crate::settings::update_model_create_draft(cx, |draft| {
+                        draft.model_name = value.to_string()
+                    });
+                },
+            )),
+        )
+        .row(
+            SettingsCardRow::new(
+                "models-create-base-url",
+                text.models_editor_base_url.clone(),
+            )
+            .control(text_input_control(
+                "models-create-base-url",
+                text.models_editor_base_url.clone(),
+                SharedString::from(draft.base_url.clone()),
+                |value: SharedString, cx: &mut App| {
+                    crate::settings::update_model_create_draft(cx, |draft| {
+                        draft.base_url = value.to_string()
+                    });
+                },
+            )),
+        )
+        .row(
+            SettingsCardRow::new("models-create-api-key", text.models_editor_api_key.clone())
+                .control(text_input_control(
+                    "models-create-api-key",
+                    text.models_editor_api_key.clone(),
+                    SharedString::from(draft.api_key.clone()),
+                    |value: SharedString, cx: &mut App| {
+                        crate::settings::update_model_create_draft(cx, |draft| {
+                            draft.api_key = value.to_string()
+                        });
+                    },
+                )),
+        )
+        .row(
+            SettingsCardRow::new("models-create-context", text.models_context_window.clone())
+                .description(text.models_context_window_hint.clone())
+                .control(number_input_control_with_width(
+                    "models-create-context-input",
+                    text.models_context_window.clone(),
+                    f64::from(draft.context_window),
+                    NumberRange {
+                        min: f64::from(MODEL_CREATE_MIN_CONTEXT_WINDOW),
+                        max: f64::MAX,
+                        step: 1_000.,
+                    },
+                    |value: f64, cx: &mut App| {
+                        if !value.is_finite() {
+                            return;
+                        }
+                        let tokens =
+                            (value.round().max(0.) as u32).max(MODEL_CREATE_MIN_CONTEXT_WINDOW);
+                        crate::settings::update_model_create_draft(cx, |draft| {
+                            draft.context_window = tokens
+                        });
+                    },
+                    false,
+                    224.,
+                )),
+        )
+        .row(
+            SettingsCardRow::new("models-create-category", text.models_category.clone()).control(
+                dropdown_control(
+                    "models-create-category-menu",
+                    category_shown,
+                    Rc::new(category_options),
+                    Rc::new(|value: SharedString, cx: &mut App| {
+                        crate::settings::update_model_create_draft(cx, |draft| {
+                            draft.category = value.to_string()
+                        });
+                    }),
+                    false,
+                ),
+            ),
+        );
+
+    if let Some(error) = draft.error.as_ref() {
+        card = card.row(SettingsCardRow::new("models-create-error", error.clone()).danger(true));
+    }
+    card
+}
+
+/// The inline editor cards (web modal): the connection fields, the model
+/// parameters, and the advanced request-shaping block. Empty while no row is
+/// open, or when the open row no longer exists (deleted meanwhile).
+fn models_editor_cards(
+    text: &ShellText,
+    models: &[openbitfun_core::service::config::types::AIModelConfig],
+    cx: &App,
+) -> Vec<SettingsCard> {
+    let Some(model_id) = ModelEditorState::current(cx).model_id.clone() else {
+        return Vec::new();
+    };
+    let Some(model) = models.iter().find(|model| model.id == model_id).cloned() else {
+        return Vec::new();
+    };
+
+    let close_button = Button::new("models-editor-close")
+        .label(text.models_edit_close.clone())
+        .small()
+        .with_variant(ButtonVariant::Ghost)
+        .on_click(|_, _, cx| {
+            ModelEditorState::mutate(cx, |state| state.model_id = None);
+            cx.refresh_windows();
+        });
+    let delete_button = Button::new("models-editor-delete")
+        .icon(IconName::Trash)
+        .small()
+        .with_variant(ButtonVariant::Ghost)
+        .tooltip(text.models_editor_delete.clone())
+        .on_click({
+            let model_id = model_id.clone();
+            let label = model_display_label(&model);
+            move |_, window, cx| {
+                open_model_delete_confirm(window, cx, model_id.clone(), label.clone());
+            }
+        });
+    let head_actions = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .child(delete_button)
+        .child(close_button);
+
+    let provider_options = model_provider_options(&model.provider);
+    let provider_shown = provider_options
+        .iter()
+        .find(|(value, _)| value.as_ref() == model.provider)
+        .map(|(_, label)| label.clone())
+        .unwrap_or_else(|| model.provider.clone().into());
+
+    // Category: the web's four choices, plus a value written by a newer build
+    // kept verbatim so it is never silently remapped.
+    let stored_category = serde_json::to_value(&model.category)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_else(|| "general_chat".to_string());
+    let mut category_options: Vec<(SharedString, SharedString)> = Vec::new();
+    for value in model_category_values(&stored_category) {
+        let (value, label) = if value == "__stored_unknown" {
+            (stored_category.clone(), stored_category.clone())
+        } else {
+            let label = match value {
+                "general_chat" => text.models_category_general_chat.clone(),
+                "multimodal" => text.models_category_multimodal.clone(),
+                "image_generation" => text.models_category_image_generation.clone(),
+                "speech_recognition" => text.models_category_speech_recognition.clone(),
+                other => other.to_string(),
+            };
+            (value.to_string(), label)
+        };
+        category_options.push((value.into(), label.into()));
+    }
+    let category_label = category_options
+        .iter()
+        .find(|(value, _)| value.as_ref() == stored_category)
+        .map(|(_, label)| label.clone())
+        .unwrap_or_else(|| stored_category.clone().into());
+    let on_category_select: Rc<dyn Fn(SharedString, &mut App)> = {
+        let model_id = model_id.clone();
+        Rc::new(move |value: SharedString, cx| {
+            set_ai_model_category(&model_id, value.to_string(), cx);
+        })
+    };
+
+    let context_value = model
+        .context_window
+        .unwrap_or(MODEL_EDITOR_DEFAULT_CONTEXT_WINDOW) as f64;
+    let on_context_change = {
+        let model_id = model_id.clone();
+        move |value: f64, cx: &mut App| {
+            if value.is_finite() && value >= f64::from(MODEL_EDITOR_MIN_CONTEXT_WINDOW) {
+                set_ai_model_context_window(&model_id, value.round() as u32, cx);
+            }
+        }
+    };
+
+    let max_tokens_value = model.max_tokens.unwrap_or(0) as f64;
+    let on_max_tokens_change = {
+        let model_id = model_id.clone();
+        move |value: f64, cx: &mut App| {
+            if !value.is_finite() {
+                return;
+            }
+            let tokens = value.round().max(0.) as u32;
+            if tokens == 0 {
+                set_ai_model_max_tokens(&model_id, None, cx);
+                return;
+            }
+            // The shared contract caps an explicit output limit at 40% of the
+            // context window; an out-of-range value is ignored rather than
+            // persisted invalid.
+            let context = ShellConfig::current(cx)
+                .ai_models
+                .iter()
+                .find(|model| model.id == model_id)
+                .and_then(|model| model.context_window)
+                .unwrap_or(MODEL_EDITOR_DEFAULT_CONTEXT_WINDOW);
+            if openbitfun_core::service::config::types::is_valid_configured_max_output_tokens(
+                context, tokens,
+            ) {
+                set_ai_model_max_tokens(&model_id, Some(tokens), cx);
+            }
+        }
+    };
+
+    // Reasoning: the stored presets, then a stored default this build cannot
+    // resolve kept verbatim.
+    let stored_default = model
+        .reasoning
+        .as_ref()
+        .and_then(|reasoning| reasoning.default_preset.clone())
+        .unwrap_or_default();
+    let mut reasoning_options: Vec<(SharedString, SharedString)> = vec![(
+        SharedString::from(""),
+        text.models_reasoning_auto.clone().into(),
+    )];
+    if let Some(reasoning) = model.reasoning.as_ref() {
+        for preset in &reasoning.presets {
+            if preset.disabled || preset.actions.is_empty() {
+                continue;
+            }
+            let label = preset
+                .label
+                .clone()
+                .filter(|label| !label.trim().is_empty())
+                .unwrap_or_else(|| preset.id.clone());
+            reasoning_options.push((preset.id.clone().into(), label.into()));
+        }
+    }
+    if !stored_default.is_empty()
+        && !reasoning_options
+            .iter()
+            .any(|(value, _)| value.as_ref() == stored_default)
+    {
+        reasoning_options.push((stored_default.clone().into(), stored_default.clone().into()));
+    }
+    let reasoning_label = reasoning_options
+        .iter()
+        .find(|(value, _)| value.as_ref() == stored_default.as_str())
+        .map(|(_, label)| label.clone())
+        .unwrap_or_else(|| stored_default.clone().into());
+    let on_reasoning_select: Rc<dyn Fn(SharedString, &mut App)> = {
+        let model_id = model_id.clone();
+        Rc::new(move |value: SharedString, cx: &mut App| {
+            let preset = (!value.is_empty()).then_some(value.to_string());
+            set_ai_model_reasoning_default(&model_id, preset, cx);
+        })
+    };
+
+    let editor_card = SettingsCard::new("models-editor")
+        .title(format!(
+            "{} · {}",
+            text.models_edit_title,
+            model_display_label(&model)
+        ))
+        .extra(head_actions)
+        .row(
+            SettingsCardRow::new("models-editor-name", text.models_editor_name.clone()).control(
+                text_input_control(
+                    "models-editor-name",
+                    text.models_editor_name.clone(),
+                    SharedString::from(model.name.clone()),
+                    {
+                        let model_id = model_id.clone();
+                        move |value: SharedString, cx: &mut App| {
+                            set_ai_model_connection_text(&model_id, "name", &value, cx)
+                        }
+                    },
+                ),
+            ),
+        )
+        .row(
+            SettingsCardRow::new(
+                "models-editor-provider",
+                text.models_editor_provider.clone(),
+            )
+            .control(dropdown_control(
+                "models-editor-provider-menu",
+                provider_shown,
+                Rc::new(provider_options),
+                {
+                    let model_id = model_id.clone();
+                    Rc::new(move |value: SharedString, cx: &mut App| {
+                        set_ai_model_provider(&model_id, value.to_string(), cx);
+                    })
+                },
+                false,
+            )),
+        )
+        .row(
+            SettingsCardRow::new(
+                "models-editor-model-name",
+                text.models_editor_model_name.clone(),
+            )
+            .control(text_input_control(
+                "models-editor-model-name",
+                text.models_editor_model_name.clone(),
+                SharedString::from(model.model_name.clone()),
+                {
+                    let model_id = model_id.clone();
+                    move |value: SharedString, cx: &mut App| {
+                        set_ai_model_connection_text(&model_id, "model_name", &value, cx)
+                    }
+                },
+            )),
+        )
+        .row(
+            SettingsCardRow::new(
+                "models-editor-base-url",
+                text.models_editor_base_url.clone(),
+            )
+            .control(text_input_control(
+                "models-editor-base-url",
+                text.models_editor_base_url.clone(),
+                SharedString::from(model.base_url.clone()),
+                {
+                    let model_id = model_id.clone();
+                    move |value: SharedString, cx: &mut App| {
+                        set_ai_model_connection_text(&model_id, "base_url", &value, cx)
+                    }
+                },
+            )),
+        )
+        .row(
+            SettingsCardRow::new("models-editor-api-key", text.models_editor_api_key.clone())
+                .control(text_input_control(
+                    "models-editor-api-key",
+                    text.models_editor_api_key.clone(),
+                    SharedString::from(model.api_key.clone()),
+                    {
+                        let model_id = model_id.clone();
+                        move |value: SharedString, cx: &mut App| {
+                            set_ai_model_connection_text(&model_id, "api_key", &value, cx)
+                        }
+                    },
+                )),
+        )
+        .row(
+            SettingsCardRow::new("models-editor-enabled", text.models_editor_enabled.clone())
+                .control(switch_control(
+                    "models-editor-enabled-switch",
+                    model.enabled,
+                    {
+                        let model_id = model_id.clone();
+                        move |value, cx| crate::settings::set_ai_model_enabled(&model_id, value, cx)
+                    },
                     false,
                 )),
         )
         .row(
-            SettingsCardRow::new("models-configured", text.models_configured.clone())
-                .multiline()
-                .control(DeferredControl {
-                    construct: move |_window, cx| models_configured_list(cx),
-                }),
-        )];
-
-    // The inline editor: the card pair stands in for the web page's model
-    // editor while a row is opened from the list.
-    if let Some(model_id) = ModelEditorState::current(cx).model_id.clone() {
-        let Some(model) = ShellConfig::current(cx)
-            .ai_models
-            .iter()
-            .find(|model| model.id == model_id)
-            .cloned()
-        else {
-            return cards;
-        };
-        let editor_text = text.clone();
-        let close_button = Button::new("models-editor-close")
-            .label(text.models_edit_close.clone())
-            .small()
-            .with_variant(ButtonVariant::Ghost)
-            .on_click(|_, _window, cx| {
-                ModelEditorState::mutate(cx, |state| state.model_id = None);
-                cx.refresh_windows();
-            });
-
-        // Category: the web's four choices, plus a value written by a newer
-        // build kept verbatim so it is never silently remapped.
-        let stored_category = serde_json::to_value(&model.category)
-            .ok()
-            .and_then(|value| value.as_str().map(str::to_string))
-            .unwrap_or_else(|| "general_chat".to_string());
-        let mut category_options: Vec<(SharedString, SharedString)> = Vec::new();
-        for value in model_category_values(&stored_category) {
-            let (value, label) = if value == "__stored_unknown" {
-                (stored_category.clone(), stored_category.clone())
-            } else {
-                let label = match value {
-                    "general_chat" => text.models_category_general_chat.clone(),
-                    "multimodal" => text.models_category_multimodal.clone(),
-                    "image_generation" => text.models_category_image_generation.clone(),
-                    "speech_recognition" => text.models_category_speech_recognition.clone(),
-                    other => other.to_string(),
-                };
-                (value.to_string(), label)
-            };
-            category_options.push((value.into(), label.into()));
-        }
-        let category_current = ShellConfig::current(cx)
-            .ai_models
-            .iter()
-            .find(|model| model.id == model_id)
-            .map(|model| {
-                serde_json::to_value(&model.category)
-                    .ok()
-                    .and_then(|value| value.as_str().map(str::to_string))
-                    .unwrap_or_else(|| "general_chat".to_string())
-            })
-            .unwrap_or_else(|| "general_chat".to_string());
-        let category_label = category_options
-            .iter()
-            .find(|(value, _)| value.as_ref() == category_current)
-            .map(|(_, label)| label.clone())
-            .unwrap_or_else(|| category_current.clone().into());
-        let on_category_select: Rc<dyn Fn(SharedString, &mut App)> = {
-            let model_id = model_id.clone();
-            Rc::new(move |value: SharedString, cx| {
-                set_ai_model_category(&model_id, value.to_string(), cx);
-            })
-        };
-
-        let context_value = model
-            .context_window
-            .unwrap_or(MODEL_EDITOR_DEFAULT_CONTEXT_WINDOW) as f64;
-        let on_context_change = {
-            let model_id = model_id.clone();
-            move |value: f64, cx: &mut App| {
-                if value.is_finite() && value >= f64::from(MODEL_EDITOR_MIN_CONTEXT_WINDOW) {
-                    set_ai_model_context_window(&model_id, value.round() as u32, cx);
-                }
-            }
-        };
-
-        let max_tokens_value = model.max_tokens.unwrap_or(0) as f64;
-        let on_max_tokens_change = {
-            let model_id = model_id.clone();
-            move |value: f64, cx: &mut App| {
-                if !value.is_finite() {
-                    return;
-                }
-                let tokens = value.round().max(0.) as u32;
-                if tokens == 0 {
-                    set_ai_model_max_tokens(&model_id, None, cx);
-                    return;
-                }
-                // The shared contract caps an explicit output limit at 40% of
-                // the context window; an out-of-range value is ignored rather
-                // than persisted invalid.
-                let context = ShellConfig::current(cx)
-                    .ai_models
-                    .iter()
-                    .find(|model| model.id == model_id)
-                    .and_then(|model| model.context_window)
-                    .unwrap_or(MODEL_EDITOR_DEFAULT_CONTEXT_WINDOW);
-                if openbitfun_core::service::config::types::is_valid_configured_max_output_tokens(
-                    context, tokens,
-                ) {
-                    set_ai_model_max_tokens(&model_id, Some(tokens), cx);
-                }
-            }
-        };
-
-        // Reasoning: the stored presets, then a stored default this build
-        // cannot resolve kept verbatim.
-        let stored_default = model
-            .reasoning
-            .as_ref()
-            .and_then(|reasoning| reasoning.default_preset.clone())
-            .unwrap_or_default();
-        let mut reasoning_options: Vec<(SharedString, SharedString)> = vec![(
-            SharedString::from(""),
-            text.models_reasoning_auto.clone().into(),
-        )];
-        if let Some(reasoning) = model.reasoning.as_ref() {
-            for preset in &reasoning.presets {
-                if preset.disabled || preset.actions.is_empty() {
-                    continue;
-                }
-                let label = preset
-                    .label
-                    .clone()
-                    .filter(|label| !label.trim().is_empty())
-                    .unwrap_or_else(|| preset.id.clone());
-                reasoning_options.push((preset.id.clone().into(), label.into()));
-            }
-        }
-        if !stored_default.is_empty()
-            && !reasoning_options
-                .iter()
-                .any(|(value, _)| value.as_ref() == stored_default)
-        {
-            reasoning_options.push((stored_default.clone().into(), stored_default.clone().into()));
-        }
-        let reasoning_label = reasoning_options
-            .iter()
-            .find(|(value, _)| value.as_ref() == stored_default.as_str())
-            .map(|(_, label)| label.clone())
-            .unwrap_or_else(|| stored_default.clone().into());
-        let on_reasoning_select: Rc<dyn Fn(SharedString, &mut App)> = {
-            let model_id = model_id.clone();
-            Rc::new(move |value: SharedString, cx: &mut App| {
-                let preset = (!value.is_empty()).then_some(value.to_string());
-                set_ai_model_reasoning_default(&model_id, preset, cx);
-            })
-        };
-
-        let editor_card = SettingsCard::new("models-editor")
-            .title(format!("{} · {}", text.models_edit_title, model.name))
-            .extra(close_button)
-            .row(
-                SettingsCardRow::new("models-editor-category", text.models_category.clone())
-                    .control(dropdown_control(
-                        "models-editor-category-menu",
-                        category_label,
-                        Rc::new(category_options),
-                        on_category_select,
-                        false,
-                    )),
-            )
-            .row(
-                SettingsCardRow::new("models-editor-context", text.models_context_window.clone())
-                    .description(text.models_context_window_hint.clone())
-                    .control(number_input_control(
-                        "models-editor-context-input",
-                        text.models_context_window.clone(),
-                        context_value,
-                        NumberRange {
-                            min: f64::from(MODEL_EDITOR_MIN_CONTEXT_WINDOW),
-                            max: f64::MAX,
-                            step: 1_000.,
-                        },
-                        on_context_change,
-                        false,
-                    )),
-            )
-            .row(
-                SettingsCardRow::new("models-editor-max-tokens", text.models_max_tokens.clone())
-                    .description(text.models_max_tokens_hint.clone())
-                    .control(number_input_control(
-                        "models-editor-max-tokens-input",
-                        text.models_max_tokens.clone(),
-                        max_tokens_value,
-                        NumberRange {
-                            min: 0.,
-                            max: f64::MAX,
-                            step: 1_000.,
-                        },
-                        on_max_tokens_change,
-                        false,
-                    )),
-            )
-            .row(
-                SettingsCardRow::new(
-                    "models-editor-reasoning",
-                    text.models_reasoning_default.clone(),
-                )
-                .control(dropdown_control(
-                    "models-editor-reasoning-menu",
-                    reasoning_label,
-                    Rc::new(reasoning_options),
-                    on_reasoning_select,
+            SettingsCardRow::new("models-editor-category", text.models_category.clone()).control(
+                dropdown_control(
+                    "models-editor-category-menu",
+                    category_label,
+                    Rc::new(category_options),
+                    on_category_select,
                     false,
-                )),
-            )
-            .row(
-                SettingsCardRow::new(
-                    "models-editor-presets",
-                    text.models_reasoning_presets.clone(),
-                )
-                .multiline()
-                .control(DeferredControl {
-                    construct: {
-                        let presets = model
-                            .reasoning
-                            .as_ref()
-                            .map(|reasoning| reasoning.presets.clone())
-                            .unwrap_or_default();
-                        move |_window, cx| model_editor_presets_element(&presets, cx)
+                ),
+            ),
+        )
+        .row(
+            SettingsCardRow::new("models-editor-context", text.models_context_window.clone())
+                .description(text.models_context_window_hint.clone())
+                .control(number_input_control_with_width(
+                    "models-editor-context-input",
+                    text.models_context_window.clone(),
+                    context_value,
+                    NumberRange {
+                        min: f64::from(MODEL_EDITOR_MIN_CONTEXT_WINDOW),
+                        max: f64::MAX,
+                        step: 1_000.,
                     },
-                }),
-            );
-        cards.push(editor_card);
-
-        // Advanced: request shaping over the fixed provider format.
-        let stored_headers_mode = model
-            .custom_headers_mode
-            .clone()
-            .filter(|mode| !mode.is_empty())
-            .unwrap_or_else(|| "replace".to_string());
-        let stored_body_mode = model
-            .custom_request_body_mode
-            .clone()
-            .filter(|mode| !mode.is_empty())
-            .unwrap_or_else(|| "merge".to_string());
-        let headers_mode_options = verbatim_pair_options(
-            vec![
-                (
-                    SharedString::from("replace"),
-                    text.models_headers_replace.clone().into(),
-                ),
-                (
-                    SharedString::from("merge"),
-                    text.models_headers_merge.clone().into(),
-                ),
-            ],
-            &stored_headers_mode,
-        );
-        let headers_mode_label = headers_mode_options
-            .iter()
-            .find(|(value, _)| value.as_ref() == stored_headers_mode)
-            .map(|(_, label)| label.clone())
-            .unwrap_or_else(|| stored_headers_mode.clone().into());
-        let body_mode_options = verbatim_pair_options(
-            vec![
-                (
-                    SharedString::from("merge"),
-                    text.models_body_merge.clone().into(),
-                ),
-                (
-                    SharedString::from("trim"),
-                    text.models_body_trim.clone().into(),
-                ),
-            ],
-            &stored_body_mode,
-        );
-        let body_mode_label = body_mode_options
-            .iter()
-            .find(|(value, _)| value.as_ref() == stored_body_mode)
-            .map(|(_, label)| label.clone())
-            .unwrap_or_else(|| stored_body_mode.clone().into());
-        let headers_description = if stored_headers_mode == "merge" {
-            text.models_headers_merge_hint.clone()
-        } else {
-            text.models_headers_replace_hint.clone()
-        };
-        let body_description = if stored_body_mode == "trim" {
-            text.models_body_trim_hint.clone()
-        } else {
-            text.models_body_hint.clone()
-        };
-        let editor = ModelEditorState::current(cx);
-        let drafts_here =
-            editor.drafts_ready && editor.model_id.as_deref() == Some(model_id.as_str());
-        let headers_value = if drafts_here {
-            SharedString::from(editor.headers_text.clone())
-        } else {
-            SharedString::from(
-                serde_json::to_string(&model.custom_headers.clone().unwrap_or_default())
-                    .unwrap_or_else(|_| "{}".to_string()),
+                    on_context_change,
+                    false,
+                    224.,
+                )),
+        )
+        .row(
+            SettingsCardRow::new("models-editor-max-tokens", text.models_max_tokens.clone())
+                .description(text.models_max_tokens_hint.clone())
+                .control(number_input_control_with_width(
+                    "models-editor-max-tokens-input",
+                    text.models_max_tokens.clone(),
+                    max_tokens_value,
+                    NumberRange {
+                        min: 0.,
+                        max: f64::MAX,
+                        step: 1_000.,
+                    },
+                    on_max_tokens_change,
+                    false,
+                    224.,
+                )),
+        )
+        .row(
+            SettingsCardRow::new(
+                "models-editor-reasoning",
+                text.models_reasoning_default.clone(),
             )
-        };
-        let body_value = if drafts_here {
-            SharedString::from(editor.body_text.clone())
-        } else {
-            SharedString::from(model.custom_request_body.clone().unwrap_or_default())
-        };
-        let invalid = drafts_here
-            && (!headers_json_valid(&editor.headers_text) || !body_json_valid(&editor.body_text));
-
-        let mut advanced = SettingsCard::new("models-advanced")
-            .title(text.models_advanced.clone())
-            .description(text.models_advanced_note.clone())
-            .row(
-                SettingsCardRow::new("models-advanced-format", text.models_request_format.clone())
-                    .description(model.provider.clone()),
+            .control(dropdown_control(
+                "models-editor-reasoning-menu",
+                reasoning_label,
+                Rc::new(reasoning_options),
+                on_reasoning_select,
+                false,
+            )),
+        )
+        .row(
+            SettingsCardRow::new(
+                "models-editor-presets",
+                text.models_reasoning_presets.clone(),
             )
-            .row(
-                SettingsCardRow::new(
-                    "models-advanced-inline-think",
-                    text.models_inline_think.clone(),
-                )
-                .description(text.models_inline_think_hint.clone())
+            .multiline()
+            .control(DeferredControl {
+                construct: {
+                    let presets = model
+                        .reasoning
+                        .as_ref()
+                        .map(|reasoning| reasoning.presets.clone())
+                        .unwrap_or_default();
+                    move |_window, cx| model_editor_presets_element(&presets, cx)
+                },
+            }),
+        );
+
+    // Advanced: request shaping over the fixed provider format.
+    let stored_headers_mode = model
+        .custom_headers_mode
+        .clone()
+        .filter(|mode| !mode.is_empty())
+        .unwrap_or_else(|| "replace".to_string());
+    let stored_body_mode = model
+        .custom_request_body_mode
+        .clone()
+        .filter(|mode| !mode.is_empty())
+        .unwrap_or_else(|| "merge".to_string());
+    let headers_mode_options = verbatim_pair_options(
+        vec![
+            (
+                SharedString::from("replace"),
+                text.models_headers_replace.clone().into(),
+            ),
+            (
+                SharedString::from("merge"),
+                text.models_headers_merge.clone().into(),
+            ),
+        ],
+        &stored_headers_mode,
+    );
+    let headers_mode_label = headers_mode_options
+        .iter()
+        .find(|(value, _)| value.as_ref() == stored_headers_mode)
+        .map(|(_, label)| label.clone())
+        .unwrap_or_else(|| stored_headers_mode.clone().into());
+    let body_mode_options = verbatim_pair_options(
+        vec![
+            (
+                SharedString::from("merge"),
+                text.models_body_merge.clone().into(),
+            ),
+            (
+                SharedString::from("trim"),
+                text.models_body_trim.clone().into(),
+            ),
+        ],
+        &stored_body_mode,
+    );
+    let body_mode_label = body_mode_options
+        .iter()
+        .find(|(value, _)| value.as_ref() == stored_body_mode)
+        .map(|(_, label)| label.clone())
+        .unwrap_or_else(|| stored_body_mode.clone().into());
+    let headers_description = if stored_headers_mode == "merge" {
+        text.models_headers_merge_hint.clone()
+    } else {
+        text.models_headers_replace_hint.clone()
+    };
+    let body_description = if stored_body_mode == "trim" {
+        text.models_body_trim_hint.clone()
+    } else {
+        text.models_body_hint.clone()
+    };
+    let editor = ModelEditorState::current(cx);
+    let drafts_here = editor.drafts_ready && editor.model_id.as_deref() == Some(model_id.as_str());
+    let headers_value = if drafts_here {
+        SharedString::from(editor.headers_text.clone())
+    } else {
+        SharedString::from(
+            serde_json::to_string(&model.custom_headers.clone().unwrap_or_default())
+                .unwrap_or_else(|_| "{}".to_string()),
+        )
+    };
+    let body_value = if drafts_here {
+        SharedString::from(editor.body_text.clone())
+    } else {
+        SharedString::from(model.custom_request_body.clone().unwrap_or_default())
+    };
+    let invalid = drafts_here
+        && (!headers_json_valid(&editor.headers_text) || !body_json_valid(&editor.body_text));
+
+    let mut advanced = SettingsCard::new("models-advanced")
+        .title(text.models_advanced.clone())
+        .description(text.models_advanced_note.clone())
+        .row(
+            SettingsCardRow::new(
+                "models-advanced-inline-think",
+                text.models_inline_think.clone(),
+            )
+            .description(text.models_inline_think_hint.clone())
+            .control(switch_control(
+                "models-advanced-inline-think-switch",
+                model.inline_think_in_text,
+                {
+                    let model_id = model_id.clone();
+                    move |value, cx| set_ai_model_inline_think(&model_id, value, cx)
+                },
+                false,
+            )),
+        )
+        .row(
+            SettingsCardRow::new("models-advanced-skip-ssl", text.models_skip_ssl.clone())
+                .description(text.models_skip_ssl_warning.clone())
                 .control(switch_control(
-                    "models-advanced-inline-think-switch",
-                    model.inline_think_in_text,
+                    "models-advanced-skip-ssl-switch",
+                    model.skip_ssl_verify,
                     {
                         let model_id = model_id.clone();
-                        move |value, cx| set_ai_model_inline_think(&model_id, value, cx)
+                        move |value, cx| set_ai_model_skip_ssl(&model_id, value, cx)
                     },
                     false,
                 )),
+        )
+        .row(
+            SettingsCardRow::new("models-advanced-headers", text.models_headers.clone())
+                .description(format!(
+                    "{} {}",
+                    text.models_headers_hint, headers_description
+                ))
+                .multiline()
+                .control(text_input_control(
+                    "models-advanced-headers-input",
+                    text.models_headers.clone(),
+                    headers_value,
+                    {
+                        let model_id = model_id.clone();
+                        move |value, cx| set_ai_model_headers_text(&model_id, value.to_string(), cx)
+                    },
+                )),
+        )
+        .row(
+            SettingsCardRow::new(
+                "models-advanced-headers-mode",
+                text.models_headers_mode.clone(),
             )
-            .row(
-                SettingsCardRow::new("models-advanced-skip-ssl", text.models_skip_ssl.clone())
-                    .description(text.models_skip_ssl_warning.clone())
-                    .control(switch_control(
-                        "models-advanced-skip-ssl-switch",
-                        model.skip_ssl_verify,
-                        {
-                            let model_id = model_id.clone();
-                            move |value, cx| set_ai_model_skip_ssl(&model_id, value, cx)
-                        },
-                        false,
-                    )),
-            )
-            .row(
-                SettingsCardRow::new("models-advanced-headers", text.models_headers.clone())
-                    .description(format!(
-                        "{} {}",
-                        text.models_headers_hint, headers_description
-                    ))
-                    .multiline()
-                    .control(text_input_control(
-                        "models-advanced-headers-input",
-                        text.models_headers.clone(),
-                        headers_value,
-                        {
-                            let model_id = model_id.clone();
-                            move |value, cx| {
-                                set_ai_model_headers_text(&model_id, value.to_string(), cx)
-                            }
-                        },
-                    )),
-            )
-            .row(
-                SettingsCardRow::new(
-                    "models-advanced-headers-mode",
-                    text.models_headers_mode.clone(),
-                )
+            .control(dropdown_control(
+                "models-advanced-headers-mode-menu",
+                headers_mode_label,
+                Rc::new(headers_mode_options),
+                {
+                    let model_id = model_id.clone();
+                    Rc::new(move |value: SharedString, cx: &mut App| {
+                        set_ai_model_header_mode(&model_id, value.to_string(), cx);
+                    })
+                },
+                false,
+            )),
+        )
+        .row(
+            SettingsCardRow::new("models-advanced-body", text.models_body.clone())
+                .description(body_description)
+                .multiline()
+                .control(text_input_control(
+                    "models-advanced-body-input",
+                    text.models_body.clone(),
+                    body_value,
+                    {
+                        let model_id = model_id.clone();
+                        move |value, cx| set_ai_model_body_text(&model_id, value.to_string(), cx)
+                    },
+                )),
+        )
+        .row(
+            SettingsCardRow::new("models-advanced-body-mode", text.models_body_mode.clone())
                 .control(dropdown_control(
-                    "models-advanced-headers-mode-menu",
-                    headers_mode_label,
-                    Rc::new(headers_mode_options),
+                    "models-advanced-body-mode-menu",
+                    body_mode_label,
+                    Rc::new(body_mode_options),
                     {
                         let model_id = model_id.clone();
                         Rc::new(move |value: SharedString, cx: &mut App| {
-                            set_ai_model_header_mode(&model_id, value.to_string(), cx);
+                            set_ai_model_body_mode(&model_id, value.to_string(), cx);
                         })
                     },
                     false,
                 )),
+        );
+    // Invalid JSON stays in the draft (the stored row is untouched); say so
+    // instead of silently showing a field that is not saving.
+    if invalid {
+        advanced = advanced.row(
+            SettingsCardRow::new(
+                "models-advanced-json-invalid",
+                text.models_json_invalid.clone(),
             )
-            .row(
-                SettingsCardRow::new("models-advanced-body", text.models_body.clone())
-                    .description(body_description)
-                    .multiline()
-                    .control(text_input_control(
-                        "models-advanced-body-input",
-                        text.models_body.clone(),
-                        body_value,
-                        {
-                            let model_id = model_id.clone();
-                            move |value, cx| {
-                                set_ai_model_body_text(&model_id, value.to_string(), cx)
-                            }
-                        },
-                    )),
-            )
-            .row(
-                SettingsCardRow::new("models-advanced-body-mode", text.models_body_mode.clone())
-                    .control(dropdown_control(
-                        "models-advanced-body-mode-menu",
-                        body_mode_label,
-                        Rc::new(body_mode_options),
-                        {
-                            let model_id = model_id.clone();
-                            Rc::new(move |value: SharedString, cx: &mut App| {
-                                set_ai_model_body_mode(&model_id, value.to_string(), cx);
-                            })
-                        },
-                        false,
-                    )),
-            );
-        // Invalid JSON stays in the draft (the stored row is untouched); say
-        // so instead of silently showing a field that is not saving.
-        if invalid {
-            advanced = advanced.row(
-                SettingsCardRow::new(
-                    "models-advanced-json-invalid",
-                    editor_text.models_json_invalid.clone(),
-                )
-                .danger(true),
-            );
-        }
-        cards.push(advanced);
+            .danger(true),
+        );
     }
+    vec![editor_card, advanced]
+}
 
-    // G-SE10: the streaming-timeout pair; zero means "no timeout".
+/// The 更多设置 disclosure (web `sections.more`): a head-only card whose
+/// toggle reveals the two advanced sections below it.
+fn models_more_card(text: &ShellText, state: &ModelsPageState) -> SettingsCard {
+    let open = state.more_open;
+    SettingsCard::new("models-more")
+        .title(text.models_more.clone())
+        .extra(
+            Button::new("models-more-toggle")
+                .label(if open {
+                    text.models_more_collapse.clone()
+                } else {
+                    text.models_more_expand.clone()
+                })
+                .small()
+                .with_variant(ButtonVariant::Ghost)
+                .on_click(|_, _, cx| {
+                    ModelsPageState::mutate(cx, |state| state.more_open = !state.more_open);
+                    cx.refresh_windows();
+                }),
+        )
+}
+
+/// G-SE10: the streaming-timeout pair; zero means "no timeout".
+fn models_stream_card(text: &ShellText, cx: &App) -> SettingsCard {
     let ttft_value = ShellConfig::current(cx)
         .stream_ttft_timeout_secs
         .unwrap_or(0) as f64;
     let idle_value = ShellConfig::current(cx)
         .stream_idle_timeout_secs
         .unwrap_or(0) as f64;
-    cards.push(
-        SettingsCard::new("models-stream")
-            .title(text.settings_stream_section.clone())
-            .description(text.settings_stream_section_note.clone())
-            .row(
-                SettingsCardRow::new("models-stream-ttft", text.settings_stream_ttft.clone())
-                    .description(text.settings_stream_ttft_description.clone())
-                    .control(number_input_control(
-                        "models-stream-ttft-input",
-                        text.settings_stream_ttft.clone(),
-                        ttft_value,
-                        NumberRange {
-                            min: 0.,
-                            max: MAX_STREAM_TIMEOUT_SECS,
-                            step: 30.,
-                        },
-                        |value, cx| {
-                            set_stream_timeout_value(
-                                STREAM_TTFT_TIMEOUT_PATH,
-                                |config, value| config.stream_ttft_timeout_secs = value,
-                                value,
-                                cx,
-                            );
-                        },
-                        false,
-                    )),
-            )
-            .row(
-                SettingsCardRow::new("models-stream-idle", text.settings_stream_idle.clone())
-                    .description(text.settings_stream_idle_description.clone())
-                    .control(number_input_control(
-                        "models-stream-idle-input",
-                        text.settings_stream_idle.clone(),
-                        idle_value,
-                        NumberRange {
-                            min: 0.,
-                            max: MAX_STREAM_TIMEOUT_SECS,
-                            step: 30.,
-                        },
-                        |value, cx| {
-                            set_stream_timeout_value(
-                                STREAM_IDLE_TIMEOUT_PATH,
-                                |config, value| config.stream_idle_timeout_secs = value,
-                                value,
-                                cx,
-                            );
-                        },
-                        false,
-                    )),
-            ),
-    );
+    SettingsCard::new("models-stream")
+        .title(text.settings_stream_section.clone())
+        .description(text.settings_stream_section_note.clone())
+        .row(
+            SettingsCardRow::new("models-stream-ttft", text.settings_stream_ttft.clone())
+                .description(text.settings_stream_ttft_description.clone())
+                .control(number_input_control(
+                    "models-stream-ttft-input",
+                    text.settings_stream_ttft.clone(),
+                    ttft_value,
+                    NumberRange {
+                        min: 0.,
+                        max: MAX_STREAM_TIMEOUT_SECS,
+                        step: 30.,
+                    },
+                    |value, cx| {
+                        set_stream_timeout_value(
+                            STREAM_TTFT_TIMEOUT_PATH,
+                            |config, value| config.stream_ttft_timeout_secs = value,
+                            value,
+                            cx,
+                        );
+                    },
+                    false,
+                )),
+        )
+        .row(
+            SettingsCardRow::new("models-stream-idle", text.settings_stream_idle.clone())
+                .description(text.settings_stream_idle_description.clone())
+                .control(number_input_control(
+                    "models-stream-idle-input",
+                    text.settings_stream_idle.clone(),
+                    idle_value,
+                    NumberRange {
+                        min: 0.,
+                        max: MAX_STREAM_TIMEOUT_SECS,
+                        step: 30.,
+                    },
+                    |value, cx| {
+                        set_stream_timeout_value(
+                            STREAM_IDLE_TIMEOUT_PATH,
+                            |config, value| config.stream_idle_timeout_secs = value,
+                            value,
+                            cx,
+                        );
+                    },
+                    false,
+                )),
+        )
+}
 
-    // G-SE11: the proxy document; the three credential rows turn off with the
-    // switch.
+/// G-SE11: the proxy document; the three credential rows turn off with the
+/// switch.
+fn models_proxy_card(text: &ShellText, cx: &App) -> SettingsCard {
     let proxy = ShellConfig::current(cx).proxy;
     let proxy_on = proxy_enabled(&proxy);
     let proxy_url = SharedString::from(proxy_text(&proxy, "url"));
     let proxy_username = SharedString::from(proxy_text(&proxy, "username"));
     let proxy_password = SharedString::from(proxy_text(&proxy, "password"));
-    cards.push(
-        SettingsCard::new("models-proxy")
-            .title(text.settings_proxy_section.clone())
-            .description(text.settings_proxy_section_note.clone())
-            .row(
-                SettingsCardRow::new("models-proxy-enable", text.settings_proxy_enable.clone())
-                    .description(text.settings_proxy_enable_description.clone())
-                    .control(switch_control(
-                        "models-proxy-enable-switch",
-                        proxy_on,
-                        |value, cx| set_proxy_key("enabled", serde_json::json!(value), cx),
-                        false,
-                    )),
-            )
-            .row(
-                SettingsCardRow::new("models-proxy-url", text.settings_proxy_url.clone())
-                    .description(text.settings_proxy_url_description.clone())
-                    .disabled(!proxy_on)
-                    .control(text_input_control(
-                        "models-proxy-url-input",
-                        text.settings_proxy_url.clone(),
-                        proxy_url,
-                        |value, cx| set_proxy_key("url", serde_json::json!(value.to_string()), cx),
-                    )),
-            )
-            .row(
-                SettingsCardRow::new(
-                    "models-proxy-username",
-                    text.settings_proxy_username.clone(),
-                )
+    SettingsCard::new("models-proxy")
+        .title(text.settings_proxy_section.clone())
+        .description(text.settings_proxy_section_note.clone())
+        .row(
+            SettingsCardRow::new("models-proxy-enable", text.settings_proxy_enable.clone())
+                .description(text.settings_proxy_enable_description.clone())
+                .control(switch_control(
+                    "models-proxy-enable-switch",
+                    proxy_on,
+                    |value, cx| set_proxy_key("enabled", serde_json::json!(value), cx),
+                    false,
+                )),
+        )
+        .row(
+            SettingsCardRow::new("models-proxy-url", text.settings_proxy_url.clone())
+                .description(text.settings_proxy_url_description.clone())
                 .disabled(!proxy_on)
                 .control(text_input_control(
-                    "models-proxy-username-input",
-                    text.settings_proxy_username.clone(),
-                    proxy_username,
-                    |value, cx| {
-                        set_proxy_key("username", serde_json::json!(value.to_string()), cx);
-                    },
+                    "models-proxy-url-input",
+                    text.settings_proxy_url.clone(),
+                    proxy_url,
+                    |value, cx| set_proxy_key("url", serde_json::json!(value.to_string()), cx),
                 )),
+        )
+        .row(
+            SettingsCardRow::new(
+                "models-proxy-username",
+                text.settings_proxy_username.clone(),
             )
-            .row(
-                SettingsCardRow::new(
-                    "models-proxy-password",
-                    text.settings_proxy_password.clone(),
-                )
-                .description(text.settings_proxy_password_description.clone())
-                .disabled(!proxy_on)
-                .control(text_input_control(
-                    "models-proxy-password-input",
-                    text.settings_proxy_password.clone(),
-                    proxy_password,
-                    |value, cx| {
-                        set_proxy_key("password", serde_json::json!(value.to_string()), cx);
-                    },
-                )),
-            ),
-    );
-    cards
+            .disabled(!proxy_on)
+            .control(text_input_control(
+                "models-proxy-username-input",
+                text.settings_proxy_username.clone(),
+                proxy_username,
+                |value, cx| {
+                    set_proxy_key("username", serde_json::json!(value.to_string()), cx);
+                },
+            )),
+        )
+        .row(
+            SettingsCardRow::new(
+                "models-proxy-password",
+                text.settings_proxy_password.clone(),
+            )
+            .description(text.settings_proxy_password_description.clone())
+            .disabled(!proxy_on)
+            .control(text_input_control(
+                "models-proxy-password-input",
+                text.settings_proxy_password.clone(),
+                proxy_password,
+                |value, cx| {
+                    set_proxy_key("password", serde_json::json!(value.to_string()), cx);
+                },
+            )),
+        )
 }
 
 /// A two-value option list plus a stored value outside it, kept verbatim so

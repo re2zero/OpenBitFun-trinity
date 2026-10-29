@@ -247,12 +247,8 @@ pub(crate) struct ShellText {
     pub permission_full_access: String,
     pub permission_full_access_desc: String,
     pub models_title: String,
-    pub models_default: String,
-    pub models_default_description: String,
-    pub models_configured: String,
     pub models_loading: String,
     pub models_empty: String,
-    pub models_enabled: String,
     pub models_disabled: String,
     /// G-SE12: the per-model connection probe labels and its result receipt.
     pub models_test: String,
@@ -277,7 +273,6 @@ pub(crate) struct ShellText {
     /// G-SE12-3: request shaping in the model editor's advanced block.
     pub models_advanced: String,
     pub models_advanced_note: String,
-    pub models_request_format: String,
     pub models_inline_think: String,
     pub models_inline_think_hint: String,
     pub models_skip_ssl: String,
@@ -296,6 +291,59 @@ pub(crate) struct ShellText {
     pub models_body_trim: String,
     pub models_body_trim_hint: String,
     pub models_json_invalid: String,
+    /// E3-B3: the acquisition, selection-mode, all-models, more-settings, and
+    /// new-model copy the web page uses (`settings/models.json`).
+    pub models_acquisition_title: String,
+    pub models_acquisition_api: String,
+    pub models_acquisition_none: String,
+    pub models_acquisition_subscriptions: String,
+    pub models_subscriptions_unavailable: String,
+    pub models_add: String,
+    pub models_delete_provider: String,
+    pub models_selection_modes_title: String,
+    pub models_mode_smart: String,
+    pub models_mode_smart_hint: String,
+    pub models_mode_unavailable: String,
+    pub models_pool_title: String,
+    pub models_default_primary: String,
+    pub models_default_primary_desc: String,
+    pub models_default_fast: String,
+    pub models_default_fast_desc: String,
+    pub models_default_image: String,
+    pub models_default_image_desc: String,
+    pub models_default_speech: String,
+    pub models_default_speech_desc: String,
+    pub models_default_not_set: String,
+    pub models_search: String,
+    pub models_filter_all_capabilities: String,
+    pub models_filter_all_providers: String,
+    pub models_capability_text: String,
+    pub models_capability_image: String,
+    pub models_capability_speech: String,
+    pub models_capability_tools: String,
+    pub models_no_matches: String,
+    pub models_clear_filter: String,
+    pub models_delete: String,
+    pub models_delete_confirm: String,
+    pub models_delete_message: String,
+    pub models_more: String,
+    pub models_more_expand: String,
+    pub models_more_collapse: String,
+    pub models_editor_name: String,
+    pub models_editor_provider: String,
+    pub models_editor_model_name: String,
+    pub models_editor_base_url: String,
+    pub models_editor_api_key: String,
+    pub models_editor_enabled: String,
+    pub models_editor_delete: String,
+    pub models_create_title: String,
+    pub models_create_save: String,
+    pub models_create_cancel: String,
+    pub models_create_error_name: String,
+    pub models_create_error_model: String,
+    pub models_create_error_url: String,
+    pub models_create_error_key: String,
+    pub models_create_error_context: String,
     pub chat_empty: String,
     pub chat_empty_title: String,
     /// Tabless landing face (R2b): the brand line and the pinned slogan. Web
@@ -1637,6 +1685,45 @@ pub(crate) fn model_test_error_label(cx: &App) -> String {
     resolve_with("gpui-shell-models-test-error", TranslationArgs::new(), cx)
 }
 
+/// E3-B3: the acquisition row's configured-services summary (web
+/// `acquisition.configuredSummary`).
+pub(crate) fn models_acquisition_summary(providers: usize, models: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-models-acquisition-summary",
+        TranslationArgs::new()
+            .with_string("providers", providers.to_string())
+            .with_string("models", models.to_string()),
+        cx,
+    )
+}
+
+/// E3-B3: the provider-delete confirmation title (the web's danger dialog).
+pub(crate) fn models_delete_provider_title(provider: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-models-delete-provider-title",
+        TranslationArgs::new().with_string("provider", provider),
+        cx,
+    )
+}
+
+/// E3-B3: how many model rows the provider delete removes.
+pub(crate) fn models_delete_provider_message(count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-models-delete-provider-message",
+        TranslationArgs::new().with_string("count", count.to_string()),
+        cx,
+    )
+}
+
+/// E3-B3: the model-delete confirmation title.
+pub(crate) fn models_delete_model_title(model: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-models-delete-model-title",
+        TranslationArgs::new().with_string("model", model),
+        cx,
+    )
+}
+
 /// G-SE12: the localized hint for the runtime's diagnosis code (web
 /// `translateConnectionTestMessage`).
 pub(crate) fn model_test_message_code(
@@ -2427,14 +2514,9 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         permission_full_access_desc: "Tools are allowed by default without confirmation."
             .to_string(),
         models_title: "Models".to_string(),
-        models_default: "Default model".to_string(),
-        models_default_description:
-            "Model new sessions start on; existing sessions keep their own selection.".to_string(),
-        models_configured: "Configured models".to_string(),
         models_loading: "Loading model catalog…".to_string(),
-        models_empty: "No models configured. Add models in the desktop app to pick one here."
-            .to_string(),
-        models_enabled: "enabled".to_string(),
+        models_empty:
+            "Add API models or import a subscription to build your model pool.".to_string(),
         models_disabled: "disabled".to_string(),
         models_test: "Test Connection".to_string(),
         models_testing: "Testing…".to_string(),
@@ -2461,7 +2543,6 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         models_advanced_note:
             "Adapt requests and responses to service-specific requirements; keep the defaults if unsure."
                 .to_string(),
-        models_request_format: "Request format".to_string(),
         models_inline_think: "Parse <think> Tags In Text".to_string(),
         models_inline_think_hint:
             "Display content inside <think>...</think> tags as reasoning.".to_string(),
@@ -2491,6 +2572,66 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
                 .to_string(),
         models_json_invalid: "Invalid JSON; the shared configuration was not changed."
             .to_string(),
+        models_acquisition_title: "Add or import models".to_string(),
+        models_acquisition_api: "API models".to_string(),
+        models_acquisition_none: "No API services configured yet".to_string(),
+        models_acquisition_subscriptions: "Subscriptions".to_string(),
+        models_subscriptions_unavailable:
+            "Subscription sign-in and quotas are not available in this surface yet; subscription models imported elsewhere keep working in the list below."
+                .to_string(),
+        models_add: "Add model".to_string(),
+        models_delete_provider: "Delete service".to_string(),
+        models_selection_modes_title: "Model selection modes".to_string(),
+        models_mode_smart: "Smart mode".to_string(),
+        models_mode_smart_hint:
+            "Powered by OpenBitFun adaptive routing and collaborative multi-model reasoning to improve cost efficiency and task performance."
+                .to_string(),
+        models_mode_unavailable: "Not available yet".to_string(),
+        models_pool_title: "All models".to_string(),
+        models_default_primary: "Primary model".to_string(),
+        models_default_primary_desc:
+            "Complex tasks and default conversations use this model.".to_string(),
+        models_default_fast: "Fast model".to_string(),
+        models_default_fast_desc:
+            "Used for lightweight tasks; falls back to the primary model when unset.".to_string(),
+        models_default_image: "Image understanding model".to_string(),
+        models_default_image_desc: "Reads images attached to a conversation.".to_string(),
+        models_default_speech: "Speech recognition model".to_string(),
+        models_default_speech_desc: "Transcribes audio into text.".to_string(),
+        models_default_not_set: "Not set".to_string(),
+        models_search: "Search models, sources, or tags".to_string(),
+        models_filter_all_capabilities: "All capabilities".to_string(),
+        models_filter_all_providers: "All services".to_string(),
+        models_capability_text: "Text chat".to_string(),
+        models_capability_image: "Image understanding".to_string(),
+        models_capability_speech: "Speech recognition".to_string(),
+        models_capability_tools: "Function calling".to_string(),
+        models_no_matches: "No models match these filters".to_string(),
+        models_clear_filter: "Clear filters".to_string(),
+        models_delete: "Delete".to_string(),
+        models_delete_confirm: "Delete model".to_string(),
+        models_delete_message:
+            "Sessions using this model will need to pick another one.".to_string(),
+        models_more: "More settings".to_string(),
+        models_more_expand: "Expand".to_string(),
+        models_more_collapse: "Collapse".to_string(),
+        models_editor_name: "Config name".to_string(),
+        models_editor_provider: "Request format".to_string(),
+        models_editor_model_name: "Model name".to_string(),
+        models_editor_base_url: "API address".to_string(),
+        models_editor_api_key: "API key".to_string(),
+        models_editor_enabled: "Enabled".to_string(),
+        models_editor_delete: "Delete model".to_string(),
+        models_create_title: "Add model".to_string(),
+        models_create_save: "Save".to_string(),
+        models_create_cancel: "Cancel".to_string(),
+        models_create_error_name: "Enter a config name.".to_string(),
+        models_create_error_model: "Enter a model name.".to_string(),
+        models_create_error_url:
+            "Enter an API address starting with http:// or https://.".to_string(),
+        models_create_error_key: "Enter an API key.".to_string(),
+        models_create_error_context:
+            "The context window must be at least 32,000 tokens.".to_string(),
         chat_empty: "Pick a session on the left, or create a new one.".to_string(),
         chat_empty_title: "Start a conversation".to_string(),
         welcome_title: "OpenBitFun,".to_string(),
@@ -3768,12 +3909,8 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         permission_full_access: service.t("gpui-shell-permission-full-access").await,
         permission_full_access_desc: service.t("gpui-shell-permission-full-access-desc").await,
         models_title: service.t("gpui-shell-models-title").await,
-        models_default: service.t("gpui-shell-models-default").await,
-        models_default_description: service.t("gpui-shell-models-default-desc").await,
-        models_configured: service.t("gpui-shell-models-configured").await,
         models_loading: service.t("gpui-shell-models-loading").await,
         models_empty: service.t("gpui-shell-models-empty").await,
-        models_enabled: service.t("gpui-shell-models-enabled").await,
         models_disabled: service.t("gpui-shell-models-disabled").await,
         models_test: service.t("gpui-shell-models-test").await,
         models_testing: service.t("gpui-shell-models-testing").await,
@@ -3799,7 +3936,6 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         models_reasoning_empty: service.t("gpui-shell-models-reasoning-empty").await,
         models_advanced: service.t("gpui-shell-models-advanced").await,
         models_advanced_note: service.t("gpui-shell-models-advanced-note").await,
-        models_request_format: service.t("gpui-shell-models-request-format").await,
         models_inline_think: service.t("gpui-shell-models-inline-think").await,
         models_inline_think_hint: service.t("gpui-shell-models-inline-think-hint").await,
         models_skip_ssl: service.t("gpui-shell-models-skip-ssl").await,
@@ -3818,6 +3954,63 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         models_body_trim: service.t("gpui-shell-models-body-trim").await,
         models_body_trim_hint: service.t("gpui-shell-models-body-trim-hint").await,
         models_json_invalid: service.t("gpui-shell-models-json-invalid").await,
+        models_acquisition_title: service.t("gpui-shell-models-acquisition-title").await,
+        models_acquisition_api: service.t("gpui-shell-models-acquisition-api").await,
+        models_acquisition_none: service.t("gpui-shell-models-acquisition-none").await,
+        models_acquisition_subscriptions: service
+            .t("gpui-shell-models-acquisition-subscriptions")
+            .await,
+        models_subscriptions_unavailable: service
+            .t("gpui-shell-models-subscriptions-unavailable")
+            .await,
+        models_add: service.t("gpui-shell-models-add").await,
+        models_delete_provider: service.t("gpui-shell-models-delete-provider").await,
+        models_selection_modes_title: service.t("gpui-shell-models-selection-modes-title").await,
+        models_mode_smart: service.t("gpui-shell-models-mode-smart").await,
+        models_mode_smart_hint: service.t("gpui-shell-models-mode-smart-hint").await,
+        models_mode_unavailable: service.t("gpui-shell-models-mode-unavailable").await,
+        models_pool_title: service.t("gpui-shell-models-pool-title").await,
+        models_default_primary: service.t("gpui-shell-models-default-primary").await,
+        models_default_primary_desc: service.t("gpui-shell-models-default-primary-desc").await,
+        models_default_fast: service.t("gpui-shell-models-default-fast").await,
+        models_default_fast_desc: service.t("gpui-shell-models-default-fast-desc").await,
+        models_default_image: service.t("gpui-shell-models-default-image").await,
+        models_default_image_desc: service.t("gpui-shell-models-default-image-desc").await,
+        models_default_speech: service.t("gpui-shell-models-default-speech").await,
+        models_default_speech_desc: service.t("gpui-shell-models-default-speech-desc").await,
+        models_default_not_set: service.t("gpui-shell-models-default-not-set").await,
+        models_search: service.t("gpui-shell-models-search").await,
+        models_filter_all_capabilities: service
+            .t("gpui-shell-models-filter-all-capabilities")
+            .await,
+        models_filter_all_providers: service.t("gpui-shell-models-filter-all-providers").await,
+        models_capability_text: service.t("gpui-shell-models-capability-text").await,
+        models_capability_image: service.t("gpui-shell-models-capability-image").await,
+        models_capability_speech: service.t("gpui-shell-models-capability-speech").await,
+        models_capability_tools: service.t("gpui-shell-models-capability-tools").await,
+        models_no_matches: service.t("gpui-shell-models-no-matches").await,
+        models_clear_filter: service.t("gpui-shell-models-clear-filter").await,
+        models_delete: service.t("gpui-shell-models-delete").await,
+        models_delete_confirm: service.t("gpui-shell-models-delete-confirm").await,
+        models_delete_message: service.t("gpui-shell-models-delete-message").await,
+        models_more: service.t("gpui-shell-models-more").await,
+        models_more_expand: service.t("gpui-shell-models-more-expand").await,
+        models_more_collapse: service.t("gpui-shell-models-more-collapse").await,
+        models_editor_name: service.t("gpui-shell-models-editor-name").await,
+        models_editor_provider: service.t("gpui-shell-models-editor-provider").await,
+        models_editor_model_name: service.t("gpui-shell-models-editor-model-name").await,
+        models_editor_base_url: service.t("gpui-shell-models-editor-base-url").await,
+        models_editor_api_key: service.t("gpui-shell-models-editor-api-key").await,
+        models_editor_enabled: service.t("gpui-shell-models-editor-enabled").await,
+        models_editor_delete: service.t("gpui-shell-models-editor-delete").await,
+        models_create_title: service.t("gpui-shell-models-create-title").await,
+        models_create_save: service.t("gpui-shell-models-create-save").await,
+        models_create_cancel: service.t("gpui-shell-models-create-cancel").await,
+        models_create_error_name: service.t("gpui-shell-models-create-error-name").await,
+        models_create_error_model: service.t("gpui-shell-models-create-error-model").await,
+        models_create_error_url: service.t("gpui-shell-models-create-error-url").await,
+        models_create_error_key: service.t("gpui-shell-models-create-error-key").await,
+        models_create_error_context: service.t("gpui-shell-models-create-error-context").await,
         chat_empty: service.t("gpui-shell-chat-empty").await,
         chat_empty_title: service.t("gpui-shell-chat-empty-title").await,
         welcome_title: service.t("gpui-shell-welcome-title").await,

@@ -47,6 +47,26 @@ pub(crate) const TERMINAL_PROFILES_PATH: &str = "terminal.profiles";
 /// Default model new sessions start on (same path the desktop models page
 /// writes).
 pub(crate) const DEFAULT_MODEL_PATH: &str = "ai.default_models.primary";
+/// E3-B3: the other default-model slots the web page renders (lightweight
+/// tasks, image understanding, speech recognition). The whole document is
+/// shared, so each slot is merged back key by key.
+pub(crate) const DEFAULT_MODELS_PATH: &str = "ai.default_models";
+pub(crate) const DEFAULT_MODEL_FAST_SLOT: &str = "fast";
+pub(crate) const DEFAULT_MODEL_IMAGE_SLOT: &str = "image_understanding";
+pub(crate) const DEFAULT_MODEL_SPEECH_SLOT: &str = "speech_recognition";
+/// E3-B3: the provider formats the web editor offers for a connection.
+pub(crate) const MODEL_PROVIDER_FORMATS: &[(&str, &str)] = &[
+    ("openai", "OpenAI (chat/completions)"),
+    ("responses", "OpenAI (responses)"),
+    ("anthropic", "Anthropic (messages)"),
+    ("gemini", "Gemini (generateContent)"),
+    ("gemini-code-assist", "Gemini Code Assist (cloudcode-pa)"),
+];
+/// E3-B3: model ids the web never lets a new row take (its
+/// `RESERVED_MODEL_CONFIG_IDS`).
+pub(crate) const RESERVED_MODEL_CONFIG_IDS: &[&str] = &["primary", "fast", "auto", "default"];
+/// E3-B3: the web's floor for a newly created model's context window.
+pub(crate) const MODEL_CREATE_MIN_CONTEXT_WINDOW: u32 = 32_000;
 
 /// G-SE13: the `memories` config document the memory page edits. Single keys
 /// are merged back through [`persist_object_key`] so unknown keys survive.
@@ -292,6 +312,13 @@ pub(crate) struct ShellConfig {
     /// `ai.default_models.primary`: the model new sessions start on. `None`
     /// means the runtime picks the first enabled model.
     pub(crate) default_primary_model: Option<String>,
+    /// E3-B3: `ai.default_models.fast` (lightweight tasks). `None` falls back
+    /// to the primary model, exactly as the shared contract reads it.
+    pub(crate) default_fast_model: Option<String>,
+    /// E3-B3: `ai.default_models.image_understanding`.
+    pub(crate) default_image_model: Option<String>,
+    /// E3-B3: `ai.default_models.speech_recognition`.
+    pub(crate) default_speech_model: Option<String>,
     /// Raw `app.close_button_behavior` (`quit` | `minimize_to_tray` | `ask`).
     /// Kept verbatim so the page can show an unsupported value as-is.
     pub(crate) close_behavior_raw: String,
@@ -395,6 +422,9 @@ impl ShellConfig {
             auto_approve_ask: config.tool_permissions.interaction.auto_approve_ask,
             terminal: TerminalSettings::from_global(&config.terminal),
             default_primary_model: config.ai.default_models.primary.clone(),
+            default_fast_model: config.ai.default_models.fast.clone(),
+            default_image_model: config.ai.default_models.image_understanding.clone(),
+            default_speech_model: config.ai.default_models.speech_recognition.clone(),
             close_behavior_raw: config.app.close_button_behavior.clone(),
             auto_update: config.app.auto_update,
             dialog_completion_notify: config.app.notifications.dialog_completion_notify,
@@ -500,6 +530,9 @@ impl ShellConfig {
             auto_approve_ask: false,
             terminal: TerminalSettings::default(),
             default_primary_model: None,
+            default_fast_model: None,
+            default_image_model: None,
+            default_speech_model: None,
             close_behavior_raw: CLOSE_QUIT.to_string(),
             auto_update: true,
             dialog_completion_notify: true,
@@ -2304,94 +2337,29 @@ pub(crate) fn set_default_primary_model(value: &str, cx: &mut App) {
     cx.refresh_windows();
 }
 
-/// The configured-models list: loading/empty states, then one row per model
-/// with its provider state plus test/edit actions, the test receipt beneath
-/// the tested row. Both model renderers share it.
-pub(crate) fn models_configured_list(cx: &App) -> gpui_kit::AnyElement {
-    let catalog = cx
-        .try_global::<crate::runtime::ModelCatalog>()
-        .cloned()
-        .unwrap_or_default();
-    let text = crate::i18n::current(cx);
-    if !catalog.loaded {
-        return div()
-            .text_sm()
-            .text_color(cx.theme().muted_foreground)
-            .child(text.models_loading.clone())
-            .into_any_element();
-    }
-    if catalog.models.is_empty() {
-        return div()
-            .text_sm()
-            .text_color(cx.theme().muted_foreground)
-            .child(text.models_empty.clone())
-            .into_any_element();
-    }
-    let receipts = ModelTestState::current(cx).receipts;
-    let mut list = div().v_flex().gap_2().w_full();
-    for model in &catalog.models {
-        let (state, state_color) = if model.enabled {
-            (text.models_enabled.clone(), cx.theme().muted_foreground)
-        } else {
-            (text.models_disabled.clone(), cx.theme().danger)
-        };
-        let testing = matches!(receipts.get(&model.id), Some(ModelTestReceipt::Testing));
-        let test_label = if testing {
-            text.models_testing.clone()
-        } else {
-            text.models_test.clone()
-        };
-        let test_id = model.id.clone();
-        let edit_id = model.id.clone();
-        let edit_label = crate::i18n::shared_term("tools.edit", cx);
-        let row = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .justify_between()
-            .gap_2()
-            .child(div().min_w_0().truncate().text_sm().child(model.label()))
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .child(div().text_sm().text_color(state_color).child(state))
-                    .child(
-                        Button::new(SharedString::from(format!("model-test-{}", model.id)))
-                            .label(test_label)
-                            .small()
-                            .with_variant(ButtonVariant::Ghost)
-                            .loading(testing)
-                            .on_click(move |_, _window, cx| {
-                                start_model_test(test_id.clone(), cx);
-                            }),
-                    )
-                    .child(
-                        Button::new(SharedString::from(format!("model-edit-{}", model.id)))
-                            .label(edit_label)
-                            .small()
-                            .with_variant(ButtonVariant::Ghost)
-                            .on_click(move |_, _window, cx| {
-                                ModelEditorState::mutate(cx, |state| {
-                                    state.model_id = Some(edit_id.clone());
-                                    state.drafts_ready = false;
-                                    state.headers_text.clear();
-                                    state.body_text.clear();
-                                });
-                                cx.refresh_windows();
-                            }),
-                    ),
-            );
-        let mut card = div().v_flex().gap_1().w_full().child(row);
-        if let Some(ModelTestReceipt::Done(result)) = receipts.get(&model.id) {
-            card = card.child(model_test_receipt(result, &text, cx));
+/// E3-B3: one of the optional default-model slots. The empty value clears the
+/// slot (the web writes `null`), so the shared contract falls back to primary
+/// (fast) or simply has no model for that capability.
+pub(crate) fn set_default_model_slot(slot: &'static str, value: &str, cx: &mut App) {
+    let stored = (!value.is_empty()).then(|| value.to_string());
+    {
+        let config = cx.global_mut::<ShellConfig>();
+        match slot {
+            DEFAULT_MODEL_FAST_SLOT => config.default_fast_model = stored.clone(),
+            DEFAULT_MODEL_IMAGE_SLOT => config.default_image_model = stored.clone(),
+            DEFAULT_MODEL_SPEECH_SLOT => config.default_speech_model = stored.clone(),
+            _ => {}
         }
-        list = list.child(card);
     }
-    list.into_any_element()
+    persist_object_key(
+        DEFAULT_MODELS_PATH,
+        slot,
+        match stored {
+            Some(value) => serde_json::json!(value),
+            None => serde_json::Value::Null,
+        },
+    );
+    cx.refresh_windows();
 }
 
 /// The read-only preset summary beneath the reasoning selector: what the
@@ -5338,6 +5306,526 @@ impl ModelEditorState {
     }
 }
 
+/// E3-B3: page-local state for the models page — the 全部模型 toolbar filters
+/// (web `poolQuery`/`poolCapability`/`poolProvider`), the 更多设置 disclosure,
+/// and the new-model form. A global for the same reason the other settings
+/// pages keep theirs there: the page is built inside the window render.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ModelsPageState {
+    pub(crate) query: String,
+    /// Capability filter (`""` = all): one of `text_chat`,
+    /// `image_understanding`, `speech_recognition`, `function_calling`.
+    pub(crate) capability: String,
+    /// Provider-group filter (`""` = all), otherwise a [`ModelProviderGroup`] key.
+    pub(crate) provider: String,
+    pub(crate) more_open: bool,
+    pub(crate) create: Option<ModelCreateDraft>,
+}
+
+impl Global for ModelsPageState {}
+
+impl ModelsPageState {
+    pub(crate) fn current(cx: &App) -> Self {
+        cx.try_global::<Self>().cloned().unwrap_or_default()
+    }
+
+    pub(crate) fn mutate<R>(cx: &mut App, change: impl FnOnce(&mut Self) -> R) -> R {
+        if cx.try_global::<Self>().is_none() {
+            cx.set_global(Self::default());
+        }
+        change(cx.global_mut::<Self>())
+    }
+}
+
+/// E3-B3: the new-model form (web `handleCreateNew` + its save validation).
+/// It is the one deliberate draft on the settings surface: a half-filled model
+/// row must never land in the shared `ai.models`, so the row is written once,
+/// whole, when the form saves.
+#[derive(Debug, Clone)]
+pub(crate) struct ModelCreateDraft {
+    pub(crate) name: String,
+    pub(crate) provider: String,
+    pub(crate) model_name: String,
+    pub(crate) base_url: String,
+    pub(crate) api_key: String,
+    pub(crate) context_window: u32,
+    pub(crate) category: String,
+    /// The last save attempt's validation failure, shown inside the card.
+    pub(crate) error: Option<String>,
+}
+
+impl Default for ModelCreateDraft {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            provider: MODEL_PROVIDER_FORMATS[0].0.to_string(),
+            model_name: String::new(),
+            base_url: String::new(),
+            api_key: String::new(),
+            context_window: MODEL_EDITOR_DEFAULT_CONTEXT_WINDOW,
+            category: "general_chat".to_string(),
+            error: None,
+        }
+    }
+}
+
+/// E3-B3: one configured endpoint and the model rows that share it (web
+/// `ProviderGroup`). The key is the web's provider-instance metadata when the
+/// row carries it; rows written by other surfaces without that metadata group
+/// by their connection identity (display name + request format + endpoint).
+#[derive(Debug, Clone)]
+pub(crate) struct ModelProviderGroup {
+    pub(crate) key: String,
+    pub(crate) name: String,
+    pub(crate) base_url: String,
+    pub(crate) model_ids: Vec<String>,
+}
+
+/// The web's `getProviderDisplayName`: a legacy `name` that repeats the model
+/// name as a suffix is shown as the bare provider name.
+fn provider_display_name(model: &openbitfun_core::service::config::types::AIModelConfig) -> String {
+    let name = model.name.trim();
+    let model_name = model.model_name.trim();
+    if !name.is_empty() && !model_name.is_empty() {
+        for suffix in [format!(" - {model_name}"), format!("/{model_name}")] {
+            if let Some(stripped) = name.strip_suffix(&suffix) {
+                let stripped = stripped.trim();
+                if !stripped.is_empty() {
+                    return stripped.to_string();
+                }
+            }
+        }
+    }
+    if !name.is_empty() {
+        return name.to_string();
+    }
+    if !model.provider.trim().is_empty() {
+        return model.provider.clone();
+    }
+    model.base_url.clone()
+}
+
+pub(crate) fn model_provider_key(
+    model: &openbitfun_core::service::config::types::AIModelConfig,
+) -> String {
+    if let Some(instance) = model
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("provider_instance_id"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|instance| !instance.is_empty())
+    {
+        return format!("instance:{instance}");
+    }
+    format!(
+        "{}|{}|{}",
+        provider_display_name(model),
+        model.provider.trim(),
+        model.base_url.trim()
+    )
+}
+
+/// The configured endpoints, in `ai.models` order (web `providerGroups`).
+pub(crate) fn model_provider_groups(
+    models: &[openbitfun_core::service::config::types::AIModelConfig],
+) -> Vec<ModelProviderGroup> {
+    let mut groups: Vec<ModelProviderGroup> = Vec::new();
+    for model in models {
+        let key = model_provider_key(model);
+        match groups.iter_mut().find(|group| group.key == key) {
+            Some(group) => group.model_ids.push(model.id.clone()),
+            None => groups.push(ModelProviderGroup {
+                key,
+                name: provider_display_name(model),
+                base_url: model.base_url.clone(),
+                model_ids: vec![model.id.clone()],
+            }),
+        }
+    }
+    groups
+}
+
+/// The capability defaults the web applies to a category
+/// (`getCapabilitiesByCategory`), including its text generation contract.
+pub(crate) fn model_capabilities_for_category(
+    category: &str,
+) -> Vec<openbitfun_core::service::config::types::ModelCapability> {
+    use openbitfun_core::service::config::types::ModelCapability as Capability;
+    match category {
+        "multimodal" => vec![
+            Capability::TextChat,
+            Capability::ImageUnderstanding,
+            Capability::FunctionCalling,
+        ],
+        "speech_recognition" => vec![Capability::SpeechRecognition],
+        _ => vec![Capability::TextChat, Capability::FunctionCalling],
+    }
+}
+
+/// The capabilities a row actually offers: its explicit list when it has one,
+/// otherwise the category defaults (web `getEffectiveModelCapabilities`).
+pub(crate) fn model_effective_capabilities(
+    model: &openbitfun_core::service::config::types::AIModelConfig,
+) -> Vec<openbitfun_core::service::config::types::ModelCapability> {
+    if !model.capabilities.is_empty() {
+        return model.capabilities.clone();
+    }
+    let category = serde_json::to_value(&model.category)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_else(|| "general_chat".to_string());
+    model_capabilities_for_category(&category)
+}
+
+/// Whether a row can be chosen for a capability (web
+/// `isSelectableModelForCapability`: enabled rows only).
+pub(crate) fn model_supports_capability(
+    model: &openbitfun_core::service::config::types::AIModelConfig,
+    capability: openbitfun_core::service::config::types::ModelCapability,
+) -> bool {
+    model.enabled && model_effective_capabilities(model).contains(&capability)
+}
+
+/// The web's `allocateModelConfigId`: the model name itself, suffixed on
+/// collision; the retired selector words stay reserved.
+pub(crate) fn allocate_model_config_id(
+    model_name: &str,
+    models: &[openbitfun_core::service::config::types::AIModelConfig],
+) -> String {
+    let base = model_name.trim();
+    let occupied = |candidate: &str| {
+        models.iter().any(|model| model.id.trim() == candidate)
+            || RESERVED_MODEL_CONFIG_IDS
+                .iter()
+                .any(|reserved| reserved.eq_ignore_ascii_case(candidate))
+    };
+    if !base.is_empty() && !occupied(base) {
+        return base.to_string();
+    }
+    let mut suffix = 2;
+    loop {
+        let candidate = format!("{base}-{suffix}");
+        if !occupied(&candidate) {
+            return candidate;
+        }
+        suffix += 1;
+    }
+}
+
+/// Opens the new-model form, replacing any half-filled one.
+pub(crate) fn open_model_create(cx: &mut App) {
+    ModelsPageState::mutate(cx, |state| {
+        state.create = Some(ModelCreateDraft::default());
+    });
+    cx.refresh_windows();
+}
+
+pub(crate) fn cancel_model_create(cx: &mut App) {
+    ModelsPageState::mutate(cx, |state| state.create = None);
+    cx.refresh_windows();
+}
+
+/// Edits the needle in the form; a validation error from the previous save
+/// attempt clears as soon as the user touches the form again.
+pub(crate) fn update_model_create_draft(cx: &mut App, change: impl FnOnce(&mut ModelCreateDraft)) {
+    ModelsPageState::mutate(cx, |state| {
+        let draft = state.create.get_or_insert_with(ModelCreateDraft::default);
+        change(draft);
+        draft.error = None;
+    });
+    cx.refresh_windows();
+}
+
+/// Writes the form as one complete `ai.models` row (web `handleSave`'s
+/// required fields: a connection name, a model name, an http(s) endpoint, an
+/// API key, and the 32k context floor). The row is appended, never merged into
+/// a half-matching existing one.
+pub(crate) fn save_model_create(cx: &mut App) {
+    let Some(draft) = ModelsPageState::current(cx).create.clone() else {
+        return;
+    };
+    let text = crate::i18n::current(cx);
+    let name = draft.name.trim().to_string();
+    let model_name = draft.model_name.trim().to_string();
+    let base_url = draft.base_url.trim().to_string();
+    let api_key = draft.api_key.trim().to_string();
+    let validation = if name.is_empty() {
+        Some(text.models_create_error_name.clone())
+    } else if model_name.is_empty() {
+        Some(text.models_create_error_model.clone())
+    } else if !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
+        Some(text.models_create_error_url.clone())
+    } else if api_key.is_empty() {
+        Some(text.models_create_error_key.clone())
+    } else if draft.context_window < MODEL_CREATE_MIN_CONTEXT_WINDOW {
+        Some(text.models_create_error_context.clone())
+    } else {
+        None
+    };
+    if let Some(error) = validation {
+        ModelsPageState::mutate(cx, |state| {
+            if let Some(draft) = state.create.as_mut() {
+                draft.error = Some(error);
+            }
+        });
+        cx.refresh_windows();
+        return;
+    }
+
+    let id = allocate_model_config_id(&model_name, &ShellConfig::current(cx).ai_models);
+    let capabilities: Vec<String> = model_capabilities_for_category(&draft.category)
+        .iter()
+        .filter_map(|capability| {
+            serde_json::to_value(capability)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_string))
+        })
+        .collect();
+    let row = serde_json::json!({
+        "id": id,
+        "name": name,
+        "provider": draft.provider,
+        "model_name": model_name,
+        "base_url": base_url,
+        "api_key": api_key,
+        "enabled": true,
+        "category": draft.category,
+        "capabilities": capabilities,
+        "context_window": draft.context_window,
+        "metadata": {},
+    });
+    let typed = match serde_json::from_value::<openbitfun_core::service::config::types::AIModelConfig>(
+        row.clone(),
+    ) {
+        Ok(model) => model,
+        Err(error) => {
+            tracing::error!("New model row does not deserialize: {error}");
+            ModelsPageState::mutate(cx, |state| {
+                if let Some(draft) = state.create.as_mut() {
+                    draft.error = Some(text.models_create_error_model.clone());
+                }
+            });
+            cx.refresh_windows();
+            return;
+        }
+    };
+    {
+        let config = cx.global_mut::<ShellConfig>();
+        config.ai_models.push(typed);
+        // The first model of an otherwise empty configuration becomes the
+        // primary default, so a fresh setup is usable without a second step.
+        if config.default_primary_model.is_none() && config.ai_models.len() == 1 {
+            config.default_primary_model = Some(id.clone());
+            persist(DEFAULT_MODEL_PATH, serde_json::json!(id.as_str()));
+        }
+    }
+    let row_id = id.clone();
+    persist_ai_models_array(
+        move |models| {
+            let exists = models.iter().any(|model| {
+                model.get("id").and_then(serde_json::Value::as_str) == Some(row_id.as_str())
+            });
+            if !exists {
+                models.push(row);
+            }
+        },
+        "create",
+    );
+    ModelsPageState::mutate(cx, |state| state.create = None);
+    ModelEditorState::mutate(cx, |state| {
+        state.model_id = Some(id);
+        state.drafts_ready = false;
+        state.headers_text.clear();
+        state.body_text.clear();
+    });
+    refresh_model_catalog(cx);
+    cx.refresh_windows();
+}
+
+/// Removes the given rows from `ai.models` (model delete and provider-group
+/// delete), clearing any default slot that pointed at one of them.
+pub(crate) fn delete_ai_models(ids: Vec<String>, cx: &mut App) {
+    let ids: Vec<String> = ids
+        .into_iter()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .collect();
+    if ids.is_empty() {
+        return;
+    }
+    let removed: std::collections::HashSet<String> = ids.iter().cloned().collect();
+    let mut cleared_slots: Vec<&'static str> = Vec::new();
+    {
+        let config = cx.global_mut::<ShellConfig>();
+        config
+            .ai_models
+            .retain(|model| !removed.contains(model.id.trim()));
+        let slots: [(&'static str, &mut Option<String>); 4] = [
+            ("primary", &mut config.default_primary_model),
+            (DEFAULT_MODEL_FAST_SLOT, &mut config.default_fast_model),
+            (DEFAULT_MODEL_IMAGE_SLOT, &mut config.default_image_model),
+            (DEFAULT_MODEL_SPEECH_SLOT, &mut config.default_speech_model),
+        ];
+        for (slot, value) in slots {
+            if value
+                .as_deref()
+                .map(|current| removed.contains(current.trim()))
+                .unwrap_or(false)
+            {
+                *value = None;
+                cleared_slots.push(slot);
+            }
+        }
+    }
+    for slot in cleared_slots {
+        persist_object_key(DEFAULT_MODELS_PATH, slot, serde_json::Value::Null);
+    }
+    if ModelEditorState::current(cx)
+        .model_id
+        .as_deref()
+        .map(|open| removed.contains(open))
+        .unwrap_or(false)
+    {
+        ModelEditorState::mutate(cx, |state| {
+            state.model_id = None;
+            state.drafts_ready = false;
+        });
+    }
+    persist_ai_models_array(
+        move |models| {
+            models.retain(|model| {
+                model
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|id| !removed.contains(id))
+                    .unwrap_or(true)
+            })
+        },
+        "delete",
+    );
+    refresh_model_catalog(cx);
+    cx.refresh_windows();
+}
+
+/// One connection text field of the editor. Endpoint-shaping fields drop the
+/// stored `request_url` so the shared contract re-derives it from the new
+/// values instead of routing to the old URL.
+pub(crate) fn set_ai_model_connection_text(
+    model_id: &str,
+    field: &'static str,
+    value: &str,
+    cx: &mut App,
+) {
+    let mut cleared_request_url = false;
+    if update_ai_model_mirror(model_id, cx, |model| match field {
+        "name" => model.name = value.to_string(),
+        "model_name" => {
+            model.model_name = value.to_string();
+            model.request_url = None;
+            cleared_request_url = true;
+        }
+        "base_url" => {
+            model.base_url = value.to_string();
+            model.request_url = None;
+            cleared_request_url = true;
+        }
+        "api_key" => model.api_key = value.to_string(),
+        _ => {}
+    }) {
+        let mut fields = vec![(field, Some(serde_json::json!(value)))];
+        if cleared_request_url {
+            fields.push(("request_url", None));
+        }
+        persist_ai_model_fields(model_id, fields);
+        cx.refresh_windows();
+    }
+}
+
+pub(crate) fn set_ai_model_provider(model_id: &str, provider: String, cx: &mut App) {
+    if update_ai_model_mirror(model_id, cx, |model| {
+        model.provider = provider.clone();
+        model.request_url = None;
+    }) {
+        persist_ai_model_fields(
+            model_id,
+            vec![
+                ("provider", Some(serde_json::json!(provider))),
+                ("request_url", None),
+            ],
+        );
+        cx.refresh_windows();
+    }
+}
+
+pub(crate) fn set_ai_model_enabled(model_id: &str, enabled: bool, cx: &mut App) {
+    if update_ai_model_mirror(model_id, cx, |model| model.enabled = enabled) {
+        persist_ai_model_fields(
+            model_id,
+            vec![("enabled", Some(serde_json::json!(enabled)))],
+        );
+        refresh_model_catalog(cx);
+        cx.refresh_windows();
+    }
+}
+
+/// Rebuilds the picker catalog from the page's model mirror, so a create /
+/// delete / enable lands in the chat header without waiting for a runtime
+/// reload.
+fn refresh_model_catalog(cx: &mut App) {
+    let loaded = cx
+        .try_global::<crate::runtime::ModelCatalog>()
+        .map(|catalog| catalog.loaded)
+        .unwrap_or(false);
+    let models = ShellConfig::current(cx)
+        .ai_models
+        .iter()
+        .map(|model| crate::runtime::ModelChoice {
+            id: model.id.clone(),
+            name: model.name.clone(),
+            provider: model.provider.clone(),
+            enabled: model.enabled,
+        })
+        .collect();
+    cx.set_global(crate::runtime::ModelCatalog { loaded, models });
+}
+
+/// One whole-array mutation of `ai.models` through `update_config` (row
+/// creation and deletion). Field edits keep the per-field helper, so unknown
+/// keys of untouched rows survive.
+fn persist_ai_models_array(
+    mutation: impl FnOnce(&mut Vec<serde_json::Value>) + Send + 'static,
+    log: &'static str,
+) {
+    let Some(handle) = crate::runtime::runtime_handle() else {
+        tracing::error!("Cannot persist ai.models ({log}) before the runtime is ready");
+        return;
+    };
+    handle.tokio_handle().spawn(async move {
+        let service = match get_global_config_service().await {
+            Ok(service) => service,
+            Err(error) => {
+                tracing::error!(
+                    "Config service unavailable while persisting ai.models ({log}): {error}"
+                );
+                return;
+            }
+        };
+        let result = service
+            .update_config::<serde_json::Value, ()>("ai.models", move |section| {
+                if let Some(models) = section.as_array_mut() {
+                    mutation(models);
+                }
+                Ok(())
+            })
+            .await;
+        match result {
+            Ok(()) => tracing::info!("ai.models persisted: {log}"),
+            Err(error) => tracing::error!("Failed to persist ai.models ({log}): {error}"),
+        }
+    });
+}
+
 /// G-SE25: the automation page's Hook-import projection plus the page-local
 /// review/busy state. A global for the same reason the other settings pages
 /// keep theirs there: the page is built inside the window render.
@@ -7112,6 +7600,9 @@ mod tests {
         config.terminal.scrollback = 50_000;
         config.terminal.default_shell = "/usr/bin/zsh".to_string();
         config.ai.default_models.primary = Some("model-a".to_string());
+        config.ai.default_models.fast = Some("model-fast".to_string());
+        config.ai.default_models.image_understanding = None;
+        config.ai.default_models.speech_recognition = Some("model-speech".to_string());
         // M22 general/automation/websearch/diagnostics fields.
         config.app.close_button_behavior = "ask".to_string();
         config.app.auto_update = false;
@@ -7194,6 +7685,12 @@ mod tests {
         assert_eq!(snapshot.terminal.scrollback, 50_000);
         assert_eq!(snapshot.terminal.default_shell, "/usr/bin/zsh");
         assert_eq!(snapshot.default_primary_model.as_deref(), Some("model-a"));
+        assert_eq!(snapshot.default_fast_model.as_deref(), Some("model-fast"));
+        assert_eq!(snapshot.default_image_model, None);
+        assert_eq!(
+            snapshot.default_speech_model.as_deref(),
+            Some("model-speech")
+        );
         assert_eq!(snapshot.close_behavior_raw, "ask");
         assert!(!snapshot.auto_update);
         assert!(!snapshot.dialog_completion_notify);
@@ -7889,6 +8386,127 @@ mod tests {
         assert!(body_json_valid("{\"temperature\":0.8}"));
         assert!(!body_json_valid("[1, 2]"));
         assert!(!body_json_valid("{"));
+    }
+
+    /// E3-B3: the default slots only offer enabled models with the slot's
+    /// capability, using the web's category defaults when a row has no
+    /// explicit capability list.
+    #[test]
+    fn model_capabilities_follow_the_web_defaults() {
+        use openbitfun_core::service::config::types::{
+            AIModelConfig, ModelCapability, ModelCategory,
+        };
+        let mut chat = AIModelConfig::default();
+        chat.id = "chat".to_string();
+        chat.enabled = true;
+        chat.category = ModelCategory::GeneralChat;
+        assert!(model_supports_capability(&chat, ModelCapability::TextChat));
+        assert!(!model_supports_capability(
+            &chat,
+            ModelCapability::ImageUnderstanding
+        ));
+
+        let mut vision = AIModelConfig::default();
+        vision.id = "vision".to_string();
+        vision.enabled = true;
+        vision.category = ModelCategory::Multimodal;
+        assert!(model_supports_capability(
+            &vision,
+            ModelCapability::ImageUnderstanding
+        ));
+
+        let mut speech = AIModelConfig::default();
+        speech.id = "speech".to_string();
+        speech.enabled = true;
+        speech.category = ModelCategory::SpeechRecognition;
+        assert!(model_supports_capability(
+            &speech,
+            ModelCapability::SpeechRecognition
+        ));
+        assert!(!model_supports_capability(
+            &speech,
+            ModelCapability::TextChat
+        ));
+
+        // An explicit list wins over the category defaults, and a disabled
+        // row is never selectable (web `isSelectableModelForCapability`).
+        let mut explicit = AIModelConfig::default();
+        explicit.id = "explicit".to_string();
+        explicit.enabled = true;
+        explicit.category = ModelCategory::GeneralChat;
+        explicit.capabilities = vec![ModelCapability::SpeechRecognition];
+        assert!(model_supports_capability(
+            &explicit,
+            ModelCapability::SpeechRecognition
+        ));
+        assert!(!model_supports_capability(
+            &explicit,
+            ModelCapability::TextChat
+        ));
+        explicit.enabled = false;
+        assert!(!model_supports_capability(
+            &explicit,
+            ModelCapability::SpeechRecognition
+        ));
+    }
+
+    /// E3-B3: a new model row takes its name as the id, suffixes collisions,
+    /// and never takes a retired selector word (web `allocateModelConfigId`).
+    #[test]
+    fn model_config_ids_avoid_taken_and_reserved_names() {
+        use openbitfun_core::service::config::types::AIModelConfig;
+        let row = |id: &str| {
+            let mut model = AIModelConfig::default();
+            model.id = id.to_string();
+            model
+        };
+        let models = vec![row("gpt-4o"), row("fast"), row("gpt-4o-2")];
+        assert_eq!(allocate_model_config_id("gpt-4o", &models), "gpt-4o-3");
+        assert_eq!(allocate_model_config_id("fast", &models), "fast-2");
+        assert_eq!(allocate_model_config_id("PRIMARY", &models), "PRIMARY-2");
+        assert_eq!(
+            allocate_model_config_id("claude-sonnet", &models),
+            "claude-sonnet"
+        );
+    }
+
+    /// E3-B3: rows sharing the web's provider-instance metadata are one
+    /// service; rows without it group by their connection identity.
+    #[test]
+    fn provider_groups_follow_the_shared_connection_identity() {
+        use openbitfun_core::service::config::types::AIModelConfig;
+        let row = |id: &str, name: &str, base: &str, metadata: Option<serde_json::Value>| {
+            let mut model = AIModelConfig::default();
+            model.id = id.to_string();
+            model.name = name.to_string();
+            model.provider = "openai".to_string();
+            model.base_url = base.to_string();
+            model.metadata = metadata;
+            model
+        };
+        let models = vec![
+            row(
+                "a",
+                "Acme",
+                "https://api.acme.test/v1",
+                Some(serde_json::json!({"provider_instance_id": "prov-1"})),
+            ),
+            row(
+                "b",
+                "Acme",
+                "https://api.acme.test/v1",
+                Some(serde_json::json!({"provider_instance_id": "prov-1"})),
+            ),
+            row("c", "Acme", "https://api.acme.test/v1", None),
+            row("d", "Acme", "https://api.acme.test/v1", None),
+            row("e", "Other", "https://api.other.test/v1", None),
+        ];
+        let groups = model_provider_groups(&models);
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0].model_ids, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(groups[1].model_ids, vec!["c".to_string(), "d".to_string()]);
+        assert_eq!(groups[2].name, "Other");
+        assert_eq!(groups[2].model_ids, vec!["e".to_string()]);
     }
 
     /// G-SE17: stored/selected effects round-trip the shared ids and an

@@ -12187,11 +12187,17 @@ mod tests {
                     "settings-card-memory-advanced",
                 ],
             ),
-            // The models page is on the card path: its stream and proxy
-            // cards carry the anchors now.
+            // The models page is on the card path: the acquisition, selection
+            // mode, all-models, and more-settings cards carry the anchors now
+            // (the stream and proxy sections live behind the more disclosure).
             (
                 settings::SettingsEntry::Models,
-                &["settings-card-models-stream", "settings-card-models-proxy"],
+                &[
+                    "settings-card-models-acquisition",
+                    "settings-card-models-selection-modes",
+                    "settings-card-models-pool",
+                    "settings-card-models-more",
+                ],
             ),
             // The permissions page is on the card path: one card per web
             // section carries the anchors now.
