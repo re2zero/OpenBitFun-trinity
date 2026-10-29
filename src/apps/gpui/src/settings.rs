@@ -71,6 +71,12 @@ pub(crate) const HOOKS_PROJECT_PATH: &str = "app.hooks.project_hooks_enabled";
 /// OpenBitFun co-author line in built-in commit workflows
 /// (`app.ai_experience.enable_git_commit_coauthor`).
 pub(crate) const GIT_COAUTHOR_PATH: &str = "app.ai_experience.enable_git_commit_coauthor";
+/// The shared GitHub attribution the commit co-author handle is derived from
+/// (web `COMMIT_COAUTHOR_ACCOUNT` builds it from the same URL).
+pub(crate) const COMMIT_COAUTHOR_URL: &str = "https://github.com/bitfun-ai";
+/// Accelerated workspace search (`app.ai_experience.enable_workspace_search`),
+/// the same key the core search service reads before it starts the daemon.
+pub(crate) const WORKSPACE_SEARCH_PATH: &str = "app.ai_experience.enable_workspace_search";
 /// G-SE24: the quick-actions array (`app.ai_experience.quick_actions`).
 pub(crate) const QUICK_ACTIONS_PATH: &str = "app.ai_experience.quick_actions";
 /// Active web-search provider (`ai.web_search.provider`).
@@ -301,6 +307,9 @@ pub(crate) struct ShellConfig {
     pub(crate) project_hooks_enabled: bool,
     /// `app.ai_experience.enable_git_commit_coauthor`.
     pub(crate) git_commit_coauthor: bool,
+    /// `app.ai_experience.enable_workspace_search`: whether the accelerated
+    /// workspace index runs.
+    pub(crate) workspace_search_enabled: bool,
     /// `ai.web_search.provider`, kept verbatim; unknown ids render as-is.
     pub(crate) web_search_provider: String,
     /// `app.ai_experience.quick_actions`: the chat header quick-actions menu
@@ -392,6 +401,7 @@ impl ShellConfig {
             hooks_enabled: config.app.hooks.enabled,
             project_hooks_enabled: config.app.hooks.project_hooks_enabled,
             git_commit_coauthor: config.app.ai_experience.enable_git_commit_coauthor,
+            workspace_search_enabled: config.app.ai_experience.enable_workspace_search,
             web_search_provider: config.ai.web_search.provider.clone(),
             quick_actions: config.app.ai_experience.quick_actions.clone(),
             web_search_http_endpoint: config
@@ -496,6 +506,7 @@ impl ShellConfig {
             hooks_enabled: true,
             project_hooks_enabled: false,
             git_commit_coauthor: true,
+            workspace_search_enabled: false,
             web_search_provider: "exa_mcp_free".to_string(),
             quick_actions: openbitfun_core::service::config::types::AIExperienceConfig::default()
                 .quick_actions,
@@ -1279,7 +1290,7 @@ pub(crate) fn entry_label<'a>(entry: SettingsEntry, text: &'a ShellText) -> &'a 
         SettingsEntry::Memory => &text.settings_memory_label,
         SettingsEntry::Shortcuts => &text.settings_shortcuts_label,
         SettingsEntry::SessionSearch => &text.settings_jump_session_label,
-        SettingsEntry::WorktreesGit => &text.settings_jump_worktrees_label,
+        SettingsEntry::WorktreesGit => &text.settings_worktrees_page_label,
         SettingsEntry::Permissions => &text.settings_permissions,
         SettingsEntry::Automation => &text.settings_automation,
         SettingsEntry::WebSearch => &text.settings_websearch,
@@ -1880,6 +1891,154 @@ pub(crate) fn set_worktree_auto_delete_limit(value: f64, cx: &mut App) {
         u64::from(WORKTREE_AUTO_DELETE_MAX),
     );
     set_worktree_key("autoDeleteLimit", serde_json::json!(limit), cx);
+}
+
+/// The five keys the web reset action writes (`settings.reset`): the shared
+/// defaults for the whole document, written in one read-modify-write so the
+/// page never shows a half-reset card.
+pub(crate) const WORKTREE_SETTING_KEYS: [&str; 5] = [
+    "rootPath",
+    "branchPrefix",
+    "copyLocalChanges",
+    "autoDeleteEnabled",
+    "autoDeleteLimit",
+];
+
+/// Restores the worktree isolation defaults (web `settings.reset`). The shell
+/// has no draft layer, so the reset lands immediately; unknown sibling keys in
+/// `app.worktrees` survive the write.
+pub(crate) fn reset_worktree_settings(cx: &mut App) {
+    let defaults = default_worktree_settings_document();
+    let mut updates = Vec::with_capacity(WORKTREE_SETTING_KEYS.len());
+    for key in WORKTREE_SETTING_KEYS {
+        if let Some(value) = defaults.get(key) {
+            updates.push((key.to_string(), value.clone()));
+        }
+    }
+    let mut document = ShellConfig::current(cx).worktrees;
+    for (key, value) in &updates {
+        document = merged_object_value(&document, key, value.clone());
+    }
+    cx.global_mut::<ShellConfig>().worktrees = document;
+    persist_object_keys(WORKTREES_PATH, updates);
+    cx.refresh_windows();
+}
+
+/// Whether every isolation key already holds the shared default (the web
+/// reset button disables itself in that state).
+pub(crate) fn worktree_settings_are_default(cx: &App) -> bool {
+    let document = ShellConfig::current(cx).worktrees;
+    let defaults = default_worktree_settings_document();
+    WORKTREE_SETTING_KEYS.iter().all(|key| {
+        let current = document.get(*key);
+        let default = defaults.get(*key);
+        match (current, default) {
+            (Some(current), Some(default)) => current == default,
+            _ => false,
+        }
+    })
+}
+
+/// The worktree management card's projection (web `WorktreeSettingsSection`'s
+/// `listProjects`): every open project's managed worktrees on this host.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct WorktreeProjectsState {
+    /// A list arrived at least once (first-load state vs refresh state).
+    pub(crate) loaded: bool,
+    /// A read is in flight.
+    pub(crate) loading: bool,
+    /// The worktree a removal is in flight for.
+    pub(crate) removing: Option<String>,
+    pub(crate) projects: Vec<openbitfun_core::service::worktree::WorktreeProjectSummary>,
+    /// The last failure as the shared worktree error code plus its message;
+    /// an empty code marks a transport failure.
+    pub(crate) error: Option<(String, String)>,
+}
+
+impl Global for WorktreeProjectsState {}
+
+impl WorktreeProjectsState {
+    pub(crate) fn current(cx: &App) -> Self {
+        cx.try_global::<Self>().cloned().unwrap_or_default()
+    }
+
+    pub(crate) fn mutate<R>(cx: &mut App, change: impl FnOnce(&mut Self) -> R) -> R {
+        if cx.try_global::<Self>().is_none() {
+            cx.set_global(Self::default());
+        }
+        change(cx.global_mut::<Self>())
+    }
+}
+
+/// Reads the host's project/worktree catalog (web `loadProjects`). The page
+/// calls this on selection and from the card's refresh action; the in-flight
+/// guard coalesces repeats.
+pub(crate) fn fetch_worktree_projects(cx: &mut App) {
+    let Some(handle) = crate::runtime::runtime_handle() else {
+        return;
+    };
+    let start = WorktreeProjectsState::mutate(cx, |state| {
+        if state.loading {
+            return false;
+        }
+        state.loading = true;
+        state.error = None;
+        true
+    });
+    if !start {
+        return;
+    }
+    handle.reload_worktree_projects();
+    cx.refresh_windows();
+}
+
+/// Removes one worktree through the shared service (web `worktreeAPI.remove`
+/// with `discardLocalWork`). The confirm dialog decides the force flag; this
+/// only guards a second removal while one is in flight.
+pub(crate) fn remove_worktree(
+    project_workspace_id: Option<String>,
+    project_workspace_path: String,
+    worktree_id: String,
+    discard_local_work: bool,
+    cx: &mut App,
+) {
+    let Some(handle) = crate::runtime::runtime_handle() else {
+        return;
+    };
+    let start = WorktreeProjectsState::mutate(cx, |state| {
+        if state.removing.is_some() {
+            return false;
+        }
+        state.removing = Some(worktree_id.clone());
+        state.error = None;
+        true
+    });
+    if !start {
+        return;
+    }
+    handle.remove_project_worktree(
+        project_workspace_id,
+        project_workspace_path,
+        worktree_id,
+        discard_local_work,
+    );
+    cx.refresh_windows();
+}
+
+/// The web delete-error mapping (`WorktreeCommandError.code` → copy). Unknown
+/// codes fall back to the generic failure line.
+pub(crate) fn worktree_error_label(code: &str, text: &ShellText) -> SharedString {
+    match code {
+        "worktree_locked" => text.settings_worktree_error_locked.clone().into(),
+        "dirty_worktree" => text.settings_worktree_error_dirty.clone().into(),
+        "unpublished_commits" => text.settings_worktree_error_unpublished.clone().into(),
+        "worktree_not_found" => text.settings_worktree_error_not_found.clone().into(),
+        "remote_unsupported" => text
+            .settings_worktree_error_remote_unsupported
+            .clone()
+            .into(),
+        _ => text.settings_worktree_error_delete_failed.clone().into(),
+    }
 }
 
 /// G-SE5: the UI size menu — the shared levels, then the custom entry, then a
@@ -4077,6 +4236,21 @@ pub(crate) fn set_project_hooks_enabled(value: bool, cx: &mut App) {
 pub(crate) fn set_git_commit_coauthor(value: bool, cx: &mut App) {
     cx.global_mut::<ShellConfig>().git_commit_coauthor = value;
     persist(GIT_COAUTHOR_PATH, serde_json::Value::Bool(value));
+    cx.refresh_windows();
+}
+
+/// The attribution row's description with the co-author handle interpolated
+/// (web `commitAttribution.description` + `COMMIT_COAUTHOR_ACCOUNT`).
+pub(crate) fn git_attribution_description(cx: &App) -> String {
+    let handle = COMMIT_COAUTHOR_URL.rsplit('/').next().unwrap_or_default();
+    crate::i18n::git_attribution_description(&format!("@{handle}"), cx)
+}
+
+/// Whether the accelerated workspace index runs (web
+/// `features.workspaceSearch.enable`).
+pub(crate) fn set_workspace_search(value: bool, cx: &mut App) {
+    cx.global_mut::<ShellConfig>().workspace_search_enabled = value;
+    persist(WORKSPACE_SEARCH_PATH, serde_json::Value::Bool(value));
     cx.refresh_windows();
 }
 
@@ -6795,13 +6969,14 @@ mod tests {
             .iter()
             .map(|&category| category_entries(category).len())
             .sum();
-        assert_eq!(total, 17, "15 real pages + 2 redirect cards");
+        assert_eq!(total, 17, "16 real pages + 1 jump page");
         assert_eq!(HIDDEN_REGISTRY_PAGES.len(), 5);
     }
 
-    /// The two redirect entries are exactly the registry pages another shell
-    /// surface owns (parity §2.1); everything else with a registry id is a
-    /// real settings group.
+    /// The two shell-owned registry pages (parity §2.1). Only
+    /// `SessionSearch` still jumps to another surface (global search); the
+    /// Workspace & Git entry renders its own page since E3-B2, and the check
+    /// stays on the registry-id mapping both entries publish.
     #[test]
     fn redirect_entries_cover_exactly_the_owned_surfaces() {
         let redirects = SETTINGS_CATEGORIES
@@ -6944,6 +7119,7 @@ mod tests {
         config.app.hooks.enabled = false;
         config.app.hooks.project_hooks_enabled = true;
         config.app.ai_experience.enable_git_commit_coauthor = false;
+        config.app.ai_experience.enable_workspace_search = true;
         config.app.ai_experience.quick_actions = vec![
             openbitfun_core::service::config::types::AiExperienceQuickAction {
                 id: "commit".to_string(),
@@ -7024,6 +7200,7 @@ mod tests {
         assert!(!snapshot.hooks_enabled);
         assert!(snapshot.project_hooks_enabled);
         assert!(!snapshot.git_commit_coauthor);
+        assert!(snapshot.workspace_search_enabled);
         assert_eq!(snapshot.web_search_provider, "tavily");
         assert_eq!(
             snapshot.web_search_http_endpoint,
@@ -7620,6 +7797,67 @@ mod tests {
         assert_eq!(
             object_u64(&defaults, "autoDeleteLimit", 0),
             shared.auto_delete_limit as u64
+        );
+    }
+
+    /// E3-B2: the reset action writes exactly the five isolation keys the web
+    /// section edits, and every one of them has a shared default.
+    #[test]
+    fn worktree_reset_covers_every_isolation_key() {
+        let defaults = default_worktree_settings_document();
+        assert_eq!(WORKTREE_SETTING_KEYS.len(), 5);
+        for key in WORKTREE_SETTING_KEYS {
+            assert!(
+                defaults.get(key).is_some(),
+                "the default document carries {key}"
+            );
+        }
+    }
+
+    /// E3-B2: the workspace-search switch starts on the shared config default
+    /// (off), so a first-run shell shows what the desktop page shows.
+    #[test]
+    fn workspace_search_default_matches_the_shared_config() {
+        let shared = GlobalConfig::default()
+            .app
+            .ai_experience
+            .enable_workspace_search;
+        let shell = ShellConfig::startup_default(LocaleId::ZhCN);
+        assert_eq!(shell.workspace_search_enabled, shared);
+    }
+
+    /// E3-B2: the delete refusal copy follows the shared worktree error codes;
+    /// an unknown or transport failure lands on the generic line.
+    #[test]
+    fn worktree_delete_errors_map_the_shared_codes() {
+        let text = sample_text();
+        assert_eq!(
+            worktree_error_label("worktree_locked", &text).as_ref(),
+            text.settings_worktree_error_locked
+        );
+        assert_eq!(
+            worktree_error_label("dirty_worktree", &text).as_ref(),
+            text.settings_worktree_error_dirty
+        );
+        assert_eq!(
+            worktree_error_label("unpublished_commits", &text).as_ref(),
+            text.settings_worktree_error_unpublished
+        );
+        assert_eq!(
+            worktree_error_label("worktree_not_found", &text).as_ref(),
+            text.settings_worktree_error_not_found
+        );
+        assert_eq!(
+            worktree_error_label("remote_unsupported", &text).as_ref(),
+            text.settings_worktree_error_remote_unsupported
+        );
+        assert_eq!(
+            worktree_error_label("", &text).as_ref(),
+            text.settings_worktree_error_delete_failed
+        );
+        assert_eq!(
+            worktree_error_label("git_failed", &text).as_ref(),
+            text.settings_worktree_error_delete_failed
         );
     }
 

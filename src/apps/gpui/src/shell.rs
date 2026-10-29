@@ -3692,6 +3692,40 @@ impl ShellWindow {
                 });
                 cx.refresh_windows();
             }
+            RuntimeEvent::WorktreeProjects(projects) => {
+                settings::WorktreeProjectsState::mutate(cx, |state| {
+                    state.projects = projects;
+                    state.loaded = true;
+                    state.loading = false;
+                    state.error = None;
+                });
+                cx.refresh_windows();
+            }
+            RuntimeEvent::WorktreeProjectsFailed(error) => {
+                tracing::warn!("Worktree project list failed: {error}");
+                settings::WorktreeProjectsState::mutate(cx, |state| {
+                    state.loaded = true;
+                    state.loading = false;
+                    state.error = Some((String::new(), error));
+                });
+                cx.refresh_windows();
+            }
+            RuntimeEvent::WorktreeRemoved(worktree_id) => {
+                settings::WorktreeProjectsState::mutate(cx, |state| {
+                    state.removing = None;
+                });
+                tracing::info!("Worktree removed from the settings page: {worktree_id}");
+                settings::fetch_worktree_projects(cx);
+                cx.refresh_windows();
+            }
+            RuntimeEvent::WorktreeRemoveFailed { code, message } => {
+                tracing::warn!("Worktree removal failed: code={code}, message={message}");
+                settings::WorktreeProjectsState::mutate(cx, |state| {
+                    state.removing = None;
+                    state.error = Some((code, message));
+                });
+                cx.refresh_windows();
+            }
         }
         cx.notify();
     }
@@ -4339,6 +4373,12 @@ impl ShellWindow {
         // selection (web loads on mount); a plain read uses the catalog cache.
         if page == settings::SettingsEntry::Automation {
             settings::fetch_hook_imports(false, cx);
+        }
+        // E3-B2: the worktree management card reads the host catalog on
+        // selection (web loads on mount); the in-flight guard coalesces
+        // repeated selections, and the card's refresh action re-reads it.
+        if page == settings::SettingsEntry::WorktreesGit {
+            settings::fetch_worktree_projects(cx);
         }
         cx.notify();
     }
@@ -12227,8 +12267,10 @@ mod tests {
             (
                 settings::SettingsEntry::WorktreesGit,
                 &[
+                    "settings-card-worktrees-search",
+                    "settings-card-worktrees-attribution",
                     "settings-card-worktrees-isolation",
-                    "settings-card-worktrees-open",
+                    "settings-card-worktrees-management",
                 ],
             ),
             (

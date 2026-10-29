@@ -52,6 +52,9 @@ use openbitfun_core::service::cron::CronJob;
 use openbitfun_core::service::workspace::{
     get_global_workspace_service, set_global_workspace_service, WorkspaceInfo, WorkspaceService,
 };
+use openbitfun_core::service::worktree::{
+    WorktreeProjectListRequest, WorktreeRemoveRequest, WorktreeService,
+};
 use openbitfun_events::{AgenticEvent, ToolEventData};
 use openbitfun_runtime_ports::{
     AgentInputAttachment, AgentSessionListRequest, AgentSessionSummary, AgentSubmissionSource,
@@ -391,6 +394,19 @@ pub(crate) enum RuntimeEvent {
     ),
     /// G-SE25: a Hook-import action failed; the page shows the reason inline.
     HookImportFailed(String),
+    /// E3-B2: the worktree management card's project catalog (web
+    /// `worktree_list_projects`): every open project's managed worktrees.
+    WorktreeProjects(Vec<openbitfun_core::service::worktree::WorktreeProjectSummary>),
+    /// E3-B2: the catalog read failed (transport or host error).
+    WorktreeProjectsFailed(String),
+    /// E3-B2: one worktree removal landed; the card reloads the catalog.
+    WorktreeRemoved(String),
+    /// E3-B2: one worktree removal failed; the code is the shared
+    /// `WorktreeErrorCode` string (`""` for a transport failure).
+    WorktreeRemoveFailed {
+        code: String,
+        message: String,
+    },
     /// Workspaces the shell can switch to: the shared core catalog (recent
     /// first, then the rest of the opened set) plus workspaces visited by
     /// this process, with the active one always present.
@@ -1918,6 +1934,47 @@ impl RuntimeHandle {
             {
                 Ok(snapshot) => publish(RuntimeEvent::HookImports(Box::new(snapshot))),
                 Err(error) => publish(RuntimeEvent::HookImportFailed(error.to_string())),
+            }
+        });
+    }
+
+    /// E3-B2: reads the host's project/worktree catalog for the worktree
+    /// management card (web `worktree_list_projects`).
+    pub(crate) fn reload_worktree_projects(&self) {
+        self.tokio.spawn(async move {
+            match WorktreeService::list_projects(WorktreeProjectListRequest {}).await {
+                Ok(projects) => publish(RuntimeEvent::WorktreeProjects(projects)),
+                Err(error) => publish(RuntimeEvent::WorktreeProjectsFailed(error.to_string())),
+            }
+        });
+    }
+
+    /// E3-B2: removes one worktree of one project (web `worktree_remove` with
+    /// `force = discardLocalWork`). A clean removal publishes the id so the
+    /// card reloads; a refusal keeps its shared error code for the page copy.
+    pub(crate) fn remove_project_worktree(
+        &self,
+        project_workspace_id: Option<String>,
+        project_workspace_path: String,
+        worktree_id: String,
+        force: bool,
+    ) {
+        self.tokio.spawn(async move {
+            let request_id = format!("gpui-shell-worktree-rm-{}", uuid::Uuid::new_v4());
+            let removed = WorktreeService::remove(WorktreeRemoveRequest {
+                request_id,
+                project_workspace_id,
+                project_workspace_path,
+                worktree_id: worktree_id.clone(),
+                force,
+            })
+            .await;
+            match removed {
+                Ok(_) => publish(RuntimeEvent::WorktreeRemoved(worktree_id)),
+                Err(error) => publish(RuntimeEvent::WorktreeRemoveFailed {
+                    code: error.code.as_str().to_string(),
+                    message: error.message.clone(),
+                }),
             }
         });
     }

@@ -793,8 +793,6 @@ pub(crate) struct ShellText {
     pub settings_hooks_description: String,
     pub settings_hooks_project: String,
     pub settings_hooks_project_description: String,
-    pub settings_git_coauthor: String,
-    pub settings_git_coauthor_description: String,
     /// G-SE25: Hook declaration locations, the imported-source manager and the
     /// Codex contract reference on the automation page.
     pub settings_hooks_user_file: String,
@@ -864,6 +862,10 @@ pub(crate) struct ShellText {
     pub settings_page_terminal_description: String,
     pub settings_page_models_description: String,
     pub settings_page_session_description: String,
+    /// The Workspace & Git page's nav label (web
+    /// `navigation.pages.workspaceGit.label`; the page title and the nav row
+    /// share it).
+    pub settings_worktrees_page_label: String,
     pub settings_page_worktrees_description: String,
     pub settings_page_execution_description: String,
     pub settings_page_automation_description: String,
@@ -877,9 +879,6 @@ pub(crate) struct ShellText {
     pub settings_jump_session_label: String,
     pub settings_jump_session_description: String,
     pub settings_jump_session_action: String,
-    pub settings_jump_worktrees_label: String,
-    pub settings_jump_worktrees_description: String,
-    pub settings_jump_worktrees_action: String,
     pub websearch_provider_free: String,
     pub websearch_provider_exa: String,
     pub websearch_provider_tavily: String,
@@ -1151,7 +1150,7 @@ pub(crate) struct ShellText {
     /// G-SE15: the suffix the fixed-Harness menu puts on a stored id this
     /// build's Harness list does not own (web `defaultHarness.compatibilityMode`).
     pub value_compatibility: String,
-    // G-SE16: managed-worktree isolation defaults.
+    /// G-SE16: managed-worktree isolation defaults.
     pub settings_worktree_section: String,
     pub settings_worktree_section_note: String,
     pub settings_worktree_root: String,
@@ -1164,6 +1163,46 @@ pub(crate) struct ShellText {
     pub settings_worktree_auto_delete_description: String,
     pub settings_worktree_auto_delete_limit: String,
     pub settings_worktree_auto_delete_limit_description: String,
+    /// E3-B2: the 工作区与 Git page's remaining web sections — accelerated
+    /// workspace search, commit attribution, the isolation reset action, and
+    /// the host's project/worktree catalog.
+    pub settings_workspace_search_title: String,
+    pub settings_workspace_search_description: String,
+    pub settings_workspace_search_enable: String,
+    pub settings_git_attribution_title: String,
+    pub settings_git_attribution_scope: String,
+    pub settings_git_attribution_label: String,
+    pub settings_worktree_reset: String,
+    pub settings_worktree_management_title: String,
+    pub settings_worktree_management_description: String,
+    pub settings_worktree_management_refresh: String,
+    pub settings_worktree_management_loading: String,
+    pub settings_worktree_management_load_failed: String,
+    pub settings_worktree_management_retry: String,
+    pub settings_worktree_management_empty: String,
+    pub settings_worktree_lifecycle_permanent: String,
+    pub settings_worktree_lifecycle_external: String,
+    pub settings_worktree_state_dirty: String,
+    pub settings_worktree_state_unpublished: String,
+    pub settings_worktree_state_locked: String,
+    pub settings_worktree_state_missing: String,
+    pub settings_worktree_delete_action: String,
+    pub settings_worktree_delete_title: String,
+    pub settings_worktree_delete_message: String,
+    pub settings_worktree_delete_force_title: String,
+    pub settings_worktree_delete_force_message: String,
+    pub settings_worktree_delete_message_sessions: String,
+    pub settings_worktree_delete_force_message_sessions: String,
+    pub settings_worktree_delete_force_action: String,
+    pub settings_worktree_delete_cancel: String,
+    pub settings_worktree_protection_locked: String,
+    pub settings_worktree_protection_missing: String,
+    pub settings_worktree_error_locked: String,
+    pub settings_worktree_error_dirty: String,
+    pub settings_worktree_error_unpublished: String,
+    pub settings_worktree_error_not_found: String,
+    pub settings_worktree_error_remote_unsupported: String,
+    pub settings_worktree_error_delete_failed: String,
 }
 
 impl Global for ShellText {}
@@ -1790,6 +1829,57 @@ pub(crate) fn worktree_sessions_label(count: usize, cx: &App) -> String {
     resolve_with(
         "gpui-shell-git-worktree-sessions",
         TranslationArgs::new().with_number("count", count as f64),
+        cx,
+    )
+}
+
+/// E3-B2: the commit-attribution row's description with the co-author handle
+/// interpolated (web `commitAttribution.description`; the handle is derived in
+/// `settings` from the shared GitHub attribution URL, exactly like the web
+/// constant).
+pub(crate) fn git_attribution_description(account: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-settings-git-attribution-description",
+        TranslationArgs::new().with_string("account", account),
+        cx,
+    )
+}
+
+/// E3-B2: the localized managed-worktree count of one project block on the
+/// settings page (web `management.worktreeCount`).
+pub(crate) fn worktree_count_label(count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-settings-worktree-count",
+        TranslationArgs::new().with_number("count", count as f64),
+        cx,
+    )
+}
+
+/// E3-B2: the settings page's bound-session count (web
+/// `management.sessions.summary`; the Git panel's row keeps its own shorter
+/// label).
+pub(crate) fn worktree_management_sessions_label(count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-settings-worktree-sessions",
+        TranslationArgs::new().with_number("count", count as f64),
+        cx,
+    )
+}
+
+/// E3-B2: the web row's detached-checkout label — the short HEAD hash stands
+/// in for a missing branch name (`labels.detached`).
+pub(crate) fn worktree_detached_label(head: &str, cx: &App) -> String {
+    let short = head.trim();
+    let short = if short.len() >= 7 {
+        &short[..7]
+    } else if short.is_empty() || short.chars().all(|c| c == '0') {
+        "-"
+    } else {
+        short
+    };
+    resolve_with(
+        "gpui-shell-settings-worktree-detached",
+        TranslationArgs::new().with_string("commit", short),
         cx,
     )
 }
@@ -2929,10 +3019,6 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
              workspaces you trust."
                 .to_string()
         },
-        settings_git_coauthor: "Git co-author".to_string(),
-        settings_git_coauthor_description: {
-            "Add OpenBitFun as a co-author in built-in commit workflows.".to_string()
-        },
         settings_hooks_user_file: "User hook file".to_string(),
         settings_hooks_user_file_desc: {
             "config/hooks.json in the OpenBitFun user config directory.".to_string()
@@ -3028,7 +3114,8 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_page_terminal_description: "Choose the shell for new terminals and commands in local workspaces".to_string(),
         settings_page_models_description: "Connect model providers and choose models for each type of task".to_string(),
         settings_page_session_description: "Set the runtime for new sessions, title generation, and workspace search".to_string(),
-        settings_page_worktrees_description: "Set session isolation defaults and manage workspace worktrees".to_string(),
+        settings_worktrees_page_label: "Workspace & Git".to_string(),
+        settings_page_worktrees_description: "Configure file search, commit attribution, and worktrees, and manage isolated working directories".to_string(),
         settings_page_execution_description: "Set tool approval rules, timeouts, and task concurrency".to_string(),
         settings_page_automation_description: "Set up reusable AI prompts and commands triggered by events".to_string(),
         settings_page_websearch_description: "Choose the service agents use to search the web".to_string(),
@@ -3044,12 +3131,6 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
                 .to_string()
         },
         settings_jump_session_action: "Open Global Search".to_string(),
-        settings_jump_worktrees_label: "Worktrees".to_string(),
-        settings_jump_worktrees_description: {
-            "Covered by the Git panel in this shell: manage workspace worktrees there."
-                .to_string()
-        },
-        settings_jump_worktrees_action: "Open Git Panel".to_string(),
         websearch_provider_free: "Exa (free, MCP)".to_string(),
         websearch_provider_exa: "Exa Search API".to_string(),
         websearch_provider_tavily: "Tavily".to_string(),
@@ -3411,6 +3492,43 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_worktree_auto_delete_description: "After creating a worktree, remove the oldest managed worktrees that are safe to delete if the retention count is exceeded".to_string(),
         settings_worktree_auto_delete_limit: "Worktrees to keep per workspace".to_string(),
         settings_worktree_auto_delete_limit_description: "Worktrees with sessions, local changes, unpublished commits, or Git locks are kept, so the actual count may exceed this value".to_string(),
+        settings_workspace_search_title: "Accelerated workspace search".to_string(),
+        settings_workspace_search_description: "Speed up file search in large workspaces. Standard search remains available when this is off.".to_string(),
+        settings_workspace_search_enable: "Enable accelerated workspace search".to_string(),
+        settings_git_attribution_title: "Commit attribution".to_string(),
+        settings_git_attribution_scope: "Shared across workspaces on this execution host. Applies the next time a built-in commit workflow is loaded.".to_string(),
+        settings_git_attribution_label: "Add OpenBitFun as a co-author".to_string(),
+        settings_worktree_reset: "Restore defaults".to_string(),
+        settings_worktree_management_title: "Workspace worktrees".to_string(),
+        settings_worktree_management_description: "Grouped by workspace; only worktrees inside the OpenBitFun worktree root on this execution host are listed".to_string(),
+        settings_worktree_management_refresh: "Refresh worktrees".to_string(),
+        settings_worktree_management_loading: "Scanning OpenBitFun worktrees…".to_string(),
+        settings_worktree_management_load_failed: "Unable to load the OpenBitFun worktree list.".to_string(),
+        settings_worktree_management_retry: "Retry".to_string(),
+        settings_worktree_management_empty: "No OpenBitFun worktrees yet".to_string(),
+        settings_worktree_lifecycle_permanent: "Kept permanently".to_string(),
+        settings_worktree_lifecycle_external: "External".to_string(),
+        settings_worktree_state_dirty: "Local changes".to_string(),
+        settings_worktree_state_unpublished: "Unpublished commits".to_string(),
+        settings_worktree_state_locked: "Git locked".to_string(),
+        settings_worktree_state_missing: "Directory missing".to_string(),
+        settings_worktree_delete_action: "Delete".to_string(),
+        settings_worktree_delete_title: "Delete this worktree?".to_string(),
+        settings_worktree_delete_message: "The checkout will be deleted. This cannot be undone.".to_string(),
+        settings_worktree_delete_force_title: "Delete and discard local work?".to_string(),
+        settings_worktree_delete_force_message: "This worktree has local changes or dangling commits. They will be lost permanently.".to_string(),
+        settings_worktree_delete_message_sessions: "The checkout will be deleted. Associated sessions stay in history but lose this checkout.".to_string(),
+        settings_worktree_delete_force_message_sessions: "Local changes or dangling commits will be lost permanently. Associated sessions stay in history but no longer have this checkout.".to_string(),
+        settings_worktree_delete_force_action: "Delete and discard".to_string(),
+        settings_worktree_delete_cancel: "Cancel".to_string(),
+        settings_worktree_protection_locked: "Unlock this worktree in Git before deleting it.".to_string(),
+        settings_worktree_protection_missing: "The worktree directory is missing; clean up the stale Git record manually.".to_string(),
+        settings_worktree_error_locked: "This worktree is locked by Git and cannot be deleted.".to_string(),
+        settings_worktree_error_dirty: "This worktree still has local changes.".to_string(),
+        settings_worktree_error_unpublished: "This worktree still has unpublished commits.".to_string(),
+        settings_worktree_error_not_found: "This worktree no longer exists. Refresh the list and try again.".to_string(),
+        settings_worktree_error_remote_unsupported: "Remote SSH worktrees are not supported yet.".to_string(),
+        settings_worktree_error_delete_failed: "Unable to delete the worktree.".to_string(),
     }
 }
 
@@ -4278,10 +4396,6 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         settings_hooks_project_description: service
             .t("gpui-shell-settings-hooks-project-description")
             .await,
-        settings_git_coauthor: service.t("gpui-shell-settings-git-coauthor").await,
-        settings_git_coauthor_description: service
-            .t("gpui-shell-settings-git-coauthor-description")
-            .await,
         settings_hooks_user_file: service.t("gpui-shell-settings-hooks-user-file").await,
         settings_hooks_user_file_desc: service.t("gpui-shell-settings-hooks-user-file-desc").await,
         settings_hooks_project_file: service.t("gpui-shell-settings-hooks-project-file").await,
@@ -4422,6 +4536,7 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         settings_page_session_description: service
             .t("gpui-shell-settings-page-session-description")
             .await,
+        settings_worktrees_page_label: service.t("gpui-shell-settings-worktrees-page").await,
         settings_page_worktrees_description: service
             .t("gpui-shell-settings-page-worktrees-description")
             .await,
@@ -4455,13 +4570,6 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
             .t("gpui-shell-settings-jump-session-description")
             .await,
         settings_jump_session_action: service.t("gpui-shell-settings-jump-session-action").await,
-        settings_jump_worktrees_label: service.t("gpui-shell-settings-jump-worktrees-label").await,
-        settings_jump_worktrees_description: service
-            .t("gpui-shell-settings-jump-worktrees-description")
-            .await,
-        settings_jump_worktrees_action: service
-            .t("gpui-shell-settings-jump-worktrees-action")
-            .await,
         websearch_provider_free: service.t("gpui-shell-websearch-provider-free").await,
         websearch_provider_exa: service.t("gpui-shell-websearch-provider-exa").await,
         websearch_provider_tavily: service.t("gpui-shell-websearch-provider-tavily").await,
@@ -4931,6 +5039,111 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
             .await,
         settings_worktree_auto_delete_limit_description: service
             .t("gpui-shell-settings-worktree-auto-delete-limit-desc")
+            .await,
+        settings_workspace_search_title: service
+            .t("gpui-shell-settings-workspace-search-title")
+            .await,
+        settings_workspace_search_description: service
+            .t("gpui-shell-settings-workspace-search-description")
+            .await,
+        settings_workspace_search_enable: service
+            .t("gpui-shell-settings-workspace-search-enable")
+            .await,
+        settings_git_attribution_title: service
+            .t("gpui-shell-settings-git-attribution-title")
+            .await,
+        settings_git_attribution_scope: service
+            .t("gpui-shell-settings-git-attribution-scope")
+            .await,
+        settings_git_attribution_label: service
+            .t("gpui-shell-settings-git-attribution-label")
+            .await,
+        settings_worktree_reset: service.t("gpui-shell-settings-worktree-reset").await,
+        settings_worktree_management_title: service
+            .t("gpui-shell-settings-worktree-management-title")
+            .await,
+        settings_worktree_management_description: service
+            .t("gpui-shell-settings-worktree-management-description")
+            .await,
+        settings_worktree_management_refresh: service
+            .t("gpui-shell-settings-worktree-management-refresh")
+            .await,
+        settings_worktree_management_loading: service
+            .t("gpui-shell-settings-worktree-management-loading")
+            .await,
+        settings_worktree_management_load_failed: service
+            .t("gpui-shell-settings-worktree-management-load-failed")
+            .await,
+        settings_worktree_management_retry: service
+            .t("gpui-shell-settings-worktree-management-retry")
+            .await,
+        settings_worktree_management_empty: service
+            .t("gpui-shell-settings-worktree-management-empty")
+            .await,
+        settings_worktree_lifecycle_permanent: service
+            .t("gpui-shell-settings-worktree-lifecycle-permanent")
+            .await,
+        settings_worktree_lifecycle_external: service
+            .t("gpui-shell-settings-worktree-lifecycle-external")
+            .await,
+        settings_worktree_state_dirty: service.t("gpui-shell-settings-worktree-state-dirty").await,
+        settings_worktree_state_unpublished: service
+            .t("gpui-shell-settings-worktree-state-unpublished")
+            .await,
+        settings_worktree_state_locked: service
+            .t("gpui-shell-settings-worktree-state-locked")
+            .await,
+        settings_worktree_state_missing: service
+            .t("gpui-shell-settings-worktree-state-missing")
+            .await,
+        settings_worktree_delete_action: service
+            .t("gpui-shell-settings-worktree-delete-action")
+            .await,
+        settings_worktree_delete_title: service
+            .t("gpui-shell-settings-worktree-delete-title")
+            .await,
+        settings_worktree_delete_message: service
+            .t("gpui-shell-settings-worktree-delete-message")
+            .await,
+        settings_worktree_delete_force_title: service
+            .t("gpui-shell-settings-worktree-delete-force-title")
+            .await,
+        settings_worktree_delete_force_message: service
+            .t("gpui-shell-settings-worktree-delete-force-message")
+            .await,
+        settings_worktree_delete_message_sessions: service
+            .t("gpui-shell-settings-worktree-delete-message-sessions")
+            .await,
+        settings_worktree_delete_force_message_sessions: service
+            .t("gpui-shell-settings-worktree-delete-force-message-sessions")
+            .await,
+        settings_worktree_delete_force_action: service
+            .t("gpui-shell-settings-worktree-delete-force-action")
+            .await,
+        settings_worktree_delete_cancel: service
+            .t("gpui-shell-settings-worktree-delete-cancel")
+            .await,
+        settings_worktree_protection_locked: service
+            .t("gpui-shell-settings-worktree-protection-locked")
+            .await,
+        settings_worktree_protection_missing: service
+            .t("gpui-shell-settings-worktree-protection-missing")
+            .await,
+        settings_worktree_error_locked: service
+            .t("gpui-shell-settings-worktree-error-locked")
+            .await,
+        settings_worktree_error_dirty: service.t("gpui-shell-settings-worktree-error-dirty").await,
+        settings_worktree_error_unpublished: service
+            .t("gpui-shell-settings-worktree-error-unpublished")
+            .await,
+        settings_worktree_error_not_found: service
+            .t("gpui-shell-settings-worktree-error-not-found")
+            .await,
+        settings_worktree_error_remote_unsupported: service
+            .t("gpui-shell-settings-worktree-error-remote-unsupported")
+            .await,
+        settings_worktree_error_delete_failed: service
+            .t("gpui-shell-settings-worktree-error-delete-failed")
             .await,
     }
 }

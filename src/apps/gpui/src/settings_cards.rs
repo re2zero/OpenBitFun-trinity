@@ -10,11 +10,12 @@
 //! that renders through this path and `None` for one still on the component
 //! `Settings` pipeline (`settings::render_page`).
 
+use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState, NumberInput};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::switch::Switch;
-use gpui_kit::component::{ActiveTheme, Disableable, Sizable, WindowExt};
+use gpui_kit::component::{ActiveTheme, Disableable, Icon, Sizable, WindowExt};
 use gpui_kit::{
     div, prelude::*, px, Anchor, AnyElement, App, Entity, FontWeight, IntoElement, ParentElement,
     RenderOnce, SharedString, Styled, Subscription, Window,
@@ -51,11 +52,12 @@ use crate::settings::{
     set_flow_chat_strategy, set_language, set_prevent_sleep, set_session_title_enabled,
     set_session_title_model, set_terminal_default_shell, set_terminal_font_family,
     set_terminal_font_size, set_terminal_scrollback, set_ui_font_custom_px, set_ui_font_level,
-    set_worktree_auto_delete_limit, set_worktree_switch, set_worktree_text, shortcut_keycaps,
-    terminal_profiles_field, theme_button, ui_font_base_px, ui_font_level_options, SettingsEntry,
-    ShellConfig, CLOSE_BEHAVIOR_PATH, CLOSE_MINIMIZE, CLOSE_QUIT, GLOBAL_SHORTCUTS, MAX_FONT_SIZE,
-    MAX_SCROLLBACK, MAX_UI_FONT_PX, MIN_FONT_SIZE, MIN_SCROLLBACK, MIN_UI_FONT_PX,
-    UI_FONT_CUSTOM_LEVEL,
+    set_workspace_search, set_worktree_auto_delete_limit, set_worktree_switch, set_worktree_text,
+    shortcut_keycaps, terminal_profiles_field, theme_button, ui_font_base_px,
+    ui_font_level_options, worktree_error_label, worktree_settings_are_default, SettingsEntry,
+    ShellConfig, WorktreeProjectsState, CLOSE_BEHAVIOR_PATH, CLOSE_MINIMIZE, CLOSE_QUIT,
+    GLOBAL_SHORTCUTS, MAX_FONT_SIZE, MAX_SCROLLBACK, MAX_UI_FONT_PX, MIN_FONT_SIZE, MIN_SCROLLBACK,
+    MIN_UI_FONT_PX, UI_FONT_CUSTOM_LEVEL,
 };
 use crate::settings::{
     memory_actions_button, memory_advanced_toggle_button, memory_model_options,
@@ -83,6 +85,8 @@ use crate::settings::{
     MAX_SWARM_CONCURRENCY, MIN_REVIEW_PARALLELISM, MIN_SUBAGENT_CONCURRENCY,
 };
 use crate::shell::{resolve_quick_action_text, ShellWindow};
+use openbitfun_core::service::worktree::WorktreeProjectSummary;
+use openbitfun_core_types::{WorktreeLifecycle, WorktreeSummary};
 
 /// One setting row: label + optional description on the left, the control in a
 /// fixed trailing lane. The owning card supplies the divider above every row
@@ -399,7 +403,7 @@ pub(crate) fn render_card_page(
         SettingsEntry::Appearance => appearance_cards(text, cx),
         SettingsEntry::Terminal => terminal_cards(text, view, cx),
         SettingsEntry::SessionSearch => session_search_cards(text, view, cx),
-        SettingsEntry::WorktreesGit => worktrees_git_cards(text, view, cx),
+        SettingsEntry::WorktreesGit => worktrees_git_cards(text, cx),
         SettingsEntry::Shortcuts => shortcuts_cards(text, cx),
         SettingsEntry::Models => models_cards(text, cx),
         SettingsEntry::Memory => memory_cards(text, view, cx),
@@ -1265,15 +1269,48 @@ fn session_search_cards(
     ]
 }
 
-/// The 工作区与 Git page's cards: the web isolation defaults (G-SE16) as one
-/// titled card plus the headless jump row that opens worktree management in
-/// the Git panel, which remains this shell's worktree owner.
-fn worktrees_git_cards(
-    text: &ShellText,
-    view: gpui_kit::WeakEntity<ShellWindow>,
-    cx: &mut App,
-) -> Vec<SettingsCard> {
-    let document = ShellConfig::current(cx).worktrees.clone();
+/// The 工作区与 Git page's cards, one per web section
+/// (`WorkspaceGitSettingsPage`): accelerated workspace search, commit
+/// attribution, the worktree isolation defaults (G-SE16), and the host's
+/// project/worktree catalog with its delete path. The catalog read is
+/// triggered when the page is selected (see `ShellWindow::set_settings_page`).
+fn worktrees_git_cards(text: &ShellText, cx: &mut App) -> Vec<SettingsCard> {
+    let config = ShellConfig::current(cx);
+
+    let search = SettingsCard::new("worktrees-search")
+        .title(text.settings_workspace_search_title.clone())
+        .description(text.settings_workspace_search_description.clone())
+        .row(
+            SettingsCardRow::new(
+                "worktrees-search-enable",
+                text.settings_workspace_search_enable.clone(),
+            )
+            .control(switch_control(
+                "worktrees-search-enable-switch",
+                config.workspace_search_enabled,
+                set_workspace_search,
+                false,
+            )),
+        );
+
+    let attribution = SettingsCard::new("worktrees-attribution")
+        .title(text.settings_git_attribution_title.clone())
+        .description(text.settings_git_attribution_scope.clone())
+        .row(
+            SettingsCardRow::new(
+                "worktrees-attribution-coauthor",
+                text.settings_git_attribution_label.clone(),
+            )
+            .description(crate::settings::git_attribution_description(cx))
+            .control(switch_control(
+                "worktrees-attribution-coauthor-switch",
+                config.git_commit_coauthor,
+                set_git_commit_coauthor,
+                false,
+            )),
+        );
+
+    let document = config.worktrees.clone();
     let defaults = default_worktree_settings_document();
     let root_default = object_str(&defaults, "rootPath", "").to_string();
     let prefix_default = object_str(&defaults, "branchPrefix", "").to_string();
@@ -1288,102 +1325,476 @@ fn worktrees_git_cards(
     let auto_delete_checked = object_bool(&document, "autoDeleteEnabled", auto_delete_default);
     let limit_value = object_u64(&document, "autoDeleteLimit", limit_default) as f64;
 
-    vec![
-        SettingsCard::new("worktrees-isolation")
-            .title(text.settings_worktree_section.clone())
-            .description(text.settings_worktree_section_note.clone())
-            .row(
-                SettingsCardRow::new("worktrees-root", text.settings_worktree_root.clone())
-                    .description(text.settings_worktree_root_description.clone())
-                    .control(text_input_control(
-                        "worktrees-root-input",
-                        text.settings_worktree_root.clone(),
-                        root_value,
-                        |value, cx| set_worktree_text("rootPath", &value, cx),
-                    )),
-            )
-            .row(
-                SettingsCardRow::new(
-                    "worktrees-branch-prefix",
-                    text.settings_worktree_branch_prefix.clone(),
-                )
-                .description(text.settings_worktree_branch_prefix_description.clone())
+    let isolation = SettingsCard::new("worktrees-isolation")
+        .title(text.settings_worktree_section.clone())
+        .description(text.settings_worktree_section_note.clone())
+        .extra(
+            Button::new("worktrees-reset")
+                .label(text.settings_worktree_reset.clone())
+                .small()
+                .outline()
+                .disabled(worktree_settings_are_default(cx))
+                .on_click(|_, _, cx| crate::settings::reset_worktree_settings(cx)),
+        )
+        .row(
+            SettingsCardRow::new("worktrees-root", text.settings_worktree_root.clone())
+                .description(text.settings_worktree_root_description.clone())
                 .control(text_input_control(
-                    "worktrees-branch-prefix-input",
-                    text.settings_worktree_branch_prefix.clone(),
-                    prefix_value,
-                    |value, cx| set_worktree_text("branchPrefix", &value, cx),
+                    "worktrees-root-input",
+                    text.settings_worktree_root.clone(),
+                    root_value,
+                    |value, cx| set_worktree_text("rootPath", &value, cx),
                 )),
-            )
-            .row(
-                SettingsCardRow::new(
-                    "worktrees-copy-changes",
-                    text.settings_worktree_copy_changes.clone(),
-                )
-                .description(text.settings_worktree_copy_changes_description.clone())
-                .control(switch_control(
-                    "worktrees-copy-changes-switch",
-                    copy_checked,
-                    |value, cx| set_worktree_switch("copyLocalChanges", value, cx),
-                    false,
-                )),
-            )
-            .row(
-                SettingsCardRow::new(
-                    "worktrees-auto-delete",
-                    text.settings_worktree_auto_delete.clone(),
-                )
-                .description(text.settings_worktree_auto_delete_description.clone())
-                .control(switch_control(
-                    "worktrees-auto-delete-switch",
-                    auto_delete_checked,
-                    |value, cx| set_worktree_switch("autoDeleteEnabled", value, cx),
-                    false,
-                )),
-            )
-            .row(
-                SettingsCardRow::new(
-                    "worktrees-auto-delete-limit",
-                    text.settings_worktree_auto_delete_limit.clone(),
-                )
-                .description(text.settings_worktree_auto_delete_limit_description.clone())
-                .disabled(!auto_delete_checked)
-                .control(number_input_control(
-                    "worktrees-auto-delete-limit-input",
-                    text.settings_worktree_auto_delete_limit.clone(),
-                    limit_value,
-                    NumberRange {
-                        min: f64::from(crate::settings::WORKTREE_AUTO_DELETE_MIN),
-                        max: f64::from(crate::settings::WORKTREE_AUTO_DELETE_MAX),
-                        step: 1.,
-                    },
-                    set_worktree_auto_delete_limit,
-                    !auto_delete_checked,
-                )),
-            ),
-        SettingsCard::new("worktrees-open").row(
+        )
+        .row(
             SettingsCardRow::new(
-                "worktrees-open",
-                text.settings_jump_worktrees_description.clone(),
+                "worktrees-branch-prefix",
+                text.settings_worktree_branch_prefix.clone(),
             )
-            .control(
-                Button::new("open-worktrees-git")
-                    .label(text.settings_jump_worktrees_action.clone())
-                    .with_variant(ButtonVariant::Ghost)
-                    .on_click({
-                        let view = view.clone();
-                        move |_: &gpui_kit::ClickEvent, window, cx| {
-                            if let Some(shell) = view.upgrade() {
-                                shell.update(cx, |shell, cx| {
-                                    shell.open_git_panel(window, cx);
-                                    shell.set_git_view(crate::git::GitView::Worktrees, cx);
-                                });
-                            }
-                        }
-                    }),
-            ),
-        ),
+            .description(text.settings_worktree_branch_prefix_description.clone())
+            .control(text_input_control(
+                "worktrees-branch-prefix-input",
+                text.settings_worktree_branch_prefix.clone(),
+                prefix_value,
+                |value, cx| set_worktree_text("branchPrefix", &value, cx),
+            )),
+        )
+        .row(
+            SettingsCardRow::new(
+                "worktrees-copy-changes",
+                text.settings_worktree_copy_changes.clone(),
+            )
+            .description(text.settings_worktree_copy_changes_description.clone())
+            .control(switch_control(
+                "worktrees-copy-changes-switch",
+                copy_checked,
+                |value, cx| set_worktree_switch("copyLocalChanges", value, cx),
+                false,
+            )),
+        )
+        .row(
+            SettingsCardRow::new(
+                "worktrees-auto-delete",
+                text.settings_worktree_auto_delete.clone(),
+            )
+            .description(text.settings_worktree_auto_delete_description.clone())
+            .control(switch_control(
+                "worktrees-auto-delete-switch",
+                auto_delete_checked,
+                |value, cx| set_worktree_switch("autoDeleteEnabled", value, cx),
+                false,
+            )),
+        )
+        .row(
+            SettingsCardRow::new(
+                "worktrees-auto-delete-limit",
+                text.settings_worktree_auto_delete_limit.clone(),
+            )
+            .description(text.settings_worktree_auto_delete_limit_description.clone())
+            .disabled(!auto_delete_checked)
+            .control(number_input_control(
+                "worktrees-auto-delete-limit-input",
+                text.settings_worktree_auto_delete_limit.clone(),
+                limit_value,
+                NumberRange {
+                    min: f64::from(crate::settings::WORKTREE_AUTO_DELETE_MIN),
+                    max: f64::from(crate::settings::WORKTREE_AUTO_DELETE_MAX),
+                    step: 1.,
+                },
+                set_worktree_auto_delete_limit,
+                !auto_delete_checked,
+            )),
+        );
+
+    vec![
+        search,
+        attribution,
+        isolation,
+        worktrees_management_card(text, cx),
     ]
+}
+
+/// The web worktree management section: a refresh action in the head, then one
+/// project block per open project with its managed worktrees. Empty, loading,
+/// and failed reads each keep the section's single-card shape.
+fn worktrees_management_card(text: &ShellText, cx: &App) -> SettingsCard {
+    let state = WorktreeProjectsState::current(cx);
+    let theme = cx.theme();
+    let mut card = SettingsCard::new("worktrees-management")
+        .title(text.settings_worktree_management_title.clone())
+        .description(text.settings_worktree_management_description.clone())
+        .extra(
+            Button::new("worktrees-management-refresh")
+                .icon(IconName::RefreshCw)
+                .small()
+                .with_variant(ButtonVariant::Ghost)
+                .tooltip(text.settings_worktree_management_refresh.clone())
+                .disabled(state.loading || state.removing.is_some())
+                .on_click(|_, _, cx| crate::settings::fetch_worktree_projects(cx)),
+        );
+
+    if let Some((code, _message)) = state.error.clone() {
+        let message: SharedString = if code.is_empty() {
+            text.settings_worktree_management_load_failed.clone().into()
+        } else {
+            worktree_error_label(&code, text)
+        };
+        card = card.row(
+            SettingsCardRow::new("worktrees-management-error", message)
+                .danger(true)
+                .control(
+                    Button::new("worktrees-management-retry")
+                        .label(text.settings_worktree_management_retry.clone())
+                        .small()
+                        .outline()
+                        .on_click(|_, _, cx| crate::settings::fetch_worktree_projects(cx)),
+                ),
+        );
+    }
+
+    if state.projects.is_empty() {
+        // The failed read already rendered its message and retry action; the
+        // quiet empty state stays away until a read succeeds (web keeps the
+        // same gate).
+        if state.error.is_none() {
+            if state.loading && !state.loaded {
+                card = card.row(
+                    SettingsCardRow::body("worktrees-management-loading").control(
+                        div()
+                            .w_full()
+                            .py_6()
+                            .flex()
+                            .justify_center()
+                            .text_sm()
+                            .text_color(theme.muted_foreground)
+                            .child(text.settings_worktree_management_loading.clone()),
+                    ),
+                );
+            } else if state.loaded {
+                card = card.row(
+                    SettingsCardRow::body("worktrees-management-empty").control(
+                        div()
+                            .w_full()
+                            .py_6()
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                Icon::new(IconName::Folder)
+                                    .small()
+                                    .text_color(theme.muted_foreground),
+                            )
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .text_color(theme.muted_foreground)
+                                    .child(text.settings_worktree_management_empty.clone()),
+                            ),
+                    ),
+                );
+            }
+        }
+        return card;
+    }
+
+    for project in &state.projects {
+        card = card.row(
+            SettingsCardRow::body(format!(
+                "worktrees-project-{}",
+                project.project_workspace_path
+            ))
+            .control(worktree_project_header(project, cx)),
+        );
+        for worktree in &project.worktrees {
+            card = card.row(
+                SettingsCardRow::body(format!("worktrees-row-{}", worktree.worktree_id))
+                    .control(worktree_management_row(project, worktree, &state, text, cx)),
+            );
+        }
+    }
+    card
+}
+
+/// One project block head: the directory name, the full path (the web's code
+/// line), and the managed-worktree count.
+fn worktree_project_header(project: &WorktreeProjectSummary, cx: &App) -> AnyElement {
+    let theme = cx.theme();
+    let name = project
+        .project_workspace_path
+        .replace('\\', "/")
+        .rsplit('/')
+        .find(|segment| !segment.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| project.project_workspace_path.clone());
+    div()
+        .w_full()
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap_3()
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap_0p5()
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(name),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .font_family(theme.mono_font_family.clone())
+                        .text_color(theme.muted_foreground)
+                        .truncate()
+                        .child(project.project_workspace_path.clone()),
+                ),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_xs()
+                .text_color(theme.muted_foreground)
+                .child(crate::i18n::worktree_count_label(
+                    project.worktrees.len(),
+                    cx,
+                )),
+        )
+        .into_any_element()
+}
+
+/// One worktree row: the branch (or the detached-commit label), the lifecycle
+/// and state facts, the checkout path, the bound-session count, and the
+/// delete action. Locked and missing checkouts refuse deletion with the web's
+/// block reason instead of failing after the confirmation.
+fn worktree_management_row(
+    project: &WorktreeProjectSummary,
+    worktree: &WorktreeSummary,
+    state: &WorktreeProjectsState,
+    text: &ShellText,
+    cx: &App,
+) -> AnyElement {
+    let theme = cx.theme();
+    let title = worktree
+        .branch
+        .clone()
+        .unwrap_or_else(|| crate::i18n::worktree_detached_label(&worktree.head, cx));
+
+    let mut badges: Vec<String> = Vec::new();
+    match worktree.lifecycle {
+        WorktreeLifecycle::Managed => {}
+        WorktreeLifecycle::Permanent => {
+            badges.push(text.settings_worktree_lifecycle_permanent.clone())
+        }
+        WorktreeLifecycle::External => {
+            badges.push(text.settings_worktree_lifecycle_external.clone())
+        }
+    }
+    if worktree.dirty {
+        badges.push(text.settings_worktree_state_dirty.clone());
+    }
+    if worktree.has_unpublished_commits {
+        badges.push(text.settings_worktree_state_unpublished.clone());
+    }
+    if worktree.locked {
+        badges.push(text.settings_worktree_state_locked.clone());
+    }
+    if worktree.missing {
+        badges.push(text.settings_worktree_state_missing.clone());
+    }
+
+    let block_reason = if worktree.locked {
+        Some(text.settings_worktree_protection_locked.clone())
+    } else if worktree.missing {
+        Some(text.settings_worktree_protection_missing.clone())
+    } else {
+        None
+    };
+    let delete_disabled = block_reason.is_some() || state.removing.is_some();
+
+    let project_id = project.project_workspace_id.clone();
+    let project_path = project.project_workspace_path.clone();
+    let facts = WorktreeDeleteFacts {
+        worktree_id: worktree.worktree_id.clone(),
+        path: worktree.path.clone(),
+        discard_local_work: worktree.dirty || worktree.has_unpublished_commits,
+        has_sessions: worktree.associated_session_count > 0,
+    };
+    let delete = Button::new(format!("worktrees-delete-{}", worktree.worktree_id))
+        .icon(IconName::Trash)
+        .small()
+        .with_variant(ButtonVariant::Ghost)
+        .tooltip(
+            block_reason
+                .clone()
+                .unwrap_or_else(|| text.settings_worktree_delete_action.clone()),
+        )
+        .disabled(delete_disabled)
+        .on_click(move |_, window, cx| {
+            open_worktree_delete_confirm(
+                window,
+                cx,
+                project_id.clone(),
+                project_path.clone(),
+                facts.clone(),
+            );
+        });
+
+    div()
+        .w_full()
+        .flex()
+        .items_start()
+        .gap_3()
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap_0p5()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(theme.foreground)
+                                .truncate()
+                                .child(title),
+                        )
+                        .when(!badges.is_empty(), |line| {
+                            line.child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .truncate()
+                                    .child(badges.join(" · ")),
+                            )
+                        }),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .font_family(theme.mono_font_family.clone())
+                        .text_color(theme.muted_foreground)
+                        .truncate()
+                        .child(worktree.path.clone()),
+                )
+                .when(worktree.associated_session_count > 0, |column| {
+                    column.child(div().text_xs().text_color(theme.muted_foreground).child(
+                        crate::i18n::worktree_management_sessions_label(
+                            worktree.associated_session_count,
+                            cx,
+                        ),
+                    ))
+                }),
+        )
+        .child(div().flex_shrink_0().child(delete))
+        .into_any_element()
+}
+
+/// The facts one row's delete confirmation needs after the render pass ends.
+#[derive(Clone)]
+struct WorktreeDeleteFacts {
+    worktree_id: String,
+    path: String,
+    /// The worktree carries local work: the web confirmation switches to the
+    /// discard wording and the removal forces through.
+    discard_local_work: bool,
+    has_sessions: bool,
+}
+
+/// Opens the web delete confirmation (`ConfirmDialog` in
+/// `WorktreeSettingsSection`). Only the confirm path removes; dismissing the
+/// dialog leaves the checkout untouched.
+fn open_worktree_delete_confirm(
+    window: &mut Window,
+    cx: &mut App,
+    project_workspace_id: Option<String>,
+    project_workspace_path: String,
+    facts: WorktreeDeleteFacts,
+) {
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let text = crate::i18n::current(cx);
+        let force = facts.discard_local_work;
+        let title = if force {
+            text.settings_worktree_delete_force_title.clone()
+        } else {
+            text.settings_worktree_delete_title.clone()
+        };
+        let message = match (force, facts.has_sessions) {
+            (true, true) => text.settings_worktree_delete_force_message_sessions.clone(),
+            (true, false) => text.settings_worktree_delete_force_message.clone(),
+            (false, true) => text.settings_worktree_delete_message_sessions.clone(),
+            (false, false) => text.settings_worktree_delete_message.clone(),
+        };
+        let confirm_label = if force {
+            text.settings_worktree_delete_force_action.clone()
+        } else {
+            text.settings_worktree_delete_action.clone()
+        };
+        let confirm_id = project_workspace_id.clone();
+        let confirm_path = project_workspace_path.clone();
+        let confirm_worktree = facts.worktree_id.clone();
+        dialog
+            .title(div().child(title))
+            .child(
+                div()
+                    .w(px(380.))
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().foreground)
+                            .child(message),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .text_color(cx.theme().muted_foreground)
+                            .child(facts.path.clone()),
+                    ),
+            )
+            .footer(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("worktree-delete-cancel")
+                            .label(text.settings_worktree_delete_cancel.clone())
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                    )
+                    .child(
+                        Button::new("worktree-delete-confirm")
+                            .label(confirm_label)
+                            .with_variant(ButtonVariant::Danger)
+                            .on_click(move |_, window, cx| {
+                                crate::settings::remove_worktree(
+                                    confirm_id.clone(),
+                                    confirm_path.clone(),
+                                    confirm_worktree.clone(),
+                                    force,
+                                    cx,
+                                );
+                                window.close_dialog(cx);
+                            }),
+                    ),
+            )
+    });
 }
 
 /// The 快捷键 page's cards, one per web section (global / overlays / terminal
@@ -3075,19 +3486,6 @@ fn automation_cards(text: &ShellText, cx: &App) -> Vec<SettingsCard> {
                 config.project_hooks_enabled,
                 set_project_hooks_enabled,
                 !config.hooks_enabled,
-            )),
-        )
-        .row(
-            SettingsCardRow::new(
-                "automation-git-coauthor",
-                text.settings_git_coauthor.clone(),
-            )
-            .description(text.settings_git_coauthor_description.clone())
-            .control(switch_control(
-                "automation-git-coauthor-switch",
-                config.git_commit_coauthor,
-                set_git_commit_coauthor,
-                false,
             )),
         );
 
