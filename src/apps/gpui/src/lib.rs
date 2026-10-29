@@ -6,6 +6,7 @@
 // Send check at the spawn boundary; the default 128 limit overflows.
 #![recursion_limit = "256"]
 
+pub mod acp;
 pub mod assets;
 pub mod cli;
 pub mod diagnostics;

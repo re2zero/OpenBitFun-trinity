@@ -1210,6 +1210,9 @@ pub(crate) enum SettingsEntry {
     /// Shell-side extension (no registry page).
     Agents,
     Mcp,
+    /// `tools.external-agents`: the ACP agents page — the external agents the
+    /// runtime can drive over the Agent Client Protocol.
+    ExternalAgents,
     Usage,
     Archived,
     Diagnostics,
@@ -1237,6 +1240,7 @@ impl SettingsEntry {
             Self::Skills => None,
             Self::Agents => None,
             Self::Mcp => Some("tools.mcp"),
+            Self::ExternalAgents => Some("tools.external-agents"),
             Self::Usage => Some("data.usage"),
             Self::Archived => Some("data.archived"),
             Self::Diagnostics => Some("data.diagnostics"),
@@ -1247,9 +1251,10 @@ impl SettingsEntry {
 /// Registry pages with no shell presence of any kind. They stay out of the
 /// tree entirely — no dead-end entry that only says "not here" (the same
 /// no-fake-UI rule that keeps web-only switches out of the shell pages;
-/// parity §2.1). pet/voice have no shell analog, browser/desktop-control and
-/// ACP agents have no shell page, and the editor page stays postponed
-/// (memory graduated with G-SE13, shortcuts with G-SE7).
+/// parity §2.1). pet/voice have no shell analog, browser/desktop-control have
+/// no shell page, and the editor page stays postponed (memory graduated with
+/// G-SE13, shortcuts with G-SE7). The ACP agents page left this list with
+/// E3 batch 5 — the shell renders the local and advanced-JSON views.
 /// Test-only: hidden-ness is enforced by omission from
 /// [`category_entries`]; this list exists so the disposition test can prove
 /// tree ∪ hidden covers the registry exactly.
@@ -1259,7 +1264,6 @@ pub(crate) const HIDDEN_REGISTRY_PAGES: &[&str] = &[
     "application.voice",
     "application.editor",
     "tools.desktop-control",
-    "tools.acp",
 ];
 
 /// Tree entries per group, in display order.
@@ -1280,6 +1284,7 @@ pub(crate) fn category_entries(category: SettingsCategory) -> &'static [Settings
             SettingsEntry::Skills,
             SettingsEntry::Agents,
             SettingsEntry::Mcp,
+            SettingsEntry::ExternalAgents,
         ],
         SettingsCategory::Data => &[
             SettingsEntry::Usage,
@@ -1306,6 +1311,7 @@ pub(crate) fn entry_slug(entry: SettingsEntry) -> &'static str {
         SettingsEntry::Skills => "skills",
         SettingsEntry::Agents => "agents",
         SettingsEntry::Mcp => "mcp",
+        SettingsEntry::ExternalAgents => "external-agents",
         SettingsEntry::Usage => "usage",
         SettingsEntry::Archived => "archived",
         SettingsEntry::Diagnostics => "diagnostics",
@@ -1330,6 +1336,7 @@ pub(crate) fn entry_label<'a>(entry: SettingsEntry, text: &'a ShellText) -> &'a 
         SettingsEntry::Skills => &text.manage_skills_title,
         SettingsEntry::Agents => &text.manage_agents_title,
         SettingsEntry::Mcp => &text.manage_mcp_title,
+        SettingsEntry::ExternalAgents => &text.settings_acp_label,
         SettingsEntry::Usage => &text.settings_usage,
         SettingsEntry::Archived => &text.settings_archived,
         SettingsEntry::Diagnostics => &text.settings_diagnostics,
@@ -1353,6 +1360,7 @@ pub(crate) fn entry_description<'a>(entry: SettingsEntry, text: &'a ShellText) -
         SettingsEntry::Skills => &text.settings_page_skills_description,
         SettingsEntry::Agents => &text.settings_page_agents_description,
         SettingsEntry::Mcp => &text.settings_page_mcp_description,
+        SettingsEntry::ExternalAgents => &text.settings_page_acp_description,
         SettingsEntry::Usage => &text.settings_page_usage_description,
         SettingsEntry::Archived => &text.settings_page_archived_description,
         SettingsEntry::Diagnostics => &text.settings_page_diagnostics_description,
@@ -7355,7 +7363,7 @@ mod tests {
         "tools.automation",
         "tools.webSearch",
         "tools.mcp",
-        "tools.acp",
+        "tools.external-agents",
         "data.usage",
         "data.archived",
         "data.diagnostics",
@@ -7458,8 +7466,8 @@ mod tests {
             .iter()
             .map(|&category| category_entries(category).len())
             .sum();
-        assert_eq!(total, 17, "16 real pages + 1 jump page");
-        assert_eq!(HIDDEN_REGISTRY_PAGES.len(), 5);
+        assert_eq!(total, 18, "17 real pages + 1 jump page");
+        assert_eq!(HIDDEN_REGISTRY_PAGES.len(), 4);
     }
 
     /// The two shell-owned registry pages (parity §2.1). Only

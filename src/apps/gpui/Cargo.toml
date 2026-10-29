@@ -7,6 +7,13 @@ description = "OpenBitFun GPUI desktop shell (experimental native frontend)"
 
 [dependencies]
 gpui-kit = { workspace = true }
+# E3 batch 5: the ACP agents page reads and writes the external-agent config
+# through the core ACP client service (the same service the desktop host
+# serves). Only the client role is needed here; the server role stays with the
+# hosts that embed OpenBitFun as an agent.
+openbitfun-acp = { path = "../../crates/interfaces/acp", default-features = false, features = [
+    "client",
+] }
 # gpui-ely redesign: card/section structure primitives from the Ely upstream
 # checkout; its gpui-pre pin (=0.3.10) is the one gpui-kit 0.8.1 pins, so both
 # resolve to a single gpui graph.

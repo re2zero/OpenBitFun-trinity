@@ -3215,6 +3215,76 @@ impl ShellWindow {
                 cx.set_global(catalog);
                 cx.refresh_windows();
             }
+            // E3-B5: the ACP agents page projection — the clients, the
+            // requirement probes, and the config document the advanced-JSON
+            // view edits.
+            RuntimeEvent::AcpSnapshot(result) => {
+                match result {
+                    Ok(catalog) => {
+                        cx.set_global(catalog);
+                    }
+                    Err(message) => {
+                        crate::acp::AcpPageState::mutate(cx, |state| {
+                            state.busy = false;
+                            state.notice = Some(crate::acp::AcpNotice {
+                                success: false,
+                                message,
+                            });
+                        });
+                    }
+                }
+                cx.refresh_windows();
+            }
+            RuntimeEvent::AcpJsonConfig(result) => {
+                match result {
+                    Ok(json) => {
+                        crate::acp::AcpPageState::mutate(cx, |state| {
+                            state.json_baseline = json.clone();
+                            // A dirty draft stays the user's text; the
+                            // baseline moves under it so 「还原」 returns to
+                            // the document on disk.
+                            if !state.json_dirty {
+                                state.json_text = json;
+                            }
+                        });
+                    }
+                    Err(message) => {
+                        crate::acp::AcpPageState::mutate(cx, |state| {
+                            state.busy = false;
+                            state.notice = Some(crate::acp::AcpNotice {
+                                success: false,
+                                message,
+                            });
+                        });
+                    }
+                }
+                cx.refresh_windows();
+            }
+            RuntimeEvent::AcpAction(result) => {
+                crate::acp::AcpPageState::mutate(cx, |state| {
+                    state.busy = false;
+                    match result {
+                        Ok(key) => {
+                            // The JSON save landed: the draft is the saved
+                            // document, so the next snapshot may replace it.
+                            if key == "json_saved" {
+                                state.json_dirty = false;
+                            }
+                            state.notice = Some(crate::acp::AcpNotice {
+                                success: true,
+                                message: key,
+                            });
+                        }
+                        Err(message) => {
+                            state.notice = Some(crate::acp::AcpNotice {
+                                success: false,
+                                message,
+                            });
+                        }
+                    }
+                });
+                cx.refresh_windows();
+            }
             RuntimeEvent::ModeSkillInfos { mode_id, rows } => {
                 if let Some(state) = self.mode_skills.as_mut() {
                     if state.mode_id == mode_id {
@@ -4379,6 +4449,14 @@ impl ShellWindow {
         // repeated selections, and the card's refresh action re-reads it.
         if page == settings::SettingsEntry::WorktreesGit {
             settings::fetch_worktree_projects(cx);
+        }
+        // E3-B5: the ACP agents page reads the client list, the requirement
+        // probes, and the config document on selection (web loads on mount).
+        if page == settings::SettingsEntry::ExternalAgents {
+            if let Some(handle) = runtime::runtime_handle() {
+                handle.reload_acp_snapshot();
+                handle.load_acp_json_config();
+            }
         }
         cx.notify();
     }

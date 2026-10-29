@@ -378,7 +378,7 @@ impl RenderOnce for SettingsCard {
 /// (the text and number controls) defer like the component pipeline's
 /// `SettingItem::render` callbacks do.
 #[derive(IntoElement)]
-struct DeferredControl<F>
+pub(crate) struct DeferredControl<F>
 where
     F: FnOnce(&mut Window, &mut App) -> AnyElement + 'static,
 {
@@ -580,7 +580,7 @@ fn switch_control(
 
 /// A dropdown button in the shell's `Button + caret + menu` shape, showing
 /// `current`'s label and reporting the picked value.
-fn dropdown_control(
+pub(crate) fn dropdown_control(
     id: impl Into<SharedString>,
     label: impl Into<SharedString>,
     options: Rc<Vec<(SharedString, SharedString)>>,
@@ -646,7 +646,7 @@ struct StringFieldState {
 /// reports, and the displayed text follows the setting when it changes
 /// elsewhere. The row label doubles as the input's accessible name.
 /// [`text_input_control`] with a visible placeholder (the web search field).
-fn search_input_control(
+pub(crate) fn search_input_control(
     id: impl Into<SharedString>,
     label: impl Into<SharedString>,
     placeholder: impl Into<SharedString>,

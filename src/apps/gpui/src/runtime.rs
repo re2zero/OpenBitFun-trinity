@@ -455,6 +455,14 @@ pub(crate) enum RuntimeEvent {
     SkillGroupsSaved(Result<Vec<openbitfun_core::service::config::UserSkillGroup>, String>),
     AgentCatalog(crate::manage::AgentCatalog),
     McpCatalog(crate::manage::McpCatalog),
+    /// E3-B5: the ACP agents page snapshot — the configured clients and the
+    /// requirement probes that decide each row's status.
+    AcpSnapshot(Result<crate::acp::AcpCatalog, String>),
+    /// E3-B5: the `acpClients` document the advanced-JSON view edits.
+    AcpJsonConfig(Result<String, String>),
+    /// E3-B5: an ACP page action settled — Ok carries the receipt key, Err
+    /// the failure text.
+    AcpAction(Result<String, String>),
     /// T2-11: the skill selection projection for one agent (mode profile
     /// representative or subagent id); the dialog renders it per phase.
     ModeSkillInfos {
@@ -2146,6 +2154,113 @@ impl RuntimeHandle {
         });
     }
 
+    /// E3-B5: the ACP agents page snapshot — the configured clients plus the
+    /// requirement probes that decide each row's status.
+    pub(crate) fn reload_acp_snapshot(&self) {
+        self.tokio.spawn(async move {
+            publish(RuntimeEvent::AcpSnapshot(fetch_acp_snapshot().await));
+        });
+    }
+
+    /// E3-B5: re-probe the local requirements (the page's 「重新检测」).
+    pub(crate) fn probe_acp_requirements(&self, force: bool) {
+        self.tokio.spawn(async move {
+            publish(RuntimeEvent::AcpSnapshot(fetch_acp_snapshot_with(force).await));
+        });
+    }
+
+    /// E3-B5: load the `acpClients` document for the advanced-JSON view.
+    pub(crate) fn load_acp_json_config(&self) {
+        self.tokio.spawn(async move {
+            publish(RuntimeEvent::AcpJsonConfig(load_acp_json_config().await));
+        });
+    }
+
+    /// E3-B5: save the edited `acpClients` document.
+    pub(crate) fn save_acp_json_config(&self, json_config: String) {
+        self.tokio.spawn(async move {
+            let result = save_acp_json_config(&json_config).await;
+            if let Err(message) = &result {
+                tracing::warn!("Failed to save ACP JSON config: {message}");
+            }
+            publish(RuntimeEvent::AcpAction(result.map(|()| "json_saved".to_string())));
+            publish(RuntimeEvent::AcpJsonConfig(load_acp_json_config().await));
+            publish(RuntimeEvent::AcpSnapshot(fetch_acp_snapshot().await));
+        });
+    }
+
+    /// E3-B5: install an agent's CLI (the page's 「安装 CLI」).
+    pub(crate) fn install_acp_client_cli(&self, client_id: String) {
+        self.tokio.spawn(async move {
+            let result = match crate::acp::acp_client_service() {
+                Some(service) => service
+                    .install_client_cli(&client_id, None)
+                    .await
+                    .map(|()| "install_success".to_string()),
+                None => Err("ACP service is not initialized".to_string()),
+            };
+            if let Err(message) = &result {
+                tracing::warn!("Failed to install the ACP client CLI {client_id}: {message}");
+            }
+            publish(RuntimeEvent::AcpAction(result));
+            publish(RuntimeEvent::AcpSnapshot(fetch_acp_snapshot().await));
+        });
+    }
+
+    /// E3-B5: prepare an agent's ACP adapter (the page's 「配置 ACP」).
+    pub(crate) fn configure_acp_adapter(&self, client_id: String) {
+        self.tokio.spawn(async move {
+            let result = match crate::acp::acp_client_service() {
+                Some(service) => service
+                    .predownload_client_adapter(&client_id)
+                    .await
+                    .map(|()| "configure_success".to_string()),
+                None => Err("ACP service is not initialized".to_string()),
+            };
+            if let Err(message) = &result {
+                tracing::warn!("Failed to prepare the ACP adapter for {client_id}: {message}");
+            }
+            publish(RuntimeEvent::AcpAction(result));
+            publish(RuntimeEvent::AcpSnapshot(fetch_acp_snapshot().await));
+        });
+    }
+
+    /// E3-B5: add a preset's default configuration (the page's 「添加」).
+    pub(crate) fn add_acp_preset(&self, client_id: String) {
+        self.tokio.spawn(async move {
+            let result = match crate::acp::acp_client_service() {
+                Some(service) => add_acp_preset_config(&service, &client_id)
+                    .await
+                    .map(|()| "config_added".to_string()),
+                None => Err("ACP service is not initialized".to_string()),
+            };
+            if let Err(message) = &result {
+                tracing::warn!("Failed to add the ACP client config {client_id}: {message}");
+            }
+            publish(RuntimeEvent::AcpAction(result));
+            publish(RuntimeEvent::AcpJsonConfig(load_acp_json_config().await));
+            publish(RuntimeEvent::AcpSnapshot(fetch_acp_snapshot().await));
+        });
+    }
+
+    /// E3-B5: set an agent's tool-confirmation mode.
+    pub(crate) fn set_acp_permission_mode(&self, client_id: String, mode: String) {
+        self.tokio.spawn(async move {
+            let result = match crate::acp::acp_client_service() {
+                Some(service) => set_acp_permission_mode(&service, &client_id, &mode)
+                    .await
+                    .map(|()| "save_success".to_string()),
+                None => Err("ACP service is not initialized".to_string()),
+            };
+            if let Err(message) = &result {
+                tracing::warn!("Failed to set the ACP permission mode for {client_id}: {message}");
+            }
+            publish(RuntimeEvent::AcpAction(result));
+            publish(RuntimeEvent::AcpJsonConfig(load_acp_json_config().await));
+            publish(RuntimeEvent::AcpSnapshot(fetch_acp_snapshot().await));
+        });
+    }
+
     /// M21: resources/prompts snapshot for one server (browse dialog).
     pub(crate) fn reload_mcp_server_catalog(&self, server_id: String, force: bool) {
         self.tokio.spawn(async move {
@@ -3636,6 +3751,115 @@ async fn poll_mcp_remote_oauth_loop(
             return;
         }
     }
+}
+
+/// E3-B5: the ACP agents page snapshot — the configured clients plus the
+/// requirement probes that decide each row's status.
+async fn fetch_acp_snapshot() -> Result<crate::acp::AcpCatalog, String> {
+    fetch_acp_snapshot_with(false).await
+}
+
+/// E3-B5: the same snapshot with a forced re-probe.
+async fn fetch_acp_snapshot_with(force: bool) -> Result<crate::acp::AcpCatalog, String> {
+    let Some(service) = crate::acp::acp_client_service() else {
+        return Err("ACP service is not initialized".to_string());
+    };
+    let clients = service.list_clients().await.map_err(|error| error.to_string())?;
+    let probes = service
+        .probe_client_requirements(None, force)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(crate::acp::AcpCatalog {
+        loaded: true,
+        clients,
+        probes,
+        probing: false,
+    })
+}
+
+/// E3-B5: the `acpClients` document the advanced-JSON view edits.
+async fn load_acp_json_config() -> Result<String, String> {
+    let Some(service) = crate::acp::acp_client_service() else {
+        return Err("ACP service is not initialized".to_string());
+    };
+    service.load_json_config().await.map_err(|error| error.to_string())
+}
+
+/// E3-B5: writes the edited document back through the core service, so the
+/// same parse/normalize path the desktop host uses applies.
+async fn save_acp_json_config(json_config: &str) -> Result<(), String> {
+    let Some(service) = crate::acp::acp_client_service() else {
+        return Err("ACP service is not initialized".to_string());
+    };
+    service
+        .save_json_config(json_config)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// E3-B5: reads the client file, applies one change, and writes it back.
+async fn patch_acp_config(
+    service: &std::sync::Arc<openbitfun_acp::AcpClientService>,
+    change: impl FnOnce(&mut openbitfun_acp::client::AcpClientConfigFile),
+) -> Result<(), String> {
+    let raw = service
+        .load_json_config()
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut file: openbitfun_acp::client::AcpClientConfigFile = serde_json::from_str(&raw)
+        .map_err(|error| format!("Invalid ACP client config: {error}"))?;
+    change(&mut file);
+    let rendered = serde_json::to_string_pretty(&file)
+        .map_err(|error| format!("Failed to render the ACP config: {error}"))?;
+    service
+        .save_json_config(&rendered)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// E3-B5: adds a preset's default configuration (the web's
+/// `defaultConfigForPreset`).
+async fn add_acp_preset_config(
+    service: &std::sync::Arc<openbitfun_acp::AcpClientService>,
+    client_id: &str,
+) -> Result<(), String> {
+    let Some(preset) = crate::acp::acp_preset(client_id) else {
+        return Err(format!("Unknown ACP agent '{client_id}'"));
+    };
+    let config = openbitfun_acp::client::AcpClientConfig {
+        name: Some(preset.name.to_string()),
+        command: preset.command.to_string(),
+        args: preset.args.iter().map(|arg| arg.to_string()).collect(),
+        env: std::collections::HashMap::new(),
+        enabled: true,
+        readonly: false,
+        subagent: openbitfun_acp::client::AcpClientSubagentConfig::default(),
+        permission_mode: openbitfun_acp::client::AcpClientPermissionMode::Ask,
+    };
+    let id = preset.id.to_string();
+    patch_acp_config(service, move |file| {
+        file.acp_clients.insert(id, config);
+    })
+    .await
+}
+
+/// E3-B5: the tool-confirmation mode of one agent.
+async fn set_acp_permission_mode(
+    service: &std::sync::Arc<openbitfun_acp::AcpClientService>,
+    client_id: &str,
+    mode: &str,
+) -> Result<(), String> {
+    let mode = match mode {
+        "allow_once" => openbitfun_acp::client::AcpClientPermissionMode::AllowOnce,
+        _ => openbitfun_acp::client::AcpClientPermissionMode::Ask,
+    };
+    let id = client_id.to_string();
+    patch_acp_config(service, move |file| {
+        if let Some(config) = file.acp_clients.get_mut(&id) {
+            config.permission_mode = mode;
+        }
+    })
+    .await
 }
 
 async fn fetch_mcp_catalog() -> crate::manage::McpCatalog {
@@ -5314,6 +5538,31 @@ async fn bootstrap(tx: mpsc::UnboundedSender<RuntimeEvent>) -> Result<()> {
             }
         }
         Err(error) => tracing::warn!("Config service unavailable for MCP service: {error}"),
+    }
+
+    // E3-B5: the shell hosts the ACP client service the desktop host serves —
+    // the external-agent surface the ACP agents page reads and writes. It
+    // needs the shared config store and the path manager, both of which the
+    // shell already owns. The clients are not started here: the page manages
+    // the configuration, and a session starts an agent when it is selected.
+    match get_global_config_service().await {
+        Ok(config_service) => match try_get_path_manager_arc() {
+            Ok(path_manager) => {
+                match openbitfun_acp::AcpClientService::new(config_service, path_manager) {
+                    Ok(service) => {
+                        crate::acp::set_acp_client_service(service);
+                        tracing::info!("ACP client service initialized");
+                    }
+                    Err(error) => {
+                        tracing::warn!("Failed to initialize the ACP client service: {error}")
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::warn!("Path manager unavailable for the ACP client service: {error}")
+            }
+        },
+        Err(error) => tracing::warn!("Config service unavailable for the ACP client service: {error}"),
     }
 
     let handle = RuntimeHandle {
