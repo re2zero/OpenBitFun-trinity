@@ -4027,8 +4027,6 @@ pub(crate) struct QuickActionsEditorState {
     pub(crate) index: Option<usize>,
     pub(crate) label: String,
     pub(crate) prompt: String,
-    /// Two-stage confirmation for a custom action's delete.
-    pub(crate) confirm_delete: Option<usize>,
 }
 
 impl Global for QuickActionsEditorState {}
@@ -4180,7 +4178,6 @@ pub(crate) fn delete_quick_action(index: usize, cx: &mut App) {
     actions.remove(index);
     persist_quick_actions(actions, cx);
     QuickActionsEditorState::mutate(cx, |state| {
-        state.confirm_delete = None;
         if state.index == Some(index) {
             state.index = None;
         }
@@ -5853,9 +5850,6 @@ pub(crate) struct HookImportState {
     pub(crate) plan_stale: bool,
     /// The last action's failure, shown above the list.
     pub(crate) error: Option<String>,
-    /// An armed destructive action: `remove:<import_id>` or `reset:<scope>`.
-    /// The second click on the same row runs it.
-    pub(crate) confirm: Option<String>,
 }
 
 impl Global for HookImportState {}
@@ -5913,7 +5907,6 @@ pub(crate) fn set_hook_import_enabled(import_id: String, enabled: bool, cx: &mut
         }
         state.busy = true;
         state.error = None;
-        state.confirm = None;
     });
     handle.mutate_hook_import(
         revision,
@@ -5942,7 +5935,6 @@ pub(crate) fn remove_hook_import(import_id: String, cx: &mut App) {
         }
         state.busy = true;
         state.error = None;
-        state.confirm = None;
     });
     handle.mutate_hook_import(
         revision,
@@ -5953,8 +5945,9 @@ pub(crate) fn remove_hook_import(import_id: String, cx: &mut App) {
     cx.refresh_windows();
 }
 
-/// G-SE25: resets one corrupt import store (two-step). Source application
-/// files are never touched; only OpenBitFun's managed index is rebuilt.
+/// G-SE25: resets one corrupt import store after the dialog confirmation.
+/// Source application files are never touched; only OpenBitFun's managed
+/// index is rebuilt.
 pub(crate) fn reset_hook_import_store(
     scope: openbitfun_product_domains::external_sources::ExternalSourceScope,
     cx: &mut App,
@@ -5974,7 +5967,6 @@ pub(crate) fn reset_hook_import_store(
         }
         state.busy = true;
         state.error = None;
-        state.confirm = None;
     });
     handle.mutate_hook_import(
         revision,

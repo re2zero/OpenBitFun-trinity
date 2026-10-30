@@ -447,7 +447,8 @@ pub(crate) struct ShellText {
     pub settings_quick_actions_section: String,
     pub settings_quick_actions_add: String,
     pub settings_quick_actions_delete: String,
-    pub settings_quick_actions_delete_confirm: String,
+    pub settings_quick_actions_delete_title: String,
+    pub settings_quick_actions_delete_action: String,
     pub settings_quick_actions_label: String,
     pub settings_quick_actions_prompt: String,
     pub settings_quick_actions_save: String,
@@ -841,6 +842,9 @@ pub(crate) struct ShellText {
     pub settings_hooks_description: String,
     pub settings_hooks_project: String,
     pub settings_hooks_project_description: String,
+    pub settings_project_hooks_risk_title: String,
+    pub settings_project_hooks_risk_confirm: String,
+    pub settings_project_hooks_risk_current_workspace: String,
     /// G-SE25: Hook declaration locations, the imported-source manager and the
     /// Codex contract reference on the automation page.
     pub settings_hooks_user_file: String,
@@ -2228,6 +2232,35 @@ pub(crate) fn archived_delete_message(name: &str, workspace: &str, cx: &App) -> 
     )
 }
 
+/// Resolves the project-Hooks risk dialog body, which names the workspace the
+/// gate would trust (web `projectHooksRisk.message`); an empty path falls
+/// back to the generic "current workspace" phrase.
+pub(crate) fn project_hooks_risk_message(workspace_path: &str, cx: &App) -> String {
+    let trimmed = workspace_path.trim();
+    let workspace = if trimmed.is_empty() {
+        let text = current(cx);
+        text.settings_project_hooks_risk_current_workspace
+            .to_string()
+    } else {
+        trimmed.to_string()
+    };
+    resolve_with(
+        "gpui-shell-settings-project-hooks-risk-message",
+        TranslationArgs::new().with_string("workspace", &workspace),
+        cx,
+    )
+}
+
+/// Resolves the quick-action delete confirmation body, which names the action
+/// (web `delete.confirmMessage`).
+pub(crate) fn quick_action_delete_message(name: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-settings-quick-actions-delete-message",
+        TranslationArgs::new().with_string("name", name),
+        cx,
+    )
+}
+
 /// Tool-row chips that take their number at render time (the pattern lives in
 /// the locale file, so word order stays locale-owned).
 pub(crate) fn tool_meta_exit_code(code: i64, cx: &App) -> String {
@@ -2772,7 +2805,10 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         settings_quick_actions_section: "Quick actions".to_string(),
         settings_quick_actions_add: "Add action".to_string(),
         settings_quick_actions_delete: "Delete".to_string(),
-        settings_quick_actions_delete_confirm: "Click again to delete".to_string(),
+        settings_quick_actions_delete_title: {
+            "Delete custom action?".to_string()
+        },
+        settings_quick_actions_delete_action: "Delete action".to_string(),
         settings_quick_actions_label: "Action name".to_string(),
         settings_quick_actions_prompt: "Prompt".to_string(),
         settings_quick_actions_save: "Save".to_string(),
@@ -3208,6 +3244,15 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
             "Allow hook files from the checked-out repository. Only enable this for \
              workspaces you trust."
                 .to_string()
+        },
+        settings_project_hooks_risk_title: {
+            "Allow workspace code to run Hooks?".to_string()
+        },
+        settings_project_hooks_risk_confirm: {
+            "I reviewed it, enable Hooks".to_string()
+        },
+        settings_project_hooks_risk_current_workspace: {
+            "the current workspace".to_string()
         },
         settings_hooks_user_file: "User hook file".to_string(),
         settings_hooks_user_file_desc: {
@@ -4245,8 +4290,11 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
             .await,
         settings_quick_actions_add: service.t("gpui-shell-settings-quick-actions-add").await,
         settings_quick_actions_delete: service.t("gpui-shell-settings-quick-actions-delete").await,
-        settings_quick_actions_delete_confirm: service
-            .t("gpui-shell-settings-quick-actions-delete-confirm")
+        settings_quick_actions_delete_title: service
+            .t("gpui-shell-settings-quick-actions-delete-title")
+            .await,
+        settings_quick_actions_delete_action: service
+            .t("gpui-shell-settings-quick-actions-delete-action")
             .await,
         settings_quick_actions_label: service.t("gpui-shell-settings-quick-actions-label").await,
         settings_quick_actions_prompt: service.t("gpui-shell-settings-quick-actions-prompt").await,
@@ -4686,6 +4734,15 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         settings_hooks: service.t("gpui-shell-settings-hooks").await,
         settings_hooks_description: service.t("gpui-shell-settings-hooks-description").await,
         settings_hooks_project: service.t("gpui-shell-settings-hooks-project").await,
+        settings_project_hooks_risk_title: service
+            .t("gpui-shell-settings-project-hooks-risk-title")
+            .await,
+        settings_project_hooks_risk_confirm: service
+            .t("gpui-shell-settings-project-hooks-risk-confirm")
+            .await,
+        settings_project_hooks_risk_current_workspace: service
+            .t("gpui-shell-settings-project-hooks-risk-current-workspace")
+            .await,
         settings_hooks_project_description: service
             .t("gpui-shell-settings-hooks-project-description")
             .await,

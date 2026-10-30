@@ -585,6 +585,21 @@ fn switch_control(
         .into_any_element()
 }
 
+/// The switch variant whose handler also gets the window: confirmation
+/// dialogs open from it (the project-Hooks enable gate).
+fn switch_control_windowed(
+    id: impl Into<SharedString>,
+    checked: bool,
+    on_change: impl Fn(bool, &mut Window, &mut App) + 'static,
+    disabled: bool,
+) -> AnyElement {
+    Switch::new(id.into())
+        .checked(checked)
+        .disabled(disabled)
+        .on_click(move |checked: &bool, window, cx: &mut App| on_change(*checked, window, cx))
+        .into_any_element()
+}
+
 /// A dropdown button in the shell's `Button + caret + menu` shape, showing
 /// `current`'s label and reporting the picked value.
 pub(crate) fn dropdown_control(
@@ -4528,8 +4543,10 @@ fn open_full_access_confirm(window: &mut Window, cx: &mut App) {
 /// The 自动化 page's cards, one per web `ConfigPageSection`: the hooks
 /// activation switches, the built-in and custom quick-action collections, the
 /// hook declaration locations, the imported-hook manager, and the Codex
-/// contract reference. The quick-action editor and the import-review block
-/// stay inline (the shell has no dialog host here; registered divergence from
+/// contract reference. Destructive and trust-gating actions confirm through
+/// dialogs (web `ConfirmDialog` parity): the quick-action delete, the
+/// project-Hooks enable gate, and the import remove/reset. The quick-action
+/// editor and the import-review block stay inline (registered divergence from
 /// the web modals).
 fn automation_cards(text: &ShellText, cx: &App) -> Vec<SettingsCard> {
     let config = ShellConfig::current(cx);
@@ -4556,10 +4573,16 @@ fn automation_cards(text: &ShellText, cx: &App) -> Vec<SettingsCard> {
             )
             .description(text.settings_hooks_project_description.clone())
             .disabled(!config.hooks_enabled)
-            .control(switch_control(
+            .control(switch_control_windowed(
                 "automation-project-hooks-switch",
                 config.project_hooks_enabled,
-                set_project_hooks_enabled,
+                |value, window, cx| {
+                    if value {
+                        open_project_hooks_confirm(window, cx);
+                    } else {
+                        set_project_hooks_enabled(false, cx);
+                    }
+                },
                 !config.hooks_enabled,
             )),
         );
@@ -4589,14 +4612,7 @@ fn automation_cards(text: &ShellText, cx: &App) -> Vec<SettingsCard> {
 
     for (index, action) in actions.iter().enumerate() {
         let builtin = quick_action_builtin_default(&action.id).is_some();
-        let row = quick_action_row(
-            text,
-            action,
-            index,
-            !builtin,
-            editor.confirm_delete == Some(index),
-            cx,
-        );
+        let row = quick_action_row(text, action, index, !builtin, cx);
         if builtin {
             builtin_card = builtin_card.row(row);
         } else {
@@ -4670,14 +4686,13 @@ fn automation_cards(text: &ShellText, cx: &App) -> Vec<SettingsCard> {
 
 /// One quick-action row: label and prompt on the left, the switch plus the
 /// edit (and, for custom actions, delete) buttons in the trailing lane — the
-/// web `ActionRow`. Deleting an action takes the legacy two-click confirm
-/// (the web opens a dialog).
+/// web `ActionRow`. Deleting an action opens the web delete confirmation; the
+/// dialog's confirm path is the only remover.
 fn quick_action_row(
     text: &ShellText,
     action: &openbitfun_core::service::config::types::AiExperienceQuickAction,
     index: usize,
     deletable: bool,
-    confirm_delete: bool,
     cx: &App,
 ) -> SettingsCardRow {
     let (label, prompt) = resolve_quick_action_text(action, text);
@@ -4701,25 +4716,14 @@ fn quick_action_row(
                 .on_click(move |_, _, cx| start_quick_action_edit(index, cx)),
         );
     if deletable {
-        let delete_label = if confirm_delete {
-            text.settings_quick_actions_delete_confirm.clone()
-        } else {
-            text.settings_quick_actions_delete.clone()
-        };
+        let delete_name = label.to_string();
         controls = controls.child(
             Button::new(SharedString::from(format!("{row_id}-delete")))
-                .label(delete_label)
+                .label(text.settings_quick_actions_delete.clone())
                 .small()
                 .with_variant(ButtonVariant::Danger)
-                .on_click(move |_, _, cx| {
-                    if QuickActionsEditorState::current(cx).confirm_delete == Some(index) {
-                        delete_quick_action(index, cx);
-                    } else {
-                        QuickActionsEditorState::mutate(cx, |state| {
-                            state.confirm_delete = Some(index)
-                        });
-                        cx.refresh_windows();
-                    }
+                .on_click(move |_, window, cx| {
+                    open_quick_action_delete_confirm(window, cx, index, delete_name.clone());
                 }),
         );
     }
@@ -4888,22 +4892,15 @@ fn automation_imports_card(text: &ShellText, cx: &App) -> SettingsCard {
             import.state,
             openbitfun_product_domains::external_hook_import::ImportedHookSourceStateV1::SourceMissing
         );
-        let armed = page.confirm.as_deref() == Some(&format!("remove:{import_id}"));
         let update_label = text.settings_hooks_imports_update.clone();
         let remove_label = text.settings_hooks_imports_remove.clone();
         let toggle_label = text.settings_hooks_import_toggle.clone();
-        let cancel_label = text.settings_quick_actions_cancel.clone();
-        let confirm_title = text.settings_hooks_import_remove_title.clone();
-        let confirm_note = text.settings_hooks_import_remove_confirm_note.clone();
-        let confirm_label = text.settings_hooks_import_remove_confirm.clone();
         let update_source = import.source.key.clone();
         let click_id = import_id.clone();
         let update_id = import_id.clone();
         let remove_id = import_id.clone();
-        let confirm_id = import_id.clone();
-        let cancel_id = import_id.clone();
 
-        let mut column = div().flex().flex_col().gap_2().w_full().child(
+        let column = div().flex().flex_col().gap_2().w_full().child(
             div()
                 .flex()
                 .flex_row()
@@ -4944,56 +4941,11 @@ fn automation_imports_card(text: &ShellText, cx: &App) -> SettingsCard {
                     .small()
                     .with_variant(ButtonVariant::Ghost)
                     .disabled(busy)
-                    .on_click({
-                        let id = remove_id.clone();
-                        move |_, _, cx| {
-                            HookImportState::mutate(cx, |state| {
-                                state.confirm = Some(format!("remove:{id}"))
-                            });
-                            cx.refresh_windows();
-                        }
+                    .on_click(move |_, window, cx| {
+                        open_hook_import_remove_confirm(window, cx, remove_id.clone());
                     }),
                 ),
         );
-        if armed {
-            column = column
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().danger)
-                        .child(format!("{confirm_title} {confirm_note}")),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .gap_2()
-                        .child(
-                            Button::new(SharedString::from(format!(
-                                "hook-import-remove-confirm-{confirm_id}"
-                            )))
-                            .label(confirm_label)
-                            .small()
-                            .with_variant(ButtonVariant::Primary)
-                            .on_click({
-                                let id = confirm_id.clone();
-                                move |_, _, cx| remove_hook_import(id.clone(), cx)
-                            }),
-                        )
-                        .child(
-                            Button::new(SharedString::from(format!(
-                                "hook-import-remove-cancel-{cancel_id}"
-                            )))
-                            .label(cancel_label)
-                            .small()
-                            .with_variant(ButtonVariant::Ghost)
-                            .on_click(|_, _, cx| {
-                                HookImportState::mutate(cx, |state| state.confirm = None);
-                                cx.refresh_windows();
-                            }),
-                        ),
-                );
-        }
         card = card.row(
             SettingsCardRow::new(format!("hook-import-{import_id}"), name)
                 .description(state_label)
@@ -5012,17 +4964,8 @@ fn automation_imports_card(text: &ShellText, cx: &App) -> SettingsCard {
         let code = diagnostic.code.clone();
         let invalid_text = text.settings_hooks_import_store_invalid.clone();
         let reset_label = text.settings_hooks_import_reset.clone();
-        let reset_title = text.settings_hooks_import_reset_title.clone();
-        let reset_note = text.settings_hooks_import_reset_note.clone();
-        let reset_confirm = text.settings_hooks_import_reset_confirm.clone();
-        let cancel_label = text.settings_quick_actions_cancel.clone();
-        let armed_key = format!("reset:{code}");
-        let armed = page.confirm.as_deref() == Some(armed_key.as_str());
-        let arm_code = code.clone();
-        let run_code = code.clone();
-        let cancel_code = code.clone();
 
-        let mut column = div().flex().flex_col().gap_2().w_full().child(
+        let column = div().flex().flex_col().gap_2().w_full().child(
             div()
                 .flex()
                 .flex_row()
@@ -5031,57 +4974,15 @@ fn automation_imports_card(text: &ShellText, cx: &App) -> SettingsCard {
                 .gap_2()
                 .w_full()
                 .child(
-                    Button::new(SharedString::from(format!("hook-import-reset-{arm_code}")))
+                    Button::new(SharedString::from(format!("hook-import-reset-{code}")))
                         .label(reset_label)
                         .small()
                         .with_variant(ButtonVariant::Primary)
-                        .on_click({
-                            let key = format!("reset:{arm_code}");
-                            move |_, _, cx| {
-                                HookImportState::mutate(cx, |state| {
-                                    state.confirm = Some(key.clone())
-                                });
-                                cx.refresh_windows();
-                            }
+                        .on_click(move |_, window, cx| {
+                            open_hook_import_reset_confirm(window, cx, scope);
                         }),
                 ),
         );
-        if armed {
-            column = column
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().danger)
-                        .child(format!("{reset_title} {reset_note}")),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .gap_2()
-                        .child(
-                            Button::new(SharedString::from(format!(
-                                "hook-import-reset-confirm-{run_code}"
-                            )))
-                            .label(reset_confirm)
-                            .small()
-                            .with_variant(ButtonVariant::Primary)
-                            .on_click(move |_, _, cx| reset_hook_import_store(scope, cx)),
-                        )
-                        .child(
-                            Button::new(SharedString::from(format!(
-                                "hook-import-reset-cancel-{cancel_code}"
-                            )))
-                            .label(cancel_label)
-                            .small()
-                            .with_variant(ButtonVariant::Ghost)
-                            .on_click(|_, _, cx| {
-                                HookImportState::mutate(cx, |state| state.confirm = None);
-                                cx.refresh_windows();
-                            }),
-                        ),
-                );
-        }
         card = card.row(
             SettingsCardRow::new(format!("hook-import-reset-{code}"), invalid_text)
                 .description(message)
@@ -5206,4 +5107,174 @@ fn automation_imports_card(text: &ShellText, cx: &App) -> SettingsCard {
     }
 
     card
+}
+
+/// The web `projectHooksRisk` confirmation (`HooksSettingsSection`): enabling
+/// project hook files trusts the workspace's hooks.json with user
+/// permissions. Only the confirm path writes; cancelling leaves the switch
+/// off. The body names the active workspace (web interpolates the same path,
+/// falling back to the generic phrase).
+fn open_project_hooks_confirm(window: &mut Window, cx: &mut App) {
+    let workspace_path = crate::runtime::runtime_handle()
+        .map(|handle| handle.workspace().root_path.display().to_string())
+        .unwrap_or_default();
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let text = crate::i18n::current(cx);
+        let message = crate::i18n::project_hooks_risk_message(&workspace_path, cx);
+        dialog
+            .title(div().child(text.settings_project_hooks_risk_title.clone()))
+            .child(
+                div()
+                    .w(px(380.))
+                    .text_sm()
+                    .text_color(cx.theme().foreground)
+                    .child(message),
+            )
+            .footer(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("project-hooks-confirm-cancel")
+                            .label(text.settings_quick_actions_cancel.clone())
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                    )
+                    .child(
+                        Button::new("project-hooks-confirm-enable")
+                            .label(text.settings_project_hooks_risk_confirm.clone())
+                            .with_variant(ButtonVariant::Primary)
+                            .on_click(|_, window, cx| {
+                                set_project_hooks_enabled(true, cx);
+                                window.close_dialog(cx);
+                            }),
+                    ),
+            )
+    });
+}
+
+/// The web `delete.confirm` dialog for one custom quick action
+/// (`QuickActionsSettingsSection`). Only the confirm path removes; the name
+/// is captured when the row's button fires.
+fn open_quick_action_delete_confirm(window: &mut Window, cx: &mut App, index: usize, name: String) {
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let text = crate::i18n::current(cx);
+        let message = crate::i18n::quick_action_delete_message(&name, cx);
+        dialog
+            .title(div().child(text.settings_quick_actions_delete_title.clone()))
+            .child(
+                div()
+                    .w(px(380.))
+                    .text_sm()
+                    .text_color(cx.theme().foreground)
+                    .child(message),
+            )
+            .footer(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("quick-action-delete-cancel")
+                            .label(text.settings_quick_actions_cancel.clone())
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                    )
+                    .child(
+                        Button::new("quick-action-delete-confirm")
+                            .label(text.settings_quick_actions_delete_action.clone())
+                            .with_variant(ButtonVariant::Danger)
+                            .on_click(move |_, window, cx| {
+                                delete_quick_action(index, cx);
+                                window.close_dialog(cx);
+                            }),
+                    ),
+            )
+    });
+}
+
+/// The web `imports.remove` dialog: dropping one imported source removes only
+/// the managed copy (`HooksSettingsSection` ConfirmDialog).
+fn open_hook_import_remove_confirm(window: &mut Window, cx: &mut App, import_id: String) {
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let text = crate::i18n::current(cx);
+        let confirm_import_id = import_id.clone();
+        dialog
+            .title(div().child(text.settings_hooks_import_remove_title.clone()))
+            .child(
+                div()
+                    .w(px(380.))
+                    .text_sm()
+                    .text_color(cx.theme().foreground)
+                    .child(text.settings_hooks_import_remove_confirm_note.clone()),
+            )
+            .footer(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("hook-import-remove-cancel")
+                            .label(text.settings_quick_actions_cancel.clone())
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                    )
+                    .child(
+                        Button::new("hook-import-remove-confirm")
+                            .label(text.settings_hooks_import_remove_confirm.clone())
+                            .with_variant(ButtonVariant::Danger)
+                            .on_click(move |_, window, cx| {
+                                remove_hook_import(confirm_import_id.clone(), cx);
+                                window.close_dialog(cx);
+                            }),
+                    ),
+            )
+    });
+}
+
+/// The web `imports.reset` dialog for one corrupt import store, scoped to
+/// user-global or project (`HooksSettingsSection` ConfirmDialog).
+fn open_hook_import_reset_confirm(
+    window: &mut Window,
+    cx: &mut App,
+    scope: openbitfun_product_domains::external_sources::ExternalSourceScope,
+) {
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let text = crate::i18n::current(cx);
+        dialog
+            .title(div().child(text.settings_hooks_import_reset_title.clone()))
+            .child(
+                div()
+                    .w(px(380.))
+                    .text_sm()
+                    .text_color(cx.theme().foreground)
+                    .child(text.settings_hooks_import_reset_note.clone()),
+            )
+            .footer(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("hook-import-reset-cancel")
+                            .label(text.settings_quick_actions_cancel.clone())
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                    )
+                    .child(
+                        Button::new("hook-import-reset-confirm")
+                            .label(text.settings_hooks_import_reset_confirm.clone())
+                            .with_variant(ButtonVariant::Danger)
+                            .on_click(move |_, window, cx| {
+                                reset_hook_import_store(scope, cx);
+                                window.close_dialog(cx);
+                            }),
+                    ),
+            )
+    });
 }

@@ -3733,7 +3733,6 @@ impl ShellWindow {
                     state.error = None;
                     state.plan = None;
                     state.plan_stale = false;
-                    state.confirm = None;
                 });
                 cx.refresh_windows();
             }
