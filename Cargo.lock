@@ -9058,6 +9058,7 @@ dependencies = [
  "keepawake",
  "ksni",
  "minisign-verify",
+ "openbitfun-acp",
  "openbitfun-agent-runtime",
  "openbitfun-core",
  "openbitfun-core-types",

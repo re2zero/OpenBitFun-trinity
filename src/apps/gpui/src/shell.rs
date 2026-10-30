@@ -11909,6 +11909,43 @@ mod tests {
         crate::i18n::fallback_text(LocaleId::EnUS)
     }
 
+    /// A configured ACP client for the settings page tests (E3-B5).
+    fn acp_test_client(id: &str, name: &str) -> openbitfun_acp::client::AcpClientInfo {
+        openbitfun_acp::client::AcpClientInfo {
+            id: id.to_string(),
+            name: name.to_string(),
+            command: id.to_string(),
+            args: Vec::new(),
+            enabled: true,
+            readonly: false,
+            subagent: openbitfun_acp::client::AcpClientSubagentConfig::default(),
+            permission_mode: openbitfun_acp::client::AcpClientPermissionMode::Ask,
+            status: openbitfun_acp::client::AcpClientStatus::Configured,
+            tool_name: id.to_string(),
+            session_count: 0,
+        }
+    }
+
+    /// A requirement probe for one ACP agent (E3-B5).
+    fn acp_test_probe(
+        id: &str,
+        installed: bool,
+    ) -> openbitfun_acp::client::AcpClientRequirementProbe {
+        openbitfun_acp::client::AcpClientRequirementProbe {
+            id: id.to_string(),
+            tool: openbitfun_acp::client::AcpRequirementProbeItem {
+                name: id.to_string(),
+                installed,
+                version: None,
+                path: None,
+                error: None,
+            },
+            adapter: None,
+            runnable: installed,
+            notes: Vec::new(),
+        }
+    }
+
     fn permission_item(request_id: &str) -> PermissionPromptItem {
         PermissionPromptItem {
             request: crate::runtime::test_permission_request(request_id),
@@ -12232,6 +12269,15 @@ mod tests {
                 loaded: true,
                 models: Vec::new(),
             });
+            // E3-B5: the ACP page reads its catalog and page state as globals;
+            // seed one configured agent (probed) so the registry row renders.
+            cx.set_global(crate::acp::AcpCatalog {
+                loaded: true,
+                clients: vec![acp_test_client("codex", "Codex")],
+                probes: vec![acp_test_probe("codex", true)],
+                probing: false,
+            });
+            cx.set_global(crate::acp::AcpPageState::default());
         });
 
         let cases: &[(settings::SettingsEntry, &[&str])] = &[
@@ -12326,6 +12372,13 @@ mod tests {
                     "settings-card-manage-agents-modes",
                     "settings-card-manage-agents-subagents",
                 ],
+            ),
+            // E3-B5: the ACP page opens on the local registry view, so the
+            // registry card carries the anchor; the advanced-JSON card is
+            // view-gated and has its own settlement test.
+            (
+                settings::SettingsEntry::ExternalAgents,
+                &["settings-card-acp-registry"],
             ),
             // The pages below migrated before the anchor cases grew a slot;
             // their legacy `settings-section-*` assertions went away with the
@@ -14735,6 +14788,106 @@ mod tests {
                 .debug_bounds("settings-card-session-search-harness")
                 .is_none(),
             "the harness card left the search page"
+        );
+    }
+
+    /// E3-B5: the ACP page opens on the local registry view — presets plus
+    /// configured clients, each with its status — and the advanced-JSON card
+    /// only renders once the view switches (the web page's TabGroup over
+    /// `registry` and `json`).
+    #[gpui_kit::test]
+    fn acp_page_renders_the_local_and_json_views(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        cx.update(|cx| {
+            // Codex is configured and probed (enabled → the mode picker);
+            // `myagent` is a custom configured client; the presets without a
+            // config render as ready rows with the add action.
+            cx.set_global(crate::acp::AcpCatalog {
+                loaded: true,
+                clients: vec![
+                    acp_test_client("codex", "Codex"),
+                    acp_test_client("myagent", "My Agent"),
+                ],
+                probes: vec![acp_test_probe("codex", true)],
+                probing: false,
+            });
+            cx.set_global(crate::acp::AcpPageState::default());
+        });
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+        let text = sample_shell_text();
+        let view = shell.downgrade();
+
+        let draw_page = |window: &mut gpui_kit::VisualTestContext| {
+            let text = text.clone();
+            let view = view.clone();
+            window.draw(
+                point(px(0.), px(0.)),
+                size(px(900.), px(600.)),
+                move |_, cx| {
+                    div()
+                        .w(px(640.))
+                        .h_full()
+                        .child(
+                            cx.new(|_| SettingsHarness {
+                                text: text.clone(),
+                                view: view.clone(),
+                                page: settings::SettingsEntry::ExternalAgents,
+                            })
+                            .into_any_element(),
+                        )
+                        .into_any_element()
+                },
+            );
+            window.run_until_parked();
+        };
+
+        draw_page(window);
+        assert!(
+            window.debug_bounds("settings-card-acp-registry").is_some(),
+            "the page opens on the local registry view"
+        );
+        assert!(
+            window
+                .debug_bounds("settings-row-acp-agent-codex")
+                .is_some(),
+            "the configured agent renders its registry row"
+        );
+        assert!(
+            window
+                .debug_bounds("settings-row-acp-agent-opencode")
+                .is_some(),
+            "unconfigured presets keep their rows"
+        );
+        assert!(
+            window
+                .debug_bounds("settings-row-acp-agent-myagent")
+                .is_some(),
+            "custom configured clients render after the presets"
+        );
+        assert!(
+            window.debug_bounds("settings-card-acp-json").is_none(),
+            "the advanced-JSON card stays behind its view"
+        );
+
+        window.update(|_, cx| {
+            crate::acp::AcpPageState::mutate(cx, |state| state.view = crate::acp::AcpView::Json);
+        });
+        draw_page(window);
+        assert!(
+            window.debug_bounds("settings-card-acp-json").is_some(),
+            "the advanced-JSON view renders its card"
+        );
+        assert!(
+            window
+                .debug_bounds("settings-row-acp-json-editor")
+                .is_some(),
+            "the JSON editor row renders in the advanced view"
+        );
+        assert!(
+            window.debug_bounds("settings-card-acp-registry").is_none(),
+            "the registry card stays behind the local view"
         );
     }
 

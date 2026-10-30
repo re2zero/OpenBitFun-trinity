@@ -1608,6 +1608,10 @@ export function findProductEntrypointCoreFeatureViolations(
       label: 'Desktop',
       requiredFeatures: ['client'],
     }],
+    ['openbitfun-gpui', {
+      label: 'GPUI shell',
+      requiredFeatures: ['client'],
+    }],
   ]);
   const acpPackage = packages.find((pkg) => pkg.name === 'openbitfun-acp');
   if (acpPackage) {

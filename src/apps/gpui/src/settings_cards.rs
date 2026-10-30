@@ -382,7 +382,7 @@ pub(crate) struct DeferredControl<F>
 where
     F: FnOnce(&mut Window, &mut App) -> AnyElement + 'static,
 {
-    construct: F,
+    pub(crate) construct: F,
 }
 
 impl<F> RenderOnce for DeferredControl<F>
@@ -427,6 +427,13 @@ pub(crate) fn render_card_page(
             return page_frame_body(entry, text, preamble, body, cx);
         }
         SettingsEntry::Agents => crate::manage::agents_cards(text, view, cx),
+        // The ACP page switches views above its cards: the local registry and
+        // the advanced-JSON editor are two states of one page (web TabGroup),
+        // so the whole body goes through the custom-body frame.
+        SettingsEntry::ExternalAgents => {
+            let body = crate::acp::acp_page_body(text, cx);
+            return page_frame_body(entry, text, preamble, body, cx);
+        }
     };
     page_frame(entry, text, preamble, cards, cx)
 }

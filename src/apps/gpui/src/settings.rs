@@ -7378,15 +7378,15 @@ mod tests {
             .iter()
             .flat_map(|&category| category_entries(category).iter().copied())
             .collect::<Vec<_>>();
-        assert_eq!(entries.len(), 17);
+        assert_eq!(entries.len(), 18);
         let mut slugs = entries
             .iter()
             .map(|&entry| entry_slug(entry))
             .collect::<Vec<_>>();
-        assert_eq!(slugs.len(), 17);
+        assert_eq!(slugs.len(), 18);
         slugs.sort_unstable();
         slugs.dedup();
-        assert_eq!(slugs.len(), 17, "slugs key the page elements");
+        assert_eq!(slugs.len(), 18, "slugs key the page elements");
         for &entry in &entries {
             assert!(!entry_label(entry, &text).is_empty(), "{entry:?}");
             assert!(!entry_description(entry, &text).is_empty(), "{entry:?}");
@@ -7408,7 +7408,7 @@ mod tests {
         );
         assert_eq!(
             tree.iter().map(|group| group.rows.len()).sum::<usize>(),
-            17,
+            18,
             "every tree entry is a row"
         );
         assert!(matches!(

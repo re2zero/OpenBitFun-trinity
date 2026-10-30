@@ -2165,7 +2165,9 @@ impl RuntimeHandle {
     /// E3-B5: re-probe the local requirements (the page's 「重新检测」).
     pub(crate) fn probe_acp_requirements(&self, force: bool) {
         self.tokio.spawn(async move {
-            publish(RuntimeEvent::AcpSnapshot(fetch_acp_snapshot_with(force).await));
+            publish(RuntimeEvent::AcpSnapshot(
+                fetch_acp_snapshot_with(force).await,
+            ));
         });
     }
 
@@ -2183,7 +2185,9 @@ impl RuntimeHandle {
             if let Err(message) = &result {
                 tracing::warn!("Failed to save ACP JSON config: {message}");
             }
-            publish(RuntimeEvent::AcpAction(result.map(|()| "json_saved".to_string())));
+            publish(RuntimeEvent::AcpAction(
+                result.map(|()| "json_saved".to_string()),
+            ));
             publish(RuntimeEvent::AcpJsonConfig(load_acp_json_config().await));
             publish(RuntimeEvent::AcpSnapshot(fetch_acp_snapshot().await));
         });
@@ -2196,6 +2200,7 @@ impl RuntimeHandle {
                 Some(service) => service
                     .install_client_cli(&client_id, None)
                     .await
+                    .map_err(|error| error.to_string())
                     .map(|()| "install_success".to_string()),
                 None => Err("ACP service is not initialized".to_string()),
             };
@@ -2214,6 +2219,7 @@ impl RuntimeHandle {
                 Some(service) => service
                     .predownload_client_adapter(&client_id)
                     .await
+                    .map_err(|error| error.to_string())
                     .map(|()| "configure_success".to_string()),
                 None => Err("ACP service is not initialized".to_string()),
             };
@@ -3764,7 +3770,10 @@ async fn fetch_acp_snapshot_with(force: bool) -> Result<crate::acp::AcpCatalog, 
     let Some(service) = crate::acp::acp_client_service() else {
         return Err("ACP service is not initialized".to_string());
     };
-    let clients = service.list_clients().await.map_err(|error| error.to_string())?;
+    let clients = service
+        .list_clients()
+        .await
+        .map_err(|error| error.to_string())?;
     let probes = service
         .probe_client_requirements(None, force)
         .await
@@ -3782,7 +3791,10 @@ async fn load_acp_json_config() -> Result<String, String> {
     let Some(service) = crate::acp::acp_client_service() else {
         return Err("ACP service is not initialized".to_string());
     };
-    service.load_json_config().await.map_err(|error| error.to_string())
+    service
+        .load_json_config()
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// E3-B5: writes the edited document back through the core service, so the
@@ -5562,7 +5574,9 @@ async fn bootstrap(tx: mpsc::UnboundedSender<RuntimeEvent>) -> Result<()> {
                 tracing::warn!("Path manager unavailable for the ACP client service: {error}")
             }
         },
-        Err(error) => tracing::warn!("Config service unavailable for the ACP client service: {error}"),
+        Err(error) => {
+            tracing::warn!("Config service unavailable for the ACP client service: {error}")
+        }
     }
 
     let handle = RuntimeHandle {

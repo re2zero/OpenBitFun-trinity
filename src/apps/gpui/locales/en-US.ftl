@@ -1361,3 +1361,56 @@ gpui-shell-settings-automation-hooks-compat-desc = OpenBitFun uses the Codex Hoo
 # MCP page card (web `McpToolsConfig` server-list section).
 gpui-shell-settings-mcp-servers-title = MCP Server List
 gpui-shell-settings-mcp-servers-desc = A server must be enabled and connected before its tools are available to agents
+
+# ACP agents page (web `tools.external-agents`, `settings/acp-agents.json`).
+# The nav description carries divergence D1: the shell has no SSH view, so it
+# does not promise one.
+gpui-shell-settings-acp-label = ACP
+gpui-shell-settings-page-acp-description = Connect external agents on this host through ACP
+gpui-shell-acp-view-local = Local
+gpui-shell-acp-view-json = Advanced JSON
+gpui-shell-acp-registry-title = Agents
+gpui-shell-acp-registry-description = Discover agents on the current execution host and enable them for selection in sessions
+gpui-shell-acp-action-refresh = Recheck
+gpui-shell-acp-search-placeholder = Search agents...
+gpui-shell-acp-filter-all = All
+gpui-shell-acp-filter-enabled = Enabled
+gpui-shell-acp-filter-not-installed = Not Installed
+gpui-shell-acp-filter-invalid = Invalid config
+gpui-shell-acp-loading = Loading ACP agents…
+gpui-shell-acp-empty-title = No matching ACP agents.
+gpui-shell-acp-empty = Adjust the search or the filter to see the built-in agents again.
+gpui-shell-acp-status-enabled = Enabled
+gpui-shell-acp-status-ready = Available
+gpui-shell-acp-status-partial = Partially available
+gpui-shell-acp-status-checking = Checking
+gpui-shell-acp-status-cli-missing = CLI missing
+gpui-shell-acp-status-acp-missing = ACP missing
+gpui-shell-acp-status-path-invalid = Path invalid
+gpui-shell-acp-status-version-mismatch = Version mismatch
+gpui-shell-acp-status-connection-failed = Connection failed
+gpui-shell-acp-status-permission-denied = Permission denied
+gpui-shell-acp-status-config-invalid = Invalid config
+gpui-shell-acp-permission-ask = Ask
+gpui-shell-acp-permission-allow-once = Auto approve
+gpui-shell-acp-action-install-cli = Install CLI
+gpui-shell-acp-action-configure = Configure ACP
+gpui-shell-acp-action-view-instructions = View instructions
+gpui-shell-acp-action-view-error = View error
+gpui-shell-acp-action-add = Add
+gpui-shell-acp-action-add-config = Add config
+gpui-shell-acp-cli-missing-detail = Oh My Pi is configured separately from OpenBitFun. Install the omp CLI and make sure it is on PATH, then recheck detection.
+gpui-shell-acp-json-title = Advanced JSON configuration
+gpui-shell-acp-json-description = Use when the list cannot express the settings you need; edits acpClients on the current execution host
+gpui-shell-acp-json-warning = ACP JSON and environment variables may contain API keys or access tokens. OpenBitFun saves them in the configuration on the current execution host. Do not paste them into online JSON validators, chats, or support tickets.
+gpui-shell-acp-action-revert = Revert
+gpui-shell-acp-action-save-json = Save JSON
+gpui-shell-acp-notice-save-success = ACP config saved
+gpui-shell-acp-notice-install-success = ACP CLI installed
+gpui-shell-acp-notice-configure-success = ACP adapter prepared
+gpui-shell-acp-notice-config-added = ACP agent config added
+gpui-shell-acp-preset-opencode = Native ACP support.
+gpui-shell-acp-preset-dsh = Uses OpenBitFun's bundled ACP bridge and the model settings from dsh.
+gpui-shell-acp-preset-omp = Native ACP support.
+gpui-shell-acp-preset-claude-code = Connects through the official ACP adapter.
+gpui-shell-acp-preset-codex = Connects through the official ACP adapter.

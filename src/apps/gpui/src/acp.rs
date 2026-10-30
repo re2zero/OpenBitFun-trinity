@@ -129,16 +129,6 @@ pub(crate) enum AcpFilter {
 }
 
 impl AcpFilter {
-    /// The value the stored filter keeps.
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::All => "all",
-            Self::Enabled => "enabled",
-            Self::NotInstalled => "not_installed",
-            Self::Invalid => "invalid",
-        }
-    }
-
     /// The filter a stored value names; unknown values fall back to `All`.
     pub(crate) fn from_str(value: &str) -> Self {
         match value {
@@ -216,13 +206,16 @@ fn acp_has_transient_probe_failure(probe: Option<&AcpClientRequirementProbe>) ->
     let Some(probe) = probe else {
         return false;
     };
-    [probe.tool.error.as_deref(), probe.adapter.as_ref().and_then(|a| a.error.as_deref())]
-        .into_iter()
-        .flatten()
-        .any(|error| {
-            let lower = error.to_ascii_lowercase();
-            lower.contains("timeout") || lower.contains("timed out")
-        })
+    [
+        probe.tool.error.as_deref(),
+        probe.adapter.as_ref().and_then(|a| a.error.as_deref()),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|error| {
+        let lower = error.to_ascii_lowercase();
+        lower.contains("timeout") || lower.contains("timed out")
+    })
 }
 
 /// The issue the row reports (web `getIssueKind`).
@@ -247,7 +240,11 @@ pub(crate) fn acp_issue_kind(
                 return adapter_issue;
             }
         }
-        if probe.adapter.as_ref().is_some_and(|adapter| !adapter.installed) {
+        if probe
+            .adapter
+            .as_ref()
+            .is_some_and(|adapter| !adapter.installed)
+        {
             return AcpIssue::AdapterMissing;
         }
     }
@@ -357,7 +354,11 @@ pub(crate) fn acp_status_detail(
         if let Some(error) = probe.tool.error.as_ref() {
             lines.push(error.clone());
         }
-        if let Some(error) = probe.adapter.as_ref().and_then(|adapter| adapter.error.as_ref()) {
+        if let Some(error) = probe
+            .adapter
+            .as_ref()
+            .and_then(|adapter| adapter.error.as_ref())
+        {
             lines.push(error.clone());
         }
         lines.extend(probe.notes.iter().cloned());
@@ -394,8 +395,9 @@ pub(crate) fn acp_row_action(
     if show_select {
         return Some(AcpRowAction::PermissionMode);
     }
-    let can_install_cli =
-        status == AcpStatus::NotInstalled && issue != AcpIssue::ConnectionFailed && !self_managed_install;
+    let can_install_cli = status == AcpStatus::NotInstalled
+        && issue != AcpIssue::ConnectionFailed
+        && !self_managed_install;
     if can_install_cli {
         return Some(AcpRowAction::InstallCli);
     }
@@ -449,7 +451,7 @@ pub(crate) struct AcpAgentRow {
 }
 
 /// The clients and the probes the page renders.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct AcpCatalog {
     pub(crate) loaded: bool,
     pub(crate) clients: Vec<AcpClientInfo>,
@@ -545,10 +547,14 @@ pub(crate) fn acp_matches_search(row: &AcpAgentRow, search: &str) -> bool {
     if search.is_empty() {
         return true;
     }
-    [row.id.as_str(), row.display_name.as_str(), row.description.as_str()]
-        .join(" ")
-        .to_ascii_lowercase()
-        .contains(&search)
+    [
+        row.id.as_str(),
+        row.display_name.as_str(),
+        row.description.as_str(),
+    ]
+    .join(" ")
+    .to_ascii_lowercase()
+    .contains(&search)
 }
 
 #[cfg(test)]
@@ -595,20 +601,10 @@ mod tests {
     #[test]
     fn a_missing_cli_reads_as_not_installed() {
         let probe = probe(false);
-        let status = acp_status(
-            true,
-            true,
-            Some(false),
-            None,
-            false,
-            false,
-            Some(&probe),
-        );
+        let status = acp_status(true, true, Some(false), None, false, false, Some(&probe));
         assert_eq!(status, AcpStatus::NotInstalled);
-        assert_eq!(
-            acp_issue_kind(Some(&probe), false),
-            AcpIssue::PathInvalid
-        );
+        // No probe error text: the missing install is what the row reports.
+        assert_eq!(acp_issue_kind(Some(&probe), false), AcpIssue::CliMissing);
     }
 
     #[test]
@@ -651,10 +647,7 @@ mod tests {
             Some(&probe),
         );
         assert_eq!(status, AcpStatus::Partial);
-        assert_eq!(
-            acp_issue_kind(Some(&probe), true),
-            AcpIssue::AdapterMissing
-        );
+        assert_eq!(acp_issue_kind(Some(&probe), true), AcpIssue::AdapterMissing);
     }
 
     #[test]
@@ -757,17 +750,18 @@ mod tests {
 // ── rendering ─────────────────────────────────────────────────────────────
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::button::{Button, ButtonVariant};
+use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
-use gpui_kit::component::{ActiveTheme, Sizable, WindowExt};
+use gpui_kit::component::{ActiveTheme, Disableable, Sizable};
 use gpui_kit::{
     div, prelude::*, px, AnyElement, Entity, IntoElement, ParentElement, SharedString, Styled,
     Subscription, Window,
 };
 
 use crate::i18n::ShellText;
-use crate::settings_cards::{dropdown_control, search_input_control, DeferredControl, SettingsCard,
-    SettingsCardRow};
+use crate::settings_cards::{
+    dropdown_control, search_input_control, DeferredControl, SettingsCard, SettingsCardRow,
+};
 
 /// The page body: the view switcher, the last action's receipt, and the
 /// active view (web `AcpAgentsConfig`'s view controls and section stack).
@@ -789,7 +783,11 @@ pub(crate) fn acp_page_body(text: &ShellText, cx: &mut App) -> AnyElement {
 fn acp_view_switcher(text: &ShellText, active: AcpView) -> AnyElement {
     let mut row = div().flex().flex_row().items_center().gap_2();
     for (view, label, id) in [
-        (AcpView::Local, text.acp_view_local.clone(), "acp-view-local"),
+        (
+            AcpView::Local,
+            text.acp_view_local.clone(),
+            "acp-view-local",
+        ),
         (AcpView::Json, text.acp_view_json.clone(), "acp-view-json"),
     ] {
         let is_active = view == active;
@@ -803,6 +801,7 @@ fn acp_view_switcher(text: &ShellText, active: AcpView) -> AnyElement {
             })
             .on_click(move |_, _, cx| {
                 AcpPageState::mutate(cx, |state| state.view = view);
+                cx.refresh_windows();
             });
         row = row.child(button);
     }
@@ -850,17 +849,17 @@ fn acp_local_card(text: &ShellText, cx: &mut App) -> AnyElement {
         .description(text.acp_registry_description.clone())
         .extra(acp_refresh_button(text));
 
-    card = card.row(
-        SettingsCardRow::body("acp-toolbar").control(acp_toolbar(text, cx)),
-    );
+    card = card.row(SettingsCardRow::body("acp-toolbar").control(acp_toolbar(text, cx)));
 
     if !catalog.loaded {
-        card = card.row(SettingsCardRow::body("acp-loading").control(
-            div()
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child(text.acp_loading.clone()),
-        ));
+        card = card.row(
+            SettingsCardRow::body("acp-loading").control(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(text.acp_loading.clone()),
+            ),
+        );
         return div().child(card).into_any_element();
     }
 
@@ -871,13 +870,13 @@ fn acp_local_card(text: &ShellText, cx: &mut App) -> AnyElement {
         .filter(|row| acp_matches_search(row, &state.search))
         .collect::<Vec<_>>();
     if visible.is_empty() {
-        card = card.row(SettingsCardRow::body("acp-empty").control(
-            crate::shell::brand_empty(
+        card = card.row(
+            SettingsCardRow::body("acp-empty").control(crate::shell::brand_empty(
                 IconName::Bot,
                 &text.acp_empty_title,
                 &text.acp_empty,
-            ),
-        ));
+            )),
+        );
     } else {
         for row in visible {
             card = card.row(acp_agent_row(text, row, cx));
@@ -892,7 +891,7 @@ fn acp_refresh_button(text: &ShellText) -> AnyElement {
         .label(text.acp_action_refresh.clone())
         .small()
         .with_variant(ButtonVariant::Secondary)
-        .on_click(|_, _, cx| {
+        .on_click(|_, _, _cx| {
             if let Some(handle) = crate::runtime::runtime_handle() {
                 handle.probe_acp_requirements(true);
             }
@@ -908,9 +907,10 @@ fn acp_toolbar(text: &ShellText, cx: &mut App) -> AnyElement {
         text.acp_search_placeholder.clone(),
         text.acp_search_placeholder.clone(),
         SharedString::from(state.search.clone()),
-        Rc::new(|value: SharedString, cx: &mut App| {
+        |value: SharedString, cx: &mut App| {
             AcpPageState::mutate(cx, |state| state.search = value.to_string());
-        }),
+            cx.refresh_windows();
+        },
     );
     let filter = dropdown_control(
         "acp-filter",
@@ -919,6 +919,7 @@ fn acp_toolbar(text: &ShellText, cx: &mut App) -> AnyElement {
         Rc::new(|value: SharedString, cx: &mut App| {
             let filter = AcpFilter::from_str(&value);
             AcpPageState::mutate(cx, |state| state.filter = filter);
+            cx.refresh_windows();
         }),
         false,
     );
@@ -939,19 +940,19 @@ fn acp_filter_options(text: &ShellText) -> Vec<(SharedString, SharedString)> {
     vec![
         (
             SharedString::from("all"),
-            text.acp_filter_all.clone(),
+            text.acp_filter_all.clone().into(),
         ),
         (
             SharedString::from("enabled"),
-            text.acp_filter_enabled.clone(),
+            text.acp_filter_enabled.clone().into(),
         ),
         (
             SharedString::from("not_installed"),
-            text.acp_filter_not_installed.clone(),
+            text.acp_filter_not_installed.clone().into(),
         ),
         (
             SharedString::from("invalid"),
-            text.acp_filter_invalid.clone(),
+            text.acp_filter_invalid.clone().into(),
         ),
     ]
 }
@@ -960,10 +961,10 @@ fn acp_filter_options(text: &ShellText) -> Vec<(SharedString, SharedString)> {
 /// value.
 fn acp_filter_label(text: &ShellText, filter: AcpFilter) -> SharedString {
     match filter {
-        AcpFilter::All => text.acp_filter_all.clone(),
-        AcpFilter::Enabled => text.acp_filter_enabled.clone(),
-        AcpFilter::NotInstalled => text.acp_filter_not_installed.clone(),
-        AcpFilter::Invalid => text.acp_filter_invalid.clone(),
+        AcpFilter::All => text.acp_filter_all.clone().into(),
+        AcpFilter::Enabled => text.acp_filter_enabled.clone().into(),
+        AcpFilter::NotInstalled => text.acp_filter_not_installed.clone().into(),
+        AcpFilter::Invalid => text.acp_filter_invalid.clone().into(),
     }
 }
 
@@ -1029,7 +1030,7 @@ fn acp_action_control(text: &ShellText, row: &AcpAgentRow, action: AcpRowAction)
                 .label(text.acp_action_install_cli.clone())
                 .small()
                 .with_variant(ButtonVariant::Secondary)
-                .on_click(move |_, _, cx| {
+                .on_click(move |_, _, _cx| {
                     if let Some(handle) = crate::runtime::runtime_handle() {
                         handle.install_acp_client_cli(id.clone());
                     }
@@ -1042,27 +1043,30 @@ fn acp_action_control(text: &ShellText, row: &AcpAgentRow, action: AcpRowAction)
                 .label(text.acp_action_configure.clone())
                 .small()
                 .with_variant(ButtonVariant::Secondary)
-                .on_click(move |_, _, cx| {
+                .on_click(move |_, _, _cx| {
                     if let Some(handle) = crate::runtime::runtime_handle() {
                         handle.configure_acp_adapter(id.clone());
                     }
                 })
                 .into_any_element()
         }
-        AcpRowAction::ViewInstructions => Button::new(format!("acp-instructions-{}", row.id))
-            .label(text.acp_action_view_instructions.clone())
-            .small()
-            .with_variant(ButtonVariant::Secondary)
-            .on_click(move |_, _, cx| {
-                let message = text.acp_cli_missing_detail.clone();
-                AcpPageState::mutate(cx, |state| {
-                    state.notice = Some(AcpNotice {
-                        success: false,
-                        message,
+        AcpRowAction::ViewInstructions => {
+            let message = text.acp_cli_missing_detail.clone();
+            Button::new(format!("acp-instructions-{}", row.id))
+                .label(text.acp_action_view_instructions.clone())
+                .small()
+                .with_variant(ButtonVariant::Secondary)
+                .on_click(move |_, _, cx| {
+                    AcpPageState::mutate(cx, |state| {
+                        state.notice = Some(AcpNotice {
+                            success: false,
+                            message: message.clone(),
+                        });
                     });
-                });
-            })
-            .into_any_element(),
+                    cx.refresh_windows();
+                })
+                .into_any_element()
+        }
         AcpRowAction::ViewError => {
             let message = row.detail.join("\n");
             Button::new(format!("acp-error-{}", row.id))
@@ -1076,6 +1080,7 @@ fn acp_action_control(text: &ShellText, row: &AcpAgentRow, action: AcpRowAction)
                             message: message.clone(),
                         });
                     });
+                    cx.refresh_windows();
                 })
                 .into_any_element()
         }
@@ -1090,7 +1095,7 @@ fn acp_action_control(text: &ShellText, row: &AcpAgentRow, action: AcpRowAction)
                 .label(label)
                 .small()
                 .with_variant(ButtonVariant::Secondary)
-                .on_click(move |_, _, cx| {
+                .on_click(move |_, _, _cx| {
                     if let Some(handle) = crate::runtime::runtime_handle() {
                         handle.add_acp_preset(id.clone());
                     }
@@ -1105,11 +1110,11 @@ fn acp_permission_control(text: &ShellText, row: &AcpAgentRow) -> AnyElement {
     let options = Rc::new(vec![
         (
             SharedString::from("ask"),
-            text.acp_permission_ask.clone(),
+            text.acp_permission_ask.clone().into(),
         ),
         (
             SharedString::from("allow_once"),
-            text.acp_permission_allow_once.clone(),
+            text.acp_permission_allow_once.clone().into(),
         ),
     ]);
     let label = match row.permission_mode {
@@ -1121,7 +1126,7 @@ fn acp_permission_control(text: &ShellText, row: &AcpAgentRow) -> AnyElement {
         format!("acp-permission-{}", row.id),
         label,
         options,
-        Rc::new(move |value: SharedString, cx: &mut App| {
+        Rc::new(move |value: SharedString, _cx: &mut App| {
             let mode = value.to_string();
             if let Some(handle) = crate::runtime::runtime_handle() {
                 handle.set_acp_permission_mode(id.clone(), mode);
@@ -1137,25 +1142,28 @@ fn acp_json_card(text: &ShellText, cx: &mut App) -> AnyElement {
     let mut card = SettingsCard::new("acp-json")
         .title(text.acp_json_title.clone())
         .description(text.acp_json_description.clone());
-    card = card.row(SettingsCardRow::body("acp-json-warning").control(
-        div()
-            .text_sm()
-            .text_color(cx.theme().warning)
-            .child(text.acp_json_warning.clone()),
-    ));
-    card = card.row(SettingsCardRow::body("acp-json-editor").control(acp_json_editor(
-        SharedString::from(state.json_text.clone()),
-    )));
-    card = card.row(SettingsCardRow::body("acp-json-actions").control(acp_json_actions(
-        text,
-        state.json_dirty,
-    )));
+    card = card.row(
+        SettingsCardRow::body("acp-json-warning").control(
+            div()
+                .text_sm()
+                .text_color(cx.theme().warning)
+                .child(text.acp_json_warning.clone()),
+        ),
+    );
+    card = card.row(
+        SettingsCardRow::body("acp-json-editor")
+            .control(acp_json_editor(SharedString::from(state.json_text.clone()))),
+    );
+    card = card.row(
+        SettingsCardRow::body("acp-json-actions").control(acp_json_actions(text, state.json_dirty)),
+    );
     div().child(card).into_any_element()
 }
 
 /// The multi-line JSON editor (web's `Textarea`).
-fn acp_json_editor(value: SharedString) -> DeferredControl<impl FnOnce(&mut Window, &mut App) -> AnyElement>
-{
+fn acp_json_editor(
+    value: SharedString,
+) -> DeferredControl<impl FnOnce(&mut Window, &mut App) -> AnyElement> {
     let key = SharedString::from("card-textarea-acp-json");
     DeferredControl {
         construct: move |window, cx| {
@@ -1172,6 +1180,7 @@ fn acp_json_editor(value: SharedString) -> DeferredControl<impl FnOnce(&mut Wind
                                     state.json_text = value.to_string();
                                     state.json_dirty = state.json_text != state.json_baseline;
                                 });
+                                cx.refresh_windows();
                             }
                             _ => {}
                         }
@@ -1215,6 +1224,7 @@ fn acp_json_actions(text: &ShellText, dirty: bool) -> AnyElement {
                 state.json_text = state.json_baseline.clone();
                 state.json_dirty = false;
             });
+            cx.refresh_windows();
         });
     let save = Button::new("acp-json-save")
         .label(text.acp_action_save_json.clone())
