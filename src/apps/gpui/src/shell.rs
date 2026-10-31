@@ -6016,7 +6016,9 @@ fn render_chat_item(
                     .on_link_click(move |url, _event, _window, cx| {
                         let target = markdown::classify_link(url);
                         match target {
-                            markdown::LinkTarget::External(url) => markdown::open_external(&url),
+                            markdown::LinkTarget::External(url) => {
+                                markdown::open_external(&url);
+                            }
                             markdown::LinkTarget::File { path, line } => {
                                 let Some(view) = link_view.as_ref().and_then(|view| view.upgrade())
                                 else {
@@ -14887,6 +14889,85 @@ mod tests {
         assert!(
             window.debug_bounds("settings-card-acp-registry").is_none(),
             "the registry card stays behind the local view"
+        );
+    }
+
+    /// E3-B5 gap: the legacy tool-confirmation warning rides above both views
+    /// while a client still stores `reject_once`, and clears once the stored
+    /// value is ask (web `pendingPermissionMigration`); the docs action lives
+    /// in the view-controls row on both views.
+    #[gpui_kit::test]
+    fn acp_page_warns_about_legacy_reject_modes(cx: &mut gpui_kit::TestAppContext) {
+        install_shell_globals(cx);
+        cx.update(|cx| {
+            let mut client = acp_test_client("legacy", "Legacy Agent");
+            client.permission_mode = openbitfun_acp::client::AcpClientPermissionMode::RejectOnce;
+            cx.set_global(crate::acp::AcpCatalog {
+                loaded: true,
+                clients: vec![client],
+                probes: Vec::new(),
+                probing: false,
+            });
+            cx.set_global(crate::acp::AcpPageState::default());
+        });
+        let (tx, rx) = mpsc::unbounded_channel();
+        let window = cx.add_empty_window();
+        let shell = window.update(|window, cx| cx.new(|cx| ShellWindow::new(tx, rx, window, cx)));
+        let text = sample_shell_text();
+        let view = shell.downgrade();
+
+        let draw_page = |window: &mut gpui_kit::VisualTestContext| {
+            let text = text.clone();
+            let view = view.clone();
+            window.draw(
+                point(px(0.), px(0.)),
+                size(px(900.), px(600.)),
+                move |_, cx| {
+                    div()
+                        .w(px(640.))
+                        .h_full()
+                        .child(
+                            cx.new(|_| SettingsHarness {
+                                text: text.clone(),
+                                view: view.clone(),
+                                page: settings::SettingsEntry::ExternalAgents,
+                            })
+                            .into_any_element(),
+                        )
+                        .into_any_element()
+                },
+            );
+            window.run_until_parked();
+        };
+
+        draw_page(window);
+        assert!(
+            window.debug_bounds("acp-legacy-warning").is_some(),
+            "a stored reject_once shows the migration warning"
+        );
+        assert!(
+            window.debug_bounds("acp-docs-button").is_some(),
+            "the docs action renders in the view-controls row"
+        );
+
+        window.update(|_, cx| {
+            crate::acp::AcpPageState::mutate(cx, |state| state.view = crate::acp::AcpView::Json);
+        });
+        draw_page(window);
+        assert!(
+            window.debug_bounds("acp-legacy-warning").is_some(),
+            "the warning rides above the advanced-JSON view too"
+        );
+
+        window.update(|_, cx| {
+            for client in &mut cx.global_mut::<crate::acp::AcpCatalog>().clients {
+                client.permission_mode = openbitfun_acp::client::AcpClientPermissionMode::Ask;
+            }
+        });
+        draw_page(window);
+        assert!(
+            window.debug_bounds("acp-legacy-warning").is_none(),
+            "the warning clears once no client stores reject_once"
         );
     }
 

@@ -2267,6 +2267,25 @@ impl RuntimeHandle {
         });
     }
 
+    /// E3-B5 gap: persists the retired `reject_once` tool-confirmation modes
+    /// as ask (the legacy-migration banner's 「保存并应用」, web `saveConfig`).
+    pub(crate) fn normalize_acp_permission_modes(&self) {
+        self.tokio.spawn(async move {
+            let result = match crate::acp::acp_client_service() {
+                Some(service) => normalize_acp_permission_modes(&service)
+                    .await
+                    .map(|()| "save_success".to_string()),
+                None => Err("ACP service is not initialized".to_string()),
+            };
+            if let Err(message) = &result {
+                tracing::warn!("Failed to normalize the ACP permission modes: {message}");
+            }
+            publish(RuntimeEvent::AcpAction(result));
+            publish(RuntimeEvent::AcpJsonConfig(load_acp_json_config().await));
+            publish(RuntimeEvent::AcpSnapshot(fetch_acp_snapshot().await));
+        });
+    }
+
     /// M21: resources/prompts snapshot for one server (browse dialog).
     pub(crate) fn reload_mcp_server_catalog(&self, server_id: String, force: bool) {
         self.tokio.spawn(async move {
@@ -3869,6 +3888,22 @@ async fn set_acp_permission_mode(
     patch_acp_config(service, move |file| {
         if let Some(config) = file.acp_clients.get_mut(&id) {
             config.permission_mode = mode;
+        }
+    })
+    .await
+}
+
+/// Rewrites every stored `reject_once` mode as ask, so the saved choices
+/// match what the page shows (web's `normalizePermissionMode` at save time).
+async fn normalize_acp_permission_modes(
+    service: &std::sync::Arc<openbitfun_acp::AcpClientService>,
+) -> Result<(), String> {
+    patch_acp_config(service, |file| {
+        for config in file.acp_clients.values_mut() {
+            if config.permission_mode == openbitfun_acp::client::AcpClientPermissionMode::RejectOnce
+            {
+                config.permission_mode = openbitfun_acp::client::AcpClientPermissionMode::Ask;
+            }
         }
     })
     .await

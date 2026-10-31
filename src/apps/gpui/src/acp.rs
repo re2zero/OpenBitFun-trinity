@@ -58,6 +58,10 @@ pub(crate) struct AcpPreset {
     /// Presets OpenBitFun cannot install for the user — the agent is
     /// installed manually, so the page hides the one-click install action.
     pub(crate) self_managed_install: bool,
+    /// The npm package the one-click install puts on the host (web
+    /// `CLI_INSTALL_PACKAGES`); the install confirmation names it. `None`
+    /// means OpenBitFun has no installer for the agent.
+    pub(crate) install_package: Option<&'static str>,
 }
 
 /// The five built-in agents, in the web's order.
@@ -69,6 +73,7 @@ pub(crate) const ACP_PRESETS: &[AcpPreset] = &[
         args: &["acp"],
         native_acp: true,
         self_managed_install: false,
+        install_package: Some("opencode-ai"),
     },
     AcpPreset {
         id: "dsh",
@@ -77,6 +82,7 @@ pub(crate) const ACP_PRESETS: &[AcpPreset] = &[
         args: &["--profile", "openbitfun-acp"],
         native_acp: true,
         self_managed_install: false,
+        install_package: Some("@deepseek-ai/dsh"),
     },
     AcpPreset {
         id: "omp",
@@ -85,6 +91,7 @@ pub(crate) const ACP_PRESETS: &[AcpPreset] = &[
         args: &["acp"],
         native_acp: true,
         self_managed_install: true,
+        install_package: None,
     },
     AcpPreset {
         id: "claude-code",
@@ -93,6 +100,7 @@ pub(crate) const ACP_PRESETS: &[AcpPreset] = &[
         args: &["--yes", "@agentclientprotocol/claude-agent-acp@latest"],
         native_acp: false,
         self_managed_install: false,
+        install_package: Some("@anthropic-ai/claude-code"),
     },
     AcpPreset {
         id: "codex",
@@ -101,6 +109,7 @@ pub(crate) const ACP_PRESETS: &[AcpPreset] = &[
         args: &["--yes", "@agentclientprotocol/codex-acp@latest"],
         native_acp: false,
         self_managed_install: false,
+        install_package: Some("@openai/codex"),
     },
 ];
 
@@ -599,6 +608,50 @@ mod tests {
     }
 
     #[test]
+    fn the_install_package_table_matches_the_web_map() {
+        // Web `CLI_INSTALL_PACKAGES`; the self-managed agent has no installer.
+        let expected = [
+            ("opencode", Some("opencode-ai")),
+            ("dsh", Some("@deepseek-ai/dsh")),
+            ("omp", None),
+            ("claude-code", Some("@anthropic-ai/claude-code")),
+            ("codex", Some("@openai/codex")),
+        ];
+        for (id, package) in expected {
+            assert_eq!(acp_preset(id).unwrap().install_package, package);
+        }
+    }
+
+    #[test]
+    fn the_legacy_warning_only_reads_retired_modes() {
+        let mut catalog = AcpCatalog::default();
+        assert!(!acp_has_legacy_reject(&catalog), "nothing is loaded yet");
+        catalog.loaded = true;
+        assert!(
+            !acp_has_legacy_reject(&catalog),
+            "an empty client list has no retired modes"
+        );
+        let mut client = AcpClientInfo {
+            id: "codex".to_string(),
+            name: "Codex".to_string(),
+            command: "npx".to_string(),
+            args: Vec::new(),
+            enabled: true,
+            readonly: false,
+            subagent: openbitfun_acp::client::AcpClientSubagentConfig::default(),
+            permission_mode: AcpClientPermissionMode::Ask,
+            status: openbitfun_acp::client::AcpClientStatus::Configured,
+            tool_name: "codex".to_string(),
+            session_count: 0,
+        };
+        catalog.clients.push(client.clone());
+        assert!(!acp_has_legacy_reject(&catalog));
+        client.permission_mode = AcpClientPermissionMode::RejectOnce;
+        catalog.clients[0] = client;
+        assert!(acp_has_legacy_reject(&catalog));
+    }
+
+    #[test]
     fn a_missing_cli_reads_as_not_installed() {
         let probe = probe(false);
         let status = acp_status(true, true, Some(false), None, false, false, Some(&probe));
@@ -752,7 +805,7 @@ mod tests {
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
 use gpui_kit::component::input::{InputEvent, Textarea, TextareaState};
-use gpui_kit::component::{ActiveTheme, Disableable, Sizable};
+use gpui_kit::component::{ActiveTheme, Disableable, Sizable, WindowExt};
 use gpui_kit::{
     div, prelude::*, px, AnyElement, Entity, IntoElement, ParentElement, SharedString, Styled,
     Subscription, Window,
@@ -769,6 +822,13 @@ pub(crate) fn acp_page_body(text: &ShellText, cx: &mut App) -> AnyElement {
     let state = AcpPageState::current(cx);
     let mut body = div().flex().flex_col().gap_4().w_full();
     body = body.child(acp_view_switcher(text, state.view));
+    // The retired tool-confirmation warning rides above both views (web's
+    // `pendingPermissionMigration` Alert sits between the view controls and
+    // the section stack).
+    let catalog = AcpCatalog::try_current(cx).unwrap_or_default();
+    if acp_has_legacy_reject(&catalog) {
+        body = body.child(acp_legacy_warning(text, cx));
+    }
     if let Some(notice) = state.notice.clone() {
         body = body.child(acp_notice(text, &notice, cx));
     }
@@ -779,9 +839,11 @@ pub(crate) fn acp_page_body(text: &ShellText, cx: &mut App) -> AnyElement {
     body.into_any_element()
 }
 
-/// The view switcher (web's `TabGroup` over the three views).
+/// The view controls row: the view tabs on the left, the ACP docs button on
+/// the right (web's `view-controls` toolbar; the shell page has no header
+/// extra slot, so the web dialog presentation's toolbar placement applies).
 fn acp_view_switcher(text: &ShellText, active: AcpView) -> AnyElement {
-    let mut row = div().flex().flex_row().items_center().gap_2();
+    let mut tabs = div().flex().flex_row().items_center().gap_2();
     for (view, label, id) in [
         (
             AcpView::Local,
@@ -803,9 +865,16 @@ fn acp_view_switcher(text: &ShellText, active: AcpView) -> AnyElement {
                 AcpPageState::mutate(cx, |state| state.view = view);
                 cx.refresh_windows();
             });
-        row = row.child(button);
+        tabs = tabs.child(button);
     }
-    row.into_any_element()
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .child(tabs)
+        .child(acp_docs_button(text))
+        .into_any_element()
 }
 
 /// The receipt of the last action (the web's toast, in the settings face's
@@ -837,6 +906,145 @@ fn acp_receipt_text(text: &ShellText, key: &str) -> String {
         "config_added" => text.acp_notice_config_added.clone(),
         other => other.to_string(),
     }
+}
+
+/// The ACP introduction the docs button opens (web `openLearnMore`).
+const ACP_DOCS_URL: &str = "https://agentclientprotocol.com/get-started/introduction";
+
+/// The page's docs action (web `documentationAction`): opens the ACP
+/// introduction in the system browser. A failed spawn surfaces as the page's
+/// error receipt (web's `notifications.openLinkFailed` toast). The web
+/// button's trailing arrow has no slot in the kit's label form — divergence
+/// D7 also covers the placement.
+fn acp_docs_button(text: &ShellText) -> AnyElement {
+    let open_failed = text.acp_notice_open_link_failed.clone();
+    Button::new("acp-docs")
+        .debug_selector(|| "acp-docs-button".to_string())
+        .label(text.acp_docs.clone())
+        .small()
+        .with_variant(ButtonVariant::Secondary)
+        .on_click(move |_, _, cx| {
+            if !crate::markdown::open_external(ACP_DOCS_URL) {
+                AcpPageState::mutate(cx, |state| {
+                    state.notice = Some(AcpNotice {
+                        success: false,
+                        message: open_failed.clone(),
+                    });
+                });
+                cx.refresh_windows();
+            }
+        })
+        .into_any_element()
+}
+
+/// Whether any configured client still stores the retired `reject_once`
+/// tool-confirmation mode (web's `hasLegacyPermissionModes`).
+fn acp_has_legacy_reject(catalog: &AcpCatalog) -> bool {
+    catalog.loaded
+        && catalog
+            .clients
+            .iter()
+            .any(|client| client.permission_mode == AcpClientPermissionMode::RejectOnce)
+}
+
+/// The retired-mode migration banner (web's `permissionMode.legacyRejectWarning`
+/// Alert): the rows already render the retired value as 询问, and 保存并应用
+/// persists that choice.
+fn acp_legacy_warning(text: &ShellText, cx: &App) -> AnyElement {
+    let theme = cx.theme();
+    let save_label = text.acp_permission_save_apply.clone();
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap_3()
+        .w_full()
+        .rounded_md()
+        .border_1()
+        .border_color(theme.warning)
+        .px_3()
+        .py_2()
+        .debug_selector(|| "acp-legacy-warning".to_string())
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_sm()
+                .text_color(theme.warning)
+                .child(text.acp_legacy_reject_warning.clone()),
+        )
+        .child(
+            div().flex_shrink_0().child(
+                Button::new("acp-legacy-save")
+                    .label(save_label)
+                    .small()
+                    .with_variant(ButtonVariant::Primary)
+                    .on_click(|_, _, _cx| {
+                        if let Some(handle) = crate::runtime::runtime_handle() {
+                            handle.normalize_acp_permission_modes();
+                        }
+                    }),
+            ),
+        )
+        .into_any_element()
+}
+
+/// The web `installConfirm` dialog: the one-click install runs
+/// `npm install -g` on this host, which changes the host's global command
+/// environment, so it waits for the user's go-ahead (a warning
+/// `ConfirmDialog` — the confirm path keeps the Primary tone, per the batch-⑥
+/// dialog convention).
+fn open_install_confirm(
+    window: &mut Window,
+    cx: &mut App,
+    id: String,
+    name: String,
+    package: String,
+) {
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let text = crate::i18n::current(cx);
+        let title = crate::i18n::acp_install_confirm_title(&name, cx);
+        let message = crate::i18n::acp_install_confirm_message(
+            &text.acp_install_confirm_local_host,
+            &format!("npm install -g {}", package),
+            cx,
+        );
+        let install_id = id.clone();
+        dialog
+            .title(div().child(title))
+            .child(
+                div()
+                    .w(px(380.))
+                    .text_sm()
+                    .text_color(cx.theme().foreground)
+                    .child(message),
+            )
+            .footer(
+                div()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("acp-install-cancel")
+                            .label(text.acp_action_cancel.clone())
+                            .with_variant(ButtonVariant::Ghost)
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                    )
+                    .child(
+                        Button::new("acp-install-confirm")
+                            .label(text.acp_install_confirm_confirm.clone())
+                            .with_variant(ButtonVariant::Primary)
+                            .on_click(move |_, window, cx| {
+                                if let Some(handle) = crate::runtime::runtime_handle() {
+                                    handle.install_acp_client_cli(install_id.clone());
+                                }
+                                window.close_dialog(cx);
+                            }),
+                    ),
+            )
+    });
 }
 
 /// The registry card: the search field, the filter, and one row per agent.
@@ -1026,14 +1234,33 @@ fn acp_action_control(text: &ShellText, row: &AcpAgentRow, action: AcpRowAction)
         AcpRowAction::PermissionMode => acp_permission_control(text, row),
         AcpRowAction::InstallCli => {
             let id = row.id.clone();
+            let name = row.display_name.clone();
+            let package_unknown = text.acp_install_confirm_package_unknown.clone();
             Button::new(format!("acp-install-{}", row.id))
                 .label(text.acp_action_install_cli.clone())
                 .small()
                 .with_variant(ButtonVariant::Secondary)
-                .on_click(move |_, _, _cx| {
-                    if let Some(handle) = crate::runtime::runtime_handle() {
-                        handle.install_acp_client_cli(id.clone());
-                    }
+                .on_click(move |_, window, cx| {
+                    // The web resolves the package first and refuses to
+                    // install when unknown (`requestInstallPresetClient`);
+                    // configured custom clients have no installer either.
+                    let package = acp_preset(&id)
+                        .and_then(|preset| preset.install_package)
+                        .map(str::to_string);
+                    let Some(package) = package else {
+                        AcpPageState::mutate(cx, |state| {
+                            state.notice = Some(AcpNotice {
+                                success: false,
+                                message: package_unknown.clone(),
+                            });
+                        });
+                        cx.refresh_windows();
+                        return;
+                    };
+                    // The click handler is an `Fn` closure (it may run again),
+                    // so the captured ids are cloned, not moved (the batch-⑥
+                    // dialog lesson).
+                    open_install_confirm(window, cx, id.clone(), name.clone(), package);
                 })
                 .into_any_element()
         }

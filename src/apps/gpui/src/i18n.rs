@@ -977,6 +977,14 @@ pub(crate) struct ShellText {
     pub acp_preset_omp: String,
     pub acp_preset_claude_code: String,
     pub acp_preset_codex: String,
+    pub acp_docs: String,
+    pub acp_notice_open_link_failed: String,
+    pub acp_legacy_reject_warning: String,
+    pub acp_permission_save_apply: String,
+    pub acp_action_cancel: String,
+    pub acp_install_confirm_local_host: String,
+    pub acp_install_confirm_confirm: String,
+    pub acp_install_confirm_package_unknown: String,
     pub settings_jump_session_label: String,
     pub settings_jump_session_description: String,
     pub settings_jump_session_action: String,
@@ -2261,6 +2269,28 @@ pub(crate) fn quick_action_delete_message(name: &str, cx: &App) -> String {
     )
 }
 
+/// Resolves the ACP install confirmation title, which names the agent (web
+/// `installConfirm.title`).
+pub(crate) fn acp_install_confirm_title(name: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-acp-install-confirm-title",
+        TranslationArgs::new().with_string("name", name),
+        cx,
+    )
+}
+
+/// Resolves the ACP install confirmation body, which names the target host
+/// and the exact command (web `installConfirm.message`).
+pub(crate) fn acp_install_confirm_message(host: &str, command: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-acp-install-confirm-message",
+        TranslationArgs::new()
+            .with_string("host", host)
+            .with_string("command", command),
+        cx,
+    )
+}
+
 /// Tool-row chips that take their number at render time (the pattern lives in
 /// the locale file, so word order stays locale-owned).
 pub(crate) fn tool_meta_exit_code(code: i64, cx: &App) -> String {
@@ -3408,6 +3438,14 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         acp_preset_omp: "Native ACP support.".to_string(),
         acp_preset_claude_code: "Connects through the official ACP adapter.".to_string(),
         acp_preset_codex: "Connects through the official ACP adapter.".to_string(),
+        acp_docs: "ACP docs".to_string(),
+        acp_notice_open_link_failed: "Failed to open link".to_string(),
+        acp_legacy_reject_warning: "Some agents still have Auto reject saved. The editor replaces it with Ask. Save and apply your current choices to make them take effect; until then, those agents will continue to reject requests automatically.".to_string(),
+        acp_permission_save_apply: "Save and apply".to_string(),
+        acp_action_cancel: "Cancel".to_string(),
+        acp_install_confirm_local_host: "Current execution host".to_string(),
+        acp_install_confirm_confirm: "Install on target host".to_string(),
+        acp_install_confirm_package_unknown: "OpenBitFun could not verify the install package for this Agent, so installation was cancelled".to_string(),
         settings_page_usage_description: "See model request counts, token use, and cache hit rate".to_string(),
         settings_page_archived_description: "Review, restore, or permanently delete archived sessions".to_string(),
         settings_page_diagnostics_description: "Adjust logging and export troubleshooting information".to_string(),
@@ -4955,6 +4993,18 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         acp_preset_omp: service.t("gpui-shell-acp-preset-omp").await,
         acp_preset_claude_code: service.t("gpui-shell-acp-preset-claude-code").await,
         acp_preset_codex: service.t("gpui-shell-acp-preset-codex").await,
+        acp_docs: service.t("gpui-shell-acp-docs").await,
+        acp_notice_open_link_failed: service.t("gpui-shell-acp-notice-open-link-failed").await,
+        acp_legacy_reject_warning: service.t("gpui-shell-acp-legacy-reject-warning").await,
+        acp_permission_save_apply: service.t("gpui-shell-acp-permission-save-apply").await,
+        acp_action_cancel: service.t("gpui-shell-acp-action-cancel").await,
+        acp_install_confirm_local_host: service
+            .t("gpui-shell-acp-install-confirm-local-host")
+            .await,
+        acp_install_confirm_confirm: service.t("gpui-shell-acp-install-confirm-confirm").await,
+        acp_install_confirm_package_unknown: service
+            .t("gpui-shell-acp-install-confirm-package-unknown")
+            .await,
         settings_page_usage_description: service
             .t("gpui-shell-settings-page-usage-description")
             .await,

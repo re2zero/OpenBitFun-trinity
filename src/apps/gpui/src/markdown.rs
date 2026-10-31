@@ -417,8 +417,9 @@ pub(crate) fn resolve_path(root: &str, path: &str) -> String {
 /// ashpd/zbus on Linux, which panics on a main thread without a tokio reactor
 /// under the workspace feature union; `process_manager` + `xdg-open` is the
 /// sanctioned child-process path and avoids that (same helper shape the
-/// settings page uses to reveal the log directory).
-pub(crate) fn open_external(url: &str) {
+/// settings page uses to reveal the log directory). Returns `false` when the
+/// process could not even be spawned, so the caller can surface the failure.
+pub(crate) fn open_external(url: &str) -> bool {
     match openbitfun_services_core::process_manager::create_command("xdg-open")
         .arg(url)
         .stdin(std::process::Stdio::null())
@@ -426,8 +427,14 @@ pub(crate) fn open_external(url: &str) {
         .stderr(std::process::Stdio::null())
         .spawn()
     {
-        Ok(_) => tracing::info!("Opened external URL {url}"),
-        Err(error) => tracing::warn!("Failed to open {url}: {error}"),
+        Ok(_) => {
+            tracing::info!("Opened external URL {url}");
+            true
+        }
+        Err(error) => {
+            tracing::warn!("Failed to open {url}: {error}");
+            false
+        }
     }
 }
 
