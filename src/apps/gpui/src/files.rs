@@ -1020,10 +1020,14 @@ impl FilesPage {
                     .child(text.files_loading.clone())
                     .into_any_element();
             }
+            // The viewer's unselected state (E4 batch ① copy debt fix): say
+            // what to do next instead of claiming the workspace is empty —
+            // that phrasing stays on the tree column, which owns the real
+            // "no files" fact.
             return crate::shell::brand_empty(
                 IconName::FileText,
-                &text.files_empty_title,
-                &text.files_empty,
+                &text.files_viewer_empty_title,
+                &text.files_viewer_empty,
             );
         }
 

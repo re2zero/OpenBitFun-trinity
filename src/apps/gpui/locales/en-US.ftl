@@ -19,6 +19,7 @@ gpui-shell-miniapps-title = MiniApps
 gpui-shell-miniapps-empty = The desktop hosts MiniApps here; the shell has no MiniApp runtime yet.
 gpui-shell-extensions-title = Extensions & Compatibility
 gpui-shell-extensions-empty = The desktop hosts ecosystem import, ACP, and external hooks here; that capability is not yet scoped for the shell.
+gpui-shell-extensions-open-acp = Open ACP settings
 gpui-shell-sessions-show-less = Show less
 # Sessions list projection (web nav.sessions.viewToggle / nav.sessions.viewMenu;
 # the honest shell subset: ordering updated/created/name, show unread, status
@@ -192,7 +193,9 @@ gpui-shell-sidebar-toggle = Toggle sidebar
 gpui-shell-files-title = Files
 gpui-shell-files-loading = Loading workspace files…
 gpui-shell-files-empty = No files in this workspace.
+gpui-shell-files-viewer-empty = Select a file on the left to view its contents.
 gpui-shell-files-empty-title = No files
+gpui-shell-files-viewer-empty-title = No file selected
 gpui-shell-files-reload = Reload file tree
 gpui-shell-files-filter-placeholder = Filter files…
 gpui-shell-files-no-matches = No matching files

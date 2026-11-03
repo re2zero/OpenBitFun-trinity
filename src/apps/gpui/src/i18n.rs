@@ -41,6 +41,9 @@ pub(crate) struct ShellText {
     pub miniapps_empty: String,
     pub extensions_title: String,
     pub extensions_empty: String,
+    /// The extensions empty card's one honest action (E4 batch ①): jump to
+    /// the external-agent settings page the copy names.
+    pub extensions_open_acp: String,
     pub sessions_show_less: String,
     /// Sessions list projection (web `nav.sessions.viewToggle` /
     /// `nav.sessions.viewMenu`): the honest subset the shell has data for —
@@ -203,6 +206,10 @@ pub(crate) struct ShellText {
     pub files_loading: String,
     pub files_empty: String,
     pub files_empty_title: String,
+    /// The viewer column's unselected state (E4 batch ① copy debt): distinct
+    /// from `files_empty*`, which stays "the workspace truly has no files".
+    pub files_viewer_empty: String,
+    pub files_viewer_empty_title: String,
     pub files_reload: String,
     /// Local filter box above the tree (G-FL2); the full-workspace search
     /// stays in the Ctrl K overlay.
@@ -2431,6 +2438,7 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         miniapps_empty: "The desktop hosts MiniApps here; the shell has no MiniApp runtime yet.".to_string(),
         extensions_title: "Extensions & Compatibility".to_string(),
         extensions_empty: "The desktop hosts ecosystem import, ACP, and external hooks here; that capability is not yet scoped for the shell.".to_string(),
+        extensions_open_acp: "Open ACP settings".to_string(),
         sessions_show_less: "Show less".to_string(),
         sessions_view_all_tooltip: "Show every session in one list".to_string(),
         sessions_view_grouped_tooltip: "Organize sessions by project and assistant".to_string(),
@@ -2579,6 +2587,8 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         files_loading: "Loading workspace files…".to_string(),
         files_empty: "No files in this workspace.".to_string(),
         files_empty_title: "No files".to_string(),
+        files_viewer_empty: "Select a file on the left to view its contents.".to_string(),
+        files_viewer_empty_title: "No file selected".to_string(),
         files_reload: "Reload file tree".to_string(),
         files_filter_placeholder: "Filter files…".to_string(),
         files_no_matches: "No matching files".to_string(),
@@ -3898,6 +3908,7 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         miniapps_empty: service.t("gpui-shell-miniapps-empty").await,
         extensions_title: service.t("gpui-shell-extensions-title").await,
         extensions_empty: service.t("gpui-shell-extensions-empty").await,
+        extensions_open_acp: service.t("gpui-shell-extensions-open-acp").await,
         sessions_show_less: service.t("gpui-shell-sessions-show-less").await,
         sessions_view_all_tooltip: service.t("gpui-shell-sessions-view-all-tooltip").await,
         sessions_view_grouped_tooltip: service.t("gpui-shell-sessions-view-grouped-tooltip").await,
@@ -4051,6 +4062,8 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         files_loading: service.t("gpui-shell-files-loading").await,
         files_empty: service.t("gpui-shell-files-empty").await,
         files_empty_title: service.t("gpui-shell-files-empty-title").await,
+        files_viewer_empty: service.t("gpui-shell-files-viewer-empty").await,
+        files_viewer_empty_title: service.t("gpui-shell-files-viewer-empty-title").await,
         files_reload: service.t("gpui-shell-files-reload").await,
         files_filter_placeholder: service.t("gpui-shell-files-filter-placeholder").await,
         files_no_matches: service.t("gpui-shell-files-no-matches").await,

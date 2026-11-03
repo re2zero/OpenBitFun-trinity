@@ -673,15 +673,17 @@ impl ChatView {
 }
 
 /// Sidebar navigation destinations (R1b): the desktop top-scene rows in
-/// NavPanel order. The workbench scenes (files/git/insights) have no nav row
-/// on the desktop either — they open through the global search palette's
-/// quick actions until R2c re-homes them as workbench panels.
+/// NavPanel order. Files and git stay workbench panels opened through the
+/// global search palette's quick actions; E4 batch ① re-homes only insights —
+/// the report page is a standalone scene like the task board, so it gets the
+/// fifth nav row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NavAction {
     Chat,
     Tasks,
     MiniApps,
     Extensions,
+    Insights,
 }
 
 impl NavAction {
@@ -691,6 +693,7 @@ impl NavAction {
             NavAction::Tasks => IconName::Calendar,
             NavAction::MiniApps => IconName::LayoutDashboard,
             NavAction::Extensions => IconName::Puzzle,
+            NavAction::Insights => IconName::ChartPie,
         }
     }
 
@@ -707,6 +710,7 @@ impl NavAction {
             NavAction::Extensions => {
                 tabs.active_kind() == Some(&TabKind::Scene(SceneId::Extensions))
             }
+            NavAction::Insights => tabs.active_kind() == Some(&TabKind::Scene(SceneId::Insights)),
         }
     }
 }
@@ -730,6 +734,54 @@ pub(crate) fn brand_empty(icon: IconName, title: &str, description: &str) -> gpu
         .into_any_element()
 }
 
+/// Scene-level empty state (E4 batch ①): the branded empty laid on a quiet
+/// card centered in the scene canvas (design components.html §空态), with an
+/// optional action lane under the copy. The action must point at a real
+/// surface — a scene with no honest destination renders without one rather
+/// than faking a link.
+pub(crate) fn brand_empty_card(
+    icon: IconName,
+    title: &str,
+    description: &str,
+    action: Option<gpui_kit::AnyElement>,
+    cx: &App,
+) -> gpui_kit::AnyElement {
+    let mut body = div()
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap_3()
+        .child(brand_empty(icon, title, description));
+    if let Some(action) = action {
+        body = body.child(action);
+    }
+    div()
+        .flex_1()
+        .min_h_0()
+        .min_w_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .p_4()
+        .child(
+            div()
+                .debug_selector(|| "brand-empty-card".to_string())
+                .w_full()
+                .max_w(px(440.))
+                .flex()
+                .flex_col()
+                .items_center()
+                .bg(cx.theme().popover)
+                .border_1()
+                .border_color(cx.theme().border)
+                .rounded(cx.theme().radius_2xl())
+                .px_4()
+                .py(px(40.))
+                .child(body),
+        )
+        .into_any_element()
+}
+
 /// All nav rows in display order (desktop NavPanel top-scene order); a pure
 /// projection so tests can pin the active-state wiring without a window.
 fn nav_actions() -> Vec<NavAction> {
@@ -738,17 +790,19 @@ fn nav_actions() -> Vec<NavAction> {
         NavAction::Tasks,
         NavAction::MiniApps,
         NavAction::Extensions,
+        NavAction::Insights,
     ]
 }
 
 /// Row label for a nav destination: the desktop nav nouns (智能助理/认知体/
-/// 任务看板/小应用/扩展与兼容), not the scene titles the tabs show.
+/// 任务看板/小应用/扩展与兼容/洞察), not the scene titles the tabs show.
 fn nav_label<'a>(action: NavAction, text: &'a ShellText) -> &'a str {
     match action {
         NavAction::Chat => &text.nav_assistant,
         NavAction::Tasks => &text.nav_tasks,
         NavAction::MiniApps => &text.miniapps_title,
         NavAction::Extensions => &text.extensions_title,
+        NavAction::Insights => &text.insights_title,
     }
 }
 
@@ -4738,6 +4792,7 @@ impl ShellWindow {
                 self.tabs.open(TabKind::Scene(SceneId::Extensions));
                 cx.notify();
             }
+            NavAction::Insights => self.toggle_insights_view(cx),
         }
     }
 
@@ -9415,33 +9470,59 @@ impl Render for ShellWindow {
                 self.render_external_scene(reference, window, &text, cx)
             }
             // The desktop MiniApp/extension scenes have no shell runtime yet:
-            // the tab renders the branded empty state instead of a fake
-            // surface (loud degrade, same treatment as the chat/files/search
-            // empty states).
+            // the tab renders the branded empty card instead of a fake
+            // surface (loud degrade). The extension card carries the one
+            // honest action — the external-agent settings page that the copy
+            // names — while the MiniApp card stays actionless: no destination
+            // exists yet, and an empty state never fakes a link (E4 batch ①).
             Some(TabKind::Scene(SceneId::MiniApps)) => div()
                 .id("miniapps-page")
                 .flex_1()
                 .min_h_0()
                 .min_w_0()
                 .overflow_y_scroll()
-                .child(brand_empty(
+                .child(brand_empty_card(
                     IconName::LayoutDashboard,
                     &text.miniapps_title,
                     &text.miniapps_empty,
+                    None,
+                    cx,
                 ))
                 .into_any_element(),
-            Some(TabKind::Scene(SceneId::Extensions)) => div()
-                .id("extensions-page")
-                .flex_1()
-                .min_h_0()
-                .min_w_0()
-                .overflow_y_scroll()
-                .child(brand_empty(
-                    IconName::Puzzle,
-                    &text.extensions_title,
-                    &text.extensions_empty,
-                ))
-                .into_any_element(),
+            Some(TabKind::Scene(SceneId::Extensions)) => {
+                let open_acp = {
+                    let shell = cx.entity().downgrade();
+                    Button::new("extensions-open-acp")
+                        .debug_selector(|| "extensions-open-acp".to_string())
+                        .label(text.extensions_open_acp.clone())
+                        .small()
+                        .with_variant(ButtonVariant::Secondary)
+                        .on_click(move |_, _, cx| {
+                            let Some(shell) = shell.upgrade() else {
+                                return;
+                            };
+                            shell.update(cx, |shell, cx| {
+                                shell
+                                    .set_settings_page(settings::SettingsEntry::ExternalAgents, cx);
+                                shell.open_settings_view(cx);
+                            });
+                        })
+                };
+                div()
+                    .id("extensions-page")
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .overflow_y_scroll()
+                    .child(brand_empty_card(
+                        IconName::Puzzle,
+                        &text.extensions_title,
+                        &text.extensions_empty,
+                        Some(open_acp.into_any_element()),
+                        cx,
+                    ))
+                    .into_any_element()
+            }
             Some(TabKind::Session(session_id)) => self.render_session_main(&session_id, &text, cx),
             // No tab at all: the tabless landing face (R2b, the web
             // WelcomeScene) — brand slogan plus one input that starts a
@@ -17032,13 +17113,14 @@ mod tests {
     }
 
     /// R1b sidebar nav over the R1a tab model: the row set is the desktop
-    /// top-scene set in NavPanel order (assistant / tasks /
-    /// mini-apps / extensions — the last two degrade to honest empty-state
-    /// scenes), and exactly one row lights up per active tab (Settings
-    /// activates none — its own footer button keeps the raised variant).
-    /// Workbench scenes (files/git/insights) light no row; they live in the
-    /// search palette until R2c. A session tab lights the Chat row; no tabs
-    /// light it too (the resting empty state).
+    /// top-scene set in NavPanel order (assistant / tasks / mini-apps /
+    /// extensions — the middle two degrade to honest empty-card scenes),
+    /// and exactly one row lights up per active tab (Settings activates
+    /// none — its own footer button keeps the raised variant). Files and
+    /// git stay workbench panels that light no row; they live in the search
+    /// palette. Insights has owned the fifth row since E4 batch ①. A
+    /// session tab lights the Chat row; no tabs light it too (the resting
+    /// empty state).
     #[test]
     fn nav_rows_map_active_state_to_tabs() {
         let actions = nav_actions();
@@ -17049,6 +17131,7 @@ mod tests {
                 NavAction::Tasks,
                 NavAction::MiniApps,
                 NavAction::Extensions,
+                NavAction::Insights,
             ]
         );
         let mut tabs = TabsState::default();
@@ -17066,10 +17149,9 @@ mod tests {
                 .filter(|candidate| candidate.is_active(&tabs))
                 .collect();
             match kind {
-                // Workbench scenes have no nav row until R2c re-homes them.
-                TabKind::Scene(tabs::SceneId::Files)
-                | TabKind::Scene(tabs::SceneId::Git)
-                | TabKind::Scene(tabs::SceneId::Insights) => {
+                // Files and git stay workbench panels without a nav row;
+                // insights has its own row since E4 batch ①.
+                TabKind::Scene(tabs::SceneId::Files) | TabKind::Scene(tabs::SceneId::Git) => {
                     assert!(lit.is_empty(), "tab {kind_label} must light no nav row");
                 }
                 _ => {
@@ -17091,5 +17173,72 @@ mod tests {
         // The resting empty state is chat.
         let empty = TabsState::default();
         assert!(NavAction::Chat.is_active(&empty));
+    }
+
+    /// E4 batch ①: the extensions scene degrades onto the branded empty card
+    /// and its single action jumps to the external-agent settings page; the
+    /// mini-app card stays actionless because no honest destination exists.
+    #[gpui_kit::test]
+    fn extension_scene_renders_the_empty_card_with_the_acp_action(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::test::TestWindowExt as _;
+        install_shell_globals(cx);
+        let (tx, rx) = mpsc::unbounded_channel();
+        // The shell must be the window's ROOT view: `click` re-renders the
+        // window pipeline, so an ad-hoc `draw` frame would be replaced and
+        // the button would vanish from the observation set mid-click.
+        let (shell, window) = cx.add_window_view(|window, cx| ShellWindow::new(tx, rx, window, cx));
+        window.update(|_, cx| {
+            shell.update(cx, |shell, cx| shell.apply_nav(NavAction::Extensions, cx));
+        });
+        window.update(|window, cx| window.render_frame(cx));
+        let card = window
+            .debug_bounds("brand-empty-card")
+            .expect("the extensions scene lays out the empty card");
+        let action = window
+            .debug_bounds("extensions-open-acp")
+            .expect("the empty card carries the ACP settings action");
+        assert!(
+            action.origin.x >= card.origin.x
+                && action.origin.y >= card.origin.y
+                && action.origin.x + action.size.width <= card.origin.x + card.size.width
+                && action.origin.y + action.size.height <= card.origin.y + card.size.height,
+            "the action lives inside the card: action {:?} card {:?}",
+            action,
+            card
+        );
+
+        // The action is the one honest jump: it opens the settings scene on
+        // the external-agents page (the surface the scene copy names).
+        window.update(|window, cx| window.click("extensions-open-acp", cx));
+        window.run_until_parked();
+        window.update(|_, cx| {
+            let shell = shell.read(cx);
+            assert_eq!(
+                shell.tabs.active_kind(),
+                Some(&TabKind::Scene(tabs::SceneId::Settings)),
+                "the action opens the settings scene"
+            );
+            assert_eq!(
+                shell.settings_page,
+                settings::SettingsEntry::ExternalAgents,
+                "the action lands on the external-agents page"
+            );
+        });
+
+        // The mini-app card is the same treatment minus the action lane.
+        window.update(|_, cx| {
+            shell.update(cx, |shell, cx| shell.apply_nav(NavAction::MiniApps, cx));
+        });
+        window.update(|window, cx| window.render_frame(cx));
+        assert!(
+            window.debug_bounds("brand-empty-card").is_some(),
+            "the mini-app scene lays out the empty card too"
+        );
+        assert!(
+            window.debug_bounds("extensions-open-acp").is_none(),
+            "the mini-app card renders no action"
+        );
     }
 }

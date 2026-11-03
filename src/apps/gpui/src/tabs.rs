@@ -26,10 +26,10 @@ pub(crate) enum SceneId {
     Tasks,
     Files,
     /// The desktop 小应用 scene; the shell has no MiniApp runtime, so the tab
-    /// renders an honest empty state.
+    /// renders an honest empty card.
     MiniApps,
     /// The desktop 扩展与兼容 scene (T3 ecosystem import family); same honest
-    /// empty state until that milestone lands.
+    /// empty card until that milestone lands.
     Extensions,
     External(SceneRef),
 }
@@ -40,18 +40,17 @@ pub(crate) struct SceneDef {
     pub id: SceneId,
     pub icon: IconName,
     /// Whether the scene owns a sidebar nav row. R1b converged the nav to the
-    /// desktop top-scene shape (assistant / task board); Files and
-    /// Git moved to their R2c home (the session's right resource panel,
-    /// popping out to a main tab when no session tab is active). Insights
-    /// still lacks its desktop home and opens through the global search
-    /// overlay's quick actions, the same programmatic path the desktop uses.
-    /// The table rows outlive nav membership.
+    /// desktop top-scene shape; Files and Git live in their R2c home (the
+    /// session's right resource panel, popping out to a main tab when no
+    /// session tab is active). E4 batch ① gave Insights its desktop home —
+    /// the sidebar's fifth nav row (`NavAction::Insights`). The table rows
+    /// outlive nav membership; the flag itself has no consumer yet.
     pub in_nav: bool,
 }
 
 /// Built-in scenes. Settings is reachable from the footer gear and the scene
-/// tab it opens, not from a nav row; Insights keeps its main-tab form until
-/// its desktop home lands (see `in_nav`).
+/// tab it opens, not from a nav row; Insights opens from the sidebar nav row
+/// (see `in_nav`).
 pub(crate) fn builtin_scenes() -> Vec<SceneDef> {
     use SceneId::*;
     vec![
