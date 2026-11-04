@@ -249,7 +249,7 @@ function verifyDeb(debPath, version, workRoot) {
 }
 
 function parseArgs(argv) {
-  const options = { build: true, target: null, outputDir: null, productConfig: null };
+  const options = { build: true, target: null, outputDir: null, productConfig: null, profile: 'release' };
   const forwarded = [];
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -258,6 +258,8 @@ function parseArgs(argv) {
     else if (arg.startsWith('--target=')) options.target = arg.slice('--target='.length);
     else if (arg === '--output') options.outputDir = argv[++index];
     else if (arg.startsWith('--output=')) options.outputDir = arg.slice('--output='.length);
+    else if (arg === '--profile') options.profile = argv[++index];
+    else if (arg.startsWith('--profile=')) options.profile = arg.slice('--profile='.length);
     else forwarded.push(arg);
   }
   const extracted = extractProductConfigArg(forwarded);
@@ -300,8 +302,20 @@ function main() {
     );
   }
 
+  // The default profile keeps the literal `--release` so the official release
+  // channel's cargo fingerprints are untouched; custom profiles (release-fast
+  // is the established "release behavior without full LTO" profile, also used
+  // by the desktop fast builds and the e2e perf rounds) compile into their own
+  // target/<profile> directory and serve as local acceptance packages.
+  const profile = options.profile;
+  if (profile !== 'release') {
+    console.log(`[gpui-package] profile: ${profile}`);
+  }
   if (options.build) {
-    const cargoArgs = ['build', '--release', '-p', PACKAGE_NAME];
+    const cargoArgs =
+      profile === 'release'
+        ? ['build', '--release', '-p', PACKAGE_NAME]
+        : ['build', '--profile', profile, '-p', PACKAGE_NAME];
     if (target !== hostTargetTriple()) cargoArgs.push('--target', target);
     run('cargo', cargoArgs, { cwd: ROOT });
   }
@@ -310,8 +324,8 @@ function main() {
   // writes under target/<triple>/ even when that triple is the host's, so the
   // host shortcut in resolveTargetPath would look in the wrong directory.
   const binary = options.target
-    ? resolve(ROOT, 'target', target, 'release', BIN_NAME)
-    : resolveTargetPath(ROOT, target, join('release', BIN_NAME));
+    ? resolve(ROOT, 'target', target, profile, BIN_NAME)
+    : resolveTargetPath(ROOT, target, join(profile, BIN_NAME));
   if (!statSync(binary, { throwIfNoEntry: false })) {
     throw new Error(`Release binary not found at ${binary}; run without --no-build first`);
   }
