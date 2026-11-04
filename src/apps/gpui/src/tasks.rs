@@ -1,22 +1,30 @@
-//! Shell task board (R4): the management slice of the shared cron service
-//! laid out as an overview card, a month calendar, and the job list (enable /
-//! disable / run now / edit / delete). G-P1 adds the create/edit dialog, so
-//! the board can schedule a job without leaving the shell; the board always
-//! shows the full shared store, labelled with each job's target, so jobs from
-//! other surfaces are visible instead of filtered away. The calendar only
-//! marks instants the store actually carries (next scheduled run, latest
-//! finished run) — the service keeps no run history, so past days stay blank
-//! on purpose.
+//! Shell task board (E4-b2): the web `TodosScene` structure — an overview
+//! card with two metrics, a job list where every active job takes one row (its
+//! next run), a month calendar carrying the whole remaining agenda, and a
+//! day-detail panel — laid out as quiet cards. Occurrences are derived the
+//! same way the web panel derives them: the board expands each schedule over
+//! the visible month, so a day cell marks runs the scheduler will actually
+//! perform rather than only the next-run instant the store carries (G-P2's
+//! store-truth marks retired with this batch). Jobs with nothing left to run
+//! stay visible in the inactive partition; the create/edit dialog, the run-now
+//! capability and the reload button are shell retainers.
 
-use chrono::{DateTime, Local, NaiveDateTime, SecondsFormat, TimeZone as _};
+use std::str::FromStr as _;
+
+use chrono::{
+    DateTime, Datelike as _, Local, NaiveDate, NaiveDateTime, SecondsFormat, TimeZone as _,
+};
+use chrono_tz::Tz;
+use cron::Schedule as CronExpr;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants};
 use gpui_kit::component::input::{Input, Textarea};
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::switch::Switch;
-use gpui_kit::component::{ActiveTheme, Disableable, Sizable, StyledExt as _, WindowExt};
+use gpui_kit::component::{ActiveTheme, Disableable, Icon, Sizable, StyledExt as _, WindowExt};
 use gpui_kit::InteractiveElement as _;
 use gpui_kit::{
-    div, prelude::*, px, Anchor, App, ClickEvent, IntoElement, SharedString, WeakEntity, Window,
+    div, prelude::*, px, Anchor, App, ClickEvent, FontWeight, IntoElement, SharedString,
+    WeakEntity, Window,
 };
 use openbitfun_core::service::cron::{
     CreateCronJobRequest, CronJob, CronJobPayload, CronJobTarget, CronLaunchSpec, CronSchedule,
@@ -29,15 +37,35 @@ use crate::runtime::{self, RuntimeEvent};
 use crate::shell::ShellWindow;
 
 /// State of the task board; lives on the shell window and is updated only
-/// through [`RuntimeEvent`] projections.
-#[derive(Debug, Default)]
+/// through [`RuntimeEvent`] projections and the board's own tick.
+#[derive(Debug)]
 pub(crate) struct TasksPageState {
     pub jobs: Vec<CronJob>,
     pub error: Option<String>,
     /// The job list was fetched at least once (drives reload-on-open).
     pub loaded: bool,
-    /// G-P2: the calendar day whose detail panel is open (web `selectedDayKey`).
-    pub selected_day: Option<chrono::NaiveDate>,
+    /// The calendar day whose detail panel is open (web `selectedDayKey`).
+    pub selected_day: Option<NaiveDate>,
+    /// First day of the month the calendar is anchored on (web
+    /// `monthAnchorMs`); shifted by the month navigation.
+    pub month_anchor: NaiveDate,
+    /// The tick's clock (web `nowMs`): countdowns and badges read this so a
+    /// quiet board still ages honestly.
+    pub now_ms: i64,
+}
+
+impl Default for TasksPageState {
+    fn default() -> Self {
+        let now = Local::now();
+        Self {
+            jobs: Vec::new(),
+            error: None,
+            loaded: false,
+            selected_day: None,
+            month_anchor: now.date_naive().with_day(1).expect("day one exists"),
+            now_ms: now.timestamp_millis(),
+        }
+    }
 }
 
 /// G-P1: which schedule shape the editor is filling in (web `ScheduleKind`).
@@ -405,7 +433,7 @@ impl TaskDraft {
     }
 }
 
-/// Web `TodoItemRow` badges: the row flags this store can answer.
+/// Web `TodoItemRow` badges: the row flags this board can answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum JobBadge {
     Running,
@@ -415,7 +443,7 @@ pub(crate) enum JobBadge {
 
 /// Web `inactive` reasons: why a job has no upcoming run. Precedence follows
 /// the web row — a disabled job is paused first, then a finished one-shot is
-/// done, and anything else the store cannot turn into a run is invalid.
+/// done, and anything the board cannot turn into a run is invalid.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InactiveReason {
     Paused,
@@ -423,130 +451,637 @@ pub(crate) enum InactiveReason {
     InvalidSchedule,
 }
 
+/// A schedule the service would also reject (web surfaces it as an inactive
+/// job rather than dropping it silently).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CronScheduleError {
+    Invalid,
+}
+
+/// Per-job caps that keep a high-frequency schedule from swamping either tier
+/// (web `todoOccurrences.ts`, same values): the list takes the leading runs,
+/// the calendar budget is per day so a frequent job still marks every day it
+/// runs.
+pub(crate) const MAX_LIST_OCCURRENCES_PER_JOB: usize = 3;
+pub(crate) const MAX_CALENDAR_OCCURRENCES_PER_JOB_PER_DAY: usize = 4;
+pub(crate) const MAX_OCCURRENCES_PER_JOB: usize = 200;
+
+/// One dated run (web `TodoOccurrence`): the same recurring job can appear on
+/// several rows with different times.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TodoOccurrence {
+    /// Index into the board's job list; render reads the job through it.
+    pub job_index: usize,
+    /// When this run fires.
+    pub at_ms: i64,
+    /// True when the scheduler has this exact run queued as its next action.
+    pub is_next_run: bool,
+    /// True when the run time has passed and the job is not currently running.
+    pub is_overdue: bool,
+    /// True while the scheduler is executing this run.
+    pub is_running: bool,
+}
+
+/// An inactive entry: a job with nothing upcoming stays reachable (web
+/// `InactiveTodo`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct InactiveTodo {
+    pub job_index: usize,
+    pub reason: InactiveReason,
+}
+
+/// The web scene's two tiers (web `TodoBuckets`): `visible` takes one row per
+/// active job — its nearest upcoming run, soonest first — while `calendar`
+/// carries every expanded occurrence for the month view, near-term runs
+/// included, so a day cell is never mysteriously empty.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TodoBuckets {
+    pub visible: Vec<TodoOccurrence>,
+    pub calendar: Vec<TodoOccurrence>,
+    pub inactive: Vec<InactiveTodo>,
+    /// Distinct jobs with at least one run due within 24 hours (web
+    /// `dueSoonTodoCount`), overdue and running runs included.
+    pub due_soon_jobs: usize,
+}
+
+/// Whether the scheduler is executing this job right now (web
+/// `isJobRunning`). A running job keeps its pending trigger timestamp in the
+/// past until the turn finishes, so without this check an in-flight run reads
+/// as overdue.
 pub(crate) fn job_running(job: &CronJob) -> bool {
-    matches!(
-        job.state.last_run_status,
-        Some(openbitfun_agent_runtime::scheduled_job::ScheduledJobRunStatus::Running)
-    )
+    use openbitfun_agent_runtime::scheduled_job::ScheduledJobRunStatus;
+    job.state.active_turn_id.is_some()
+        || matches!(
+            job.state.last_run_status,
+            Some(ScheduledJobRunStatus::Running) | Some(ScheduledJobRunStatus::Queued)
+        )
 }
 
-pub(crate) fn job_overdue(job: &CronJob, now_ms: i64) -> bool {
-    job.enabled && job.state.next_run_at_ms.is_some_and(|at| at < now_ms)
-}
-
-/// The id of the job whose next run is the nearest upcoming one (web
-/// `isNextRun`). Overdue instants do not qualify, and ties keep the first job.
-pub(crate) fn next_run_job_id(jobs: &[CronJob], now_ms: i64) -> Option<String> {
-    jobs.iter()
-        .filter(|job| job.enabled)
-        .filter_map(|job| {
-            job.state
-                .next_run_at_ms
-                .filter(|at| *at >= now_ms)
-                .map(|at| (at, job.id.clone()))
-        })
-        .min_by_key(|(at, _)| *at)
-        .map(|(_, id)| id)
-}
-
-/// The inactive partition's reason for one job, or `None` when the job has an
-/// upcoming run. The store cannot report a broken schedule expression
-/// directly, so "invalid" is the honest reading of an enabled job whose next
-/// run the service never computed.
-pub(crate) fn inactive_reason(job: &CronJob) -> Option<InactiveReason> {
-    if !job.enabled {
-        return Some(InactiveReason::Paused);
+/// A one-shot job whose run already happened is finished, not broken (web
+/// `hasCompletedOneShot`): the backend clears `next_run_at_ms` once it
+/// enqueues a one-shot run, so the absence of a next run plus a recorded run
+/// is what marks it complete.
+fn has_completed_one_shot(job: &CronJob) -> bool {
+    if !matches!(job.schedule, CronSchedule::At { .. }) {
+        return false;
     }
-    if job.state.next_run_at_ms.is_some() {
-        return None;
+    job.state.last_enqueued_at_ms.is_some()
+        || job.state.last_run_finished_at_ms.is_some()
+        || job.state.last_run_started_at_ms.is_some()
+}
+
+/// Runs an anchored interval series produces in `(after_ms, until_ms]` (web
+/// `everyOccurrencesInRange`): the series is anchored, not relative to "now",
+/// so a job created at 08:03 with a 1h interval fires at :03.
+fn every_occurrences_in_range(
+    every_ms: u64,
+    anchor_ms: i64,
+    after_ms: i64,
+    until_ms: i64,
+    limit: usize,
+) -> Vec<i64> {
+    let every = every_ms as i64;
+    if every <= 0 {
+        return Vec::new();
     }
-    match (&job.schedule, job.state.last_run_status) {
-        (CronSchedule::At { .. }, Some(_)) => Some(InactiveReason::Done),
-        _ => Some(InactiveReason::InvalidSchedule),
+    let first = if anchor_ms > after_ms {
+        anchor_ms
+    } else {
+        let steps = (after_ms - anchor_ms) / every + 1;
+        anchor_ms + steps * every
+    };
+    let mut occurrences = Vec::new();
+    let mut at = first;
+    while at <= until_ms && occurrences.len() < limit {
+        occurrences.push(at);
+        at += every;
+    }
+    occurrences
+}
+
+/// Cron runs in `(after_ms, until_ms]`, expanded where the schedule executes:
+/// in its own timezone when it carries one, local wall clock otherwise (web
+/// `cronOccurrencesInRange`).
+fn cron_occurrences_in_range(
+    expr: &str,
+    tz: Option<&str>,
+    after_ms: i64,
+    until_ms: i64,
+    limit: usize,
+) -> Result<Vec<i64>, CronScheduleError> {
+    let normalized = match expr.split_whitespace().count() {
+        5 => format!("0 {expr}"),
+        6 | 7 => expr.to_string(),
+        _ => return Err(CronScheduleError::Invalid),
+    };
+    let schedule = CronExpr::from_str(&normalized).map_err(|_| CronScheduleError::Invalid)?;
+    let zone = tz
+        .map(|tz| Tz::from_str(tz))
+        .transpose()
+        .map_err(|_| CronScheduleError::Invalid)?;
+
+    fn collect<Tz: chrono::TimeZone>(
+        schedule: &CronExpr,
+        after: chrono::DateTime<Tz>,
+        after_ms: i64,
+        until_ms: i64,
+        limit: usize,
+        out: &mut Vec<i64>,
+    ) {
+        for at in schedule.after(&after) {
+            let at_ms = at.with_timezone(&chrono::Utc).timestamp_millis();
+            if at_ms > until_ms {
+                break;
+            }
+            if at_ms > after_ms {
+                out.push(at_ms);
+                if out.len() >= limit {
+                    break;
+                }
+            }
+        }
+    }
+
+    let mut occurrences = Vec::new();
+    match zone {
+        Some(zone) => {
+            let after = zone
+                .timestamp_millis_opt(after_ms)
+                .single()
+                .ok_or(CronScheduleError::Invalid)?;
+            collect(
+                &schedule,
+                after,
+                after_ms,
+                until_ms,
+                limit,
+                &mut occurrences,
+            );
+        }
+        None => {
+            let after = Local
+                .timestamp_millis_opt(after_ms)
+                .single()
+                .ok_or(CronScheduleError::Invalid)?;
+            collect(
+                &schedule,
+                after,
+                after_ms,
+                until_ms,
+                limit,
+                &mut occurrences,
+            );
+        }
+    }
+    Ok(occurrences)
+}
+
+/// Lists the runs a schedule produces in `(after_ms, until_ms]` (web
+/// `scheduleOccurrencesInRange`); the requested limit is clamped to the web
+/// default cap, so a caller can lower it but never expand past 200 per call.
+pub(crate) fn schedule_occurrences_in_range(
+    schedule: &CronSchedule,
+    created_at_ms: i64,
+    after_ms: i64,
+    until_ms: i64,
+    limit: usize,
+) -> Result<Vec<i64>, CronScheduleError> {
+    let limit = limit.min(MAX_OCCURRENCES_PER_JOB);
+    match schedule {
+        CronSchedule::At { at } => {
+            let at_ms = DateTime::parse_from_rfc3339(at)
+                .map(|at| at.timestamp_millis())
+                .map_err(|_| CronScheduleError::Invalid)?;
+            Ok(if at_ms > after_ms && at_ms <= until_ms {
+                vec![at_ms]
+            } else {
+                Vec::new()
+            })
+        }
+        CronSchedule::Every {
+            every_ms,
+            anchor_ms,
+        } => {
+            if *every_ms == 0 {
+                return Err(CronScheduleError::Invalid);
+            }
+            Ok(every_occurrences_in_range(
+                *every_ms,
+                anchor_ms.unwrap_or(created_at_ms),
+                after_ms,
+                until_ms,
+                limit,
+            ))
+        }
+        CronSchedule::Cron { expr, tz } => {
+            cron_occurrences_in_range(expr, tz.as_deref(), after_ms, until_ms, limit)
+        }
     }
 }
 
-pub(crate) fn job_badges(job: &CronJob, next_id: Option<&str>, now_ms: i64) -> Vec<JobBadge> {
+/// Expands the calendar tier one local day at a time (web
+/// `expandCalendarOccurrences`): budgeting per day rather than across the
+/// whole window keeps a frequent job visible on every day it runs.
+fn expand_calendar_occurrences(
+    schedule: &CronSchedule,
+    created_at_ms: i64,
+    from_ms: i64,
+    until_ms: i64,
+) -> Result<Vec<i64>, CronScheduleError> {
+    if until_ms <= from_ms {
+        return Ok(Vec::new());
+    }
+    let first_day = Local
+        .timestamp_millis_opt(from_ms)
+        .single()
+        .map(|at| at.date_naive());
+    let last_day = Local
+        .timestamp_millis_opt(until_ms)
+        .single()
+        .map(|at| at.date_naive());
+    let (Some(first_day), Some(last_day)) = (first_day, last_day) else {
+        return Ok(Vec::new());
+    };
+
+    let mut occurrences = Vec::new();
+    let mut cursor = first_day;
+    while cursor <= last_day {
+        let day_start = Local
+            .with_ymd_and_hms(cursor.year(), cursor.month(), cursor.day(), 0, 0, 0)
+            .single();
+        let next_day = cursor.succ_opt().and_then(|next| {
+            Local
+                .with_ymd_and_hms(next.year(), next.month(), next.day(), 0, 0, 0)
+                .single()
+        });
+        if let (Some(day_start), Some(next_start)) = (day_start, next_day) {
+            let day_end = next_start.timestamp_millis() - 1;
+            occurrences.extend(schedule_occurrences_in_range(
+                schedule,
+                created_at_ms,
+                day_start.timestamp_millis().max(from_ms) - 1,
+                day_end.min(until_ms),
+                MAX_CALENDAR_OCCURRENCES_PER_JOB_PER_DAY,
+            )?);
+        }
+        cursor = cursor.succ_opt().unwrap_or(last_day);
+    }
+    Ok(occurrences)
+}
+
+/// Groups every job into the visible list, the calendar tier, or the inactive
+/// partition (web `buildTodoBuckets`). `range_end_ms` bounds calendar
+/// expansion; the list window always covers the next 24 hours even when the
+/// calendar shows a later month.
+pub(crate) fn build_todo_buckets(jobs: &[CronJob], now_ms: i64, range_end_ms: i64) -> TodoBuckets {
+    let list_boundary_ms = now_ms + TASK_DAY_MS as i64;
+    let expansion_end_ms = range_end_ms.max(list_boundary_ms);
+    let mut runs: Vec<TodoOccurrence> = Vec::new();
+    let mut inactive: Vec<InactiveTodo> = Vec::new();
+
+    for (job_index, job) in jobs.iter().enumerate() {
+        if !job.enabled {
+            inactive.push(InactiveTodo {
+                job_index,
+                reason: InactiveReason::Paused,
+            });
+            continue;
+        }
+        let scheduled_at_ms = job.state.next_run_at_ms;
+        // Expand from just before the scheduler's own next run when that is in
+        // the past, so an overdue or retrying run still shows up.
+        let expand_after_ms = scheduled_at_ms.map_or(now_ms, |at| (at - 1).min(now_ms));
+
+        let mut occurrence_times = match schedule_occurrences_in_range(
+            &job.schedule,
+            job.created_at_ms,
+            expand_after_ms,
+            list_boundary_ms,
+            MAX_LIST_OCCURRENCES_PER_JOB,
+        )
+        .and_then(|mut times| {
+            times.extend(expand_calendar_occurrences(
+                &job.schedule,
+                job.created_at_ms,
+                list_boundary_ms,
+                expansion_end_ms,
+            )?);
+            Ok(times)
+        }) {
+            Ok(times) => times,
+            Err(_) => {
+                inactive.push(InactiveTodo {
+                    job_index,
+                    reason: InactiveReason::InvalidSchedule,
+                });
+                continue;
+            }
+        };
+
+        // A one-shot that already ran expands to nothing; report it as
+        // finished rather than as an unexplained empty schedule.
+        if occurrence_times.is_empty() && scheduled_at_ms.is_none() {
+            inactive.push(InactiveTodo {
+                job_index,
+                reason: if has_completed_one_shot(job) {
+                    InactiveReason::Done
+                } else {
+                    InactiveReason::InvalidSchedule
+                },
+            });
+            continue;
+        }
+
+        // The scheduler's pending trigger wins over a recomputed time: a
+        // retry sits off the nominal series and is still the run that will
+        // actually happen.
+        if let Some(at) = scheduled_at_ms {
+            if !occurrence_times.contains(&at) {
+                occurrence_times.push(at);
+                occurrence_times.sort_unstable();
+            }
+        }
+
+        let running = job_running(job);
+        runs.extend(occurrence_times.into_iter().map(|at_ms| TodoOccurrence {
+            job_index,
+            at_ms,
+            is_next_run: scheduled_at_ms == Some(at_ms),
+            is_overdue: at_ms < now_ms && !running,
+            is_running: running && scheduled_at_ms == Some(at_ms),
+        }));
+    }
+
+    let by_time = |a: &TodoOccurrence, b: &TodoOccurrence| {
+        a.at_ms
+            .cmp(&b.at_ms)
+            .then_with(|| jobs[a.job_index].name.cmp(&jobs[b.job_index].name))
+    };
+    runs.sort_by(by_time);
+    let calendar = runs.clone();
+
+    // One row per job: the run the scheduler has queued wins over the nearest
+    // recomputed one (web `visibleTodos`).
+    let mut nearest: Vec<Option<TodoOccurrence>> = vec![None; jobs.len()];
+    for occurrence in &runs {
+        let slot = &mut nearest[occurrence.job_index];
+        match slot {
+            None => *slot = Some(*occurrence),
+            Some(current) if occurrence.is_next_run && !current.is_next_run => {
+                *slot = Some(*occurrence)
+            }
+            _ => {}
+        }
+    }
+    let mut visible: Vec<TodoOccurrence> = nearest.into_iter().flatten().collect();
+    visible.sort_by(by_time);
+
+    let due_soon_jobs = runs
+        .iter()
+        .filter(|occurrence| occurrence.at_ms <= list_boundary_ms)
+        .map(|occurrence| occurrence.job_index)
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+
+    inactive.sort_by(|a, b| {
+        jobs[b.job_index]
+            .config_updated_at_ms
+            .cmp(&jobs[a.job_index].config_updated_at_ms)
+    });
+
+    TodoBuckets {
+        visible,
+        calendar,
+        inactive,
+        due_soon_jobs,
+    }
+}
+
+/// Row badges straight off the occurrence flags (web row order: running,
+/// next run, overdue).
+pub(crate) fn occurrence_badges(occurrence: &TodoOccurrence) -> Vec<JobBadge> {
     let mut badges = Vec::new();
-    if job_running(job) {
+    if occurrence.is_running {
         badges.push(JobBadge::Running);
     }
-    if next_id == Some(job.id.as_str()) {
+    if occurrence.is_next_run {
         badges.push(JobBadge::NextRun);
     }
-    if job_overdue(job, now_ms) {
+    if occurrence.is_overdue {
         badges.push(JobBadge::Overdue);
     }
     badges
 }
 
-/// One occurrence the store carries on a calendar day (G-P2).
+/// One day cell of the month calendar.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DayEntry {
-    pub job_name: String,
-    pub at_ms: i64,
-    pub kind: DayEntryKind,
+pub(crate) struct MonthCell {
+    /// The full local date the cell stands for (the day panel keys on it).
+    pub date: NaiveDate,
+    pub day: u32,
+    pub in_month: bool,
+    pub is_today: bool,
+    /// Indexes into the board's calendar occurrence list, in time order.
+    pub occurrences: Vec<usize>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DayEntryKind {
-    NextRun,
-    RanOk,
-    RanError,
-}
-
-/// The occurrences the store carries for one local day: each job's next
-/// scheduled instant plus its latest finished run, in time order. A day can
-/// never show more than those per job — the same limit the calendar's legend
-/// states, because the service keeps no run history.
-pub(crate) fn day_entries(jobs: &[CronJob], day: chrono::NaiveDate) -> Vec<DayEntry> {
-    let mut entries = Vec::new();
-    let local = |at: i64| chrono::Local.timestamp_millis_opt(at).single();
-    for job in jobs {
-        if job.enabled {
-            if let Some(at) = job.state.next_run_at_ms {
-                if local(at).is_some_and(|at| at.date_naive() == day) {
-                    entries.push(DayEntry {
-                        job_name: job.name.clone(),
-                        at_ms: at,
-                        kind: DayEntryKind::NextRun,
-                    });
-                }
-            }
-        }
-        if let Some(at) = job.state.last_run_finished_at_ms {
-            if local(at).is_some_and(|at| at.date_naive() == day) {
-                entries.push(DayEntry {
-                    job_name: job.name.clone(),
-                    at_ms: at,
-                    kind: if ran_ok(job) {
-                        DayEntryKind::RanOk
-                    } else {
-                        DayEntryKind::RanError
-                    },
-                });
-            }
+/// Six-week Sunday-first grid covering the anchor's month (web
+/// `buildMonthGrid`): 42 fixed cells so the calendar never reflows between
+/// months, and a run happening today is exactly what someone opening a
+/// calendar expects to see.
+pub(crate) fn build_month_grid(
+    anchor: NaiveDate,
+    calendar: &[TodoOccurrence],
+    today: NaiveDate,
+) -> Vec<MonthCell> {
+    let first = anchor.with_day(1).expect("day one exists");
+    let lead = i64::from(first.weekday().num_days_from_sunday());
+    let grid_start = first - chrono::Duration::days(lead);
+    let mut by_day: std::collections::HashMap<NaiveDate, Vec<usize>> = Default::default();
+    for (index, occurrence) in calendar.iter().enumerate() {
+        if let Some(at) = Local.timestamp_millis_opt(occurrence.at_ms).single() {
+            by_day.entry(at.date_naive()).or_default().push(index);
         }
     }
-    entries.sort_by_key(|entry| entry.at_ms);
-    entries
+    (0..42)
+        .map(|index| {
+            let date = grid_start + chrono::Duration::days(index);
+            MonthCell {
+                date,
+                day: date.day(),
+                in_month: date.month() == anchor.month(),
+                is_today: date == today,
+                occurrences: by_day.get(&date).cloned().unwrap_or_default(),
+            }
+        })
+        .collect()
 }
 
-/// Whether the job's latest finished run ended without an error (a running or
-/// queued status is not a failure; anything else, including no status at all,
-/// reads as the error the calendar marks).
-fn ran_ok(job: &CronJob) -> bool {
-    use openbitfun_agent_runtime::scheduled_job::ScheduledJobRunStatus;
-    matches!(
-        job.state.last_run_status,
-        Some(ScheduledJobRunStatus::Ok)
-            | Some(ScheduledJobRunStatus::Running)
-            | Some(ScheduledJobRunStatus::Queued)
+/// Last millisecond of the anchor month's six-week grid (web `monthRangeMs`
+/// bounds the calendar expansion with the same window). An unusable local
+/// conversion yields zero, which simply narrows the expansion to the 24-hour
+/// list window.
+pub(crate) fn month_range_end_ms(anchor: NaiveDate) -> i64 {
+    let first = anchor.with_day(1).expect("day one exists");
+    let lead = i64::from(first.weekday().num_days_from_sunday());
+    let last = first - chrono::Duration::days(lead) + chrono::Duration::days(41);
+    Local
+        .with_ymd_and_hms(last.year(), last.month(), last.day(), 23, 59, 59)
+        .single()
+        .map(|end| end.timestamp_millis() + 999)
+        .unwrap_or(0)
+}
+
+/// `HH:mm` in the viewer's local wall clock (web `formatTimeOfDay`).
+pub(crate) fn format_occurrence_time(at_ms: i64) -> String {
+    Local
+        .timestamp_millis_opt(at_ms)
+        .single()
+        .map(|at| at.format("%H:%M").to_string())
+        .unwrap_or_else(|| at_ms.to_string())
+}
+
+/// `MM/DD HH:mm` (web `formatDateTime`): the day-detail title and the
+/// one-shot summary render this compact shape.
+pub(crate) fn format_occurrence_datetime(at_ms: i64) -> String {
+    Local
+        .timestamp_millis_opt(at_ms)
+        .single()
+        .map(|at| at.format("%m/%d %H:%M").to_string())
+        .unwrap_or_else(|| at_ms.to_string())
+}
+
+/// The RFC 3339 `at` value of a one-shot schedule in the same compact shape;
+/// a value the wire could not have written passes through untouched.
+fn local_compact_datetime(at: &str) -> String {
+    DateTime::parse_from_rfc3339(at)
+        .map(|at| at.with_timezone(&Local).format("%m/%d %H:%M").to_string())
+        .unwrap_or_else(|_| at.to_string())
+}
+
+/// Which relative bucket a countdown falls into (web `formatCountdown`); the
+/// split is pure so tests can pin it without a locale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Countdown {
+    Overdue,
+    Now,
+    InMinutes(i64),
+    InHours(i64),
+    InOneDay,
+    InDays(i64),
+}
+
+pub(crate) fn countdown_choice(target_ms: i64, now_ms: i64) -> Countdown {
+    let delta_ms = target_ms - now_ms;
+    if delta_ms < 0 {
+        return Countdown::Overdue;
+    }
+    let minutes = delta_ms / TASK_MINUTE_MS as i64;
+    if minutes < 1 {
+        return Countdown::Now;
+    }
+    if minutes < 60 {
+        return Countdown::InMinutes(minutes);
+    }
+    let hours = minutes / 60;
+    if hours < 24 {
+        return Countdown::InHours(hours);
+    }
+    let days = hours / 24;
+    if days == 1 {
+        Countdown::InOneDay
+    } else {
+        Countdown::InDays(days)
+    }
+}
+
+/// Names the workspace a job runs in (web `resolveJobWorkspaceLabel`): the
+/// matched workspace's name, else the stored path's tail. A job outlives its
+/// workspace list, and the path never picks another workspace.
+pub(crate) fn job_workspace_label(job: &CronJob, current: Option<(&str, &str)>) -> String {
+    let reference = match &job.target {
+        CronJobTarget::Workspace { workspace, .. } | CronJobTarget::Session { workspace, .. } => {
+            workspace
+        }
+    };
+    if let Some((current_id, current_name)) = current {
+        if reference.workspace_id.as_deref() == Some(current_id) && !current_name.is_empty() {
+            return current_name.to_string();
+        }
+    }
+    let path = reference.workspace_path.trim();
+    let tail = path.split('/').filter(|segment| !segment.is_empty()).last();
+    tail.unwrap_or(path).to_string()
+}
+
+/// The quiet-card container every board section renders on (style.md §3): the
+/// settings-page card geometry — panel surface, hairline boundary, the theme's
+/// large radius — with an arbitrary body instead of label/control rows.
+fn scene_card(anchor: &'static str, cx: &App) -> gpui_kit::Div {
+    div()
+        .debug_selector(move || format!("tasks-card-{anchor}"))
+        .w_full()
+        .flex()
+        .flex_col()
+        .bg(cx.theme().group_box)
+        .border_1()
+        .border_color(cx.theme().border)
+        .rounded(cx.theme().radius_lg)
+}
+
+/// A card head: title and optional muted description on the left, the extra
+/// lane on the right (the `SettingsCard` head shape).
+fn scene_card_head(
+    title: String,
+    description: Option<String>,
+    extra: Option<gpui_kit::AnyElement>,
+    cx: &App,
+) -> gpui_kit::Div {
+    div().px_4().pt_4().pb_3().child(
+        div()
+            .flex()
+            .flex_row()
+            .items_start()
+            .justify_between()
+            .gap_4()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .min_w_0()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(cx.theme().foreground)
+                            .child(title),
+                    )
+                    .children(description.map(|text| {
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(text)
+                    })),
+            )
+            .children(extra),
     )
 }
 
-/// The full board: refresh header, overview card, month calendar, then the
-/// job list.
+/// A row inside a scene card: the settings-card row geometry (12px block,
+/// hairline between rows) for list-shaped bodies.
+fn scene_card_row(divider: bool, cx: &App) -> gpui_kit::Div {
+    div().flex().flex_col().px_4().py_3().when(divider, |row| {
+        row.border_t_1()
+            .border_color(cx.theme().border.opacity(0.6))
+    })
+}
+
+/// The full board: page header, overview card, month calendar card, the job
+/// list card, and — when a day is selected — the day-detail card. With
+/// nothing scheduled at all the board collapses to the scene's branded empty
+/// card; the overview and calendar still render around a non-empty but fully
+/// inactive store ("0 upcoming" is a fact worth showing).
 pub(crate) fn render_page(
     state: &TasksPageState,
     view: gpui_kit::WeakEntity<crate::shell::ShellWindow>,
@@ -554,9 +1089,71 @@ pub(crate) fn render_page(
     text: &ShellText,
     cx: &App,
 ) -> gpui_kit::AnyElement {
+    let now_ms = if state.now_ms > 0 {
+        state.now_ms
+    } else {
+        chrono::Utc::now().timestamp_millis()
+    };
+    let buckets = build_todo_buckets(&state.jobs, now_ms, month_range_end_ms(state.month_anchor));
+
     let reload_tx = tx.clone();
     let new_view = view.clone();
     let new_tx = tx.clone();
+    let header = div()
+        .flex()
+        .flex_row()
+        .items_start()
+        .justify_between()
+        .gap_4()
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_0p5()
+                .min_w_0()
+                .child(
+                    div()
+                        .text_lg()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(cx.theme().foreground)
+                        .child(text.tasks_title.clone()),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(text.tasks_subtitle.clone()),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .child(
+                    Button::new("tasks-new")
+                        .label(text.tasks_new.clone())
+                        .small()
+                        .with_variant(ButtonVariant::Primary)
+                        .on_click(move |_, window, cx| {
+                            open_task_editor(new_view.clone(), None, new_tx.clone(), window, cx);
+                        }),
+                )
+                .child(
+                    Button::new("tasks-reload")
+                        .icon(gpui_kit::assets::IconName::RefreshCw)
+                        .small()
+                        .with_variant(ButtonVariant::Ghost)
+                        .tooltip(text.sessions_reload.clone())
+                        .on_click(move |_, _, _| {
+                            if let Some(handle) = runtime::runtime_handle() {
+                                handle.reload_cron_jobs(reload_tx.clone());
+                            }
+                        }),
+                ),
+        );
+
     // Natural height: `h_full()` capped the page inside its scroll wrapper at
     // the viewport height, so a long job list had no scroll extent.
     let mut column = div()
@@ -566,53 +1163,7 @@ pub(crate) fn render_page(
         .debug_selector(|| "tasks-page-content".to_string())
         .gap_3()
         .p_4()
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .child(
-                    div()
-                        .text_lg()
-                        .text_color(cx.theme().foreground)
-                        .child(text.tasks_title.clone()),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            Button::new("tasks-new")
-                                .label(text.tasks_new.clone())
-                                .small()
-                                .with_variant(ButtonVariant::Primary)
-                                .on_click(move |_, window, cx| {
-                                    open_task_editor(
-                                        new_view.clone(),
-                                        None,
-                                        new_tx.clone(),
-                                        window,
-                                        cx,
-                                    );
-                                }),
-                        )
-                        .child(
-                            Button::new("tasks-reload")
-                                .icon(gpui_kit::assets::IconName::RefreshCw)
-                                .small()
-                                .with_variant(ButtonVariant::Ghost)
-                                .tooltip(text.sessions_reload.clone())
-                                .on_click(move |_, _, _| {
-                                    if let Some(handle) = runtime::runtime_handle() {
-                                        handle.reload_cron_jobs(reload_tx.clone());
-                                    }
-                                }),
-                        ),
-                ),
-        );
+        .child(header);
 
     if let Some(error) = &state.error {
         column = column.child(
@@ -633,291 +1184,290 @@ pub(crate) fn render_page(
         return column.into_any_element();
     }
 
-    // The overview card and calendar render even with no jobs ("0 pending"
-    // is a fact worth showing); the empty state only replaces the list.
-    column = column.child(render_overview(&state.jobs, text, cx));
-    column = column.child(render_month_calendar(state, &view, text, cx));
-    if let Some(day) = state.selected_day {
-        column = column.child(render_day_detail(state, day, &view, text, cx));
-    }
-
     if state.jobs.is_empty() {
-        column = column.child(crate::shell::brand_empty(
+        let empty_view = view.clone();
+        let empty_tx = tx.clone();
+        let action = Button::new("tasks-new-empty")
+            .label(text.tasks_new.clone())
+            .small()
+            .with_variant(ButtonVariant::Primary)
+            .on_click(move |_, window, cx| {
+                open_task_editor(empty_view.clone(), None, empty_tx.clone(), window, cx);
+            })
+            .into_any_element();
+        column = column.child(crate::shell::brand_empty_card(
             gpui_kit::assets::IconName::Calendar,
             &text.tasks_empty_title,
             &text.tasks_empty,
+            Some(action),
+            cx,
         ));
         return column.into_any_element();
     }
 
-    column = column.child(render_job_list(state, &view, tx, text, cx));
+    column = column.child(render_overview_card(&buckets, text, cx));
+    column = column.child(render_month_calendar(state, &buckets, &view, text, cx));
+    if let Some(day) = state.selected_day {
+        column = column.child(render_day_detail(
+            state, &buckets, day, now_ms, &view, tx, text, cx,
+        ));
+    }
+    column = column.child(render_job_list(
+        state, &buckets, now_ms, &view, tx, text, cx,
+    ));
 
     column.into_any_element()
 }
 
-/// Headline counts of the overview card. Pure so the window state stays
-/// projectable in tests.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct OverviewStats {
-    pub total: usize,
-    pub enabled: usize,
-    /// Enabled jobs scheduled inside the next 24 hours (`next_run_at_ms`).
-    pub due_24h: usize,
-    /// Jobs whose latest finished run ended in an error (or was cancelled).
-    pub failed: usize,
-}
-
-pub(crate) fn overview_stats(
-    jobs: &[openbitfun_core::service::cron::CronJob],
-    now_ms: i64,
-) -> OverviewStats {
-    use openbitfun_agent_runtime::scheduled_job::ScheduledJobRunStatus;
-    const DAY_MS: i64 = 24 * 60 * 60 * 1_000;
-    let mut stats = OverviewStats {
-        total: jobs.len(),
-        ..Default::default()
-    };
-    for job in jobs {
-        if !job.enabled {
-            continue;
-        }
-        stats.enabled += 1;
-        if job
-            .state
-            .next_run_at_ms
-            .is_some_and(|at| at >= now_ms && at <= now_ms + DAY_MS)
-        {
-            stats.due_24h += 1;
-        }
-        if matches!(
-            job.state.last_run_status,
-            Some(ScheduledJobRunStatus::Error) | Some(ScheduledJobRunStatus::Cancelled)
-        ) {
-            stats.failed += 1;
-        }
-    }
-    stats
-}
-
-/// The overview card: four at-a-glance numbers, the insights headline shape.
-fn render_overview(
-    jobs: &[openbitfun_core::service::cron::CronJob],
-    text: &ShellText,
-    cx: &App,
-) -> gpui_kit::Div {
-    let stats = overview_stats(jobs, chrono::Utc::now().timestamp_millis());
-    let failed_color = if stats.failed > 0 {
-        cx.theme().danger
-    } else {
-        cx.theme().muted_foreground
-    };
-    let cells = [
-        (
-            text.tasks_stat_total.clone(),
-            stats.total.to_string(),
-            cx.theme().foreground,
-        ),
-        (
-            text.tasks_stat_enabled.clone(),
-            stats.enabled.to_string(),
-            cx.theme().foreground,
-        ),
-        (
-            text.tasks_stat_due_24h.clone(),
-            stats.due_24h.to_string(),
-            cx.theme().foreground,
-        ),
-        (
-            text.tasks_stat_failed.clone(),
-            stats.failed.to_string(),
-            failed_color,
-        ),
-    ];
-    let mut row = div()
+/// One overview metric: the big value with its unit, the muted label under it
+/// (web `overview.total` / `overview.dueSoon` shape).
+fn overview_metric(value: usize, label: String, text: &ShellText, cx: &App) -> gpui_kit::Div {
+    div()
         .flex()
-        .flex_wrap()
-        .gap_4()
-        .p_3()
-        .rounded(cx.theme().radius)
-        .border_1()
-        .border_color(cx.theme().border)
+        .flex_col()
+        .gap_0p5()
+        .min_w_0()
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1()
+                .child(
+                    div()
+                        .text_xl()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(cx.theme().foreground)
+                        .child(value.to_string()),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(text.tasks_overview_unit.clone()),
+                ),
+        )
         .child(
             div()
                 .text_xs()
                 .text_color(cx.theme().muted_foreground)
-                .child(text.tasks_overview.clone()),
-        );
-    for (label, value, color) in cells {
-        row = row.child(
+                .child(label),
+        )
+}
+
+/// The overview card: the web scene's two metrics — visible jobs and jobs due
+/// within 24 hours — under the 计划概览 head with its calendar glyph.
+fn render_overview_card(buckets: &TodoBuckets, text: &ShellText, cx: &App) -> gpui_kit::Div {
+    scene_card("overview", cx)
+        .child(scene_card_head(
+            text.tasks_overview.clone(),
+            None,
+            Some(
+                Icon::new(gpui_kit::assets::IconName::CalendarDays)
+                    .text_color(cx.theme().muted_foreground)
+                    .into_any_element(),
+            ),
+            cx,
+        ))
+        .child(
             div()
-                .v_flex()
-                .gap_0p5()
-                .min_w(px(72.))
-                .child(div().text_lg().text_color(color).child(value))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(label),
-                ),
-        );
-    }
-    row
+                .px_4()
+                .pb_4()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .gap_8()
+                .child(overview_metric(
+                    buckets.visible.len(),
+                    text.tasks_overview_total.clone(),
+                    text,
+                    cx,
+                ))
+                .child(overview_metric(
+                    buckets.due_soon_jobs,
+                    text.tasks_overview_due_soon.clone(),
+                    text,
+                    cx,
+                )),
+        )
 }
 
-/// One day cell of the month calendar. Marks are booleans rather than counts:
-/// the store has no per-day history, only the next scheduled instant and the
-/// latest finished run per job.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct MonthCell {
-    /// The full local date the cell stands for (G-P2 keys the day panel on it).
-    pub date: chrono::NaiveDate,
-    pub day: u32,
-    pub in_month: bool,
-    pub is_today: bool,
-    pub scheduled: bool,
-    pub ran_ok: bool,
-    pub ran_error: bool,
-}
-
-/// Monday-first month grid, 7 columns; leading/trailing days of adjacent
-/// months pad the first and last rows.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct MonthGrid {
-    pub cells: Vec<MonthCell>,
-    pub week_count: usize,
-}
-
-pub(crate) fn build_month_grid(
-    jobs: &[openbitfun_core::service::cron::CronJob],
-    today: chrono::DateTime<chrono::Local>,
-) -> MonthGrid {
-    use chrono::{Datelike, Duration};
-    let today_date = today.date_naive();
-    let first = today_date.with_day(1).expect("first day exists");
-    let month_end = if first.month() == 12 {
-        chrono::NaiveDate::from_ymd_opt(first.year() + 1, 1, 1)
-    } else {
-        chrono::NaiveDate::from_ymd_opt(first.year(), first.month() + 1, 1)
-    }
-    .and_then(|next| next.pred_opt())
-    .expect("month end exists");
-
-    let mut scheduled: std::collections::HashSet<chrono::NaiveDate> = Default::default();
-    let mut ran_ok_days: std::collections::HashSet<chrono::NaiveDate> = Default::default();
-    let mut ran_error_days: std::collections::HashSet<chrono::NaiveDate> = Default::default();
-    for job in jobs {
-        if job.enabled {
-            if let Some(at) = job.state.next_run_at_ms {
-                if let Some(local) = chrono::Local.timestamp_millis_opt(at).single() {
-                    scheduled.insert(local.date_naive());
-                }
-            }
-        }
-        if let Some(at) = job.state.last_run_finished_at_ms {
-            let local = chrono::Local.timestamp_millis_opt(at).single();
-            if let Some(local) = local {
-                if ran_ok(job) {
-                    ran_ok_days.insert(local.date_naive());
-                } else {
-                    ran_error_days.insert(local.date_naive());
-                }
-            }
-        }
-    }
-
-    let lead = first.weekday().num_days_from_monday() as i64;
-    let day_count = (month_end - first).num_days() + 1;
-    let week_count = ((day_count + lead) as usize).div_ceil(7);
-    let grid_start = first - Duration::days(lead);
-    let mut cells = Vec::with_capacity(week_count * 7);
-    for index in 0..week_count * 7 {
-        let day = grid_start + Duration::days(index as i64);
-        cells.push(MonthCell {
-            date: day,
-            day: day.day(),
-            in_month: day >= first && day <= month_end,
-            is_today: day == today_date,
-            scheduled: scheduled.contains(&day),
-            ran_ok: ran_ok_days.contains(&day) && !ran_error_days.contains(&day),
-            ran_error: ran_error_days.contains(&day),
-        });
-    }
-    MonthGrid { cells, week_count }
-}
-
-/// The month calendar card: weekday header, the grid, and a legend that also
-/// states the data honestly (no run history in the shell). Clicking a day
-/// toggles the day panel below it (web `onSelectDay` toggles the same way).
+/// The month calendar card: month navigation (previous / label / next plus
+/// 今天), a Sunday-first six-week grid whose cells carry up to three occurrence
+/// chips, and the web cell states (today outlined, selected filled, outside
+/// month dimmed). Clicking a cell toggles the day panel below (web
+/// `onSelectDay` toggles the same way).
 fn render_month_calendar(
     state: &TasksPageState,
+    buckets: &TodoBuckets,
     view: &gpui_kit::WeakEntity<crate::shell::ShellWindow>,
     text: &ShellText,
     cx: &App,
 ) -> gpui_kit::Div {
-    const CELL: f32 = 30.;
-    const GAP: f32 = 3.;
-    let grid = build_month_grid(&state.jobs, chrono::Local::now());
+    const CELL_HEIGHT: f32 = 68.;
+    let today = Local::now().date_naive();
+    let grid = build_month_grid(state.month_anchor, &buckets.calendar, today);
     let muted = cx.theme().muted_foreground;
-    let label = |value: String| div().text_xs().text_color(muted).child(value);
 
+    let prev_view = view.clone();
+    let next_view = view.clone();
+    let today_view = view.clone();
+    let actions = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .child(
+            Button::new("tasks-cal-prev")
+                .icon(gpui_kit::assets::IconName::ChevronLeft)
+                .small()
+                .with_variant(ButtonVariant::Ghost)
+                .tooltip(text.tasks_cal_prev.clone())
+                .on_click(move |_, _, cx| {
+                    if let Some(shell) = prev_view.upgrade() {
+                        shell.update(cx, |shell, cx| {
+                            shell.shift_month(-1);
+                            cx.notify();
+                        });
+                    }
+                }),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_1()
+                .child(Icon::new(gpui_kit::assets::IconName::CalendarDays).text_color(muted))
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().foreground)
+                        .child(state.month_anchor.format("%Y-%m").to_string()),
+                ),
+        )
+        .child(
+            Button::new("tasks-cal-next")
+                .icon(gpui_kit::assets::IconName::ChevronRight)
+                .small()
+                .with_variant(ButtonVariant::Ghost)
+                .tooltip(text.tasks_cal_next.clone())
+                .on_click(move |_, _, cx| {
+                    if let Some(shell) = next_view.upgrade() {
+                        shell.update(cx, |shell, cx| {
+                            shell.shift_month(1);
+                            cx.notify();
+                        });
+                    }
+                }),
+        )
+        .child(
+            Button::new("tasks-cal-today")
+                .label(text.tasks_cal_today.clone())
+                .small()
+                .with_variant(ButtonVariant::Secondary)
+                .on_click(move |_, _, cx| {
+                    if let Some(shell) = today_view.upgrade() {
+                        shell.update(cx, |shell, cx| {
+                            shell.tasks.month_anchor = Local::now()
+                                .date_naive()
+                                .with_day(1)
+                                .expect("day one exists");
+                            shell.tasks.selected_day = None;
+                            cx.notify();
+                        });
+                    }
+                }),
+        );
+
+    // Sunday-first to match the web grid (`buildMonthGrid` starts each week
+    // on Sunday); the seven weekday keys render in that order.
     let weekdays = [
+        text.tasks_wd_sun.clone(),
         text.tasks_wd_mon.clone(),
         text.tasks_wd_tue.clone(),
         text.tasks_wd_wed.clone(),
         text.tasks_wd_thu.clone(),
         text.tasks_wd_fri.clone(),
         text.tasks_wd_sat.clone(),
-        text.tasks_wd_sun.clone(),
     ];
-    let mut header = div().flex().gap(px(GAP));
+    let mut header = div().flex().gap(px(3.));
     for name in weekdays {
-        header = header.child(div().w(px(CELL)).flex().justify_center().child(label(name)));
+        header = header.child(
+            div()
+                .flex_1()
+                .flex()
+                .justify_center()
+                .child(div().text_xs().text_color(muted).child(name)),
+        );
     }
 
-    let mut grid_element = div().v_flex().gap(px(GAP)).min_w_0();
-    for week in 0..grid.week_count {
-        let mut row = div().flex().gap(px(GAP));
+    let mut grid_element = div().v_flex().gap(px(3.)).min_w_0();
+    for week in 0..6usize {
+        let mut row = div().flex().gap(px(3.));
         for col in 0..7usize {
-            let cell = &grid.cells[week * 7 + col];
-            let text_color = if !cell.in_month {
-                cx.theme().muted_foreground.opacity(0.5)
-            } else if cell.is_today {
-                cx.theme().info
-            } else {
-                cx.theme().foreground
-            };
+            let cell = &grid[week * 7 + col];
+            let selected = state.selected_day == Some(cell.date);
             let mut day = div()
-                .w(px(CELL))
-                .h(px(CELL))
+                .flex_1()
+                .h(px(CELL_HEIGHT))
                 .v_flex()
                 .items_center()
                 .justify_center()
                 .gap_0p5()
                 .rounded(cx.theme().radius)
+                .px_1()
+                .overflow_hidden()
                 .child(
                     div()
                         .text_xs()
-                        .text_color(text_color)
+                        .text_color(if cell.in_month {
+                            cx.theme().foreground
+                        } else {
+                            muted.opacity(0.5)
+                        })
                         .child(cell.day.to_string()),
                 );
-            if cell.scheduled || cell.ran_ok || cell.ran_error {
-                let mut dots = div().flex().gap(px(2.));
-                if cell.scheduled {
-                    dots = dots.child(dot(cx.theme().info));
+            if !cell.occurrences.is_empty() {
+                let mut chips = div().v_flex().gap(px(2.)).min_w_0().w_full();
+                for index in cell.occurrences.iter().take(MAX_CHIPS_PER_DAY) {
+                    let occurrence = &buckets.calendar[*index];
+                    chips = chips.child(
+                        div()
+                            .w_full()
+                            .flex()
+                            .flex_row()
+                            .gap_0p5()
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .child(format_occurrence_time(occurrence.at_ms)),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .child(job_name_of(&state.jobs, occurrence.job_index)),
+                            ),
+                    );
                 }
-                if cell.ran_ok {
-                    dots = dots.child(dot(cx.theme().success));
+                if cell.occurrences.len() > MAX_CHIPS_PER_DAY {
+                    chips = chips.child(div().w_full().text_xs().text_color(muted).child(
+                        crate::i18n::tasks_cal_more(cell.occurrences.len() - MAX_CHIPS_PER_DAY, cx),
+                    ));
                 }
-                if cell.ran_error {
-                    dots = dots.child(dot(cx.theme().danger));
-                }
-                day = day.child(dots);
+                day = day.child(chips);
             }
             if cell.is_today {
                 day = day.border_1().border_color(cx.theme().info);
             }
-            if state.selected_day == Some(cell.date) {
+            if selected {
                 day = day.bg(cx.theme().sidebar_accent);
             }
             let toggle_view = view.clone();
@@ -946,138 +1496,131 @@ fn render_month_calendar(
         grid_element = grid_element.child(row);
     }
 
-    let mut legend = div().flex().flex_wrap().items_center().gap_2();
-    legend = legend
-        .child(legend_item(
-            cx.theme().info,
-            text.tasks_calendar_scheduled.clone(),
+    scene_card("calendar", cx)
+        .child(scene_card_head(
+            text.tasks_cal_title.clone(),
+            None,
+            Some(actions.into_any_element()),
             cx,
         ))
-        .child(legend_item(
-            cx.theme().success,
-            text.tasks_calendar_ran.clone(),
-            cx,
-        ))
-        .child(legend_item(
-            cx.theme().danger,
-            text.tasks_calendar_error.clone(),
-            cx,
-        ));
-
-    div()
-        .v_flex()
-        .gap_2()
-        .p_3()
-        .rounded(cx.theme().radius)
-        .border_1()
-        .border_color(cx.theme().border)
         .child(
             div()
-                .text_sm()
-                .text_color(cx.theme().foreground)
-                .child(chrono::Local::now().format("%Y-%m").to_string()),
+                .px_4()
+                .pb_4()
+                .v_flex()
+                .gap_2()
+                .child(header)
+                .child(grid_element),
         )
-        .child(header)
-        .child(grid_element)
-        .child(legend)
-        .child(label(text.tasks_calendar_note.clone()))
 }
 
-/// G-P2: the selected day's panel — the title with the picked date, the web
-/// panel's Clear action, and one row per instant the store carries that day
-/// (or its empty line when the day is blank).
+/// `Shifts` a month anchor by whole months (web `shiftMonth`), clamped to a
+/// real first-of-month; pure so tests can pin the year rollover.
+pub(crate) fn shift_month_anchor(anchor: NaiveDate, delta: i32) -> NaiveDate {
+    let total = i32::from(anchor.year()) * 12 + anchor.month() as i32 - 1 + delta;
+    let year = total.div_euclid(12);
+    let month = total.rem_euclid(12) as u32 + 1;
+    chrono::NaiveDate::from_ymd_opt(year, month, 1).expect("first of month exists")
+}
+
+/// The board's month navigation on the window state: shift the anchor and
+/// drop the day selection (web clears the selection on the same move).
+impl crate::shell::ShellWindow {
+    pub(crate) fn shift_month(&mut self, delta: i32) {
+        self.tasks.month_anchor = shift_month_anchor(self.tasks.month_anchor, delta);
+        self.tasks.selected_day = None;
+    }
+}
+
+/// The selected day's card (web day-detail): the title is the day's first
+/// occurrence in the compact `MM/DD HH:mm` shape, the web panel's clear
+/// action, and one row per run that day — the same job can appear several
+/// times — or the web empty line.
 fn render_day_detail(
     state: &TasksPageState,
-    day: chrono::NaiveDate,
+    buckets: &TodoBuckets,
+    day: NaiveDate,
+    now_ms: i64,
     view: &gpui_kit::WeakEntity<crate::shell::ShellWindow>,
+    tx: &mpsc::UnboundedSender<RuntimeEvent>,
     text: &ShellText,
     cx: &App,
 ) -> gpui_kit::Div {
     let clear_view = view.clone();
-    let header = div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .justify_between()
-        .gap_2()
-        .child(
-            div()
-                .text_sm()
-                .text_color(cx.theme().foreground)
-                .child(crate::i18n::tasks_day_title(&day.to_string(), cx)),
-        )
-        .child(
-            Button::new("tasks-day-clear")
-                .label(text.tasks_day_clear.clone())
-                .small()
-                .with_variant(ButtonVariant::Ghost)
-                .on_click(move |_, _window, cx| {
-                    let Some(shell) = clear_view.upgrade() else {
-                        return;
-                    };
-                    shell.update(cx, |shell, cx| {
-                        shell.tasks.selected_day = None;
-                        cx.notify();
-                    });
-                }),
-        );
+    let day_occurrences: Vec<usize> = buckets
+        .calendar
+        .iter()
+        .enumerate()
+        .filter(|(_, occurrence)| {
+            Local
+                .timestamp_millis_opt(occurrence.at_ms)
+                .single()
+                .is_some_and(|at| at.date_naive() == day)
+        })
+        .map(|(index, _)| index)
+        .collect();
+    let title = day_occurrences
+        .first()
+        .map(|index| format_occurrence_datetime(buckets.calendar[*index].at_ms))
+        .unwrap_or_else(|| text.tasks_day_detail_title.clone());
 
-    let entries = day_entries(&state.jobs, day);
-    let mut card = div()
-        .v_flex()
-        .gap_2()
-        .p_3()
-        .rounded(cx.theme().radius)
-        .border_1()
-        .border_color(cx.theme().border)
-        .debug_selector(|| "tasks-day-detail".to_string())
-        .child(header);
-    if entries.is_empty() {
-        card = card.child(
+    // The card head is the shared scene-card shape; the web panel's clear
+    // action rides in the extra lane.
+    let clear = Button::new("tasks-day-clear")
+        .label(text.tasks_day_clear.clone())
+        .small()
+        .with_variant(ButtonVariant::Ghost)
+        .on_click(move |_, _window, cx| {
+            let Some(shell) = clear_view.upgrade() else {
+                return;
+            };
+            shell.update(cx, |shell, cx| {
+                shell.tasks.selected_day = None;
+                cx.notify();
+            });
+        })
+        .into_any_element();
+
+    let mut body = scene_card_row(false, cx);
+    if day_occurrences.is_empty() {
+        body = body.child(
             div()
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
                 .child(text.tasks_day_empty.clone()),
         );
     } else {
-        for entry in entries {
-            let at = chrono::Local
-                .timestamp_millis_opt(entry.at_ms)
-                .single()
-                .map(|at| at.format("%H:%M").to_string())
-                .unwrap_or_else(|| entry.at_ms.to_string());
-            let (chip_label, chip_color) = match entry.kind {
-                DayEntryKind::NextRun => (text.tasks_badge_next_run.clone(), cx.theme().info),
-                DayEntryKind::RanOk => (text.tasks_calendar_ran.clone(), cx.theme().success),
-                DayEntryKind::RanError => (text.tasks_calendar_error.clone(), cx.theme().danger),
+        let current_workspace = runtime::runtime_handle().map(|handle| {
+            let workspace = handle.workspace();
+            (workspace.id, workspace.name)
+        });
+        for (row_index, occurrence_index) in day_occurrences.iter().enumerate() {
+            let occurrence = buckets.calendar[*occurrence_index];
+            let Some(job) = state.jobs.get(occurrence.job_index) else {
+                continue;
             };
-            card = card.child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex_shrink_0()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(at),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_sm()
-                            .text_color(cx.theme().foreground)
-                            .child(entry.job_name),
-                    )
-                    .child(status_badge(chip_label, chip_color, cx)),
-            );
+            body = body.child(render_job_row(
+                job,
+                Some(&occurrence),
+                None,
+                row_index > 0,
+                now_ms,
+                "day",
+                view,
+                tx,
+                text,
+                current_workspace
+                    .as_ref()
+                    .map(|(id, name)| (id.as_str(), name.as_str())),
+                cx,
+            ));
         }
     }
-    card
+
+    scene_card("day-detail", cx)
+        .debug_selector(|| "tasks-day-detail".to_string())
+        .child(scene_card_head(title, None, Some(clear), cx))
+        .child(body)
 }
 
 /// A compact status chip: tinted text on the tint's weak surface, the shell's
@@ -1094,89 +1637,143 @@ fn status_badge(label: String, tone: gpui_kit::Hsla, cx: &App) -> gpui_kit::Div 
         .child(label)
 }
 
-fn dot(color: gpui_kit::Hsla) -> gpui_kit::Div {
-    div().w(px(4.)).h(px(4.)).rounded_full().bg(color)
-}
+/// Chips rendered inside a calendar day cell before collapsing into a "+N"
+/// counter (web `MAX_CHIPS_PER_DAY`).
+const MAX_CHIPS_PER_DAY: usize = 3;
 
-fn legend_item(color: gpui_kit::Hsla, label: String, cx: &App) -> gpui_kit::Div {
-    div().flex().items_center().gap_1().child(dot(color)).child(
-        div()
-            .text_xs()
-            .text_color(cx.theme().muted_foreground)
-            .child(label),
-    )
-}
-
-/// The list section: every job under its partition. Jobs with an upcoming run
-/// come first (their row carrying the web badges), then the inactive
-/// partition under the web's own subheader, so a job with no next run is
-/// visible as such instead of silently missing.
+/// The job list card: one row per active job — its nearest upcoming run,
+/// soonest first — then the inactive partition under the web's own subheader,
+/// so a job with no next run is visible as such instead of silently missing.
 fn render_job_list(
     state: &TasksPageState,
+    buckets: &TodoBuckets,
+    now_ms: i64,
     view: &WeakEntity<ShellWindow>,
     tx: &mpsc::UnboundedSender<RuntimeEvent>,
     text: &ShellText,
     cx: &App,
 ) -> gpui_kit::Div {
-    let now_ms = chrono::Utc::now().timestamp_millis();
-    let next_id = next_run_job_id(&state.jobs, now_ms);
-    let mut active = div().v_flex().gap_2().child(
-        div()
-            .text_sm()
-            .text_color(cx.theme().muted_foreground)
-            .child(text.tasks_list_title.clone()),
-    );
-    let mut inactive = Vec::new();
+    let current_workspace = runtime::runtime_handle().map(|handle| {
+        let workspace = handle.workspace();
+        (workspace.id, workspace.name)
+    });
 
-    for job in &state.jobs {
-        match inactive_reason(job) {
-            None => {
-                let badges = job_badges(job, next_id.as_deref(), now_ms);
-                active = active.child(render_job_row(job, &badges, None, view, tx, text, cx));
-            }
-            Some(reason) => {
-                inactive.push(render_job_row(job, &[], Some(reason), view, tx, text, cx))
-            }
-        }
-    }
-
-    if !inactive.is_empty() {
-        active = active.child(
+    let mut card = scene_card("jobs", cx).child(scene_card_head(
+        crate::i18n::tasks_list_count_title(buckets.visible.len(), cx),
+        None,
+        None,
+        cx,
+    ));
+    let mut body = scene_card_row(false, cx);
+    if buckets.visible.is_empty() {
+        body = body.child(
             div()
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
-                .child(crate::i18n::tasks_inactive_title(inactive.len(), cx)),
+                .debug_selector(|| "tasks-list-empty".to_string())
+                .child(text.tasks_list_empty.clone()),
         );
-        for row in inactive {
-            active = active.child(row);
+    } else {
+        for (index, occurrence) in buckets.visible.iter().enumerate() {
+            let Some(job) = state.jobs.get(occurrence.job_index) else {
+                continue;
+            };
+            body = body.child(render_job_row(
+                job,
+                Some(occurrence),
+                None,
+                index > 0,
+                now_ms,
+                "list",
+                view,
+                tx,
+                text,
+                current_workspace
+                    .as_ref()
+                    .map(|(id, name)| (id.as_str(), name.as_str())),
+                cx,
+            ));
         }
     }
-    active
+    card = card.child(body);
+
+    if !buckets.inactive.is_empty() {
+        let mut inactive_body = scene_card_row(true, cx).child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(crate::i18n::tasks_inactive_title(
+                    buckets.inactive.len(),
+                    cx,
+                )),
+        );
+        for (index, entry) in buckets.inactive.iter().enumerate() {
+            let Some(job) = state.jobs.get(entry.job_index) else {
+                continue;
+            };
+            inactive_body = inactive_body.child(render_job_row(
+                job,
+                None,
+                Some(entry.reason),
+                index > 0,
+                now_ms,
+                "list",
+                view,
+                tx,
+                text,
+                current_workspace
+                    .as_ref()
+                    .map(|(id, name)| (id.as_str(), name.as_str())),
+                cx,
+            ));
+        }
+        card = card.child(inactive_body);
+    }
+    card
 }
 
-/// One job row: name and schedule on the left, target plus actions on the
-/// right. Disabled jobs stay visible at reduced opacity so the toggle is
-/// discoverable; an inactive job also carries its reason chip in place of the
-/// countdown the web row shows.
+/// One job row (web `TodoItemRow`): the calendar-clock glyph, the name with
+/// its badges, a meta line (workspace · schedule summary · target ·
+/// countdown), the stored last error when the run failed, and the action lane
+/// — the web Switch plus the shell-retained run-now, edit and delete. The
+/// row click opens the editor; the lane stops propagation so its controls
+/// never double-fire. Disabled jobs stay visible at reduced opacity so the
+/// toggle is discoverable; an inactive row carries its reason chip in place
+/// of the countdown.
+#[allow(clippy::too_many_arguments)]
 fn render_job_row(
     job: &CronJob,
-    badges: &[JobBadge],
+    occurrence: Option<&TodoOccurrence>,
     inactive: Option<InactiveReason>,
+    divider: bool,
+    now_ms: i64,
+    scope: &'static str,
     view: &WeakEntity<ShellWindow>,
     tx: &mpsc::UnboundedSender<RuntimeEvent>,
     text: &ShellText,
+    current_workspace: Option<(&str, &str)>,
     cx: &App,
-) -> gpui_kit::Div {
+) -> gpui_kit::AnyElement {
     let enabled_tx = tx.clone();
     let job_id_enabled = job.id.clone();
-    let enabled = job.enabled;
     let run_tx = tx.clone();
     let job_id_run = job.id.clone();
     let edit_view = view.clone();
     let edit_job = job.clone();
     let edit_tx = tx.clone();
+    let row_view = view.clone();
+    let row_job = job.clone();
+    let row_tx = tx.clone();
+    let delete_view = view.clone();
+    let delete_job = job.clone();
     let delete_tx = tx.clone();
-    let job_id_delete = job.id.clone();
+
+    // The same job+instant renders in both the list card and the day-detail
+    // card; element ids are unique per frame, so the scope keeps them apart.
+    let row_id = match occurrence {
+        Some(occurrence) => format!("{scope}-{}-{}", job.id, occurrence.at_ms),
+        None => format!("{scope}-{}", job.id),
+    };
 
     let mut name_row = div().flex().flex_row().items_center().gap_2().min_w_0();
     name_row = name_row.child(
@@ -1186,13 +1783,15 @@ fn render_job_row(
             .truncate()
             .child(job.name.clone()),
     );
-    for badge in badges {
-        let (label, tone) = match badge {
-            JobBadge::Running => (text.tasks_badge_running.clone(), cx.theme().success),
-            JobBadge::NextRun => (text.tasks_badge_next_run.clone(), cx.theme().info),
-            JobBadge::Overdue => (text.tasks_badge_overdue.clone(), cx.theme().danger),
-        };
-        name_row = name_row.child(status_badge(label, tone, cx));
+    if let Some(occurrence) = occurrence {
+        for badge in occurrence_badges(occurrence) {
+            let (label, tone) = match badge {
+                JobBadge::Running => (text.tasks_badge_running.clone(), cx.theme().success),
+                JobBadge::NextRun => (text.tasks_badge_next_run.clone(), cx.theme().info),
+                JobBadge::Overdue => (text.tasks_badge_overdue.clone(), cx.theme().danger),
+            };
+            name_row = name_row.child(status_badge(label, tone, cx));
+        }
     }
     if let Some(reason) = inactive {
         let label = match reason {
@@ -1203,123 +1802,258 @@ fn render_job_row(
         name_row = name_row.child(status_badge(label, cx.theme().muted_foreground, cx));
     }
 
+    let mut meta_parts = vec![
+        job_workspace_label(job, current_workspace),
+        schedule_summary(&job.schedule, cx),
+        job_target_label(job, text, cx),
+    ];
+    if let Some(occurrence) = occurrence {
+        meta_parts.push(countdown_label(occurrence.at_ms, now_ms, cx));
+    }
+    let mut body = div()
+        .flex_1()
+        .min_w_0()
+        .v_flex()
+        .gap_0p5()
+        .child(name_row)
+        .child(
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .truncate()
+                .child(meta_parts.join(" · ")),
+        );
+    if let Some(error) = job.state.last_error.as_deref().filter(|e| !e.is_empty()) {
+        body = body.child(
+            div()
+                .w_full()
+                .min_w_0()
+                .text_xs()
+                .text_color(cx.theme().danger)
+                .child(error.to_string()),
+        );
+    }
+
+    let actions = div()
+        .flex()
+        .items_center()
+        .gap_1()
+        .child(
+            Switch::new(SharedString::from(format!("task-toggle-{row_id}")))
+                .checked(job.enabled)
+                .on_click(move |checked: &bool, _window, cx| {
+                    cx.stop_propagation();
+                    if let Some(handle) = runtime::runtime_handle() {
+                        handle.set_cron_job_enabled(
+                            job_id_enabled.clone(),
+                            *checked,
+                            enabled_tx.clone(),
+                        );
+                    }
+                }),
+        )
+        .child(
+            Button::new(SharedString::from(format!("task-run-{row_id}")))
+                .icon(gpui_kit::assets::IconName::Play)
+                .small()
+                .with_variant(ButtonVariant::Ghost)
+                .tooltip(text.tasks_run_now.clone())
+                .on_click(move |_, _, cx| {
+                    cx.stop_propagation();
+                    if let Some(handle) = runtime::runtime_handle() {
+                        handle.run_cron_job_now(job_id_run.clone(), run_tx.clone());
+                    }
+                }),
+        )
+        .child(
+            Button::new(SharedString::from(format!("task-edit-{row_id}")))
+                .icon(gpui_kit::assets::IconName::Pencil)
+                .small()
+                .with_variant(ButtonVariant::Ghost)
+                .tooltip(crate::i18n::shared_term("tools.edit", cx))
+                .on_click(move |_, window, cx| {
+                    cx.stop_propagation();
+                    open_task_editor(
+                        edit_view.clone(),
+                        Some(edit_job.clone()),
+                        edit_tx.clone(),
+                        window,
+                        cx,
+                    );
+                }),
+        )
+        .child(
+            Button::new(SharedString::from(format!("task-delete-{row_id}")))
+                .icon(gpui_kit::assets::IconName::Trash)
+                .small()
+                .with_variant(ButtonVariant::Ghost)
+                .tooltip(text.session_delete.clone())
+                .on_click(move |_, window, cx| {
+                    cx.stop_propagation();
+                    open_delete_confirm(
+                        delete_view.clone(),
+                        delete_job.clone(),
+                        delete_tx.clone(),
+                        window,
+                        cx,
+                    );
+                }),
+        );
+
     div()
+        .id(SharedString::from(format!("tasks-row-{row_id}")))
+        .debug_selector({
+            let row_id = row_id.clone();
+            move || format!("tasks-row-{row_id}")
+        })
         .flex()
         .flex_row()
         .items_center()
-        .justify_between()
-        .gap_2()
-        .p_2()
-        .rounded(cx.theme().radius)
-        .when(!job.enabled, |this| this.opacity(0.6))
-        .child(
-            div().v_flex().gap_0p5().min_w_0().child(name_row).child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .truncate()
-                    .child(schedule_label(&job.schedule)),
-            ),
-        )
+        .gap_3()
+        .px_4()
+        .py_3()
+        .when(divider, |row| {
+            row.border_t_1()
+                .border_color(cx.theme().border.opacity(0.6))
+        })
+        .when(!job.enabled, |row| row.opacity(0.5))
+        .cursor_pointer()
+        .on_click(move |_, window, cx| {
+            open_task_editor(
+                row_view.clone(),
+                Some(row_job.clone()),
+                row_tx.clone(),
+                window,
+                cx,
+            );
+        })
         .child(
             div()
+                .flex_shrink_0()
+                .w(px(36.))
+                .h(px(36.))
                 .flex()
                 .items_center()
-                .gap_1()
+                .justify_center()
+                .rounded(cx.theme().radius)
+                .bg(cx.theme().muted)
                 .child(
-                    div()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(format!("{:?}", job.target_kind())),
-                )
-                .child(
-                    Button::new(SharedString::from(format!("task-toggle-{}", job.id)))
-                        .label(if enabled {
-                            text.tasks_disable.clone()
-                        } else {
-                            text.tasks_enable.clone()
-                        })
-                        .small()
-                        .with_variant(ButtonVariant::Ghost)
-                        .on_click(move |_, _, _| {
-                            if let Some(handle) = runtime::runtime_handle() {
-                                handle.set_cron_job_enabled(
-                                    job_id_enabled.clone(),
-                                    !enabled,
-                                    enabled_tx.clone(),
-                                );
-                            }
-                        }),
-                )
-                .child(
-                    Button::new(SharedString::from(format!("task-run-{}", job.id)))
-                        .label(text.tasks_run_now.clone())
-                        .small()
-                        .with_variant(ButtonVariant::Ghost)
-                        .on_click(move |_, _, _| {
-                            if let Some(handle) = runtime::runtime_handle() {
-                                handle.run_cron_job_now(job_id_run.clone(), run_tx.clone());
-                            }
-                        }),
-                )
-                .child(
-                    Button::new(SharedString::from(format!("task-edit-{}", job.id)))
-                        .label(crate::i18n::shared_term("tools.edit", cx))
-                        .small()
-                        .with_variant(ButtonVariant::Ghost)
-                        .on_click(move |_, window, cx| {
-                            open_task_editor(
-                                edit_view.clone(),
-                                Some(edit_job.clone()),
-                                edit_tx.clone(),
-                                window,
-                                cx,
-                            );
-                        }),
-                )
-                .child(
-                    Button::new(SharedString::from(format!("task-delete-{}", job.id)))
-                        .icon(gpui_kit::assets::IconName::X)
-                        .small()
-                        .with_variant(ButtonVariant::Ghost)
-                        .tooltip(text.session_delete.clone())
-                        .on_click(move |_, _, _| {
-                            if let Some(handle) = runtime::runtime_handle() {
-                                handle.delete_cron_job(job_id_delete.clone(), delete_tx.clone());
-                            }
-                        }),
+                    Icon::new(gpui_kit::assets::IconName::CalendarClock)
+                        .text_color(cx.theme().muted_foreground),
                 ),
         )
+        .child(body)
+        .child(actions)
+        .into_any_element()
 }
 
-/// Technical schedule notation; deliberately not localized because it mirrors
-/// the wire values users set through the agent tool.
-fn schedule_label(schedule: &CronSchedule) -> String {
+/// The human summary of the recurrence rule (web `formatScheduleSummary`):
+/// the one-shot time, the interval in its largest unit, or the expression
+/// with an optional timezone.
+fn schedule_summary(schedule: &CronSchedule, cx: &App) -> String {
     match schedule {
-        CronSchedule::At { at } => format!("at {at}"),
-        CronSchedule::Every { every_ms, .. } => format!("every {}", format_every(*every_ms)),
+        CronSchedule::At { at } => {
+            crate::i18n::tasks_schedule_once(&local_compact_datetime(at), cx)
+        }
+        CronSchedule::Every { every_ms, .. } => {
+            let (value, unit) = split_interval(*every_ms);
+            match unit {
+                TaskIntervalUnit::Minute => crate::i18n::tasks_schedule_every_minutes(&value, cx),
+                TaskIntervalUnit::Hour => crate::i18n::tasks_schedule_every_hours(&value, cx),
+                TaskIntervalUnit::Day => crate::i18n::tasks_schedule_every_days(&value, cx),
+            }
+        }
         CronSchedule::Cron { expr, tz } => match tz {
-            Some(tz) => format!("cron {expr} ({tz})"),
-            None => format!("cron {expr}"),
+            Some(tz) => crate::i18n::tasks_schedule_cron_tz(expr, tz, cx),
+            None => crate::i18n::tasks_schedule_cron(expr, cx),
         },
     }
 }
 
-/// Milliseconds to a compact human interval (`90s`, `5m`, `2h`, `3d`).
-fn format_every(every_ms: u64) -> String {
-    const SECOND: u64 = 1_000;
-    const MINUTE: u64 = 60 * SECOND;
-    const HOUR: u64 = 60 * MINUTE;
-    const DAY: u64 = 24 * HOUR;
-    if every_ms >= DAY && every_ms % DAY == 0 {
-        format!("{}d", every_ms / DAY)
-    } else if every_ms >= HOUR && every_ms % HOUR == 0 {
-        format!("{}h", every_ms / HOUR)
-    } else if every_ms >= MINUTE && every_ms % MINUTE == 0 {
-        format!("{}m", every_ms / MINUTE)
-    } else {
-        format!("{}s", every_ms / SECOND)
+/// What the job launches into: a specific session, or a fresh one named by
+/// its agent type (web `formatJobTargetLabel`).
+fn job_target_label(job: &CronJob, text: &ShellText, cx: &App) -> String {
+    match &job.target {
+        CronJobTarget::Session { .. } => text.tasks_editor_target_session.clone(),
+        CronJobTarget::Workspace { launch, .. } => crate::i18n::tasks_target_new_session(
+            &crate::i18n::shared_agent_name(&launch.agent_type, cx),
+            cx,
+        ),
     }
+}
+
+fn job_name_of(jobs: &[CronJob], job_index: usize) -> String {
+    jobs.get(job_index)
+        .map(|job| job.name.clone())
+        .unwrap_or_default()
+}
+
+/// The localized countdown line for one occurrence (web `formatCountdown`).
+fn countdown_label(at_ms: i64, now_ms: i64, cx: &App) -> String {
+    match countdown_choice(at_ms, now_ms) {
+        Countdown::Overdue => crate::i18n::tasks_relative_overdue(cx),
+        Countdown::Now => crate::i18n::tasks_relative_now(cx),
+        Countdown::InMinutes(value) => crate::i18n::tasks_relative_in_minutes(value, cx),
+        Countdown::InHours(value) => crate::i18n::tasks_relative_in_hours(value, cx),
+        Countdown::InOneDay => crate::i18n::tasks_relative_in_one_day(cx),
+        Countdown::InDays(value) => crate::i18n::tasks_relative_in_days(value, cx),
+    }
+}
+
+/// The delete confirmation (web `confirmDanger`): the dialog names the job,
+/// and only the danger action deletes. Deleting the job being edited also
+/// closes the editor, as the web panel does.
+fn open_delete_confirm(
+    view: WeakEntity<ShellWindow>,
+    job: CronJob,
+    tx: mpsc::UnboundedSender<RuntimeEvent>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let title = crate::i18n::tasks_delete_confirm_title(&job.name, cx);
+    let confirm_view = view.clone();
+    let confirm_job_id = job.id.clone();
+    let confirm_tx = tx.clone();
+    let confirm = move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+        if let Some(handle) = runtime::runtime_handle() {
+            handle.delete_cron_job(confirm_job_id.clone(), confirm_tx.clone());
+        }
+        if let Some(shell) = confirm_view.upgrade() {
+            let confirm_job_id = confirm_job_id.clone();
+            shell.update(cx, |shell, cx| {
+                if shell.task_editor_target.as_deref() == Some(confirm_job_id.as_str()) {
+                    shell.task_editor_target = None;
+                }
+                cx.notify();
+            });
+        }
+        window.close_dialog(cx);
+    };
+    let cancel = move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+        window.close_dialog(cx);
+    };
+    window.open_dialog(cx, move |dialog, _window, cx| {
+        let text = crate::i18n::current(cx);
+        dialog.title(div().child(title.clone())).footer(
+            div()
+                .flex()
+                .flex_row()
+                .justify_end()
+                .gap_2()
+                .child(
+                    Button::new("task-delete-cancel")
+                        .label(text.session_action_cancel.clone())
+                        .with_variant(ButtonVariant::Ghost)
+                        .on_click(cancel.clone()),
+                )
+                .child(
+                    Button::new("task-delete-accept")
+                        .label(text.session_delete.clone())
+                        .with_variant(ButtonVariant::Danger)
+                        .on_click(confirm.clone()),
+                ),
+        )
+    });
 }
 
 fn tasks_editor_field(
@@ -1622,11 +2356,48 @@ pub(crate) fn open_task_editor(
             )
         };
         let label_color = cx.theme().muted_foreground;
+        let description = if editing {
+            text.tasks_editor_edit_desc.clone()
+        } else {
+            text.tasks_editor_create_desc.clone()
+        };
         let mut content = div()
             .w(px(520.))
             .v_flex()
             .gap_3()
             .debug_selector(|| "task-editor".to_string())
+            // The web editor's intro (icon + what this dialog does); the title
+            // itself lives in the dialog chrome.
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .w(px(36.))
+                            .h(px(36.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(cx.theme().radius)
+                            .bg(cx.theme().muted)
+                            .child(
+                                Icon::new(gpui_kit::assets::IconName::CalendarClock)
+                                    .text_color(label_color),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_sm()
+                            .text_color(label_color)
+                            .child(description),
+                    ),
+            )
             .child(tasks_editor_field(
                 &text.tasks_editor_name,
                 label_color,
@@ -1725,7 +2496,13 @@ pub(crate) fn open_task_editor(
                         &text.tasks_editor_cron_tz,
                         label_color,
                         Input::new(&tz_input),
-                    ));
+                    ))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(label_color)
+                            .child(text.tasks_editor_cron_hint.clone()),
+                    );
             }
         }
 
@@ -1866,7 +2643,11 @@ pub(crate) fn open_task_editor(
                 )
                 .child(
                     Button::new("task-editor-confirm")
-                        .label(text.session_action_confirm.clone())
+                        .label(if editing {
+                            text.tasks_editor_btn_save.clone()
+                        } else {
+                            text.tasks_editor_btn_create.clone()
+                        })
                         .with_variant(ButtonVariant::Primary)
                         .on_click(confirm.clone()),
                 ),
@@ -1929,242 +2710,320 @@ mod tests {
         }
     }
 
+    /// E4-b2: the one-shot occurrence appears inside its window and not
+    /// outside it.
     #[test]
-    fn schedule_labels_mirror_wire_values() {
-        assert_eq!(
-            schedule_label(&CronSchedule::At {
-                at: "2026-10-12T09:00:00+08:00".to_string()
-            }),
-            "at 2026-10-12T09:00:00+08:00"
-        );
-        assert_eq!(
-            schedule_label(&CronSchedule::Every {
-                every_ms: 5 * 60 * 1_000,
-                anchor_ms: None
-            }),
-            "every 5m"
-        );
-        assert_eq!(
-            schedule_label(&CronSchedule::Cron {
-                expr: "0 9 * * 1-5".to_string(),
-                tz: Some("Asia/Shanghai".to_string())
-            }),
-            "cron 0 9 * * 1-5 (Asia/Shanghai)"
-        );
+    fn at_occurrences_land_inside_the_window_only() {
+        let at = "2026-11-10T09:00:00+08:00".to_string();
+        let schedule = CronSchedule::At { at: at.clone() };
+        let inside = schedule_occurrences_in_range(
+            &schedule,
+            0,
+            0,
+            DateTime::parse_from_rfc3339(&at)
+                .unwrap()
+                .timestamp_millis(),
+            MAX_OCCURRENCES_PER_JOB,
+        )
+        .expect("at expansion");
+        assert_eq!(inside.len(), 1);
+        let before = schedule_occurrences_in_range(&schedule, 0, 0, 1, MAX_OCCURRENCES_PER_JOB)
+            .expect("at expansion");
+        assert!(before.is_empty());
     }
 
+    /// E4-b2: the anchored interval series stays on its anchor (a job created
+    /// at 08:03 with a 1h interval fires at :03) and honors the cap.
     #[test]
-    fn every_intervals_compact_to_the_largest_whole_unit() {
-        assert_eq!(format_every(90 * 1_000), "90s");
-        assert_eq!(format_every(5 * 60 * 1_000), "5m");
-        assert_eq!(format_every(2 * 60 * 60 * 1_000), "2h");
-        assert_eq!(format_every(3 * 24 * 60 * 60 * 1_000), "3d");
+    fn every_occurrences_keep_the_anchor_alignment() {
+        let times = every_occurrences_in_range(60_000, 1_000, 181_000, 1_000_000, 2);
+        assert_eq!(times, vec![241_000, 301_000]);
     }
 
+    /// E4-b2: cron expansion runs where the schedule executes — a `0 9 * * *`
+    /// job with an Asia/Shanghai zone yields 09:00 in that zone, converted to
+    /// the absolute instants the calendar plots.
     #[test]
-    fn overview_counts_only_enabled_jobs_and_the_24h_window() {
-        let now: i64 = 1_760_000_000_000;
-        let due = ScheduledJobRuntimeState {
-            next_run_at_ms: Some(now + 3_600_000),
-            ..Default::default()
-        };
-        let later = ScheduledJobRuntimeState {
-            next_run_at_ms: Some(now + 25 * 3_600_000),
-            ..Default::default()
-        };
-        let failed = ScheduledJobRuntimeState {
-            last_run_status: Some(
-                openbitfun_agent_runtime::scheduled_job::ScheduledJobRunStatus::Error,
-            ),
-            ..Default::default()
-        };
-        let jobs = vec![
-            job("due", true, due.clone()),
-            job("later", true, later),
-            job("off", false, due),
-            job("broke", true, failed),
-        ];
-        let stats = overview_stats(&jobs, now);
-        assert_eq!(stats.total, 4);
-        assert_eq!(stats.enabled, 3);
-        assert_eq!(stats.due_24h, 1);
-        assert_eq!(stats.failed, 1);
-    }
-
-    #[test]
-    fn month_grid_covers_the_month_monday_first_and_marks_days() {
-        use chrono::Datelike;
-        // A Wednesday: 2026-10-07 local, so the first row pads Mon+Tue.
-        let today = chrono::Local
-            .timestamp_millis_opt(1_760_000_000_000)
+    fn cron_occurrences_expand_in_the_schedule_timezone() {
+        use chrono::TimeZone as _;
+        let zone = chrono_tz::Tz::from_str("Asia/Shanghai").expect("zone");
+        let after = zone
+            .with_ymd_and_hms(2026, 11, 3, 0, 0, 0)
             .single()
-            .expect("valid local time");
-        let due = ScheduledJobRuntimeState {
-            next_run_at_ms: Some(today.timestamp_millis()),
-            ..Default::default()
-        };
-        let jobs = vec![job("daily", true, due)];
-        let grid = build_month_grid(&jobs, today);
-        assert_eq!(grid.cells.len() % 7, 0);
-        assert_eq!(grid.cells[0].day, {
-            let first = today.date_naive().with_day(1).unwrap();
-            let lead = first.weekday().num_days_from_monday() as i64;
-            (first - chrono::Duration::days(lead)).day()
-        });
-        let today_cell = grid
-            .cells
-            .iter()
-            .find(|cell| cell.is_today)
-            .expect("today is in the grid");
-        assert!(today_cell.in_month);
-        assert!(today_cell.scheduled);
-        assert!(!today_cell.ran_ok && !today_cell.ran_error);
+            .expect("valid local time")
+            .timestamp_millis();
+        let until = zone
+            .with_ymd_and_hms(2026, 11, 4, 0, 0, 0)
+            .single()
+            .expect("valid local time")
+            .timestamp_millis();
+        let times = schedule_occurrences_in_range(
+            &CronSchedule::Cron {
+                expr: "0 9 * * *".to_string(),
+                tz: Some("Asia/Shanghai".to_string()),
+            },
+            0,
+            after,
+            until,
+            MAX_OCCURRENCES_PER_JOB,
+        )
+        .expect("cron expansion");
+        let expected = zone
+            .with_ymd_and_hms(2026, 11, 3, 9, 0, 0)
+            .single()
+            .expect("valid local time")
+            .timestamp_millis();
+        assert_eq!(times, vec![expected]);
     }
 
-    /// G-P3: the badges follow the web row — running first, the nearest
-    /// upcoming run marked, an overdue instant flagged, and nothing else.
+    /// E4-b2: the two tiers — one row per active job with its nearest run,
+    /// the calendar carrying every expanded occurrence — plus the inactive
+    /// partition reading paused, done and invalid the way the web row does.
     #[test]
-    fn badges_follow_running_next_run_and_overdue() {
-        use openbitfun_agent_runtime::scheduled_job::ScheduledJobRunStatus;
+    fn buckets_split_visible_calendar_and_inactive() {
         let now: i64 = 1_760_000_000_000;
-        let busy = ScheduledJobRuntimeState {
-            last_run_status: Some(ScheduledJobRunStatus::Running),
-            next_run_at_ms: Some(now + 3_600_000),
-            ..Default::default()
-        };
-        let later = ScheduledJobRuntimeState {
-            next_run_at_ms: Some(now + 7_200_000),
-            ..Default::default()
-        };
-        let overdue = ScheduledJobRuntimeState {
-            next_run_at_ms: Some(now - 3_600_000),
-            ..Default::default()
-        };
-        let idle = ScheduledJobRuntimeState {
-            next_run_at_ms: None,
-            last_run_status: Some(ScheduledJobRunStatus::Ok),
+        let hourly = ScheduledJobRuntimeState {
+            next_run_at_ms: Some(now + 1_800_000),
             ..Default::default()
         };
         let jobs = vec![
-            job("busy", true, busy),
-            job("later", true, later),
-            job("late", true, overdue),
-            job("idle", false, idle),
+            job_with(
+                "hourly",
+                true,
+                CronSchedule::Every {
+                    every_ms: 3_600_000,
+                    anchor_ms: Some(now - 1_800_000),
+                },
+                hourly,
+            ),
+            job("paused", false, ScheduledJobRuntimeState::default()),
+            job_with(
+                "finished",
+                true,
+                CronSchedule::At {
+                    at: "2026-10-01T09:00:00+08:00".to_string(),
+                },
+                ScheduledJobRuntimeState {
+                    last_enqueued_at_ms: Some(now - 86_400_000),
+                    ..Default::default()
+                },
+            ),
+            job_with(
+                "broken",
+                true,
+                CronSchedule::Cron {
+                    expr: "not a cron expression".to_string(),
+                    tz: None,
+                },
+                ScheduledJobRuntimeState::default(),
+            ),
         ];
-        let next = next_run_job_id(&jobs, now);
-        assert_eq!(next.as_deref(), Some("busy"));
+        let buckets = build_todo_buckets(&jobs, now, now + TASK_DAY_MS as i64);
+        assert_eq!(buckets.visible.len(), 1);
+        assert_eq!(buckets.visible[0].job_index, 0);
+        assert!(buckets.visible[0].is_next_run);
+        assert!(!buckets.calendar.is_empty());
+        assert_eq!(buckets.due_soon_jobs, 1);
+        let reasons: Vec<InactiveReason> =
+            buckets.inactive.iter().map(|entry| entry.reason).collect();
         assert_eq!(
-            job_badges(&jobs[0], next.as_deref(), now),
-            vec![JobBadge::Running, JobBadge::NextRun]
+            reasons,
+            vec![
+                InactiveReason::Paused,
+                InactiveReason::Done,
+                InactiveReason::InvalidSchedule
+            ]
         );
-        assert!(job_badges(&jobs[1], next.as_deref(), now).is_empty());
-        assert_eq!(
-            job_badges(&jobs[2], next.as_deref(), now),
-            vec![JobBadge::Overdue]
-        );
-        // A paused job never carries a badge: it belongs to the partition.
-        assert!(job_badges(&jobs[3], next.as_deref(), now).is_empty());
     }
 
-    /// G-P3: the inactive partition reads paused, done and invalid the way
-    /// the web row does — disabled first, then a finished one-shot, then the
-    /// schedule the store could not turn into a run.
+    /// E4-b2: the scheduler's pending trigger wins over the recomputed
+    /// series; a running job is not overdue, and a passed run without a turn
+    /// is.
     #[test]
-    fn inactive_partition_reads_paused_done_and_invalid() {
-        use openbitfun_agent_runtime::scheduled_job::ScheduledJobRunStatus;
+    fn occurrence_flags_follow_running_overdue_and_next_run() {
         let now: i64 = 1_760_000_000_000;
-        let next = ScheduledJobRuntimeState {
-            next_run_at_ms: Some(now + 3_600_000),
-            ..Default::default()
+        let schedule = CronSchedule::Every {
+            every_ms: 3_600_000,
+            anchor_ms: Some(now - 7_200_000),
         };
-        let paused = job("off", false, next.clone());
-        assert_eq!(inactive_reason(&paused), Some(InactiveReason::Paused));
-
-        let scheduled = job("daily", true, next);
-        assert_eq!(inactive_reason(&scheduled), None);
-
-        let done = job_with(
-            "once",
+        let overdue = job_with(
+            "overdue",
             true,
-            CronSchedule::At {
-                at: "2026-10-01T09:00:00+08:00".to_string(),
-            },
+            schedule.clone(),
             ScheduledJobRuntimeState {
-                next_run_at_ms: None,
-                last_run_status: Some(ScheduledJobRunStatus::Ok),
+                next_run_at_ms: Some(now - 3_600_000),
                 ..Default::default()
             },
         );
-        assert_eq!(inactive_reason(&done), Some(InactiveReason::Done));
-
-        let never_ran = job_with(
-            "broken",
+        let running = job_with(
+            "running",
             true,
-            CronSchedule::Cron {
-                expr: "not a cron expression".to_string(),
-                tz: None,
+            schedule,
+            ScheduledJobRuntimeState {
+                next_run_at_ms: Some(now - 3_600_000),
+                active_turn_id: Some("turn-1".to_string()),
+                ..Default::default()
             },
-            ScheduledJobRuntimeState::default(),
+        );
+        let jobs = vec![overdue, running];
+        let buckets = build_todo_buckets(&jobs, now, now + TASK_DAY_MS as i64);
+        let first = buckets
+            .visible
+            .iter()
+            .find(|occurrence| occurrence.job_index == 0)
+            .expect("overdue row");
+        assert!(first.is_next_run);
+        assert!(first.is_overdue);
+        assert!(!first.is_running);
+        let second = buckets
+            .visible
+            .iter()
+            .find(|occurrence| occurrence.job_index == 1)
+            .expect("running row");
+        assert!(second.is_running);
+        assert!(!second.is_overdue);
+        assert_eq!(
+            occurrence_badges(first),
+            vec![JobBadge::NextRun, JobBadge::Overdue]
         );
         assert_eq!(
-            inactive_reason(&never_ran),
-            Some(InactiveReason::InvalidSchedule)
+            occurrence_badges(second),
+            vec![JobBadge::Running, JobBadge::NextRun]
         );
     }
 
-    /// G-P2: the day panel lists exactly the instants the store carries for
-    /// that local day — the next scheduled run and the latest finished run —
-    /// in time order, and nothing for a day it knows nothing about.
+    /// E4-b2: the grid is always six weeks and starts on Sunday, and a day's
+    /// occurrences index back into the calendar list.
     #[test]
-    fn day_entries_cover_next_and_latest_run_in_time_order() {
-        use openbitfun_agent_runtime::scheduled_job::ScheduledJobRunStatus;
-        let day = chrono::Local
-            .with_ymd_and_hms(2026, 10, 15, 0, 0, 0)
+    fn month_grid_is_sunday_first_and_indexes_day_occurrences() {
+        use chrono::TimeZone as _;
+        let now: i64 = 1_760_000_000_000;
+        let at = chrono::Local
+            .with_ymd_and_hms(2026, 11, 10, 9, 0, 0)
             .single()
-            .expect("valid local date")
-            .date_naive();
-        let at = |hour: u32, minute: u32| {
-            chrono::Local
-                .with_ymd_and_hms(2026, 10, 15, hour, minute, 0)
-                .single()
-                .expect("valid local time")
-                .timestamp_millis()
+            .expect("valid local time")
+            .timestamp_millis();
+        let job = job_with(
+            "daily",
+            true,
+            CronSchedule::At {
+                at: "2026-11-10T09:00:00+08:00".to_string(),
+            },
+            ScheduledJobRuntimeState {
+                next_run_at_ms: Some(at),
+                ..Default::default()
+            },
+        );
+        let buckets = build_todo_buckets(&[job], now, now + 30 * TASK_DAY_MS as i64);
+        let grid = build_month_grid(
+            NaiveDate::from_ymd_opt(2026, 11, 15).expect("date"),
+            &buckets.calendar,
+            NaiveDate::from_ymd_opt(2026, 11, 15).expect("date"),
+        );
+        assert_eq!(grid.len(), 42);
+        assert_eq!(grid[0].date.weekday(), chrono::Weekday::Sun);
+        let tenth = grid
+            .iter()
+            .find(|cell| cell.date == NaiveDate::from_ymd_opt(2026, 11, 10).expect("date"))
+            .expect("the day cell");
+        assert_eq!(tenth.occurrences.len(), 1);
+        assert_eq!(
+            buckets.calendar[tenth.occurrences[0]].at_ms,
+            buckets.calendar[0].at_ms
+        );
+    }
+
+    /// E4-b2: the expansion window covers the anchor month's six-week grid,
+    /// so a late-month job beyond the visible week still lands on its cell.
+    #[test]
+    fn month_range_end_covers_the_six_week_grid() {
+        let anchor = NaiveDate::from_ymd_opt(2026, 11, 15).expect("date");
+        let end = month_range_end_ms(anchor);
+        let first = anchor.with_day(1).expect("day one");
+        let grid_end_day = first
+            - chrono::Duration::days(i64::from(first.weekday().num_days_from_sunday()))
+            + chrono::Duration::days(41);
+        let expected_end = chrono::Local
+            .with_ymd_and_hms(
+                grid_end_day.year(),
+                grid_end_day.month(),
+                grid_end_day.day(),
+                23,
+                59,
+                59,
+            )
+            .single()
+            .expect("valid local time")
+            .timestamp_millis()
+            + 999;
+        assert_eq!(end, expected_end);
+    }
+
+    /// E4-b2: the countdown buckets mirror the web wording split — overdue,
+    /// imminent, and the minute/hour/day ladders with the singular day.
+    #[test]
+    fn countdown_choices_follow_the_web_ladder() {
+        let now: i64 = 1_760_000_000_000;
+        assert_eq!(countdown_choice(now - 1, now), Countdown::Overdue);
+        assert_eq!(countdown_choice(now + 30_000, now), Countdown::Now);
+        assert_eq!(
+            countdown_choice(now + 5 * 60_000, now),
+            Countdown::InMinutes(5)
+        );
+        assert_eq!(
+            countdown_choice(now + 2 * 3_600_000, now),
+            Countdown::InHours(2)
+        );
+        assert_eq!(
+            countdown_choice(now + 24 * 3_600_000, now),
+            Countdown::InOneDay
+        );
+        assert_eq!(
+            countdown_choice(now + 3 * 24 * 3_600_000, now),
+            Countdown::InDays(3)
+        );
+    }
+
+    /// E4-b2: a job's workspace label is the matched workspace's name, or the
+    /// stored path's tail when the workspace list no longer knows it.
+    #[test]
+    fn workspace_label_matches_by_id_and_falls_back_to_the_path_tail() {
+        let mut job = job("named", true, ScheduledJobRuntimeState::default());
+        job.target = CronJobTarget::Workspace {
+            workspace: CronWorkspaceRef {
+                workspace_id: Some("ws-1".to_string()),
+                workspace_path: "/home/dev/project".to_string(),
+                project_workspace_path: None,
+                execution_target: None,
+                remote_connection_id: None,
+                remote_ssh_host: None,
+            },
+            launch: Default::default(),
         };
-        let jobs = vec![
-            job(
-                "nine",
-                true,
-                ScheduledJobRuntimeState {
-                    next_run_at_ms: Some(at(9, 0)),
-                    ..Default::default()
-                },
-            ),
-            job(
-                "eight",
-                true,
-                ScheduledJobRuntimeState {
-                    last_run_finished_at_ms: Some(at(8, 0)),
-                    last_run_status: Some(ScheduledJobRunStatus::Error),
-                    ..Default::default()
-                },
-            ),
-            // Tomorrow's run does not leak into today.
-            job(
-                "tomorrow",
-                true,
-                ScheduledJobRuntimeState {
-                    next_run_at_ms: Some(at(9, 0) + 24 * 3_600_000),
-                    ..Default::default()
-                },
-            ),
-        ];
-        let entries = day_entries(&jobs, day);
-        assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0].job_name, "eight");
-        assert_eq!(entries[0].kind, DayEntryKind::RanError);
-        assert_eq!(entries[1].job_name, "nine");
-        assert_eq!(entries[1].kind, DayEntryKind::NextRun);
-        assert!(day_entries(&jobs, day + chrono::Duration::days(2)).is_empty());
+        assert_eq!(
+            job_workspace_label(&job, Some(("ws-1", "My Project"))),
+            "My Project"
+        );
+        assert_eq!(
+            job_workspace_label(&job, Some(("ws-2", "Other"))),
+            "project"
+        );
+        assert_eq!(job_workspace_label(&job, None), "project");
+    }
+
+    /// E4-b2: month navigation rolls over the year boundary and stays pinned
+    /// to the first of the month.
+    #[test]
+    fn month_anchor_shifts_across_the_year_boundary() {
+        let anchor = NaiveDate::from_ymd_opt(2026, 12, 15).expect("date");
+        assert_eq!(
+            shift_month_anchor(anchor, 1),
+            NaiveDate::from_ymd_opt(2027, 1, 1).expect("date")
+        );
+        assert_eq!(
+            shift_month_anchor(anchor, -1),
+            NaiveDate::from_ymd_opt(2026, 11, 1).expect("date")
+        );
     }
 
     fn task_workspace() -> CronWorkspaceRef {

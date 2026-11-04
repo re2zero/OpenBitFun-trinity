@@ -124,15 +124,13 @@ pub(crate) struct ShellText {
     pub tasks_title: String,
     pub tasks_empty_title: String,
     pub tasks_empty: String,
-    pub tasks_enable: String,
-    pub tasks_disable: String,
     pub tasks_run_now: String,
-    /// R4 board chrome: overview card, month calendar, list section.
+    /// E4-b2 board chrome: page subtitle, overview metrics, calendar card.
+    pub tasks_subtitle: String,
     pub tasks_overview: String,
-    pub tasks_stat_total: String,
-    pub tasks_stat_enabled: String,
-    pub tasks_stat_due_24h: String,
-    pub tasks_stat_failed: String,
+    pub tasks_overview_unit: String,
+    pub tasks_overview_total: String,
+    pub tasks_overview_due_soon: String,
     pub tasks_wd_mon: String,
     pub tasks_wd_tue: String,
     pub tasks_wd_wed: String,
@@ -140,11 +138,15 @@ pub(crate) struct ShellText {
     pub tasks_wd_fri: String,
     pub tasks_wd_sat: String,
     pub tasks_wd_sun: String,
-    pub tasks_calendar_scheduled: String,
-    pub tasks_calendar_ran: String,
-    pub tasks_calendar_error: String,
-    pub tasks_calendar_note: String,
-    pub tasks_list_title: String,
+    pub tasks_cal_title: String,
+    pub tasks_cal_prev: String,
+    pub tasks_cal_next: String,
+    pub tasks_cal_today: String,
+    /// E4-b2: the day panel's fallback title and empty line (the titled form
+    /// is the parameterized `tasks_day_detail_title` helper's first run).
+    pub tasks_day_detail_title: String,
+    pub tasks_day_clear: String,
+    pub tasks_day_empty: String,
     /// G-P3: the web row badges (running / nearest upcoming run / overdue).
     pub tasks_badge_running: String,
     pub tasks_badge_next_run: String,
@@ -153,14 +155,18 @@ pub(crate) struct ShellText {
     pub tasks_inactive_paused: String,
     pub tasks_inactive_done: String,
     pub tasks_inactive_invalid: String,
-    /// G-P2: the selected-day panel (title date and empty line are composed
-    /// by the page; `tasks_day_title` is the parameterized helper).
-    pub tasks_day_clear: String,
-    pub tasks_day_empty: String,
+    pub tasks_list_empty: String,
     /// G-P1: the scheduled-job create/edit dialog.
     pub tasks_new: String,
     pub tasks_editor_create_title: String,
     pub tasks_editor_edit_title: String,
+    pub tasks_editor_create_desc: String,
+    pub tasks_editor_edit_desc: String,
+    pub tasks_editor_btn_create: String,
+    pub tasks_editor_btn_save: String,
+    pub tasks_editor_cron_hint: String,
+    pub tasks_editor_name_placeholder: String,
+    pub tasks_editor_prompt_placeholder: String,
     pub tasks_editor_name: String,
     pub tasks_editor_prompt: String,
     pub tasks_editor_schedule: String,
@@ -1500,21 +1506,145 @@ pub(crate) fn insights_range_days(count: u32, cx: &App) -> String {
     )
 }
 
-/// G-P2: the selected-day panel's heading, naming the picked local date.
-pub(crate) fn tasks_day_title(date: &str, cx: &App) -> String {
-    resolve_with(
-        "gpui-shell-tasks-day-title",
-        TranslationArgs::new().with_string("date", date),
-        cx,
-    )
-}
-
 /// G-P3: the inactive partition's subheader with its job count (web
 /// `inactive.title`).
 pub(crate) fn tasks_inactive_title(count: usize, cx: &App) -> String {
     resolve_with(
         "gpui-shell-tasks-inactive-title",
         TranslationArgs::new().with_number("count", count as f64),
+        cx,
+    )
+}
+
+/// E4-b2: the job list's count title (web `list.countTitle`).
+pub(crate) fn tasks_list_count_title(total: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-tasks-list-count-title",
+        TranslationArgs::new().with_number("count", total as f64),
+        cx,
+    )
+}
+
+/// E4-b2: a calendar cell's "+N" overflow line (web `calendar.moreCount`).
+pub(crate) fn tasks_cal_more(count: usize, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-tasks-cal-more",
+        TranslationArgs::new().with_number("count", count as f64),
+        cx,
+    )
+}
+
+/// E4-b2: the relative countdown lines (web `relative.*`).
+pub(crate) fn tasks_relative_overdue(cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-tasks-relative-overdue",
+        TranslationArgs::new(),
+        cx,
+    )
+}
+
+pub(crate) fn tasks_relative_now(cx: &App) -> String {
+    resolve_with("gpui-shell-tasks-relative-now", TranslationArgs::new(), cx)
+}
+
+pub(crate) fn tasks_relative_in_minutes(value: i64, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-tasks-relative-in-minutes",
+        TranslationArgs::new().with_number("value", value as f64),
+        cx,
+    )
+}
+
+pub(crate) fn tasks_relative_in_hours(value: i64, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-tasks-relative-in-hours",
+        TranslationArgs::new().with_number("value", value as f64),
+        cx,
+    )
+}
+
+pub(crate) fn tasks_relative_in_one_day(cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-tasks-relative-in-one-day",
+        TranslationArgs::new(),
+        cx,
+    )
+}
+
+pub(crate) fn tasks_relative_in_days(value: i64, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-tasks-relative-in-days",
+        TranslationArgs::new().with_number("value", value as f64),
+        cx,
+    )
+}
+
+/// E4-b2: the localized schedule summaries (web `schedule.*`).
+pub(crate) fn tasks_schedule_once(at: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-tasks-schedule-once",
+        TranslationArgs::new().with_string("at", at),
+        cx,
+    )
+}
+
+pub(crate) fn tasks_schedule_cron(expr: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-tasks-schedule-cron",
+        TranslationArgs::new().with_string("expr", expr),
+        cx,
+    )
+}
+
+pub(crate) fn tasks_schedule_cron_tz(expr: &str, tz: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-tasks-schedule-cron-tz",
+        TranslationArgs::new()
+            .with_string("expr", expr)
+            .with_string("tz", tz),
+        cx,
+    )
+}
+
+pub(crate) fn tasks_schedule_every_minutes(value: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-tasks-schedule-every-minutes",
+        TranslationArgs::new().with_string("value", value),
+        cx,
+    )
+}
+
+pub(crate) fn tasks_schedule_every_hours(value: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-tasks-schedule-every-hours",
+        TranslationArgs::new().with_string("value", value),
+        cx,
+    )
+}
+
+pub(crate) fn tasks_schedule_every_days(value: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-tasks-schedule-every-days",
+        TranslationArgs::new().with_string("value", value),
+        cx,
+    )
+}
+
+/// E4-b2: the row's launch target (web `target.newSession`); the existing
+/// session reading reuses the editor's field label.
+pub(crate) fn tasks_target_new_session(agent_type: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-tasks-target-new-session",
+        TranslationArgs::new().with_string("agent_type", agent_type),
+        cx,
+    )
+}
+
+/// E4-b2: the delete confirmation naming its job (web `deleteDialog.title`).
+pub(crate) fn tasks_delete_confirm_title(name: &str, cx: &App) -> String {
+    resolve_with(
+        "gpui-shell-tasks-delete-confirm-title",
+        TranslationArgs::new().with_string("name", name),
         cx,
     )
 }
@@ -2514,14 +2644,12 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         tasks_title: "Task Board".to_string(),
         tasks_empty_title: "No scheduled jobs".to_string(),
         tasks_empty: "No scheduled jobs. Ask the agent to create one, or add it in the desktop app.".to_string(),
-        tasks_enable: "Enable".to_string(),
-        tasks_disable: "Disable".to_string(),
         tasks_run_now: "Run now".to_string(),
+        tasks_subtitle: "Plan, manage, and run your scheduled work".to_string(),
         tasks_overview: "Plan overview".to_string(),
-        tasks_stat_total: "Total jobs".to_string(),
-        tasks_stat_enabled: "Enabled".to_string(),
-        tasks_stat_due_24h: "Due in 24h".to_string(),
-        tasks_stat_failed: "Last run failed".to_string(),
+        tasks_overview_unit: "items".to_string(),
+        tasks_overview_total: "Scheduled tasks".to_string(),
+        tasks_overview_due_soon: "Due within 24 hours".to_string(),
         tasks_wd_mon: "Mo".to_string(),
         tasks_wd_tue: "Tu".to_string(),
         tasks_wd_wed: "We".to_string(),
@@ -2529,22 +2657,30 @@ pub(crate) fn fallback_text(locale: LocaleId) -> ShellText {
         tasks_wd_fri: "Fr".to_string(),
         tasks_wd_sat: "Sa".to_string(),
         tasks_wd_sun: "Su".to_string(),
-        tasks_calendar_scheduled: "Scheduled".to_string(),
-        tasks_calendar_ran: "Ran".to_string(),
-        tasks_calendar_error: "Error".to_string(),
-        tasks_calendar_note: "Marks the next scheduled run and the latest run only; run history is not kept in this shell.".to_string(),
-        tasks_list_title: "All jobs".to_string(),
+        tasks_cal_title: "Calendar".to_string(),
+        tasks_cal_prev: "Previous month".to_string(),
+        tasks_cal_next: "Next month".to_string(),
+        tasks_cal_today: "Today".to_string(),
+        tasks_day_detail_title: "Selected day".to_string(),
+        tasks_day_clear: "Clear".to_string(),
+        tasks_day_empty: "Nothing scheduled on this day.".to_string(),
         tasks_badge_running: "Running now".to_string(),
         tasks_badge_next_run: "Next run".to_string(),
         tasks_badge_overdue: "Overdue".to_string(),
         tasks_inactive_paused: "Paused".to_string(),
         tasks_inactive_done: "Finished".to_string(),
         tasks_inactive_invalid: "Invalid schedule".to_string(),
-        tasks_day_clear: "Clear".to_string(),
-        tasks_day_empty: "Nothing scheduled on this day.".to_string(),
+        tasks_list_empty: "No pending tasks yet".to_string(),
         tasks_new: "New task".to_string(),
         tasks_editor_create_title: "New scheduled task".to_string(),
         tasks_editor_edit_title: "Edit scheduled task".to_string(),
+        tasks_editor_create_desc: "Create a task and OpenBitFun will run it automatically at the scheduled time.".to_string(),
+        tasks_editor_edit_desc: "Update the task details and how OpenBitFun should run it.".to_string(),
+        tasks_editor_btn_create: "Create Todo".to_string(),
+        tasks_editor_btn_save: "Save changes".to_string(),
+        tasks_editor_cron_hint: "Fields are minute hour day month weekday. Weekday runs 1-7 with Sunday as 1, so 0 8 * * 2 is every Monday at 08:00.".to_string(),
+        tasks_editor_name_placeholder: "For example: Daily standup summary".to_string(),
+        tasks_editor_prompt_placeholder: "What should the agent do when this Todo fires?".to_string(),
         tasks_editor_name: "Name".to_string(),
         tasks_editor_prompt: "Prompt".to_string(),
         tasks_editor_schedule: "Schedule".to_string(),
@@ -3985,14 +4121,12 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         tasks_title: service.t("gpui-shell-tasks-title").await,
         tasks_empty_title: service.t("gpui-shell-tasks-empty-title").await,
         tasks_empty: service.t("gpui-shell-tasks-empty").await,
-        tasks_enable: service.t("gpui-shell-tasks-enable").await,
-        tasks_disable: service.t("gpui-shell-tasks-disable").await,
         tasks_run_now: service.t("gpui-shell-tasks-run-now").await,
+        tasks_subtitle: service.t("gpui-shell-tasks-subtitle").await,
         tasks_overview: service.t("gpui-shell-tasks-overview").await,
-        tasks_stat_total: service.t("gpui-shell-tasks-stat-total").await,
-        tasks_stat_enabled: service.t("gpui-shell-tasks-stat-enabled").await,
-        tasks_stat_due_24h: service.t("gpui-shell-tasks-stat-due-24h").await,
-        tasks_stat_failed: service.t("gpui-shell-tasks-stat-failed").await,
+        tasks_overview_unit: service.t("gpui-shell-tasks-overview-unit").await,
+        tasks_overview_total: service.t("gpui-shell-tasks-overview-total").await,
+        tasks_overview_due_soon: service.t("gpui-shell-tasks-overview-due-soon").await,
         tasks_wd_mon: service.t("gpui-shell-tasks-wd-mon").await,
         tasks_wd_tue: service.t("gpui-shell-tasks-wd-tue").await,
         tasks_wd_wed: service.t("gpui-shell-tasks-wd-wed").await,
@@ -4000,22 +4134,32 @@ async fn fetch_text(locale: LocaleId) -> ShellText {
         tasks_wd_fri: service.t("gpui-shell-tasks-wd-fri").await,
         tasks_wd_sat: service.t("gpui-shell-tasks-wd-sat").await,
         tasks_wd_sun: service.t("gpui-shell-tasks-wd-sun").await,
-        tasks_calendar_scheduled: service.t("gpui-shell-tasks-calendar-scheduled").await,
-        tasks_calendar_ran: service.t("gpui-shell-tasks-calendar-ran").await,
-        tasks_calendar_error: service.t("gpui-shell-tasks-calendar-error").await,
-        tasks_calendar_note: service.t("gpui-shell-tasks-calendar-note").await,
-        tasks_list_title: service.t("gpui-shell-tasks-list-title").await,
+        tasks_cal_title: service.t("gpui-shell-tasks-cal-title").await,
+        tasks_cal_prev: service.t("gpui-shell-tasks-cal-prev").await,
+        tasks_cal_next: service.t("gpui-shell-tasks-cal-next").await,
+        tasks_cal_today: service.t("gpui-shell-tasks-cal-today").await,
+        tasks_day_detail_title: service.t("gpui-shell-tasks-day-detail-title").await,
+        tasks_day_clear: service.t("gpui-shell-tasks-day-clear").await,
+        tasks_day_empty: service.t("gpui-shell-tasks-day-empty").await,
         tasks_badge_running: service.t("gpui-shell-tasks-badge-running").await,
         tasks_badge_next_run: service.t("gpui-shell-tasks-badge-next-run").await,
         tasks_badge_overdue: service.t("gpui-shell-tasks-badge-overdue").await,
         tasks_inactive_paused: service.t("gpui-shell-tasks-inactive-paused").await,
         tasks_inactive_done: service.t("gpui-shell-tasks-inactive-done").await,
         tasks_inactive_invalid: service.t("gpui-shell-tasks-inactive-invalid").await,
-        tasks_day_clear: service.t("gpui-shell-tasks-day-clear").await,
-        tasks_day_empty: service.t("gpui-shell-tasks-day-empty").await,
+        tasks_list_empty: service.t("gpui-shell-tasks-list-empty").await,
         tasks_new: service.t("gpui-shell-tasks-new").await,
         tasks_editor_create_title: service.t("gpui-shell-tasks-editor-create-title").await,
         tasks_editor_edit_title: service.t("gpui-shell-tasks-editor-edit-title").await,
+        tasks_editor_create_desc: service.t("gpui-shell-tasks-editor-create-desc").await,
+        tasks_editor_edit_desc: service.t("gpui-shell-tasks-editor-edit-desc").await,
+        tasks_editor_btn_create: service.t("gpui-shell-tasks-editor-btn-create").await,
+        tasks_editor_btn_save: service.t("gpui-shell-tasks-editor-btn-save").await,
+        tasks_editor_cron_hint: service.t("gpui-shell-tasks-editor-cron-hint").await,
+        tasks_editor_name_placeholder: service.t("gpui-shell-tasks-editor-name-placeholder").await,
+        tasks_editor_prompt_placeholder: service
+            .t("gpui-shell-tasks-editor-prompt-placeholder")
+            .await,
         tasks_editor_name: service.t("gpui-shell-tasks-editor-name").await,
         tasks_editor_prompt: service.t("gpui-shell-tasks-editor-prompt").await,
         tasks_editor_schedule: service.t("gpui-shell-tasks-editor-schedule").await,

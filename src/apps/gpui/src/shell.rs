@@ -553,8 +553,12 @@ impl ShellWindow {
         let mcp_import_path = cx.new(|cx| InputState::new(window, cx));
         let mcp_auth_token_input = cx.new(|cx| InputState::new(window, cx));
         let websearch_credential_input = cx.new(|cx| InputState::new(window, cx));
-        let task_name_input = cx.new(|cx| InputState::new(window, cx));
-        let task_prompt_input = cx.new(|cx| TextareaState::new(window, cx));
+        let task_name_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(text.tasks_editor_name_placeholder.clone())
+        });
+        let task_prompt_input = cx.new(|cx| {
+            TextareaState::new(window, cx).placeholder(text.tasks_editor_prompt_placeholder.clone())
+        });
         let task_at_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("YYYY-MM-DDTHH:MM"));
         let task_every_input = cx.new(|cx| InputState::new(window, cx).placeholder("1"));
@@ -588,6 +592,7 @@ impl ShellWindow {
         // scenes; the fixture provider installs behind its env gate.
         let (plugin_ui, _fixture_scene) = crate::plugin_ui::setup_projection();
         receive_runtime_events(event_rx, window, cx);
+        spawn_tasks_tick(window, cx);
 
         // M22 close-button behavior: the callback mirrors the shared setting
         // through `CLOSE_QUITS` and always vetoes the direct close — quit
@@ -2748,6 +2753,41 @@ fn receive_runtime_events(
             if !alive {
                 break;
             }
+        }
+    })
+    .detach();
+}
+
+/// E4-b2: the task board's 30-second clock (web `CLOCK_TICK_MS`). While the
+/// tasks scene is the active tab it ages the countdowns and re-pulls the
+/// shared store, so a job changed by another surface — the agent's own
+/// scheduling tool, a workspace editor — arrives without a manual reload; the
+/// shell runtime has no change-push channel, so the poll is the board's
+/// equivalent of the web panel's `SCHEDULED_JOBS_CHANGED` subscription.
+fn spawn_tasks_tick(window: &Window, cx: &mut Context<ShellWindow>) {
+    use std::time::Duration;
+    cx.spawn_in(window, async move |this, cx| loop {
+        cx.background_executor()
+            .timer(Duration::from_secs(30))
+            .await;
+        let alive = cx
+            .update(|_, cx| {
+                this.update(cx, |shell, cx| {
+                    let tasks_active =
+                        shell.tabs.active_kind() == Some(&TabKind::Scene(SceneId::Tasks));
+                    if tasks_active && shell.tasks.loaded {
+                        shell.tasks.now_ms = chrono::Utc::now().timestamp_millis();
+                        if let Some(handle) = runtime::runtime_handle() {
+                            handle.reload_cron_jobs(shell.event_tx.clone());
+                        }
+                        cx.notify();
+                    }
+                })
+                .is_ok()
+            })
+            .unwrap_or(false);
+        if !alive {
+            break;
         }
     })
     .detach();

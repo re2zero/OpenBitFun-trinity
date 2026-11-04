@@ -32,11 +32,15 @@ gpui_kit::assets::icon_assets!(
     // menu trigger (打开项目 / 新建项目). ListTree/List are the sessions view
     // toggle's grouped/all glyphs and Funnel the session filter menu trigger
     // (web nav.sessions.viewToggle + viewMenu), all outside the default set.
+    // CalendarClock/CalendarDays are the tasks board's row and editor glyphs
+    // (E4-b2); the default bundle only ships plain `calendar`.
     [
         Activity,
         Archive,
         ArrowUpRight,
         BrainCircuit,
+        CalendarClock,
+        CalendarDays,
         ChartColumn,
         Funnel,
         FolderPlus,
