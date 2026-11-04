@@ -26,9 +26,9 @@ use gpui_kit::component::text::TextView;
 use gpui_kit::component::{ActiveTheme, Icon, Sizable};
 use gpui_kit::InteractiveElement as _;
 use gpui_kit::{
-    div, img, list, prelude::*, px, App, Context, Entity, FontStyle, HighlightStyle, Hsla, Image,
-    ImageFormat, IntoElement, ListAlignment, ListOffset, ListState, Render, Rgba, SharedString,
-    StyledText, TextStyle, Window,
+    div, img, list, prelude::*, px, App, Context, Entity, FontStyle, FontWeight, HighlightStyle,
+    Hsla, Image, ImageFormat, IntoElement, ListAlignment, ListOffset, ListState, Render, Rgba,
+    SharedString, StyledText, TextStyle, Window,
 };
 use openbitfun_core::service::filesystem::{FileSystemService, FileTreeNode};
 use syntect::easy::HighlightLines;
@@ -763,49 +763,25 @@ impl FilesPage {
 impl Render for FilesPage {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let text = i18n::current(cx);
-        let this = cx.entity();
 
         let mut column = div()
             .size_full()
             .flex()
             .flex_col()
-            .gap_2()
+            .gap_3()
             .p_4()
             .text_color(cx.theme().foreground);
 
-        let mut header = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .justify_between()
-            .gap_2()
-            .child(
-                div()
-                    .text_lg()
-                    .text_color(cx.theme().foreground)
-                    .child(text.files_title.clone()),
-            );
-        header = header.child(
-            Button::new("files-reload")
-                .icon(IconName::RefreshCw)
-                .small()
-                .with_variant(ButtonVariant::Ghost)
-                .tooltip(text.files_reload.clone())
-                .on_click(move |_, _, cx| {
-                    this.update(cx, |page, cx| page.reload(cx));
-                }),
+        // Page head: the scene title only. The reload lives in the tree
+        // card's head lane (web keeps it in the files section header
+        // actions), and the workspace identity moved there too (D2/D3).
+        column = column.child(
+            div()
+                .text_lg()
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(cx.theme().foreground)
+                .child(text.files_title.clone()),
         );
-        column = column.child(header);
-
-        if !self.root.is_empty() {
-            column = column.child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .truncate()
-                    .child(self.root.clone()),
-            );
-        }
 
         if let Some(error) = &self.error {
             column = column.child(
@@ -826,27 +802,8 @@ impl Render for FilesPage {
             self.tree_list.reset(count);
         }
         let this = cx.entity();
-        let tree = div()
-            .when(self.compact, |this| this.flex_1().min_w_0())
-            .when(!self.compact, |this| {
-                this.w(px(TREE_COLUMN_WIDTH)).flex_shrink_0()
-            })
-            .h_full()
-            .flex()
-            .flex_col()
-            .when(!self.compact, |this| {
-                this.border_r_1().border_color(cx.theme().border).pr_1()
-            })
-            .child(self.render_filter_row(&filter, cx))
-            .child(self.render_tree(this.clone(), &text, cx));
-        let viewer = div()
-            .flex_1()
-            .min_w_0()
-            .h_full()
-            .flex()
-            .flex_col()
-            .when(!self.compact, |this| this.pl_2())
-            .child(self.render_viewer(this, &text, cx));
+        let tree = self.render_tree_card(this.clone(), &filter, &text, cx);
+        let viewer = self.render_viewer_card(this, &text, cx);
 
         // The docked panel is one column wide, so tree and viewer cannot sit
         // side by side (R2c kept the tree): an opened file takes the panel
@@ -861,10 +818,84 @@ impl Render for FilesPage {
                 .min_h_0()
                 .flex()
                 .flex_row()
+                .gap_3()
                 .child(tree)
                 .when(!self.compact, |this| this.child(viewer))
         };
         column.child(body)
+    }
+}
+
+impl FilesPage {
+    /// The directory tree card (screens.md §3 left): workspace identity and
+    /// the reload action on the card head, the filter box and the lazy
+    /// virtualized tree on the body. The docked-panel form stretches the same
+    /// card across the panel.
+    fn render_tree_card(
+        &self,
+        this: gpui_kit::Entity<Self>,
+        filter: &Entity<InputState>,
+        text: &ShellText,
+        cx: &App,
+    ) -> gpui_kit::Div {
+        let head_title = if self.root_name.is_empty() {
+            text.files_title.clone()
+        } else {
+            self.root_name.clone()
+        };
+        let reload = Button::new("files-reload")
+            .icon(IconName::RefreshCw)
+            .small()
+            .with_variant(ButtonVariant::Ghost)
+            .tooltip(text.files_reload.clone())
+            .on_click({
+                let this = this.clone();
+                move |_, _, cx| {
+                    this.update(cx, |page, cx| page.reload(cx));
+                }
+            })
+            .into_any_element();
+        let root_path = (!self.root.is_empty()).then(|| self.root.clone());
+        crate::shell::scene_card("files-tree", cx)
+            .min_h_0()
+            .when(self.compact, |card| card.flex_1().min_w_0())
+            .when(!self.compact, |card| {
+                card.w(px(TREE_COLUMN_WIDTH)).flex_shrink_0()
+            })
+            .child(crate::shell::scene_card_head(
+                head_title,
+                root_path,
+                Some(reload),
+                cx,
+            ))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .px_3()
+                    .pb_3()
+                    .child(Input::new(filter))
+                    .child(self.render_tree(this, text, cx)),
+            )
+    }
+
+    /// The viewer card (screens.md §3 right): headless — the tab chips are
+    /// the file-name row the wireframe draws — carrying the open-file tabs
+    /// and the read-only preview, or the centered empty state.
+    fn render_viewer_card(
+        &self,
+        this: gpui_kit::Entity<Self>,
+        text: &ShellText,
+        cx: &App,
+    ) -> gpui_kit::Div {
+        crate::shell::scene_card("files-viewer", cx)
+            .flex_1()
+            .min_h_0()
+            .min_w_0()
+            .child(self.render_viewer(this, text, cx))
     }
 }
 
@@ -884,11 +915,10 @@ impl FilesPage {
         self.filter.clone().expect("filter input created above")
     }
 
-    /// The local filter box above the tree (G-FL2).
-    fn render_filter_row(&self, filter: &Entity<InputState>, _cx: &App) -> gpui_kit::AnyElement {
-        div().pb_1().child(Input::new(filter)).into_any_element()
-    }
-
+    /// The tree body: loading, failure, empty-workspace, and no-match states
+    /// with the lazy virtualized row list between them. True empty states are
+    /// centered in the card (the card carries the empty surface; no card in
+    /// card).
     fn render_tree(
         &self,
         this: gpui_kit::Entity<Self>,
@@ -914,11 +944,18 @@ impl FilesPage {
                 .into_any_element();
         }
         if self.loaded && self.top.is_empty() {
-            return crate::shell::brand_empty(
-                IconName::FolderOpen,
-                &text.files_empty_title,
-                &text.files_empty,
-            );
+            return div()
+                .flex_1()
+                .w_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(crate::shell::brand_empty(
+                    IconName::FolderOpen,
+                    &text.files_empty_title,
+                    &text.files_empty,
+                ))
+                .into_any_element();
         }
 
         let query = self
@@ -1013,6 +1050,8 @@ impl FilesPage {
             if self.opening.is_some() {
                 return div()
                     .flex_1()
+                    .w_full()
+                    .flex()
                     .items_center()
                     .justify_center()
                     .text_sm()
@@ -1023,16 +1062,33 @@ impl FilesPage {
             // The viewer's unselected state (E4 batch ① copy debt fix): say
             // what to do next instead of claiming the workspace is empty —
             // that phrasing stays on the tree column, which owns the real
-            // "no files" fact.
-            return crate::shell::brand_empty(
-                IconName::FileText,
-                &text.files_viewer_empty_title,
-                &text.files_viewer_empty,
-            );
+            // "no files" fact. The viewer card itself is the empty-state
+            // card (D5): the copy centers on its surface, no nested card.
+            return div()
+                .flex_1()
+                .w_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .p_4()
+                .child(crate::shell::brand_empty(
+                    IconName::FileText,
+                    &text.files_viewer_empty_title,
+                    &text.files_viewer_empty,
+                ))
+                .into_any_element();
         }
 
         let active_path = self.active.clone();
-        let mut column = div().flex_1().min_h_0().flex().flex_col().gap_1();
+        let mut column = div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .px_3()
+            .pt_3()
+            .pb_3();
 
         // Tab bar: one chip per open file; the chip body selects, the close
         // mark closes. The two click targets are siblings, not nested, so a
@@ -1138,13 +1194,12 @@ impl FilesPage {
                 })
                 .size_full()
                 .min_h_0();
+                // The card is the content's boundary (D5): the code body sits
+                // directly on the card surface instead of a boxed inset.
                 div()
                     .flex_1()
                     .min_h_0()
                     .min_w_0()
-                    .border_1()
-                    .border_color(cx.theme().border)
-                    .rounded(cx.theme().radius)
                     .py_1()
                     .child(list_element)
                     .into_any_element()
@@ -1430,6 +1485,55 @@ mod tests {
         assert!(
             window.debug_bounds("files-code-row").is_some(),
             "the code viewer lays out its rows"
+        );
+        // The two-card mount (E4-b3): tree and viewer cards both lay out.
+        assert!(
+            window.debug_bounds("scene-card-files-tree").is_some(),
+            "the tree card lays out"
+        );
+        assert!(
+            window.debug_bounds("scene-card-files-viewer").is_some(),
+            "the viewer card lays out"
+        );
+    }
+
+    /// The unselected viewer (no tabs) centers the batch-① copy on the viewer
+    /// card surface; the tree card still carries the workspace head.
+    #[gpui_kit::test]
+    fn page_renders_viewer_empty_state(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            cx.set_global(crate::i18n::fallback_text(
+                openbitfun_core::service::i18n::LocaleId::EnUS,
+            ));
+        });
+        let page = cx.new(|_| tree_page());
+        page.update(cx, |page, _| {
+            page.loaded = true;
+        });
+        let window = cx.add_empty_window();
+        window.draw(
+            gpui_kit::point(px(0.), px(0.)),
+            gpui_kit::size(px(1000.), px(700.)),
+            {
+                let page = page.clone();
+                move |_, _| page.into_any_element()
+            },
+        );
+        window.run_until_parked();
+        // The unselected viewer renders on the card surface itself (D5): the
+        // card lays out, no code rows exist, and the tree card sits beside it.
+        assert!(
+            window.debug_bounds("scene-card-files-viewer").is_some(),
+            "the viewer card is the empty-state surface"
+        );
+        assert!(
+            window.debug_bounds("scene-card-files-tree").is_some(),
+            "the tree card sits beside the empty viewer"
+        );
+        assert!(
+            window.debug_bounds("files-code-row").is_none(),
+            "no code rows without an open file"
         );
     }
 

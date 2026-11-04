@@ -34,7 +34,7 @@ use tokio::sync::mpsc;
 
 use crate::i18n::ShellText;
 use crate::runtime::{self, RuntimeEvent};
-use crate::shell::ShellWindow;
+use crate::shell::{scene_card, scene_card_head, scene_card_row, ShellWindow};
 
 /// State of the task board; lives on the shell window and is updated only
 /// through [`RuntimeEvent`] projections and the board's own tick.
@@ -1012,69 +1012,6 @@ pub(crate) fn job_workspace_label(job: &CronJob, current: Option<(&str, &str)>) 
     let path = reference.workspace_path.trim();
     let tail = path.split('/').filter(|segment| !segment.is_empty()).last();
     tail.unwrap_or(path).to_string()
-}
-
-/// The quiet-card container every board section renders on (style.md §3): the
-/// settings-page card geometry — panel surface, hairline boundary, the theme's
-/// large radius — with an arbitrary body instead of label/control rows.
-fn scene_card(anchor: &'static str, cx: &App) -> gpui_kit::Div {
-    div()
-        .debug_selector(move || format!("tasks-card-{anchor}"))
-        .w_full()
-        .flex()
-        .flex_col()
-        .bg(cx.theme().group_box)
-        .border_1()
-        .border_color(cx.theme().border)
-        .rounded(cx.theme().radius_lg)
-}
-
-/// A card head: title and optional muted description on the left, the extra
-/// lane on the right (the `SettingsCard` head shape).
-fn scene_card_head(
-    title: String,
-    description: Option<String>,
-    extra: Option<gpui_kit::AnyElement>,
-    cx: &App,
-) -> gpui_kit::Div {
-    div().px_4().pt_4().pb_3().child(
-        div()
-            .flex()
-            .flex_row()
-            .items_start()
-            .justify_between()
-            .gap_4()
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_0p5()
-                    .min_w_0()
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(cx.theme().foreground)
-                            .child(title),
-                    )
-                    .children(description.map(|text| {
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(text)
-                    })),
-            )
-            .children(extra),
-    )
-}
-
-/// A row inside a scene card: the settings-card row geometry (12px block,
-/// hairline between rows) for list-shaped bodies.
-fn scene_card_row(divider: bool, cx: &App) -> gpui_kit::Div {
-    div().flex().flex_col().px_4().py_3().when(divider, |row| {
-        row.border_t_1()
-            .border_color(cx.theme().border.opacity(0.6))
-    })
 }
 
 /// The full board: page header, overview card, month calendar card, the job
