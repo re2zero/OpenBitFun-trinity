@@ -17,8 +17,8 @@ import { extractProductConfigArg } from './product-customization/cli.mjs';
 import { resolveProductDefinition } from './product-customization/resolver.mjs';
 
 const ROOT = resolve(import.meta.dirname, '..');
-export const BIN_NAME = 'openbitfun-gpui';
-export const PACKAGE_NAME = 'openbitfun-gpui';
+export const BIN_NAME = 'openbitfun-app';
+export const PACKAGE_NAME = 'openbitfun-app';
 const ICON_SIZES = [16, 32, 48, 64, 128, 256];
 // `dpkg-shlibdeps` only sees DT_NEEDED. Verified against a running release
 // binary (`/proc/<pid>/maps`): the wgpu Vulkan backend loads the loader at
@@ -83,7 +83,7 @@ export function desktopEntry() {
   return [
     '[Desktop Entry]',
     'Type=Application',
-    'Name=OpenBitFun GPUI Shell',
+    'Name=OpenBitFun',
     'Comment=Native GPU-rendered desktop shell (experimental)',
     `Exec=${BIN_NAME}`,
     `Icon=${PACKAGE_NAME}`,

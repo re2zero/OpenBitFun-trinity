@@ -160,7 +160,7 @@ jobs:
             --target ${{ matrix.platform.target }} \
             -p openbitfun-cli \
             -p openbitfun-relay-server \
-            -p openbitfun-gpui \
+            -p openbitfun-app \
             --bins
 
       # A binary above this floor cannot start on older distributions, and the
@@ -198,7 +198,7 @@ jobs:
         run: bash scripts/relay/package-unix.sh "$ASSET_VERSION" "$TARGET"
 
       # The manifest (and therefore the feed the updater reads) requires
-      # `openbitfun-gpui-<version>-<target>.tar.gz` next to the CLI and
+      # `openbitfun-app-<version>-<target>.tar.gz` next to the CLI and
       # Relay archives; this step produces exactly that name.
       - name: Package GPUI Shell
         id: gpui-stage

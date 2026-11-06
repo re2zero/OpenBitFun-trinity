@@ -1,37 +1,14 @@
-//! OpenBitFun GPUI desktop shell library: the window shell, embedded runtime
-//! bridge, theming/i18n, and the built-in terminal. The binary target is a
-//! thin bootstrap around [`shell::launch_main_window`].
+//! OpenBitFun GPUI desktop shell. The former single crate was split into
+//! per-concern crates under `crates/` so no single rustc process has to carry
+//! the whole product's compile; this target is the thin library facade the
+//! binary, integration tests, and examples consume. Every historical
+//! `openbitfun_gpui::<module>` path keeps working through the re-exports
+//! below.
 
-// The insights generation future drags a long rmcp type chain through the
-// Send check at the spawn boundary; the default 128 limit overflows.
-#![recursion_limit = "256"]
-
-pub mod acp;
-pub mod assets;
-pub mod cli;
-pub mod diagnostics;
-pub mod ely_support;
-pub mod files;
-pub mod git;
-pub mod i18n;
-pub mod insights;
-pub mod instance;
-pub mod manage;
-pub mod markdown;
-pub mod plugin_ui;
-pub mod runtime;
-pub mod search;
-pub mod settings;
-pub mod settings_cards;
-pub mod shell;
-pub mod sleep_prevention;
-pub mod storage;
-pub mod subagent_identity;
-pub mod tabs;
-pub mod tasks;
-pub mod terminal;
-pub mod theme;
-pub mod theme_openbitfun;
-pub mod transcript;
-pub mod tray;
-pub mod update;
+pub use gpui_foundation::{assets, ely_support, i18n, subagent_identity, theme, theme_openbitfun};
+pub use gpui_host::{cli, diagnostics, instance, storage, update};
+pub use gpui_shell::{
+    acp, files, git, insights, manage, markdown, plugin_ui, runtime, search, settings,
+    settings_cards, shell, sleep_prevention, tabs, tasks, transcript, tray,
+};
+pub use gpui_terminal::terminal;

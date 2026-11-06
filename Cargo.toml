@@ -2,6 +2,10 @@
 members = [
     "src/apps/cli",
     "src/apps/gpui",
+    "src/apps/gpui/crates/gpui-foundation",
+    "src/apps/gpui/crates/gpui-host",
+    "src/apps/gpui/crates/gpui-shell",
+    "src/apps/gpui/crates/gpui-terminal",
     "src/apps/sdk-host",
     "src/apps/desktop",
     "src/apps/miniapp-shell",

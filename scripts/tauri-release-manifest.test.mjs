@@ -320,7 +320,7 @@ test(`${version} Linux CLI and Relay manifests keep signed assets on the version
   const tag = `v${version}`;
   const assets = [];
   for (const target of ['x86_64-unknown-linux-gnu', 'aarch64-unknown-linux-gnu']) {
-    for (const name of [`openbitfun-cli-${version}-${target}.tar.gz`, `openbitfun-relay-server-${target}.tar.gz`, `openbitfun-gpui-${version}-${target}.tar.gz`]) {
+    for (const name of [`openbitfun-cli-${version}-${target}.tar.gz`, `openbitfun-relay-server-${target}.tar.gz`, `openbitfun-app-${version}-${target}.tar.gz`]) {
       for (const suffix of ['', '.sha256', '.sig', '.sha256.sig']) {
         const filename = path.join(temp, name + suffix);
         fs.writeFileSync(filename, `fixture ${name}${suffix}`);

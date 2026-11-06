@@ -61,14 +61,17 @@
 ## 5. 验证口径
 
 ```bash
-cargo check -p openbitfun-gpui --lib --tests   # 单 crate 约 50min / rustc 峰值 ~48GB
-cargo test -p openbitfun-gpui --lib
+# 2026-11 壳已拆分为 src/apps/gpui/crates/ 下的 gpui-* crate（bin 包名
+# openbitfun-app），不再有"单 crate 50min / rustc 峰值 ~48GB"的编译形态；
+# 各 crate 独立编译、峰值内存回归常量级。
+cargo check -p openbitfun-app --lib --tests
+cargo test -p gpui-shell --lib
 pnpm run fmt:rs                                 # 只格式化改动文件
 node --test scripts/gpui-package.test.mjs scripts/audit-rust-surface-colors.test.mjs
 node scripts/audit-frontend-colors.mjs --surface gpui
 ```
 
-冒烟要点：隔离根启动（默认隔离到 `~/.local/share/openbitfun-gpui`）；杀壳扫
+冒烟要点：隔离根启动（默认隔离到 `~/.local/share/openbitfun-app`）；杀壳扫
 `/proc/*/exe` 且模式必须带尾星（二进制替换后 readlink 带 `(deleted)`）；Xvfb 用冷门
 私有显示器号；gpui-kit 开关的视觉回填走异步事件链，自动化采样要移开鼠标+延时。
 

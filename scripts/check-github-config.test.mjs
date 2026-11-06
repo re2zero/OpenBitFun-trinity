@@ -1116,7 +1116,7 @@ test('Linux binary packaging uses the shared locked version projection contract'
   assert.equal(steps[committedIndex].run, 'cargo metadata --locked --no-deps');
   assert.equal(steps[projectedIndex].run, 'cargo metadata --locked --no-deps');
   assert.match(steps[buildIndex].run, /cargo build --locked --release/);
-  assert.match(steps[buildIndex].run, /-p openbitfun-gpui/);
+  assert.match(steps[buildIndex].run, /-p openbitfun-app/);
   const rustCache = steps.find((step) =>
     step.uses?.startsWith('swatinem/rust-cache@'));
   const restoreOnlyOnPr =
@@ -1136,7 +1136,7 @@ test('Linux binary packaging uses the shared locked version projection contract'
     upload?.with?.['retention-days'],
     '${{ inputs.artifact_retention_days }}',
   );
-  // The feed manifest requires `openbitfun-gpui-<version>-<target>.tar.gz`
+  // The feed manifest requires `openbitfun-app-<version>-<target>.tar.gz`
   // next to the CLI and Relay archives, so the workflow must package it after
   // the build and hand it to the same upload step.
   const gpuiStage = steps.find((step) => step.id === 'gpui-stage');

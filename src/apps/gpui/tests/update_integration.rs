@@ -190,7 +190,7 @@ impl Server {
 /// keeps that instant and disk-free (both paths are on the same filesystem); the
 /// swap only moves directory entries, so the artifact cargo owns stays intact.
 fn installed_shell() -> (TempDir, PathBuf) {
-    let artifact = PathBuf::from(env!("CARGO_BIN_EXE_openbitfun-gpui"));
+    let artifact = PathBuf::from(env!("CARGO_BIN_EXE_openbitfun-app"));
     let cache = std::env::var_os("HOME")
         .map(PathBuf::from)
         .map(|home| home.join(".cache"))

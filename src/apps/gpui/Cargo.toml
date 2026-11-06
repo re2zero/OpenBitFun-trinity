@@ -1,127 +1,38 @@
 [package]
-name = "openbitfun-gpui"
+name = "openbitfun-app"
 version.workspace = true
 authors.workspace = true
 edition.workspace = true
 description = "OpenBitFun GPUI desktop shell (experimental native frontend)"
 
+# The packaged artifact keeps the historical `openbitfun_gpui` lib name so the
+# binary bootstrap, integration tests, and examples import it unchanged.
+[lib]
+name = "openbitfun_gpui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "openbitfun-app"
+path = "src/main.rs"
+
 [dependencies]
-gpui-kit = { workspace = true }
-# E3 batch 5: the ACP agents page reads and writes the external-agent config
-# through the core ACP client service (the same service the desktop host
-# serves). Only the client role is needed here; the server role stays with the
-# hosts that embed OpenBitFun as an agent.
-openbitfun-acp = { path = "../../crates/interfaces/acp", default-features = false, features = [
-    "client",
-] }
-# gpui-ely redesign: card/section structure primitives from the Ely upstream
-# checkout; its gpui-pre pin (=0.3.10) is the one gpui-kit 0.8.1 pins, so both
-# resolve to a single gpui graph.
-ely-core = { workspace = true }
-openbitfun-core = { path = "../../crates/assembly/core", features = [
-    "i18n-runtime",
-    # Embedded runtime closure, aligned with `src/apps/cli/Cargo.toml` (PLAN M3):
-    # the reviewed CLI owner-feature closure plus the Code Agent atomic tool
-    # owners. Do not replace with `product-full`.
-    "agent-runtime",
-    "product-search",
-    "workspace-search",
-    "document-read",
-    "subscription-auth",
-    "remote-connect",
-    "external-sources",
-    "plugin-runtime",
-    "opencode-plugin-host",
-    "ssh-remote",
-    "tools-pages",
-    "tools-basic",
-    "tools-git",
-    "tools-mcp",
-    "tools-browser-web",
-    "tools-computer-use",
-    "tools-image-analysis",
-    "tools-agent-control",
-    # G-G2: the AI commit-message generator goes through the core GitFunctionAgent.
-    "function-agents",
-] }
-openbitfun-agent-runtime = { path = "../../crates/execution/agent-runtime", features = ["agent-runtime"] }
-openbitfun-events = { path = "../../crates/contracts/events" }
-# M19 worktree management: the reconciled worktree summary and error contracts
-# live in the stable core-types crate (the desktop adapter depends on it the
-# same way).
-openbitfun-core-types = { path = "../../crates/contracts/core-types" }
-# G-SE25: the Hook import snapshot/plan/mutation contracts the automation page
-# reads; the core crate owns the lifecycle behind them.
-openbitfun-product-domains = { path = "../../crates/contracts/product-domains", features = [
-    "external-sources",
-] }
-openbitfun-runtime-ports = { path = "../../crates/contracts/runtime-ports", features = [
-    "agent-api",
-    # M8 changes view: the workspace diff port served by the local runtime
-    # services provider.
-    "git-port",
-] }
-# M7 built-in terminal: PTY lifecycle from the owning services crate, VT screen
-# model (grid/scrollback/alternate screen) from the emulator backend (D24).
-terminal-core = { path = "../../crates/services/terminal" }
-alacritty_terminal = { workspace = true }
-anyhow = { workspace = true }
-base64 = { workspace = true }
-minisign-verify = { workspace = true }
-chrono = { workspace = true }
-# E4-b2 task board: the calendar derives future occurrences the way the web
-# scene does, so the shell expands cron/at/every schedules locally instead of
-# only marking the store's next-run instant.
-chrono-tz = { workspace = true }
-cron = { workspace = true }
-serde = { workspace = true }
-serde_json = { workspace = true }
+# Thin binary: the shell was split into per-concern crates under crates/ so no
+# single rustc process monomorphizes the whole product (the former monolith
+# peaked past the machine's memory during release codegen).
+gpui-foundation = { path = "crates/gpui-foundation" }
+gpui-host = { path = "crates/gpui-host" }
+gpui-shell = { path = "crates/gpui-shell" }
+gpui-terminal = { path = "crates/gpui-terminal" }
 tokio = { workspace = true, features = ["fs", "io-util", "rt-multi-thread", "sync"] }
-# M9 self-update: the release manifest and archive come over HTTPS through the
-# same product-owned ring TLS provider the CLI uses, and the extracted binary is
-# probed through the sanctioned child-process helper (never a bare
-# `std::process::Command`). Both features are already in this crate's closure
-# through `openbitfun-core`.
-openbitfun-services-core = { path = "../../crates/services/services-core", features = [
+tracing = { workspace = true }
+
+[dev-dependencies]
+# examples/ seeders import the runtime closure types directly.
+openbitfun-core = { path = "../../../src/crates/assembly/core", features = ["test-support"] }
+openbitfun-services-core = { path = "../../../src/crates/services/services-core", features = [
     "process-runtime",
     "tls-provider",
 ] }
-flate2 = { workspace = true }
-# M22 tray icon (StatusNotifierItem) and launch-at-login; auto-launch shares
-# the version the desktop's tauri-plugin-autostart already pulls. `image`
-# decodes the embedded brand PNG into the SNI icon pixmap.
-ksni = { workspace = true }
-auto-launch = { workspace = true }
-image = { workspace = true, features = ["png"] }
-# G-SE1: the OS sleep inhibitor behind the prevent-sleep toggle; the same
-# workspace version and backend the desktop host uses (logind D-Bus on Linux).
-keepawake = { workspace = true }
-futures-util = { workspace = true }
-# M21 MCP interaction pump: the emitter forwarding server asks into the shell
-# event pump implements the core backend-bus trait.
-async-trait = { workspace = true }
-reqwest = { workspace = true, features = ["http2", "rustls-no-provider", "stream"] }
-sha2 = { workspace = true }
-tar = { workspace = true }
-tempfile = { workspace = true }
-uuid = { workspace = true }
-# Unwrapped diff rows size to the widest line; display width (CJK = two columns)
-# selects that row instead of character count.
-unicode-width = { workspace = true }
-# M15 files viewer: syntax highlighting for the code tab. The workspace pins
-# the feature set (default syntaxes/themes, regex-onig) the CLI already ships.
-syntect = { workspace = true }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-# Trinity console (T2-15): the daemon endpoint comes from the shared
-# `~/.config/trinity/trinity.toml`, parsed with the same toml crate desktop uses.
-toml = { workspace = true }
-dirs = { workspace = true }
-# Diagnostics bundle export packs session logs into the same deflate zip the
-# desktop support bundles use.
-zip = { workspace = true }
-
-[dev-dependencies]
 # gpui-kit's test-support forwards to gpui/gpui-platform/gpui-base/
 # gpui-component test features, covering `#[gpui_kit::test]` headless windows.
 gpui-kit = { workspace = true, features = ["test-support"] }
@@ -133,7 +44,16 @@ fluent-bundle = { workspace = true }
 # serves the release fixture over a local HTTP/1.1 listener and runs the real
 # binary as the updater. Headless shell tests also construct terminal panes
 # against a leaked tokio runtime (rt), so tab close semantics run for real.
+alacritty_terminal = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+tar = { workspace = true }
+serde_json = { workspace = true }
+terminal-core = { path = "../../../src/crates/services/terminal" }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "rt-multi-thread", "time"] }
+flate2 = { workspace = true }
+sha2 = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

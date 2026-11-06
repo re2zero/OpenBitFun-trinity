@@ -1,0 +1,29 @@
+[package]
+name = "gpui-foundation"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "Leaf foundations of the OpenBitFun GPUI shell: i18n, theming, embedded assets, and the Ely bridge"
+
+[dependencies]
+gpui-kit = { workspace = true }
+ely-core = { workspace = true }
+openbitfun-core = { path = "../../../../../src/crates/assembly/core", features = [
+    "i18n-runtime",
+] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The code-block highlighter the theme defaults install (M15 files viewer and
+# the markdown hooks share the same process-wide syntax sets).
+syntect = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# Parses the compiled-in ftl catalogs in tests; the i18n:audit checks key
+# parity but not Fluent grammar, and a malformed select expression only
+# surfaces as a runtime registration failure.
+fluent-bundle = { workspace = true }
+gpui-kit = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

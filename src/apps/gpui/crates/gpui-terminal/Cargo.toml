@@ -1,0 +1,24 @@
+[package]
+name = "gpui-terminal"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "Built-in terminal of the OpenBitFun GPUI shell: PTY lifecycle, alacritty screen model, and gpui paint"
+
+[dependencies]
+# The settings slice mirrors the shared document's `terminal.*` section.
+openbitfun-core = { path = "../../../../../src/crates/assembly/core", features = [
+    "local-storage",
+] }
+# M7 built-in terminal: PTY lifecycle from the owning services crate, VT screen
+# model (grid/scrollback/alternate screen) from the emulator backend (D24).
+alacritty_terminal = { workspace = true }
+terminal-core = { path = "../../../../../src/crates/services/terminal" }
+gpui-foundation = { path = "../gpui-foundation" }
+gpui-kit = { workspace = true }
+serde = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

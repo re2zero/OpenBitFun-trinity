@@ -23,7 +23,9 @@ const SKIPPED_DIRECTORIES = new Set([
 ]);
 
 const ALLOWED_TARGET_LAYERS = new Map([
-  ['apps', new Set(['interfaces', 'assembly', 'adapters', 'services', 'execution', 'contracts'])],
+  // App-internal composition crates (the split gpui shell family under
+  // src/apps/gpui/crates) depend on each other, so apps may target apps.
+  ['apps', new Set(['apps', 'interfaces', 'assembly', 'adapters', 'services', 'execution', 'contracts'])],
   ['interfaces', new Set(['interfaces', 'assembly', 'adapters', 'services', 'execution', 'contracts'])],
   ['assembly', new Set(['assembly', 'adapters', 'services', 'execution', 'contracts'])],
   ['adapters', new Set(['adapters', 'services', 'execution', 'contracts'])],
@@ -348,7 +350,7 @@ const REQWEST_PACKAGE_PROFILES = new Map([
   }],
   // The gpui shell mirrors the CLI self-update client; the ring TLS provider
   // is selected through openbitfun-services-core in the same closure.
-  ['openbitfun-gpui', {
+  ['gpui-host', {
     dependencyFeatures: ['http2', 'rustls-no-provider', 'stream'],
     optional: false,
     tlsProviderDependency: 'openbitfun-services-core',
@@ -600,7 +602,7 @@ const THIRD_PARTY_CAPABILITY_PROFILES = new Map([
         useDefaultFeatures: false,
       })],
       // The gpui shell decodes the embedded brand PNG into the tray icon pixmap.
-      ['openbitfun-gpui', dependencyProfile(['png'], { useDefaultFeatures: false })],
+      ['gpui-shell', dependencyProfile(['png'], { useDefaultFeatures: false })],
     ]),
   }],
   ['tokio-tungstenite', {
@@ -1608,7 +1610,7 @@ export function findProductEntrypointCoreFeatureViolations(
       label: 'Desktop',
       requiredFeatures: ['client'],
     }],
-    ['openbitfun-gpui', {
+    ['gpui-shell', {
       label: 'GPUI shell',
       requiredFeatures: ['client'],
     }],
